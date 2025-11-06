@@ -55,4 +55,4 @@ build/
 
 # Training data files (keep structure but exclude large data)
 training-data/*.jsonl
-!training-data/.gitkeep
+!training-data/.gitkeep/home/r4/.config/vaughan-cli/config.json
