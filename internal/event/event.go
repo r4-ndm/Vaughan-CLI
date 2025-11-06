@@ -14,7 +14,7 @@ import (
 
 const (
 	endpoint = "https://data.charm.land"
-	key      = "phc_4zt4VgDWLqbYnJYEwLRxFoaTL2noNrQij0C6E8k3I0V"
+	key      = os.Getenv("POSTHOG_API_KEY")
 )
 
 var (
@@ -30,6 +30,10 @@ var (
 )
 
 func Init() {
+	if key == "" {
+		slog.Debug("PostHog API key not set, analytics disabled")
+		return
+	}
 	c, err := posthog.NewWithConfig(key, posthog.Config{
 		Endpoint: endpoint,
 		Logger:   logger{},

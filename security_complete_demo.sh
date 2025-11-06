@@ -175,13 +175,13 @@ func main() {
     
     sanitizer := security.NewSanitizer()
     
-    // Test API key masking
-    apiKey := "sk-123456789012345678901234567890abcdef"
+    // Test API key masking (DEMO KEY - NOT REAL)
+    apiKey := "sk-000000000000000000000000000000000000000000000000"
     masked := sanitizer.SanitizeAPIKey(apiKey)
     fmt.Printf("✅ API Key masked: %s\n", masked)
     
-    // Test private key masking
-    privateKey := "1234567890123456789012345678901234567890123456789012345678901234"
+    // Test private key masking (DEMO KEY - NOT REAL)
+    privateKey := "0000000000000000000000000000000000000000000000000000000000000000"
     maskedPrivate := sanitizer.SanitizePrivateKey(privateKey)
     fmt.Printf("✅ Private Key masked: %s\n", maskedPrivate)
     
