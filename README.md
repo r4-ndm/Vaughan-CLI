@@ -1,7 +1,7 @@
 # Vaughan-CLI
 
 <p align="center">
-    <a href="https://github.com/r4-ndm/Vaughan-CLI"><img width="450" alt="Vaughan CLI Logo" src="https://github.com/user-attachments/assets/adc1a6f4-b284-4603-836c-59038caa2e8b" /></a><br />
+    <a href="https://github.com/r4-ndm/Vaughan-CLI"><img width="450" alt="Vaughan CLI Logo" src="Vaughan-CLI-logo/Vaughan-big.png" /></a><br />
     <a href="https://github.com/r4-ndm/Vaughan-CLI/releases"><img src="https://img.shields.io/github/release/r4-ndm/Vaughan-CLI" alt="Latest Release"></a>
     <a href="https://github.com/r4-ndm/Vaughan-CLI/actions"><img src="https://github.com/r4-ndm/Vaughan-CLI/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
 </p>
