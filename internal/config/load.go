@@ -90,7 +90,12 @@ func Load(workingDir, dataDir string, debug bool) (*Config, error) {
 	}
 
 	if !cfg.IsConfigured() {
-		slog.Warn("No providers configured")
+		slog.Warn("No providers configured - please set up an API key")
+		slog.Info("To use Vaughan, set one of these environment variables:")
+		slog.Info("  export ANTHROPIC_API_KEY='sk-ant-...'  # For Claude")
+		slog.Info("  export OPENAI_API_KEY='sk-...'           # For GPT") 
+		slog.Info("  export GROQ_API_KEY='gsk_...'            # For Groq (fast & free)")
+		slog.Info("Or run: ollama serve                 # For local models")
 		return cfg, nil
 	}
 

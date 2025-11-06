@@ -675,6 +675,8 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		return c.buildGoogleVertexProvider(headers, providerCfg.ExtraParams)
 	case openaicompat.Name:
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody)
+	case "builtin":
+		return nil, fmt.Errorf("built-in provider not yet implemented - please configure API key or start Ollama")
 	default:
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	}
