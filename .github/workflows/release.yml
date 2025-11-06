@@ -10,17 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, windows, darwin, freebsd, openbsd, netbsd]
-        goarch: [amd64, arm64]
-        exclude:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
           - goos: windows
-            goarch: arm64
-          - goos: freebsd
-            goarch: arm64
-          - goos: openbsd
-            goarch: arm64
-          - goos: netbsd
-            goarch: arm64
+            goarch: amd64
 
     steps:
     - uses: actions/checkout@v4
@@ -41,7 +39,7 @@ jobs:
         if [ "${{ matrix.goos }}" = "windows" ]; then
           output_name+=".exe"
         fi
-        go build -o "$output_name" .
+        go build -ldflags="-s -w" -o "$output_name" .
         
     - name: Create archive
       shell: bash
