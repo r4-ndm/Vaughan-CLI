@@ -1,0 +1,101 @@
+{
+  "$schema": "https://charm.land/vaughan.json",
+  "models": {
+    "large": {
+      "model": "vaughan-crush-v1",
+      "provider": "local-ollama"
+    }
+  },
+  "providers": {
+    "local-ollama": {
+      "type": "openai-compat",
+      "base_url": "http://127.0.0.1:11434/v1/",
+      "models": [
+        {
+          "id": "vaughan-crush-v1",
+          "name": "Vaughan Crush v1 (Blockchain Specialized)",
+          "cost_per_1m_in": 0,
+          "cost_per_1m_out": 0,
+          "cost_per_1m_in_cached": 0,
+          "cost_per_1m_out_cached": 0,
+          "context_window": 32768,
+          "default_max_tokens": 2000
+        }
+      ]
+    }
+  },
+  "lsp": {
+    "gopls": {}
+  },
+  "agents": {
+    "blockchain": {
+      "id": "blockchain",
+      "name": "Vaughan Crush v1 - Blockchain AI Assistant",
+      "description": "AI assistant specialized in blockchain interactions and Cast commands (custom trained)",
+      "model": "large",
+      "allowed_tools": [
+        "cast_call",
+        "cast_send", 
+        "gas_price",
+        "view",
+        "ls",
+        "grep",
+        "bash"
+      ]
+    }
+  },
+  "blockchain": {
+    "default_network": "sepolia",
+    "networks": {
+      "mainnet": {
+        "name": "Ethereum Mainnet",
+        "chain_id": 1,
+        "rpc_url": "https://eth.llamarpc.com",
+        "block_time": 12,
+        "gas_token": "ETH"
+      },
+      "sepolia": {
+        "name": "Sepolia Testnet",
+        "chain_id": 11155111,
+        "rpc_url": "https://ethereum-sepolia.publicnode.com",
+        "block_time": 15,
+        "gas_token": "ETH"
+      },
+      "polygon": {
+        "name": "Polygon Mainnet",
+        "chain_id": 137,
+        "rpc_url": "https://polygon.llamarpc.com",
+        "block_time": 2,
+        "gas_token": "MATIC"
+      },
+      "anvil": {
+        "name": "Anvil Local Node",
+        "chain_id": 31337,
+        "rpc_url": "http://127.0.0.1:8545",
+        "block_time": 0,
+        "gas_token": "ETH"
+      }
+    },
+    "address_book": {
+      "vitalik": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+      "uniswap_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564"
+    },
+    "gas_strategies": {
+      "slow": {
+        "name": "Slow",
+        "gas_multiplier": 0.9,
+        "description": "Low gas fees, longer wait time"
+      },
+      "standard": {
+        "name": "Standard", 
+        "gas_multiplier": 1.0,
+        "description": "Balanced gas fees and speed"
+      },
+      "fast": {
+        "name": "Fast",
+        "gas_multiplier": 1.2,
+        "description": "Higher gas fees, quick confirmation"
+      }
+    }
+  }
+}

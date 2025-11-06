@@ -1,0 +1,58 @@
+# Dependencies
+vendor/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+vaughan
+vaughan-crush
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.cover
+
+# Dependency directories
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration
+*.local.json
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
+temp-*/
+temp-crush/
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*backup*
+vaughan-backup-*.json
+
+# Build output
+dist/
+build/
+
+# Training data files (keep structure but exclude large data)
+training-data/*.jsonl
+!training-data/.gitkeep

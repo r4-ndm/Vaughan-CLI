@@ -1,0 +1,65 @@
+# Vaughan CLI Production Monitoring Configuration
+# This file configures real monitoring services for production use
+
+# ========================================
+# PROMETHEUS METRICS CONFIGURATION
+# ========================================
+prometheus:
+  port: "9090"
+  metrics_path: "/metrics"
+  registry_name: "vaughan_production"
+
+# ========================================
+# ELASTICSEARCH LOGGING CONFIGURATION
+# ========================================
+elasticsearch:
+  addresses:
+    - "https://elasticsearch.vaughan.io:9200"
+  username: "vaughan_monitoring"
+  password: "${ELASTICSEARCH_PASSWORD}"
+  index: "vaughan_production_logs"
+  security_events_index: "vaughan_production_security"
+
+# ========================================
+# INFLUXDB TIME SERIES CONFIGURATION
+# ========================================
+influxdb:
+  url: "https://influxdb.vaughan.io:8086"
+  token: "${INFLUXDB_TOKEN}"
+  org: "vaughan"
+  bucket: "production_metrics"
+
+# ========================================
+# SENTRY ERROR TRACKING CONFIGURATION
+# ========================================
+sentry:
+  dsn: "${SENTRY_DSN}"
+  environment: "production"
+  release: "vaughan-cli@1.0.0"
+  sample_rate: 1.0
+
+# ========================================
+# SEGMENT ANALYTICS CONFIGURATION
+# ========================================
+segment:
+  write_key: "${SEGMENT_WRITE_KEY}"
+
+# ========================================
+# LOGGING CONFIGURATION
+# ========================================
+logging:
+  level: "info"
+  format: "json"
+  output: "file"
+  security_events_file: "/var/log/vaughan/security_events.log"
+
+# ========================================
+# ALERTING CONFIGURATION
+# ========================================
+alerting:
+  enabled: true
+  channels:
+    - "email"
+    - "slack"
+    - "pagerduty"
+  threshold: 5.0
