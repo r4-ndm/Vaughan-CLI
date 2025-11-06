@@ -8,52 +8,43 @@ var appStartTime time.Time
 
 func AppInitialized() {
 	appStartTime = time.Now()
-	send("app initialized")
+	// Analytics disabled for privacy
 }
 
 func AppExited() {
 	duration := time.Since(appStartTime).Truncate(time.Second)
-	send(
-		"app exited",
-		"app duration pretty", duration.String(),
-		"app duration in seconds", int64(duration.Seconds()),
-	)
+	// Analytics disabled for privacy
+	_ = duration
 	Flush()
 }
 
 func SessionCreated() {
-	send("session created")
+	// Analytics disabled for privacy
 }
 
 func SessionDeleted() {
-	send("session deleted")
+	// Analytics disabled for privacy
 }
 
 func SessionSwitched() {
-	send("session switched")
+	// Analytics disabled for privacy
 }
 
 func FilePickerOpened() {
-	send("filepicker opened")
+	// Analytics disabled for privacy
 }
 
 func PromptSent(props ...any) {
-	send(
-		"prompt sent",
-		props...,
-	)
+	// Analytics disabled for privacy
+	_ = props
 }
 
 func PromptResponded(props ...any) {
-	send(
-		"prompt responded",
-		props...,
-	)
+	// Analytics disabled for privacy
+	_ = props
 }
 
 func TokensUsed(props ...any) {
-	send(
-		"tokens used",
-		props...,
-	)
+	// Analytics disabled for privacy
+	_ = props
 }
