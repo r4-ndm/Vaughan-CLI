@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin, freebsd, openbsd, netbsd]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+          - goos: freebsd
+            goarch: arm64
+          - goos: openbsd
+            goarch: arm64
+          - goos: netbsd
+            goarch: arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Set environment variables
+      run: |
+        echo "GOOS=${{ matrix.goos }}" >> $GITHUB_ENV
+        echo "GOARCH=${{ matrix.goarch }}" >> $GITHUB_ENV
+        
+    - name: Build binary
+      run: |
+        output_name="vaughan-cli-${{ matrix.goos }}-${{ matrix.goarch }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          output_name+=".exe"
+        fi
+        go build -o "$output_name" .
+        
+    - name: Create archive
+      shell: bash
+      run: |
+        output_name="vaughan-cli-${{ matrix.goos }}-${{ matrix.goarch }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          output_name+=".exe"
+          zip "${output_name}.zip" "$output_name"
+          echo "ASSET_NAME=${output_name}.zip" >> $GITHUB_ENV
+        else
+          tar -czf "${output_name}.tar.gz" "$output_name"
+          echo "ASSET_NAME=${output_name}.tar.gz" >> $GITHUB_ENV
+        fi
+
+    - name: Upload Release Asset
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ env.ASSET_NAME }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
