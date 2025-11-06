@@ -676,7 +676,7 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 	case openaicompat.Name:
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody)
 	case "builtin":
-		return nil, fmt.Errorf("built-in provider not yet implemented - please configure API key or start Ollama")
+		return nil, fmt.Errorf("builtin provider not available - please set up an API key or start Ollama as shown above")
 	default:
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	}

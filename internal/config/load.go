@@ -90,12 +90,26 @@ func Load(workingDir, dataDir string, debug bool) (*Config, error) {
 	}
 
 	if !cfg.IsConfigured() {
-		slog.Warn("No providers configured - please set up an API key")
-		slog.Info("To use Vaughan, set one of these environment variables:")
-		slog.Info("  export ANTHROPIC_API_KEY='sk-ant-...'  # For Claude")
-		slog.Info("  export OPENAI_API_KEY='sk-...'           # For GPT") 
-		slog.Info("  export GROQ_API_KEY='gsk_...'            # For Groq (fast & free)")
-		slog.Info("Or run: ollama serve                 # For local models")
+		slog.Warn("No providers configured - Vaughan needs an LLM to assist you!")
+		slog.Info("")
+		slog.Info("🤖 To use Vaughan, set up one of these options:")
+		slog.Info("")
+		slog.Info("🔑 Option 1: Cloud API (Fast & Easy)")
+		slog.Info("   export ANTHROPIC_API_KEY='sk-ant-...'  # Claude")
+		slog.Info("   export OPENAI_API_KEY='sk-...'           # GPT") 
+		slog.Info("   export GROQ_API_KEY='gsk_...'            # Groq (free tier)")
+		slog.Info("")
+		slog.Info("💻 Option 2: Local LLM (No API keys needed)")
+		slog.Info("   # Install Ollama:")
+		slog.Info("   curl -fsSL https://ollama.ai/install.sh | sh")
+		slog.Info("   # Download model:")
+		slog.Info("   ollama pull qwen2.5:0.5b")
+		slog.Info("   # Start server:")
+		slog.Info("   ollama serve")
+		slog.Info("")
+		slog.Info("Then run: vaughan-cli")
+		slog.Info("")
+		slog.Info("💡 Vaughan will automatically detect and use your setup!")
 		return cfg, nil
 	}
 
