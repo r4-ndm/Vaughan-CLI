@@ -1,24 +1,6 @@
-# Dependencies
-vendor/
-
-# Go build artifacts
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-vaughan
-vaughan-crush
-
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool
-*.out
-*.cover
-
-# Dependency directories
-node_modules/
+# Rust build artifacts
+/target
+**/*.rs.bk
 
 # IDE files
 .vscode/
@@ -30,29 +12,21 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Local configuration
-*.local.json
+# Local configuration / secrets
 .env
 .env.local
+*.local.json
+vaughan-backup-*.json
+*backup*
+
+# Logs
+*.log
 
 # Temporary files
 *.tmp
 *.temp
 temp-*/
-temp-crush/
 
-# Logs
-*.log
-
-# Backup files
-*.bak
-*backup*
-vaughan-backup-*.json
-
-# Build output
-dist/
-build/
-
-# Training data files (keep structure but exclude large data)
-training-data/*.jsonl
-!training-data/.gitkeep/home/r4/.config/vaughan-cli/config.json
+# Local wallet data (never commit keys)
+*.keystore
+wallet.json

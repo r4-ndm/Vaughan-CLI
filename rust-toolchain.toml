@@ -1,0 +1,4 @@
+# Pinned toolchain. Alloy 1.7 requires rustc >= 1.91; this is the version the
+# workspace is built and tested against.
+[toolchain]
+channel = "1.97.1"

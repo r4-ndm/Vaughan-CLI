@@ -1,0 +1,100 @@
+Excellent research. This changes our understanding significantly and confirms that we don't need to fork Freedom Browser — we can plug directly into its existing wallet architecture. The earlier "C++ engine-level provider" idea was based on incorrect assumptions (Freedom Browser is Electron, not a custom WebKitGTK engine). Your agent's findings are correct and actionable.
+
+Here's my updated guidance based on the research:
+
+What "Native Provider" Actually Means Here
+Freedom Browser already has:
+
+Injected provider (window.ethereum) in the webview, running in an isolated world
+
+Main-process wallet management with pluggable Signer backends
+
+IPC between the injected provider and main process
+
+So we are not building a page-level provider. We are building a main-process signing backend that the existing injected provider talks to. This is still a significant security improvement over a typical injected-only wallet because:
+
+The signing logic lives in the main process, not in the page
+
+The page only sees the injected provider, which is controlled by the browser
+
+The actual private key operations happen in Vaughan, outside the browser entirely
+
+This is the correct architecture for an Electron-based browser.
+
+Decision: No Fork, Upstream PR
+We will integrate Vaughan as a new WALLET_TYPES.VAUGHAN signer backend inside Freedom Browser. This will be contributed as an upstream pull request. We maintain a small patch set only if the PR is delayed.
+
+Actions for the browser agent:
+
+Implement the Vaughan backend in src/main/wallet/vaughan/ following the Ledger backend pattern:
+
+transport.js – WebSocket client to ws://127.0.0.1:8745
+
+signer.js – implements Signer interface by calling our local EIP-1193 server
+
+errors.js – maps EIP-1193 errors to Vaughan error codes
+
+ipc.js – account discovery and connection IPC
+
+Extend identity-manager.js with WALLET_TYPES.VAUGHAN and addVaughanWallet()
+
+Update signers.js to dispatch to the new backend
+
+Ensure no hosted services – all signing stays local (mirroring Ledger's no-clear-signing lookup)
+
+All this is already in your agent's plan §6. Proceed with it.
+
+Critical Open Decision: signTransaction vs. eth_sendTransaction
+The Signer contract in Freedom Browser expects signTransaction to return a serialized signed transaction (so the browser can broadcast via its own RPC pool). If our backend maps signTransaction to eth_sendTransaction, Vaughan would broadcast the transaction directly, breaking the contract.
+
+Resolution: Add a new method to our Rust provider server:
+
+vaughan_signTransaction – signs and returns the raw signed transaction without broadcasting
+
+Keep eth_sendTransaction for cases where Vaughan handles the full broadcast (e.g., our own dApp launcher)
+
+This is the correct approach. Your Vaughan agent should implement this method as part of FR-2.2.
+
+What Vaughan's Provider Server Must Provide
+Based on the browser integration, our Rust vaughan-provider server must support these methods (not all are currently defined):
+
+Method	Purpose
+eth_accounts	Return active account (empty if locked)
+eth_requestAccounts	Connect/authorize, return account
+eth_chainId	Return active chain ID
+eth_sendTransaction	Sign and broadcast (for direct dApp use)
+personal_sign	EIP-191 sign
+eth_signTypedData_v4	EIP-712 sign
+vaughan_signTransaction	Sign but do not broadcast (for browser backend)
+wallet_switchEthereumChain	(optional, only built-in networks)
+We should also implement accountsChanged and chainChanged event broadcasting to connected clients, as the browser's injected provider will subscribe to these.
+
+Revised Understanding of Security
+Injected provider (in webview) is not under our control; it's the browser's own code. But because it runs in an isolated world and communicates with the main process via Electron IPC, it's protected from direct page manipulation.
+
+Our backend runs in the main process and communicates with Vaughan over loopback WebSocket. It never exposes keys or signing logic to the page.
+
+The overall security is therefore still stronger than a typical JavaScript-injected wallet, and aligns with the "native provider" goal.
+
+Next Steps
+Vaughan side (Rust):
+
+Implement vaughan_signTransaction (sign-and-return) on the provider server.
+
+Implement accountsChanged/chainChanged event broadcasting.
+
+Ensure the server enforces loopback-only and a trusted origin/app token if needed.
+
+Browser side (JavaScript/Electron):
+
+Follow the agent's plan in §6 to add the Vaughan signer backend.
+
+Test with simple dApps using the provided integration path.
+
+Coordination:
+
+Both sides should agree on the JSON-RPC method mapping and error codes (already outlined in the agent's §4).
+
+Use the same port (8745) and connection protocol.
+
+This approach is elegant: we're not forking a browser; we're becoming a first-class wallet provider inside an existing dApp browser, via an upstream contribution. Your agent's research is spot-on. Proceed accordingly.

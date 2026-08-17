@@ -1,0 +1,85 @@
+# Vaughan-CLI — Requirements
+
+A Rust multi-chain CLI wallet TUI. Alloy for the wallet core, kohaku-rs for
+privacy/provider, and a ratatui terminal frontend. EVM-first, PulseChain-optimized.
+Architecture modeled on the `vaughan-core` layering from Vaughan-Dioxus.
+
+Requirement IDs are referenced by `TASKS.md`.
+
+## Goals
+
+- Self-custody wallet usable entirely from a terminal.
+- Wallet core (chains, keys, signing, RPC, tx building) built on Alloy.
+- EVM first-class; PulseChain mainnet (369) and testnet v4 (943) as the primary targets.
+- Native provider bridge so Freedom Browser (and other EIP-1193/6963 browsers) can use
+  Vaughan as the signing wallet.
+- Privacy via kohaku-rs (stealth / railgun) and smart accounts via Ambire
+  (ERC-4337/7702 AA) — later phases, both reimplemented in Rust.
+
+## Non-goals (deferred, not dropped)
+
+- Full smart-account UX (batching, recovery, multisig) in Phase 1.
+- ERC-20 token management and transaction history in Phase 1.
+- Hardware wallet (Ledger/Trezor) support.
+- A bundled web browser / webview.
+
+## Functional requirements
+
+### Phase 1 — EOA wallet on PulseChain
+
+- **FR-1.1** Create a new wallet with a 12-word BIP-39 mnemonic (English).
+- **FR-1.2** Restore a wallet from a mnemonic; validate before storing.
+- **FR-1.3** Password-protected vault: Argon2id KDF derives an AES-256-GCM key that
+  encrypts the mnemonic; only ciphertext is written to disk.
+- **FR-1.4** Password strength policy: >= 12 chars, uppercase, lowercase, digit, symbol.
+- **FR-1.5** Lock / unlock flow: on launch the wallet is locked; unlock decrypts the
+  mnemonic into memory only.
+- **FR-1.6** HD derivation at `m/44'/60'/0'/0/{index}` producing an Alloy local signer;
+  support a list of derived accounts (index 0 active by default).
+- **FR-1.7** Built-in networks: PulseChain mainnet (369), PulseChain testnet v4 (943),
+  Ethereum (1), Sepolia (11155111), Polygon (137), BSC (56), Base (8453).
+- **FR-1.8** Dashboard: show active account address and native balance.
+- **FR-1.9** Send native asset: recipient + amount -> fee estimate -> sign -> broadcast
+  -> show tx hash.
+- **FR-1.10** Receive: display the active address.
+- **FR-1.11** Settings: switch the active network; selection persists.
+
+### Phase 2 — Native provider bridge (Freedom Browser)
+
+- **FR-2.1** Local EIP-1193 JSON-RPC server (WebSocket on 127.0.0.1), loopback only.
+- **FR-2.2** Implement `eth_accounts`, `eth_requestAccounts`, `eth_chainId`,
+  `eth_sendTransaction`, `personal_sign`, `eth_signTypedData_v4`,
+  `wallet_switchEthereumChain`, and account/chain change events.
+- **FR-2.3** Every signing / send request requires an explicit approve/deny prompt in
+  the TUI. Never auto-sign.
+- **FR-2.4** Trusted-host allowlist for dApp origins (borrowed from Vaughan-Dioxus's
+  `vaughan-trusted-hosts`).
+- **FR-2.5** Freedom Browser integration: a signer backend (analogous to its Ledger
+  backend) that forwards sign requests to Vaughan's local endpoint (out-of-repo PR).
+
+### Phase 3 — Privacy + smart accounts
+
+- **FR-3.1** Harden kohaku-rs: real test coverage, fix the railgun build, publish
+  `kohaku-core` / `kohaku-stealth` to crates.io.
+- **FR-3.2** ERC-5564 stealth addresses via `kohaku-stealth`.
+- **FR-3.3** Ambire smart accounts (ERC-4337/7702 AA) reimplemented in Rust via Alloy +
+  Ambire ABI (borrowed from Vaughan-Dioxus).
+- **FR-3.4** Railgun / privacy pools (deferred until upstream stabilizes).
+
+## Non-functional requirements
+
+- **NFR-1** Secrets never persisted unencrypted; zeroized in memory after use.
+- **NFR-2** No telemetry, analytics, or external data collection.
+- **NFR-3** Testnet-first: any feature that moves funds is exercised on testnet before mainnet.
+- **NFR-4** Cross-platform: Linux, macOS, Windows.
+- **NFR-5** Unit tests cover encryption, HD derivation, transaction building, and network config.
+- **NFR-6** `cargo fmt` + `clippy` clean; `unsafe_code` forbidden.
+
+## Constraints & decisions
+
+- **C-1** Language: Rust (edition 2021).
+- **C-2** Alloy 1.7 (single workspace version, same pin as Vaughan-Dioxus).
+- **C-3** TUI: ratatui + crossterm.
+- **C-4** `vaughan-core` reimplements the Vaughan-Dioxus layering (not vendored).
+- **C-5** kohaku-rs is consumed as a git dependency (our own repo) in later phases.
+- **C-6** PulseChain is the primary target chain.

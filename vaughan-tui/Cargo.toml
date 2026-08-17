@@ -1,0 +1,13 @@
+[package]
+name = "vaughan-tui"
+version.workspace = true
+edition.workspace = true
+description = "ratatui terminal frontend for Vaughan"
+
+[dependencies]
+vaughan-core = { path = "../vaughan-core" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }

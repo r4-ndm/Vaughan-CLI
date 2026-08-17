@@ -1,0 +1,8 @@
+Updated Security Table :
+
+Attack	                                  Injected Provider            Thin Proxy	               Freedom Browser + Vaughan backend	               Native C++ Provider
+Monkey-patch window.ethereum	          ✅ Possible	               ❌ Very difficult	              ❌ Impossible	                               ❌ Impossible
+Inspect provider source	                  ✅ Possible	               ❌ Very difficult	              ❌ Impossible	                               ❌ Impossible
+Transaction substitution	          ✅ Possible	               ❌ Very difficult	              ❌ Impossible                       	       ❌ Impossible
+Intercept wallet IPC	                  ✅ Possible	               ❌ Very difficult	              ❌ Impossible	                               ❌ Impossible
+Fake events	                          ✅ Possible	               ❌ Very difficult	              ❌ Very difficult	                               ❌ Impossible

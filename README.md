@@ -1,167 +1,80 @@
 # Vaughan-CLI
 
 <p align="center">
-    <a href="https://github.com/r4-ndm/Vaughan-CLI"><img width="450" alt="Vaughan CLI Logo" src="Vaughan-CLI-logo/Vaughan-big.png" /></a><br />
-    <a href="https://github.com/r4-ndm/Vaughan-CLI/releases"><img src="https://img.shields.io/github/release/r4-ndm/Vaughan-CLI" alt="Latest Release"></a>
-    <a href="https://github.com/r4-ndm/Vaughan-CLI/actions"><img src="https://github.com/r4-ndm/Vaughan-CLI/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
+    <a href="https://github.com/r4-ndm/Vaughan-CLI"><img width="450" alt="Vaughan CLI Logo" src="branding/vaughan-logo-small.png" /></a><br />
 </p>
 
-<p align="center">AI-powered blockchain and programming CLI with enhanced security and privacy.</p>
-<p align="center">🦊⚡ Your secure coding companion for blockchain development.</p>
+<p align="center">A multi-chain wallet for the terminal. 🦊⚡</p>
+
+**Vaughan-CLI** is a Rust CLI wallet TUI:
+
+- **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
+- **ratatui** for the terminal interface
+- **kohaku-rs** for privacy/provider (stealth addresses, later railgun)
+- **Freedom Browser** integration — use Vaughan as the native signing provider for dApps
+
+EVM-first and PulseChain-optimized, architected after the `vaughan-core` layering from
+[Vaughan-Dioxus](https://github.com/r4-ndm/Vaughan-Dioxus).
+
+> Status: prototype under active development. Phase 1 (EOA wallet) in progress.
 
 ## Features
 
-- **🔒 Privacy-First:** No analytics, no telemetry, no data collection
-- **🤖 Multi-Model:** Choose from a wide range of LLMs or add your own via OpenAI- or Anthropic-compatible APIs
-- **⛓️ Blockchain-Native:** Built-in blockchain tools and security features
-- **🔄 Flexible:** Switch LLMs mid-session while preserving context
-- **📂 Session-Based:** Maintain multiple work sessions and contexts per project
-- **🔍 LSP-Enhanced:** Uses LSPs for additional context, just like you do
-- **🛠️ Extensible:** Add capabilities via MCPs (http, stdio, and sse)
-- **🌍 Cross-Platform:** Works on macOS, Linux, Windows (PowerShell and WSL), FreeBSD, OpenBSD, and NetBSD
+- 🔒 Self-custody with a password-encrypted vault (Argon2id + AES-256-GCM)
+- 🧾 BIP-39 mnemonic create/restore, HD derivation at `m/44'/60'/0'/0/{index}`
+- ⛓️ Multi-chain: PulseChain (mainnet 369 / testnet 943), Ethereum, Sepolia, Polygon, BSC, Base
+- 💸 Check balances and send native assets
+- 🖥️ Native EIP-1193 provider bridge for Freedom Browser *(Phase 2)*
+- 🕵️ Privacy (ERC-5564 stealth, railgun) and Ambire smart accounts *(Phase 3)*
 
-## Installation
+## Architecture
 
-### Quick Install (Recommended)
-
-#### Go Install
-```bash
-go install github.com/r4-ndm/Vaughan-CLI@latest
+```
+vaughan-cli/
+├─ vaughan-core/      # library: chains (Alloy EVM + PulseChain), core services,
+│                     #   security (HD wallet, encryption), persistence
+├─ vaughan-tui/       # ratatui frontend: onboarding, unlock, dashboard, send,
+│                     #   receive, settings
+└─ vaughan-provider/  # [Phase 2] local EIP-1193 bridge + approval UX
 ```
 
-#### Download Binary
-```bash
-# Linux
-wget https://github.com/r4-ndm/Vaughan-CLI/releases/latest/download/vaughan-cli-linux-amd64
-chmod +x vaughan-cli-linux-amd64
-sudo mv vaughan-cli-linux-amd64 /usr/local/bin/vaughan-cli
-
-# macOS
-wget https://github.com/r4-ndm/Vaughan-CLI/releases/latest/download/vaughan-cli-darwin-amd64
-chmod +x vaughan-cli-darwin-amd64
-sudo mv vaughan-cli-darwin-amd64 /usr/local/bin/vaughan-cli
-
-# Windows
-wget https://github.com/r4-ndm/Vaughan-CLI/releases/latest/download/vaughan-cli-windows-amd64.exe
-```
-
-### Build from Source
+## Build & run
 
 ```bash
-git clone https://github.com/r4-ndm/Vaughan-CLI.git
-cd Vaughan-CLI
-go build .
-./vaughan-cli
+cargo build --release
+cargo run -p vaughan-tui
 ```
 
-## Getting Started
+## Networks
 
-The quickest way to get started is to grab an API key for your preferred provider such as Anthropic, OpenAI, Groq, or OpenRouter and just start Vaughan-CLI. You'll be prompted to enter your API key.
+| Network | Chain ID | Native | RPC |
+|---|---|---|---|
+| PulseChain Mainnet | 369 | PLS | `https://rpc.pulsechain.com` |
+| PulseChain Testnet V4 | 943 | tPLS | `https://rpc.v4.testnet.pulsechain.com` |
+| Ethereum Mainnet | 1 | ETH | `https://eth.llamarpc.com` |
+| Ethereum Sepolia | 11155111 | ETH | `https://ethereum-sepolia-rpc.publicnode.com` |
+| Polygon | 137 | MATIC | `https://polygon-bor-rpc.publicnode.com` |
+| BSC | 56 | BNB | `https://bsc-dataseed.binance.org` |
+| Base | 8453 | ETH | `https://mainnet.base.org` |
 
-### Environment Variables
+## Security
 
-You can also set environment variables for preferred providers:
+- Mnemonic/keys never touch disk unencrypted; zeroized in memory after use
+- Password policy: >= 12 chars, uppercase, lowercase, digit, symbol
+- Signing always requires explicit user approval
+- No telemetry, no analytics, no data collection
 
-| Environment Variable        | Provider                                           |
-| --------------------------- | -------------------------------------------------- |
-| `ANTHROPIC_API_KEY`         | Anthropic                                          |
-| `OPENAI_API_KEY`            | OpenAI                                             |
-| `GROQ_API_KEY`              | Groq                                               |
-| `OPENROUTER_API_KEY`        | OpenRouter                                         |
+## Documentation
 
-### Usage
+- [REQUIREMENTS.md](REQUIREMENTS.md) — goals, functional and non-functional requirements
+- [PLAN.md](PLAN.md) — architecture, technology choices, phases, risks
+- [TASKS.md](TASKS.md) — checkable task breakdown by phase
 
-```bash
-# Start Vaughan CLI
-vaughan-cli
+## Roadmap
 
-# Check version
-vaughan-cli --version
-
-# Show help
-vaughan-cli --help
-```
-
-## Privacy & Security
-
-- ✅ **No Analytics:** No user tracking or data collection
-- ✅ **No Telemetry:** All telemetry features have been removed
-- ✅ **Local Processing:** All operations are performed locally
-- ✅ **Secure Key Management:** Built-in encryption for sensitive data
-
-## Configuration
-
-Vaughan-CLI uses a simple JSON configuration file. The config file is automatically created on first run at:
-
-- **Linux/macOS:** `~/.config/vaughan-cli/config.json`
-- **Windows:** `%APPDATA%\vaughan-cli\config.json`
-
-### Example Configuration
-
-```json
-{
-  "$schema": "https://vaughan-cli.example.com/schema.json",
-  "models": {
-    "large": {
-      "id": "claude-3-5-sonnet-20241022",
-      "provider": "anthropic"
-    }
-  },
-  "providers": {
-    "anthropic": {
-      "id": "anthropic",
-      "name": "Anthropic",
-      "base_url": "https://api.anthropic.com",
-      "type": "anthropic",
-      "api_key": "your-anthropic-api-key"
-    }
-  }
-}
-```
-
-## Development
-
-### Building
-
-```bash
-go build .
-```
-
-### Testing
-
-```bash
-go test ./...
-```
-
-### Formatting
-
-```bash
-gofumpt -w .
-```
-
-### Linting
-
-```bash
-golangci-lint run
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-- 📖 [Documentation](https://github.com/r4-ndm/Vaughan-CLI/wiki)
-- 🐛 [Bug Reports](https://github.com/r4-ndm/Vaughan-CLI/issues)
-- 💡 [Feature Requests](https://github.com/r4-ndm/Vaughan-CLI/issues)
+1. **Phase 1** — EOA wallet on PulseChain (create/restore, balance, send, receive, networks)
+2. **Phase 2** — Freedom Browser native provider bridge
+3. **Phase 3** — kohaku-rs privacy + Ambire smart accounts
 
 ---
 
