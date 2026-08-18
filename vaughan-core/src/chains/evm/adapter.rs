@@ -12,17 +12,20 @@ use std::time::Duration;
 
 use alloy::eips::eip2718::Encodable2718;
 use alloy::network::{Ethereum, EthereumWallet, NetworkTransactionBuilder};
-use alloy::primitives::{utils::format_units, TxKind, B256, U256};
+use alloy::primitives::{utils::format_units, Address, Bytes, TxKind, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::client::RpcClient;
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::BlockNumberOrTag;
 use alloy::signers::local::PrivateKeySigner;
+use alloy::sol_types::SolCall;
 use alloy::transports::http::Http;
 use async_trait::async_trait;
 use url::Url;
 
+use crate::chains::evm::abi::{IERC20Metadata, IMulticall3};
 use crate::chains::evm::networks::get_network_by_chain_id;
+use crate::chains::evm::tokens::tokens_for_chain;
 use crate::chains::evm::utils::parse_address;
 use crate::chains::{
     Balance, ChainAdapter, ChainInfo, ChainTransaction, ChainType, EvmTransaction, Fee, FeeDetails,
@@ -36,6 +39,12 @@ pub type AlloyProvider = RootProvider<Ethereum>;
 /// one. Networks with a different market (e.g. PulseChain's sub-gwei fees)
 /// override this in [`crate::chains::evm::networks`].
 pub const DEFAULT_PRIORITY_FEE_WEI: u64 = 1_500_000_000; // 1.5 gwei
+
+/// Canonical Multicall3 address (https://github.com/mds1/multicall). Present
+/// on both PulseChain mainnet and testnet — verified via `cast codesize`
+/// (3808 bytes on both, 2026-08-18; see `docs/optimizations.md`).
+pub const MULTICALL3: Address =
+    alloy::primitives::address!("cA11bde05977b3631167028862bE2a173976CA11");
 
 /// EVM adapter built on Alloy's HTTP provider, with transparent fallback to
 /// alternate RPC endpoints when the primary is down or rate-limited.
@@ -54,6 +63,8 @@ pub struct EvmAdapter {
     balance_cache: moka::future::Cache<String, Balance>,
     gas_price_cache: moka::future::Cache<u64, String>,
     nonce_cache: moka::future::Cache<String, u64>,
+    /// ERC-20 metadata cache: token address → (symbol, name, decimals).
+    token_meta_cache: moka::future::Cache<String, (String, String, u8)>,
 }
 
 impl EvmAdapter {
@@ -95,6 +106,9 @@ impl EvmAdapter {
                 .build(),
             nonce_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(5))
+                .build(),
+            token_meta_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(60 * 60))
                 .build(),
         })
     }
@@ -263,16 +277,261 @@ impl EvmAdapter {
         Ok(TxHash(format!("{:?}", pending.tx_hash())))
     }
 
-    /// EVM-specific: ERC-20 balance (not yet implemented).
+    /// EVM-specific: ERC-20 `balanceOf` (EIP-20) for `wallet_address`, with
+    /// symbol/decimals resolved on-chain (cached).
     pub async fn get_token_balance(
         &self,
-        _token_address: &str,
-        _wallet_address: &str,
+        token_address: &str,
+        wallet_address: &str,
     ) -> Result<Balance, WalletError> {
-        // ERC-20 balance/metadata is a Phase 2 feature.
-        Err(WalletError::Other(
-            "ERC-20 balances are not supported yet".to_string(),
-        ))
+        let cache_key = format!("{token_address}:{wallet_address}").to_ascii_lowercase();
+        if let Some(cached) = self.balance_cache.get(&cache_key).await {
+            return Ok(cached);
+        }
+        let token = parse_address(token_address)?;
+        let wallet = parse_address(wallet_address)?;
+        let input = IERC20Metadata::balanceOfCall { account: wallet }.abi_encode();
+        let raw = self
+            .with_provider(|provider| {
+                let input = input.clone();
+                async move {
+                    provider
+                        .call(TransactionRequest::default().to(token).input(input.into()))
+                        .await
+                        .map_err(|e| WalletError::RpcError(e.to_string()))
+                }
+            })
+            .await?;
+        let raw_balance = IERC20Metadata::balanceOfCall::abi_decode_returns(&raw)
+            .map_err(|e| WalletError::Other(format!("bad balanceOf return: {e}")))?;
+        let (symbol, name, decimals) = self.get_token_metadata(token_address).await?;
+        let formatted =
+            format_units(raw_balance, decimals).unwrap_or_else(|_| "0.0".to_string());
+        let bal = Balance {
+            token: TokenInfo {
+                symbol,
+                name,
+                decimals,
+                contract_address: Some(token_address.to_string()),
+            },
+            raw: raw_balance.to_string(),
+            formatted,
+            usd_value: None,
+        };
+        self.balance_cache.insert(cache_key, bal.clone()).await;
+        Ok(bal)
+    }
+
+    /// EVM-specific: best-effort ERC-20 metadata (EIP-20 `symbol`/`name`/
+    /// `decimals`), cached for an hour. Each accessor falls back individually
+    /// (EIP-20 does not require any of them) — the registry entry wins when
+    /// the contract doesn't provide the value, and a raw address defaults to
+    /// a shortened address + 18 decimals.
+    pub async fn get_token_metadata(
+        &self,
+        token_address: &str,
+    ) -> Result<(String, String, u8), WalletError> {
+        let key = token_address.to_ascii_lowercase();
+        if let Some(cached) = self.token_meta_cache.get(&key).await {
+            return Ok(cached);
+        }
+        let token = parse_address(token_address)?;
+        let registry = crate::chains::evm::find_token(self.chain_id, token_address);
+
+        // `symbol()` — fallback: registry symbol, else a shortened address.
+        let symbol = self
+            .eth_call_symbol(token)
+            .await
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                registry
+                    .as_ref()
+                    .map(|t| t.symbol.to_string())
+                    .unwrap_or_else(|| short_address(token))
+            });
+        // `name()` — fallback: symbol, else registry name.
+        let name = self
+            .eth_call_name(token)
+            .await
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                registry
+                    .as_ref()
+                    .map(|t| t.name.to_string())
+                    .unwrap_or_else(|| symbol.clone())
+            });
+        // `decimals()` — fallback: registry decimals, else 18.
+        let decimals = self
+            .eth_call_decimals(token)
+            .await
+            .unwrap_or_else(|| registry.as_ref().map(|t| t.decimals).unwrap_or(18));
+        let meta = (symbol, name, decimals);
+        self.token_meta_cache.insert(key, meta.clone()).await;
+        Ok(meta)
+    }
+
+    /// EVM-specific: all balances of `wallet_address` — the native asset plus
+    /// every curated per-chain ERC-20 (auto asset detection).
+    ///
+    /// ERC-20 balances are read in **one** Multicall3 `tryAggregate` call
+    /// (provenance: mds1/multicall) with `requireSuccess=false`, so a token
+    /// that reverts on `balanceOf` is skipped rather than failing the batch.
+    /// When Multicall3 is absent on the chain the call falls back to
+    /// sequential `balanceOf` reads.
+    pub async fn get_assets(&self, wallet_address: &str) -> Result<Vec<Balance>, WalletError> {
+        let wallet = parse_address(wallet_address)?;
+        let mut out = vec![self.get_balance(wallet_address).await?];
+        let tokens = tokens_for_chain(self.chain_id);
+        if tokens.is_empty() {
+            return Ok(out);
+        }
+
+        // Only use the Multicall3 batch if the contract is actually deployed
+        // on this chain: an `eth_call` to an address with no code returns
+        // `0x` as *success*, so without this probe the decode would fail
+        // instead of falling back to sequential reads.
+        let multicall3_present = self
+            .with_provider(|provider| async move {
+                provider
+                    .get_code_at(MULTICALL3)
+                    .await
+                    .map(|code| !code.is_empty())
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            })
+            .await
+            .unwrap_or(false);
+
+        if !multicall3_present {
+            return self.get_assets_sequential(wallet_address, out).await;
+        }
+
+        let calls: Vec<IMulticall3::Call> = tokens
+            .iter()
+            .map(|t| IMulticall3::Call {
+                target: parse_address(t.address).expect("registry addresses are valid"),
+                callData: IERC20Metadata::balanceOfCall { account: wallet }
+                    .abi_encode()
+                    .into(),
+            })
+            .collect();
+        let req = TransactionRequest::default()
+            .to(MULTICALL3)
+            .input(IMulticall3::tryAggregateCall {
+                requireSuccess: false,
+                calls,
+            }
+            .abi_encode()
+            .into());
+
+        let multicall = self
+            .with_provider(|provider| {
+                let req = req.clone();
+                async move {
+                    provider
+                        .call(req)
+                        .await
+                        .map_err(|e| WalletError::RpcError(e.to_string()))
+                }
+            })
+            .await;
+
+        match multicall {
+            Ok(raw) => {
+                let ret = IMulticall3::tryAggregateCall::abi_decode_returns(&raw)
+                    .map_err(|e| WalletError::Other(format!("bad tryAggregate return: {e}")))?;
+                // `Result[]` — one `(success, returnData)` struct per call.
+                for (token, result) in tokens.iter().zip(ret.iter()) {
+                    if !result.success {
+                        continue; // reverting token — skip, don't fail the batch
+                    }
+                    match IERC20Metadata::balanceOfCall::abi_decode_returns(&result.returnData) {
+                        Ok(raw_balance) if !raw_balance.is_zero() => {
+                            let (symbol, name, decimals) =
+                                self.get_token_metadata(token.address).await?;
+                            out.push(Balance {
+                                token: TokenInfo {
+                                    symbol,
+                                    name,
+                                    decimals,
+                                    contract_address: Some(token.address.to_string()),
+                                },
+                                raw: raw_balance.to_string(),
+                                formatted: format_units(raw_balance, decimals)
+                                    .unwrap_or_else(|_| "0.0".to_string()),
+                                usd_value: None,
+                            });
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(WalletError::RpcError(format!(
+                    "Multicall3 batch failed: {e}"
+                )))
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sequential per-token fallback when Multicall3 is absent (or the batch
+    /// path can't run). One `eth_call` per curated token — same result set as
+    /// the batch, just more RPC round-trips.
+    async fn get_assets_sequential(
+        &self,
+        wallet_address: &str,
+        mut out: Vec<Balance>,
+    ) -> Result<Vec<Balance>, WalletError> {
+        let tokens = tokens_for_chain(self.chain_id);
+        for token in &tokens {
+            let bal = self.get_token_balance(token.address, wallet_address).await?;
+            if !bal.raw.is_empty()
+                && U256::from_str(&bal.raw).unwrap_or_default() != U256::ZERO
+            {
+                out.push(bal);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Best-effort `symbol()` read for `token` (EIP-20 metadata). A revert
+    /// (token without `symbol`) yields `None`.
+    async fn eth_call_symbol(&self, token: Address) -> Option<String> {
+        let call = IERC20Metadata::symbolCall {};
+        let raw = self.eth_call_raw(token, &call).await?;
+        IERC20Metadata::symbolCall::abi_decode_returns(&raw).ok()
+    }
+
+    /// Best-effort `name()` read for `token` (EIP-20 metadata).
+    async fn eth_call_name(&self, token: Address) -> Option<String> {
+        let call = IERC20Metadata::nameCall {};
+        let raw = self.eth_call_raw(token, &call).await?;
+        IERC20Metadata::nameCall::abi_decode_returns(&raw).ok()
+    }
+
+    /// Best-effort `decimals()` read for `token` (EIP-20 metadata).
+    async fn eth_call_decimals(&self, token: Address) -> Option<u8> {
+        let call = IERC20Metadata::decimalsCall {};
+        let raw = self.eth_call_raw(token, &call).await?;
+        IERC20Metadata::decimalsCall::abi_decode_returns(&raw).ok()
+    }
+
+    /// Run `call` against `token` via `eth_call` (typed encoding, typed
+    /// decoding happens at the call site). `None` on any revert/transport
+    /// error — metadata accessors are best-effort by design.
+    async fn eth_call_raw<C: SolCall>(&self, token: Address, call: &C) -> Option<Bytes> {
+        let input = call.abi_encode();
+        self.with_provider(|provider| {
+            let input = input.clone();
+            async move {
+                provider
+                    .call(TransactionRequest::default().to(token).input(input.into()))
+                    .await
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            }
+        })
+        .await
+        .ok()
     }
 
     /// EVM-specific: ERC-20 transfer history (not yet implemented).
@@ -374,6 +633,12 @@ impl EvmAdapter {
         let raw = self.build_signed_envelope(&mut evm_tx).await?;
         Ok(format!("0x{}", hex::encode(raw)))
     }
+}
+
+/// Short display form for an unknown token address (`0x1234…abcd`).
+fn short_address(a: Address) -> String {
+    let s = a.to_string();
+    format!("{}…{}", &s[..8], &s[s.len() - 4..])
 }
 
 #[async_trait]

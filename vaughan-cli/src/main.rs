@@ -62,6 +62,20 @@ enum Command {
         #[arg(long)]
         password_env: Option<String>,
     },
+    /// Show every detected balance (native + known ERC-20s) — auto asset
+    /// detection against the curated per-chain token list (EIP-20 balances,
+    /// batched via Multicall3; see docs/optimizations.md).
+    Assets {
+        /// Network id override.
+        #[arg(long)]
+        network: Option<String>,
+        /// RPC url override (dev node, dedicated provider).
+        #[arg(long)]
+        rpc_url: Option<String>,
+        /// Env var holding the wallet password (non-interactive).
+        #[arg(long)]
+        password_env: Option<String>,
+    },
     /// List built-in networks.
     Networks,
     /// Create a new wallet (prints the mnemonic once — store it securely).
@@ -148,6 +162,34 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 balance.formatted,
                 balance.token.symbol
             );
+        }
+        Command::Assets {
+            network,
+            rpc_url,
+            password_env,
+        } => {
+            unlock(&mut wallet, password_env.as_deref())?;
+            if let Some(id) = network {
+                wallet.set_active_network(&id)?;
+            }
+            if let Some(url) = rpc_url {
+                wallet.set_rpc_override(&url);
+            }
+            let assets = wallet.assets().await?;
+            let addr = wallet.active_address()?.to_string();
+            println!("{addr}");
+            if assets.is_empty() {
+                println!("no balances detected");
+            }
+            for bal in assets {
+                let contract = bal
+                    .token
+                    .contract_address
+                    .as_deref()
+                    .map(|a| format!("  {a}"))
+                    .unwrap_or_default();
+                println!("{:<6} {}{contract}", bal.token.symbol, bal.formatted);
+            }
         }
         Command::Send {
             to,

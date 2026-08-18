@@ -217,6 +217,39 @@ impl WalletState {
         adapter.get_balance(address).await
     }
 
+    /// All detected balances of the active account: the native asset plus
+    /// every curated per-chain ERC-20 (auto asset detection).
+    ///
+    /// ERC-20s are read in one Multicall3 `tryAggregate` batch (EIP-20 +
+    /// mds1/multicall; see `docs/optimizations.md` for provenance), with a
+    /// sequential fallback when Multicall3 is absent. Zero balances are
+    /// excluded; symbol/decimals come from the contract (cached), falling
+    /// back to the curated registry.
+    pub async fn assets(&self) -> Result<Vec<Balance>, WalletError> {
+        let (net, address) = self.active_context()?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        adapter.get_assets(address).await
+    }
+
+    /// Balance of a single ERC-20 (`token_address`) for the active account.
+    pub async fn token_balance(&self, token_address: &str) -> Result<Balance, WalletError> {
+        let (net, address) = self.active_context()?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        adapter.get_token_balance(token_address, address).await
+    }
+
     /// Estimate the fee to send `value_wei` (base units) to `to`.
     pub async fn estimate_fee(&self, to: &str, value_wei: &str) -> Result<Fee, WalletError> {
         let (net, address) = self.active_context()?;
