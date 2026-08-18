@@ -23,6 +23,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use vaughan_core::chains::evm::networks::get_network_by_chain_id;
 use vaughan_core::core::WalletState;
 use vaughan_core::security::hd_wallet::validate_mnemonic;
 use vaughan_provider::Eip1193Handler;
@@ -31,6 +32,8 @@ use vaughan_tui::provider::{ApprovalKind, HostRequest, ProviderHost};
 
 /// Anvil's default dev mnemonic — the wallet restored from it is funded.
 const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
+/// Anvil dev account #0's private key (from the dev mnemonic, index 0).
+const ANVIL_KEY0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const PASSWORD: &str = "BombProof123!";
 
 fn free_port() -> u16 {
@@ -123,6 +126,18 @@ fn anvil_dev_address(index: u32) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// Verify an EIP-191 personal-message signature with `cast wallet verify`
+/// (foundry's reference implementation). Returns true if the signature
+/// recovers to `address`. `decoded_message` is the UTF-8 message whose bytes
+/// were signed (the provider decodes the `0x`-hex wire value before signing).
+fn verify_eip191(address: &str, decoded_message: &str, signature: &str) -> bool {
+    let out = Command::new("cast")
+        .args(["wallet", "verify", "--address", address, decoded_message, signature])
+        .output()
+        .expect("cast must be available");
+    out.status.success()
+}
+
 /// Spawn the full provider stack and return (server task, ws URL, request rx).
 async fn spawn_provider_stack(
 ) -> (
@@ -143,7 +158,7 @@ async fn spawn_provider_stack(
 /// Simulated UI thread: drain approval requests, apply `decide`, reply.
 async fn run_approval_consumer(
     mut rx: mpsc::UnboundedReceiver<HostRequest>,
-    wallet: WalletState,
+    mut wallet: WalletState,
     decide: fn(&ApprovalKind) -> Result<(), ProviderError>,
     seen: Arc<std::sync::Mutex<Vec<String>>>,
 ) {
@@ -196,10 +211,31 @@ async fn run_approval_consumer(
                 let _ = reply.send(Ok(accounts));
             }
             HostRequest::ChainId { reply } => {
-                let _ = reply.send(Ok("0x3af".to_string()));
+                let id = wallet.networks().active().chain_id;
+                let _ = reply.send(Ok(format!("0x{id:x}")));
             }
-            HostRequest::SwitchChain { reply, .. } => {
-                let _ = reply.send(Err(ProviderError::UnrecognizedChain("test".into())));
+            HostRequest::SwitchChain { chain_id, reply } => {
+                // Mirror the app: switch to a built-in network by chain id.
+                let id: u64 = match chain_id.parse() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        let _ = reply.send(Err(ProviderError::UnrecognizedChain(chain_id)));
+                        continue;
+                    }
+                };
+                match get_network_by_chain_id(id) {
+                    Some(net) => {
+                        let result = wallet.set_active_network(&net.id);
+                        let _ = reply.send(result.map_err(|e| {
+                            ProviderError::Internal(e.user_message())
+                        }));
+                    }
+                    None => {
+                        let _ = reply.send(Err(ProviderError::UnrecognizedChain(
+                            format!("0x{id:x}"),
+                        )));
+                    }
+                }
             }
         }
     }
@@ -402,6 +438,185 @@ async fn locked_wallet_reads_answer_but_signing_fails() {
         anvil.wei_balance(&recipient),
         recipient_before,
         "locked send must not move funds"
+    );
+
+    consumer.abort();
+    task.abort();
+}
+
+/// `personal_sign` (EIP-191): approval prompt shown, signature returns, and it
+/// recovers to the active account via foundry's reference verifier.
+#[tokio::test(flavor = "multi_thread")]
+async fn personal_sign_recovers_to_active_account() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(rx, wallet, |_| Ok(()), seen2));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    // Sign "hello" (hex-encoded per EIP-1193).
+    let message_hex = "0x68656c6c6f";
+    let reply = rpc_call(&mut ws, 1, "personal_sign", json!([message_hex, sender])).await;
+    if reply["error"].is_object() {
+        panic!("personal_sign returned an error: {}", reply["error"]);
+    }
+    let signature = reply["result"].as_str().expect("signature").to_string();
+    assert!(signature.starts_with("0x"));
+    assert_eq!(signature.len(), 2 + 65 * 2, "65-byte r||s||v signature");
+
+    // Approval prompt was shown.
+    assert!(
+        seen.lock().unwrap().iter().any(|s| s == "message"),
+        "personal_sign must show an approval prompt"
+    );
+
+    // Signature recovers to the active account: `0x68656c6c6f` decodes to
+    // "hello", and that is what the provider signs (EIP-191).
+    assert!(
+        verify_eip191(&sender, "hello", &signature),
+        "signature must verify against the active account"
+    );
+
+    consumer.abort();
+    task.abort();
+}
+
+/// `eth_signTypedData_v4` (EIP-712): approval prompt shown, and the signature
+/// matches foundry's reference signer for the same key + payload exactly.
+#[tokio::test(flavor = "multi_thread")]
+async fn typed_data_signature_matches_foundry_reference() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(rx, wallet, |_| Ok(()), seen2));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    // A minimal EIP-712 payload. Chain id 943 matches the active network
+    // (testnet v4) so the domain hash is stable and cast can reproduce it.
+    let typed_data = json!({
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+            ],
+            "Message": [{"name": "content", "type": "string"}],
+        },
+        "primaryType": "Message",
+        "domain": {"name": "Vaughan Test", "version": "1", "chainId": 943},
+        "message": {"content": "Hello, dApp!"},
+    });
+
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "eth_signTypedData_v4",
+        json!([sender, typed_data.clone()]),
+    )
+    .await;
+    if reply["error"].is_object() {
+        panic!("eth_signTypedData_v4 returned an error: {}", reply["error"]);
+    }
+    let signature = reply["result"].as_str().expect("signature").to_string();
+    assert!(signature.starts_with("0x"));
+    assert_eq!(signature.len(), 2 + 65 * 2, "65-byte r||s||v signature");
+
+    // Approval prompt was shown.
+    assert!(
+        seen.lock().unwrap().iter().any(|s| s == "typed"),
+        "eth_signTypedData_v4 must show an approval prompt"
+    );
+
+    // Foundry's reference signer (same key) must produce the identical
+    // signature — exact cross-check of the EIP-712 hash + signing path.
+    let out = Command::new("cast")
+        .args(["wallet", "sign", "--data", "--private-key", ANVIL_KEY0])
+        .arg(typed_data.to_string())
+        .output()
+        .expect("cast must be available");
+    assert!(
+        out.status.success(),
+        "cast wallet sign failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reference = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(
+        signature, reference,
+        "wallet EIP-712 signature must match foundry's reference for the same key"
+    );
+
+    consumer.abort();
+    task.abort();
+}
+
+/// `wallet_switchEthereumChain`: switches to a built-in network (chainId
+/// reflects it), and unknown chains fail with EIP-1193 4902.
+#[tokio::test(flavor = "multi_thread")]
+async fn switch_chain_switches_builtin_and_rejects_unknown() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil); // starts on testnet v4 (943)
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let consumer = tokio::spawn(run_approval_consumer(
+        rx,
+        wallet,
+        |_| Ok(()),
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+    ));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    // Switch to PulseChain mainnet (0x171 = 369).
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "wallet_switchEthereumChain",
+        json!([{ "chainId": "0x171" }]),
+    )
+    .await;
+    assert!(reply["result"].is_null(), "successful switch returns null");
+
+    // The active chain now reports 0x171.
+    let reply = rpc_call(&mut ws, 2, "eth_chainId", json!([])).await;
+    assert_eq!(reply["result"], "0x171");
+
+    // Switching back to the testnet works too.
+    let reply = rpc_call(
+        &mut ws,
+        3,
+        "wallet_switchEthereumChain",
+        json!([{ "chainId": "0x3af" }]),
+    )
+    .await;
+    assert!(reply["result"].is_null());
+    let reply = rpc_call(&mut ws, 4, "eth_chainId", json!([])).await;
+    assert_eq!(reply["result"], "0x3af");
+
+    // An unknown chain (Ethereum mainnet is built-in, so use a random id).
+    let reply = rpc_call(
+        &mut ws,
+        5,
+        "wallet_switchEthereumChain",
+        json!([{ "chainId": "0xdeadbeef" }]),
+    )
+    .await;
+    assert_eq!(
+        reply["error"]["code"],
+        4902,
+        "unknown chain rejects with EIP-1193 unrecognized chain (4902)"
     );
 
     consumer.abort();

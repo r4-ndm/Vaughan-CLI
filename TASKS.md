@@ -129,6 +129,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] `execute_approval` is now truly async (shared by the TUI's sync wrapper and async callers)
 - [x] 145 tests green workspace-wide (incl. 8 anvil integration tests); no new clippy warnings
 
+### Sign + switch methods — anvil integration tests (added 2026-08-18) — done
+
+- [x] `personal_sign`: approval prompt shown; signature is 65-byte `r‖s‖v` and **recovers to the active account** via foundry's `cast wallet verify`
+- [x] `eth_signTypedData_v4`: approval prompt shown; signature **matches `cast wallet sign --data` byte-for-byte** for the same key + EIP-712 payload (exact reference cross-check)
+- [x] `wallet_switchEthereumChain`: switch to built-in networks (testnet↔mainnet) reflects in `eth_chainId`; unknown chain rejects with EIP-1193 **4902**
+- [x] Test consumer now mirrors the real app: chain id read from the wallet, switch actually switches (was hardcoded/stubbed)
+- [x] 148 tests green workspace-wide (incl. 11 anvil integration tests); no new clippy warnings
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)
