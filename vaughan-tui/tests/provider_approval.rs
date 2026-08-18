@@ -622,3 +622,117 @@ async fn switch_chain_switches_builtin_and_rejects_unknown() {
     consumer.abort();
     task.abort();
 }
+
+/// `vaughan_signTransaction`: the dApp gets a raw signed tx (nothing
+/// broadcast). The raw tx must be valid — anvil accepts it via
+/// `eth_sendRawTransaction`, proving the signature, nonce and chain id.
+#[tokio::test(flavor = "multi_thread")]
+async fn sign_transaction_returns_valid_raw_tx_that_broadcasts() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+    let recipient = anvil_dev_address(4);
+    let before = anvil.wei_balance(&recipient);
+    let nonce_before =
+        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(rx, wallet, |_| Ok(()), seen2));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    let value_wei = 10u128.pow(18); // 1 tPLS
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "vaughan_signTransaction",
+        json!([{ "from": sender, "to": recipient, "value": format!("{value_wei:#x}") }]),
+    )
+    .await;
+    if reply["error"].is_object() {
+        panic!("vaughan_signTransaction returned an error: {}", reply["error"]);
+    }
+    let raw_tx = reply["result"].as_str().expect("raw signed tx").to_string();
+    assert!(raw_tx.starts_with("0x"), "raw tx is 0x-hex");
+    assert!(raw_tx.len() > 100, "raw tx carries an RLP body: {raw_tx}");
+
+    // Approval prompt was shown.
+    assert!(
+        seen.lock().unwrap().iter().any(|s| s == "sign"),
+        "vaughan_signTransaction must show an approval prompt"
+    );
+
+    // Sign-only: nothing broadcast yet.
+    assert_eq!(anvil.wei_balance(&recipient), before, "nothing moved yet");
+
+    // The raw tx is valid and signed by the active account: anvil accepts it
+    // and mines it. This validates signature recovery, nonce and chain id.
+    let tx_hash = anvil
+        .rpc("eth_sendRawTransaction", json!([raw_tx]))
+        .unwrap_or_else(|e| panic!("anvil rejected the raw tx: {e}"));
+    assert!(tx_hash.as_str().unwrap().starts_with("0x"));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if anvil.wei_balance(&recipient) == before + value_wei {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(anvil.wei_balance(&recipient), before + value_wei);
+    let nonce_after =
+        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    assert_ne!(nonce_after, nonce_before, "sender nonce must advance");
+
+    consumer.abort();
+    task.abort();
+}
+
+/// `vaughan_signTransaction` denied: EIP-1193 4001, no raw tx, nothing on
+/// chain, nonce untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn sign_transaction_denied_returns_4001_and_broadcasts_nothing() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+    let recipient = anvil_dev_address(5);
+    let before = anvil.wei_balance(&recipient);
+    let nonce_before =
+        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(
+        rx,
+        wallet,
+        |_| Err(ProviderError::UserRejected),
+        seen2,
+    ));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "vaughan_signTransaction",
+        json!([{ "from": sender, "to": recipient, "value": "0x1" }]),
+    )
+    .await;
+
+    // EIP-1193 user-rejected: 4001.
+    assert_eq!(reply["error"]["code"], 4001);
+    assert!(seen.lock().unwrap().iter().any(|s| s == "sign"));
+
+    // Nothing moved, nonce untouched.
+    assert_eq!(anvil.wei_balance(&recipient), before);
+    let nonce_after =
+        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    assert_eq!(nonce_after, nonce_before, "denied sign must not consume a nonce");
+
+    consumer.abort();
+    task.abort();
+}
