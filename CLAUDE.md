@@ -138,7 +138,7 @@ Run these before declaring any non-trivial change done.
 ## Repository navigation
 
 ```
-Cargo.toml                     # workspace + shared deps (alloy 1.7, ratatui, …)
+Cargo.toml                     # workspace + shared deps (alloy 2.x, ratatui, …)
 vaughan-core/src/
   chains/                      # ChainAdapter trait, types, evm/ (Alloy adapter + networks)
   core/                        # wallet state, accounts, transactions, persistence, network

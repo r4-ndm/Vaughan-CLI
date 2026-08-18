@@ -88,7 +88,8 @@ Requirement IDs are referenced by `TASKS.md`.
 ## Constraints & decisions
 
 - **C-1** Language: Rust (edition 2021).
-- **C-2** Alloy 1.7 (single workspace version, same pin as Vaughan-Dioxus).
+- **C-2** Alloy 2.x (single workspace version; upgraded from 1.7 in 2026-08 —
+  Vaughan was early-stage, so the Vaughan-Dioxus pin no longer applies).
 - **C-3** TUI: ratatui + crossterm.
 - **C-4** `vaughan-core` reimplements the Vaughan-Dioxus layering (not vendored).
 - **C-5** kohaku-rs was planned as a git dependency (our own repo) in later phases;

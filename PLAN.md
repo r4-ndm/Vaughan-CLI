@@ -59,7 +59,7 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 | Decision | Choice | Rationale |
 |---|---|---|
 | Language | Rust (2021) | Alloy + ratatui + kohaku-rs are Rust; matches Vaughan-Dioxus |
-| Ethereum lib | alloy 1.7 | Same pin as Vaughan-Dioxus; proven API for our EVM adapter |
+| Ethereum lib | alloy 2.x (resolved 2.4.1) | Single workspace version; upgraded from 1.7 in 2026-08 (Vaughan is early-stage, so the Vaughan-Dioxus pin no longer applies) |
 | TUI | ratatui + crossterm | De-facto standard, async/tokio friendly |
 | Core layering | reimplement | Clean control; mirror Vaughan-Dioxus, don't vendor |
 | HD wallet | bip39 + bip32 | RustCrypto stack, actively maintained; bip39 for mnemonics, bip32 for derivation |
@@ -124,4 +124,6 @@ Full scope: `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5).
   and upstream is unaudited; not hardened or consumed until resolved (see
   `docs/kohaku-go-no-go.md`).
 - **PulseChain RPC availability** — public endpoints; may need fallback URLs.
-- **Alloy 1.7 vs 2.x** — pinned to 1.7 for API stability; revisit on a later upgrade pass.
+- **Alloy version** — on 2.x since 2026-08 (early-stage project, so the 1.7
+  Vaughan-Dioxus pin was dropped). Future major upgrades are isolated to a
+  single workspace pin (`Cargo.toml`).
