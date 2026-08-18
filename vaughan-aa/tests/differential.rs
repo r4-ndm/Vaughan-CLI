@@ -1,9 +1,11 @@
-//! Byte-equality differential tests against Ambire-signed fixtures.
+//! Byte-equality differential tests against Solidity-reference fixtures.
 //!
-//! Fixtures are captured *outside* this workspace: Ambire's SDK is GPL-family,
-//! so we run it in a separate checkout and commit only the resulting byte
-//! vectors (JSON), never the SDK source. See `tests/fixtures/README.md` for the
-//! capture procedure and schema. When no fixtures are present, this test skips.
+//! Fixtures are captured with Solidity's own `abi.encode`, executed by the EVM
+//! (a throwaway forge project under `.fixtures-capture/`, gitignored) — the
+//! canonical encoder the on-chain `AmbireAccount.execute` verifies against.
+//! Only the resulting byte vectors (JSON) are committed. See
+//! `tests/fixtures/README.md` for the capture procedure and schema. When no
+//! fixtures are present, this test skips.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -12,6 +14,7 @@ use alloy::primitives::{Address, Bytes, U256};
 use serde::Deserialize;
 
 use vaughan_aa::abi::Transaction;
+use vaughan_aa::encode::encode_execute;
 use vaughan_aa::scw::ScwTransaction;
 
 #[derive(Deserialize)]
@@ -22,6 +25,16 @@ struct Fixture {
     txns: Vec<FixtureTxn>,
     /// Expected `keccak256(abi.encode(account, chainId, nonce, txns))`, `0x`-prefixed.
     digest: String,
+    /// Expected `abi.encode(account, chainId, nonce, txns)` — the full digest
+    /// preimage, `0x`-prefixed (captured alongside the digest).
+    #[serde(default)]
+    preimage: Option<String>,
+    /// The signature used to pin the `execute` calldata, `0x`-prefixed.
+    #[serde(default)]
+    signature: Option<String>,
+    /// Expected `abi.encodeCall(execute, (txns, signature))`, `0x`-prefixed.
+    #[serde(default)]
+    execute_calldata: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +52,10 @@ fn parse_u256(s: &str) -> U256 {
     } else {
         U256::from_str(s).unwrap()
     }
+}
+
+fn parse_bytes(s: &str) -> Vec<u8> {
+    hex::decode(s.trim_start_matches("0x")).unwrap()
 }
 
 fn load_fixtures() -> Vec<(String, Fixture)> {
@@ -62,10 +79,10 @@ fn load_fixtures() -> Vec<(String, Fixture)> {
 }
 
 #[test]
-fn digest_matches_ambire_fixtures() {
+fn matches_solidity_reference_fixtures() {
     let fixtures = load_fixtures();
     if fixtures.is_empty() {
-        eprintln!("no Ambire fixtures found — skipping (see tests/fixtures/README.md)");
+        eprintln!("no Solidity-reference fixtures found — skipping (see tests/fixtures/README.md)");
         return;
     }
 
@@ -80,15 +97,34 @@ fn digest_matches_ambire_fixtures() {
                 .map(|t| Transaction {
                     to: Address::from_str(&t.to).unwrap(),
                     value: parse_u256(&t.value),
-                    data: Bytes::from(hex::decode(t.data.trim_start_matches("0x")).unwrap()),
+                    data: Bytes::from(parse_bytes(&t.data)),
                 })
                 .collect(),
         };
-        let expected = hex::decode(fixture.digest.trim_start_matches("0x")).unwrap();
+
+        // The encoded preimage must match Solidity's abi.encode byte-for-byte.
+        if let Some(preimage) = &fixture.preimage {
+            assert_eq!(
+                tx.encode_for_digest(),
+                parse_bytes(preimage),
+                "preimage mismatch in fixture {path}"
+            );
+        }
+
+        // The digest must match keccak256(preimage) as computed by the EVM.
         assert_eq!(
             tx.digest().as_slice(),
-            expected.as_slice(),
+            parse_bytes(&fixture.digest),
             "digest mismatch in fixture {path}"
         );
+
+        // The full execute calldata must match abi.encodeCall byte-for-byte.
+        if let (Some(signature), Some(calldata)) = (&fixture.signature, &fixture.execute_calldata) {
+            assert_eq!(
+                encode_execute(&tx.txns, &parse_bytes(signature)),
+                parse_bytes(calldata),
+                "execute calldata mismatch in fixture {path}"
+            );
+        }
     }
 }

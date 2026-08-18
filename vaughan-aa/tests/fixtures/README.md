@@ -1,34 +1,65 @@
 # Ambire signed-transaction fixtures
 
-Fixtures for `tests/differential.rs` are captured **outside** this workspace,
-because Ambire's SDK is GPL-family and must never be checked into (or absorbed
-by) this MIT/Apache repo. Only the resulting **byte vectors** are committed here.
+Fixtures for `tests/differential.rs` are **byte vectors only** — no Ambire or
+other third-party source is ever committed here. They are captured with
+**Solidity's own `abi.encode`, executed by the EVM** (a throwaway forge
+project), which is the canonical encoder the on-chain `AmbireAccount.execute`
+verifies against — a stronger, dependency-free reference than Ambire's TS SDK
+(which itself just delegates to `ethers`' encoder).
 
-## Capture procedure (run in a separate checkout, not in this repo)
+## Capture procedure
 
-1. In a throwaway directory, `git clone` `AmbireTech/ambire-common` and install
-   its deps (Node — never run inside Vaughan-CLI itself, which is Rust-only).
-2. For a set of representative `scw_transaction`s (single txn, multi-txn batch,
-   non-zero `value`, non-empty `data`), sign them with the SDK and record the
-   SDK's own computed digest.
-3. Write each case to a JSON file here using the schema below. **Do not copy any
-   `.ts`/`.sol` source** — only the recorded byte vectors.
+The throwaway forge project lives in `vaughan-aa/.fixtures-capture/`
+(gitignored — only the resulting JSON here is committed):
+
+```sh
+cd vaughan-aa/.fixtures-capture
+forge test --match-test test_generate -vv   # writes JSON to out/fixtures/
+cp out/fixtures/*.json ../tests/fixtures/
+```
+
+`test/Generate.t.sol` defines a set of representative `scw_transaction` cases
+and computes, per case, the reference values via `src/DigestHelper.sol`
+(a ~30-line MIT helper; the Ambire interface facts it references are declared
+inline, never copied from Ambire's AGPL source):
+
+- `preimage`          = `abi.encode(account, chainId, nonce, txns)`
+- `digest`            = `keccak256(preimage)`
+- `execute_calldata`  = `abi.encodeCall(execute, (txns, signature))` with a
+  fixed 66-byte `0xaa…` signature (pins the *encoding*; signature-content
+  correctness is covered by `vaughan-aa`'s sign tests)
+
+The Rust harness (`tests/differential.rs`) asserts all three byte-for-byte
+against the same inputs. When no `*.json` files are present, it skips.
 
 ## Fixture schema
 
 ```json
 {
-  "account": "0x1111111111111111111111111111111111111111",
+  "name": "case1-single-zero-value",
+  "account": "0x…",
   "chain_id": 943,
   "nonce": 0,
   "txns": [
-    { "to": "0x2222222222222222222222222222222222222222", "value": "0", "data": "0xdeadbeef" }
+    { "to": "0x…", "value": "0", "data": "0xdeadbeef" }
   ],
-  "digest": "0x…"
+  "preimage": "0x…",
+  "digest": "0x…",
+  "signature": "0xaa…aa",
+  "execute_calldata": "0x…"
 }
 ```
 
-`digest` is the SDK's `keccak256(abi.encode(account, chainId, nonce, txns))`.
-`value` may be decimal or `0x`-prefixed. `data` is `0x`-prefixed.
+`value` may be decimal or `0x`-prefixed; `data` is `0x`-prefixed. `preimage`,
+`signature`, and `execute_calldata` are optional (older fixtures assert only
+`digest`).
 
-When no `*.json` files are present, `tests/differential.rs` skips.
+## Current cases
+
+| Fixture | Shape |
+|---|---|
+| `case1-single-zero-value` | one txn, zero value, `0xdeadbeef` data |
+| `case2-native-transfer` | one txn, 1 ETH value, empty data |
+| `case3-multi-txn-batch` | 3 txns: native transfer + ERC-20 `transfer` + `approve` |
+| `case4-empty-batch` | zero txns |
+| `case5-erc20-transfer` | one txn, padded `transfer(address,uint256)` calldata |

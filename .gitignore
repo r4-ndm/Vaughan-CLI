@@ -19,6 +19,10 @@ Thumbs.db
 vaughan-backup-*.json
 *backup*
 
+# AA fixture capture workspace (throwaway forge project; only the resulting
+# fixture JSON in vaughan-aa/tests/fixtures/ is committed)
+.fixtures-capture/
+
 # Logs
 *.log
 

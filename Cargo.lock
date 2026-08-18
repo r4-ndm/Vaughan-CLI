@@ -5075,6 +5075,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tokio",
  "vaughan-core",
 ]
 
