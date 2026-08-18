@@ -170,6 +170,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] `fresh_wallet` helper added to `tests/common/mod.rs` (onboarding creates its own wallet; no anvil needed — fully offline)
 - [x] 169 tests green workspace-wide (incl. 32 anvil/TestBackend integration tests); no new clippy warnings
 
+### Dashboard view — anvil/TestBackend tests (`dashboard_view.rs`, added 2026-08-18) — done
+
+- [x] Renders the active address, network with the `(testnet)` marker, the live balance (`formatted + symbol`), and the shortcut bar
+- [x] `r` refresh: fresh dashboard shows `—`, pressing `r` fetches the balance from anvil and renders it
+- [x] `l` lock: wallet locks, navigates to Unlock, and publishes `accountsChanged` with an **empty** account list (dApps see the lock)
+- [x] `s`/`v`/`n` navigate to Send/Receive/Settings; locked wallet renders `(locked)` instead of the address
+- [x] 174 tests green workspace-wide (incl. 37 integration tests); no new clippy warnings
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)
