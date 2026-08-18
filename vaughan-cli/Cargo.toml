@@ -1,0 +1,25 @@
+[package]
+name = "vaughan-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Non-interactive Vaughan wallet commands: send contract calls, check balances, manage the vault"
+repository = "https://github.com/r4-ndm/vaughan-cli"
+
+[[bin]]
+name = "vaughan"
+path = "src/main.rs"
+
+[dependencies]
+vaughan-core = { path = "../vaughan-core" }
+alloy = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+rpassword = { workspace = true }
+secrecy = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

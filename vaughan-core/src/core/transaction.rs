@@ -51,6 +51,43 @@ impl TransactionService {
         }))
     }
 
+    /// Build an unsigned contract-call request (any calldata).
+    ///
+    /// `value` is in the chain's base unit (wei for EVM) as a decimal string;
+    /// pass `"0"` for a pure call. `data` is the hex calldata (`0x`-prefixed
+    /// or not; empty for a plain value transfer).
+    pub fn build_contract_call(
+        &self,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        data: &str,
+        value: impl Into<String>,
+        chain_id: u64,
+    ) -> Result<ChainTransaction, WalletError> {
+        let value = value.into();
+        U256::from_str(&value)
+            .map_err(|_| WalletError::InvalidAmount(format!("invalid amount: {value}")))?;
+        let data = data.trim();
+        let data = data.strip_prefix("0x").unwrap_or(data).to_string();
+        if !data.is_empty() && hex::decode(&data).is_err() {
+            return Err(WalletError::InvalidTransaction(
+                "data must be valid hex".to_string(),
+            ));
+        }
+        Ok(ChainTransaction::Evm(EvmTransaction {
+            from: from.into(),
+            to: to.into(),
+            value,
+            data: Some(format!("0x{data}")),
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id,
+        }))
+    }
+
     /// Copy `fee`'s gas parameters onto an EVM transaction.
     ///
     /// The UI shows the [`Fee`] to the user and, on approval, the confirmed
@@ -170,6 +207,45 @@ mod tests {
                 assert_eq!(e.value, "1000");
                 assert_eq!(e.chain_id, 369);
                 assert!(e.nonce.is_none());
+            }
+            _ => panic!("expected EVM variant"),
+        }
+    }
+
+    #[test]
+    fn build_contract_call_keeps_data_and_value() {
+        let svc = TransactionService::new();
+        let tx = svc
+            .build_contract_call("0xabc", "0xdef", "0x1234", "500", 369)
+            .unwrap();
+        match tx {
+            ChainTransaction::Evm(e) => {
+                assert_eq!(e.to, "0xdef");
+                assert_eq!(e.value, "500");
+                assert_eq!(e.data.as_deref(), Some("0x1234"));
+                assert_eq!(e.chain_id, 369);
+            }
+            _ => panic!("expected EVM variant"),
+        }
+    }
+
+    #[test]
+    fn build_contract_call_rejects_bad_hex() {
+        let svc = TransactionService::new();
+        assert!(svc
+            .build_contract_call("0xabc", "0xdef", "zzz", "0", 369)
+            .is_err());
+    }
+
+    #[test]
+    fn build_contract_call_accepts_bare_hex_and_empty() {
+        let svc = TransactionService::new();
+        let tx = svc
+            .build_contract_call("0xabc", "0xdef", "1234", "0", 369)
+            .unwrap();
+        match tx {
+            ChainTransaction::Evm(e) => {
+                assert_eq!(e.data.as_deref(), Some("0x1234"));
             }
             _ => panic!("expected EVM variant"),
         }

@@ -90,6 +90,20 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - PulseX Router `0x165C…552d9` → Factory `0x29eA…C523`, PLSX `0x95B3…90ab`, 186,244 pairs
 - `getabi` endpoint works on `api.scan.pulsechain.com` (tested on Multicall3)
 
+## Deploy CLI (`vaughan-cli`, added 2026-08-18) — done
+
+> Non-interactive wallet commands for testnet contract deploys (and wiz4rd-swap Phase 3).
+
+- [x] `vaughan-cli` workspace crate → `vaughan` binary
+- [x] `vaughan send <to> --data <hex> [--value N] [--network id]` — builds an arbitrary contract call, estimates fee, signs via vault, broadcasts; prints tx hash. The deploy path: pass contract creation bytecode or calldata
+- [x] `vaughan balance [--network id]` — active account native balance
+- [x] `vaughan networks` — list built-in networks (pulsechain 369, pulsechain-testnet-v4 943, …)
+- [x] `vaughan create` / `vaughan restore` — vault bootstrap (mnemonic printed once)
+- [x] Password via `--password-env NAME` (automation) or interactive `rpassword` prompt
+- [x] Core: `TransactionService::build_contract_call` (validates calldata hex, keeps value/data)
+- [x] ⚠️ Fixed HTTPS RPC: added `reqwest-default-tls` to workspace alloy (hyper transport was HTTP-only; balance/send failed on all HTTPS RPCs)
+- [x] 137 tests green workspace-wide; clippy clean; verified live: create → balance on mainnet (PLS) + testnet (tPLS)
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "vaughan-aa",
+    "vaughan-cli",
     "vaughan-core",
     "vaughan-provider",
     "vaughan-tui",
@@ -22,6 +23,7 @@ alloy = { version = "2", default-features = false, features = [
     "providers",
     "provider-http",
     "reqwest",
+    "reqwest-default-tls",
     "signers",
     "signer-local",
     "rpc-types-eth",
@@ -39,7 +41,10 @@ alloy = { version = "2", default-features = false, features = [
 # also enables optional cloud/ledger signer crates whose published versions
 # don't resolve, so we enable the feature on the dyn-abi sub-crate directly.
 alloy-dyn-abi = { version = "1.6", features = ["eip712"] }
+anyhow = "1"
 async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
 url = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "net", "io-util"] }
 moka = { version = "0.12", features = ["future"] }
