@@ -117,6 +117,18 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Test: wrong password fails with a clear error
 - [x] 142 tests green workspace-wide (incl. 5 anvil integration tests); clippy clean
 
+### Provider approval flow — anvil integration tests (`vaughan-tui/tests/provider_approval.rs`, added 2026-08-18) — done
+
+> Each test spawns its own anvil + the real `ProviderServer` + `Eip1193Handler` over WebSocket, with a simulated UI thread draining `HostRequest`s (mirroring the TUI's `poll_provider`). Run: `cargo test -p vaughan-tui --test provider_approval`.
+
+- [x] `vaughan-tui` split into lib + bin so integration tests can drive the provider stack
+- [x] Test: dApp `eth_sendTransaction` → approval prompt shown → approve → tx lands on anvil (recipient balance + sender nonce increment)
+- [x] Test: deny returns EIP-1193 **4001** and nothing broadcasts (nonce untouched)
+- [x] Test: **locked wallet** — reads (`eth_accounts`) answer `[]`, `eth_sendTransaction` rejects with **4100** and never shows a prompt
+- [x] ⚠️ Behavior fix: locked wallet no longer prompts — `execute_approval` (shared by TUI + tests) rejects early with `Unauthorized`; the app loop skips the prompt entirely (previously a locked wallet showed a prompt that would fail at execution)
+- [x] `execute_approval` is now truly async (shared by the TUI's sync wrapper and async callers)
+- [x] 145 tests green workspace-wide (incl. 8 anvil integration tests); no new clippy warnings
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)

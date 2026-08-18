@@ -21,8 +21,6 @@ use serde_json::{json, Value};
 /// account, so no faucet step is needed.
 const ANVIL_MNEMONIC: &str =
     "test test test test test test test test test test test junk";
-/// Anvil dev account #0.
-const ANVIL_KEY0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 const PASSWORD_ENV: &str = "VAUGHAN_TEST_PW";
 const PASSWORD: &str = "BombProof123!";

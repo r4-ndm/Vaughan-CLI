@@ -5142,6 +5142,7 @@ dependencies = [
 name = "vaughan-tui"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "async-trait",
  "crossterm",
  "futures-util",

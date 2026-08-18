@@ -251,6 +251,14 @@ impl App {
                     origin,
                     reply,
                 } => {
+                    // Locked wallet: reject without prompting (the execution
+                    // path guards too, but no prompt should ever appear).
+                    if !self.wallet.is_unlocked() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "wallet is locked; unlock it first".to_string(),
+                        )));
+                        continue;
+                    }
                     let preview = provider::describe_approval(&kind, &self.wallet, &self.handle);
                     let (title, details) = match preview {
                         Ok(preview) => preview,
@@ -324,7 +332,7 @@ impl App {
         let result = if deny {
             Err(ProviderError::UserRejected)
         } else {
-            provider::execute_approval(&pending.kind, &self.wallet, &self.handle)
+            provider::execute_approval_sync(&pending.kind, &self.wallet, &self.handle)
         };
         let _ = pending.reply.send(result);
         let back = self.approve_return;

@@ -1,13 +1,8 @@
 //! Vaughan-CLI terminal wallet: entry point and terminal lifecycle.
 
-mod app;
-mod input;
-mod provider;
-mod views;
-
 use std::io;
 
-use app::App;
+use vaughan_tui::app::App;
 
 fn main() -> io::Result<()> {
     vaughan_core::logging::init_logging();

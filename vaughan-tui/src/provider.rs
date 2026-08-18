@@ -406,13 +406,21 @@ fn fee_from_explicit_tx_params(tx: &TxParams, wallet: &WalletState) -> Option<Fe
 
 /// Execute an approved request, producing the value the handler returns.
 ///
-/// Runs on the UI thread; `handle.block_on` is used for the two network-backed
-/// paths (sign-only raw tx and broadcast), matching the existing view pattern.
-pub fn execute_approval(
+/// Async: the two network-backed paths (sign-only raw tx and broadcast) await
+/// the wallet directly, so both the TUI (via the sync wrapper) and async
+/// callers (integration tests) can drive the same code.
+pub async fn execute_approval(
     kind: &ApprovalKind,
     wallet: &WalletState,
-    handle: &Handle,
 ) -> Result<String, ProviderError> {
+    // A locked wallet never prompts, never signs: reject cleanly (EIP-1193
+    // 4100). The UI skips the prompt for locked wallets too (see app.rs), so
+    // this guard is the shared backstop for every caller.
+    if !wallet.is_unlocked() {
+        return Err(ProviderError::Unauthorized(
+            "wallet is locked; unlock it first".to_string(),
+        ));
+    }
     match kind {
         ApprovalKind::SignMessage { address, message } => {
             verify_address(address, wallet)?;
@@ -429,18 +437,28 @@ pub fn execute_approval(
         }
         ApprovalKind::SignTransaction(tx) => {
             let evm = to_evm_transaction(tx, wallet)?;
-            handle
-                .block_on(wallet.sign_transaction(evm))
-                .map_err(map_wallet_error)
+            wallet.sign_transaction(evm).await.map_err(map_wallet_error)
         }
         ApprovalKind::SendTransaction(tx) => {
             let evm = to_evm_transaction(tx, wallet)?;
-            handle
-                .block_on(wallet.send_transaction(evm))
+            wallet
+                .send_transaction(evm)
+                .await
                 .map(|hash| hash.to_string())
                 .map_err(map_wallet_error)
         }
     }
+}
+
+/// Synchronous wrapper for the UI thread: runs [`execute_approval`] via
+/// `handle.block_on`. The UI thread is not a tokio worker, so blocking here is
+/// safe (matching the existing view pattern).
+pub fn execute_approval_sync(
+    kind: &ApprovalKind,
+    wallet: &WalletState,
+    handle: &Handle,
+) -> Result<String, ProviderError> {
+    handle.block_on(execute_approval(kind, wallet))
 }
 
 /// Map [`TxParams`] (already quantity-normalized by the provider) onto an
