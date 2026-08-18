@@ -143,6 +143,17 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Deny: EIP-1193 **4001**, no raw tx, nothing on chain, nonce untouched
 - [x] 150 tests green workspace-wide (incl. 13 anvil integration tests); no new clippy warnings
 
+### TUI native send view — anvil integration tests (`vaughan-tui/tests/send_view.rs`, added 2026-08-18) — done
+
+> Drives the real `SendView` state machine (Input → Confirm → Done) with real key events, renders it headlessly via ratatui's `TestBackend`, and verifies broadcasts on-chain. Run: `cargo test -p vaughan-tui --test send_view`.
+
+- [x] Happy path: recipient + amount → confirm screen shows fee + recipient → Enter broadcasts; rendered done-stage shows the tx hash, `eth_getTransactionByHash` matches the form input (to/value), receipt status `0x1`, funds moved, nonce advanced
+- [x] Insufficient funds: fails cleanly, nothing lands, nonce untouched, view returns to the form
+- [x] Invalid amount: never leaves the input stage, nothing lands
+- [x] Esc on confirm: cancels, back to the form, nothing broadcast
+- [x] Shared anvil/`funded_wallet` helpers extracted to `tests/common/mod.rs` (both test binaries consume it)
+- [x] 154 tests green workspace-wide (incl. 17 anvil integration tests); no new clippy warnings
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)

@@ -9,14 +9,14 @@
 //! cargo test -p vaughan-tui --test provider_approval -- --nocapture
 //! ```
 
-use std::net::TcpListener;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
+mod common;
+
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use common::{anvil_dev_address, funded_wallet, Anvil, ANVIL_KEY0};
 use futures_util::{SinkExt, StreamExt};
-use secrecy::SecretString;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -25,106 +25,9 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use vaughan_core::chains::evm::networks::get_network_by_chain_id;
 use vaughan_core::core::WalletState;
-use vaughan_core::security::hd_wallet::validate_mnemonic;
 use vaughan_provider::Eip1193Handler;
 use vaughan_provider::ProviderError;
 use vaughan_tui::provider::{ApprovalKind, HostRequest, ProviderHost};
-
-/// Anvil's default dev mnemonic — the wallet restored from it is funded.
-const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
-/// Anvil dev account #0's private key (from the dev mnemonic, index 0).
-const ANVIL_KEY0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const PASSWORD: &str = "BombProof123!";
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
-struct Anvil {
-    child: Child,
-    port: u16,
-}
-
-impl Anvil {
-    fn start() -> Self {
-        let port = free_port();
-        let child = Command::new("anvil")
-            .args(["--port", &port.to_string(), "--chain-id", "943", "--silent"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("anvil must be on PATH (foundry)");
-        let anvil = Self { child, port };
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if anvil.rpc("eth_chainId", json!([])).is_ok() {
-                return anvil;
-            }
-            if Instant::now() > deadline {
-                panic!("anvil did not start in time");
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-
-    fn rpc(&self, method: &str, params: Value) -> Result<Value, String> {
-        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        let out = Command::new("curl")
-            .args(["-s", "-X", "POST", "-H", "Content-Type: application/json"])
-            .arg("-d")
-            .arg(body.to_string())
-            .arg(self.url())
-            .output()
-            .expect("curl must be available");
-        let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
-        if let Some(err) = v.get("error") {
-            return Err(err.to_string());
-        }
-        Ok(v["result"].clone())
-    }
-
-    /// Native balance of `addr` in wei.
-    fn wei_balance(&self, addr: &str) -> u128 {
-        let v = self.rpc("eth_getBalance", json!([addr, "latest"])).unwrap();
-        u128::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
-    }
-}
-
-impl Drop for Anvil {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// A funded wallet (restored from the anvil mnemonic) in a temp vault,
-/// pointed at the local anvil RPC (chain id 943 matches the built-in
-/// pulsechain-testnet-v4 network, so signing/fee-estimation hit anvil).
-fn funded_wallet(dir: &Path, anvil: &Anvil) -> WalletState {
-    let path = dir.join("wallet.json");
-    let mut wallet = WalletState::load(path).unwrap();
-    let mnemonic = validate_mnemonic(ANVIL_MNEMONIC).unwrap();
-    wallet
-        .create(&SecretString::from(PASSWORD.to_string()), mnemonic)
-        .unwrap();
-    wallet.set_active_network("pulsechain-testnet-v4").unwrap();
-    wallet.set_rpc_override(anvil.url());
-    wallet
-}
-
-/// Anvil dev account `index` address (from the dev mnemonic).
-fn anvil_dev_address(index: u32) -> String {
-    let out = Command::new("cast")
-        .args(["wallet", "address", "--mnemonic", ANVIL_MNEMONIC])
-        .args(["--mnemonic-index", &index.to_string()])
-        .output()
-        .expect("cast must be available");
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
 
 /// Verify an EIP-191 personal-message signature with `cast wallet verify`
 /// (foundry's reference implementation). Returns true if the signature
