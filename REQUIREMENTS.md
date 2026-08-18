@@ -13,8 +13,10 @@ Requirement IDs are referenced by `TASKS.md`.
 - EVM first-class; PulseChain mainnet (369) and testnet v4 (943) as the primary targets.
 - Native provider bridge so Freedom Browser (and other EIP-1193/6963 browsers) can use
   Vaughan as the signing wallet.
-- Privacy via kohaku-rs (stealth / railgun) and smart accounts via Ambire
-  (ERC-4337/7702 AA) — later phases, both reimplemented in Rust.
+- Smart accounts via Ambire (ERC-4337/7702 AA) reimplemented in Rust — done
+  (FR-3.3, see `docs/ambire-aa.md`).
+- Privacy via kohaku-rs (stealth / railgun) — **deferred by decision** (see
+  `docs/kohaku-go-no-go.md`).
 
 ## Non-goals (deferred, not dropped)
 
@@ -60,11 +62,19 @@ Requirement IDs are referenced by `TASKS.md`.
 ### Phase 3 — Privacy + smart accounts
 
 - **FR-3.1** Harden kohaku-rs: real test coverage, fix the railgun build, publish
-  `kohaku-core` / `kohaku-stealth` to crates.io.
-- **FR-3.2** ERC-5564 stealth addresses via `kohaku-stealth`.
+  `kohaku-core` / `kohaku-stealth` to crates.io. — **deferred by decision**: upstream
+  `ethereum/kohaku` derives RAILGUN keys with BIP-32 while the canonical RAILGUN
+  engine uses a babyjubjub seed tree, producing incompatible/unrecoverable keys;
+  upstream is also unaudited and pre-production. See `docs/kohaku-go-no-go.md`.
+- **FR-3.2** ERC-5564 stealth addresses via `kohaku-stealth`. — deferred with FR-3.1.
 - **FR-3.3** Ambire smart accounts (ERC-4337/7702 AA) reimplemented in Rust via Alloy +
-  Ambire ABI (borrowed from Vaughan-Dioxus).
-- **FR-3.4** Railgun / privacy pools (deferred until upstream stabilizes).
+  Ambire ABI (borrowed from Vaughan-Dioxus). — **implemented**: `vaughan-aa` with
+  differential (EVM-reference) fixtures and a live 7702 self-pay E2E; TUI batched-send
+  view landed (see `docs/ambire-aa.md`). ERC-4337 `UserOperation` stays deferred by
+  decision (self-pay 7702 is the testnet-first route).
+- **FR-3.4** Railgun / privacy pools — **deferred by decision** (see
+  `docs/kohaku-go-no-go.md`); revisit only when the derivation incompatibility is
+  resolved upstream or a spec-first implementation is scoped.
 
 ## Non-functional requirements
 
@@ -81,5 +91,7 @@ Requirement IDs are referenced by `TASKS.md`.
 - **C-2** Alloy 1.7 (single workspace version, same pin as Vaughan-Dioxus).
 - **C-3** TUI: ratatui + crossterm.
 - **C-4** `vaughan-core` reimplements the Vaughan-Dioxus layering (not vendored).
-- **C-5** kohaku-rs is consumed as a git dependency (our own repo) in later phases.
+- **C-5** kohaku-rs was planned as a git dependency (our own repo) in later phases;
+  consumption is **deferred by decision** pending the upstream derivation fix (see
+  `docs/kohaku-go-no-go.md`).
 - **C-6** PulseChain is the primary target chain.

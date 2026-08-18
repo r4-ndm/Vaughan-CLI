@@ -5,7 +5,8 @@
 Vaughan-CLI is a Rust multi-chain CLI wallet TUI:
 
 - **Alloy** — wallet core: keys, signing, RPC, transaction building/broadcast.
-- **kohaku-rs** — privacy/provider (stealth, later railgun), consumed as a git dep.
+- **kohaku-rs** — privacy (stealth, later railgun), consumed as a git dep; **deferred
+  by decision** (see `docs/kohaku-go-no-go.md`).
 - **ratatui** — terminal UI.
 - **Freedom Browser** — dApp browser that uses Vaughan as its native signing provider.
 
@@ -63,7 +64,7 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 | Core layering | reimplement | Clean control; mirror Vaughan-Dioxus, don't vendor |
 | HD wallet | bip39 + bip32 | RustCrypto stack, actively maintained; bip39 for mnemonics, bip32 for derivation |
 | Vault crypto | Argon2id + AES-256-GCM | Argon2id KDF, authenticated encryption |
-| kohaku-rs | git dep, later phases | Own repo; hardened in Phase 3 |
+| kohaku-rs | git dep, later phases | **Deferred** — upstream RAILGUN key derivation is incompatible with the canonical engine (see `docs/kohaku-go-no-go.md`) |
 | Ambire AA | Rust + Alloy + Ambire ABI | Reimplement from the on-chain `AmbireAccount` contract; Vaughan-Dioxus as guide only |
 | dApp bridge | local EIP-1193 JSON-RPC (WebSocket) | Mirrors Vaughan-Dioxus provider-style RPC; loopback only |
 
@@ -78,8 +79,16 @@ send native PLS, receive, network switching. No bridge, no tokens.
 Freedom Browser signer-backend PR (out-of-repo, MPL-2.0).
 
 ### Phase 3 — Privacy + smart accounts
-Harden kohaku-rs (tests + publish), wire ERC-5564 stealth, then Ambire AA in Rust
-(see `docs/ambire-aa.md`), then railgun/privacy pools when upstream stabilizes.
+Ambire AA in Rust (see `docs/ambire-aa.md`) is **done**: `vaughan-aa` verified
+byte-for-byte against EVM-reference fixtures, 7702 self-pay proven end-to-end on a
+forked testnet, and the TUI batched-send view ships it (ERC-4337 `UserOperation`
+stays deferred by decision — self-pay 7702 is the route).
+
+kohaku-rs (hardening, ERC-5564 stealth, railgun/privacy pools) is **deferred by
+decision**: upstream's RAILGUN key derivation (BIP-32) is incompatible with the
+canonical engine's babyjubjub seed tree, so keys could be unrecoverable. Revisit
+only when upstream fixes it (with proof vectors) and tags a release, or when a
+spec-first ERC-5564 implementation is scoped. See `docs/kohaku-go-no-go.md`.
 
 ### Phase 4 — Contract browser (terminal DEX browsing)
 Generic browser engine in `vaughan-core` (pure Rust, alloy-native: explorer-ABI
@@ -110,6 +119,9 @@ Full scope: `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5).
 
 - **Freedom Browser bridge** — transport requires a new signer backend + local socket
   (confirmed by inspecting its `signers.js`/injection flow).
-- **kohaku-rs maturity** — untested scaffolding; isolated to Phase 3, hardened before use.
+- **kohaku-rs maturity** — **deferred by decision**: upstream's RAILGUN key
+  derivation is incompatible with the canonical engine (unrecoverable-funds risk)
+  and upstream is unaudited; not hardened or consumed until resolved (see
+  `docs/kohaku-go-no-go.md`).
 - **PulseChain RPC availability** — public endpoints; may need fallback URLs.
 - **Alloy 1.7 vs 2.x** — pinned to 1.7 for API stability; revisit on a later upgrade pass.
