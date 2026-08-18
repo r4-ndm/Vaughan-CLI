@@ -116,3 +116,39 @@ vaughan-aa/                  # new workspace member (or its own repo, like kohak
 
 If the crate grows or needs independent hardening/audit, extract it to its own repo
 and consume it as a git dependency (the established kohaku-rs pattern).
+
+## 7. Decision: ERC-4337 vs EIP-7702 self-pay (recorded 2026-08)
+
+**Decision: self-pay EIP-7702 is the broadcast route for the testnet-first phase;
+ERC-4337 `UserOperation` assembly stays deferred.** This is recorded now so the
+choice doesn't get re-litigated — the reasoning and the trigger conditions for
+revisiting are below.
+
+### Why self-pay 7702 wins for now
+
+- **It's proven.** `tests/self_pay_e2e.rs` runs the full flow against a fork of
+  PulseChain testnet (943) with Ambire's *real* deployed implementation
+  (`0x2A2b85EB1054d6f0c6c2E37dA05eD3E5feA684EF`, present on both testnet and
+  mainnet): bootstrap the key privilege, sign the batch, broadcast, and the batch
+  executes on-chain. The correctness chain (digest → signature → calldata →
+  envelope) is additionally pinned byte-for-byte by the differential harness.
+- **No new infrastructure.** Self-pay needs only the account EOA's own PLS for
+  gas — no EntryPoint deployment, no bundler, no relayer. That matches the
+  testnet-first constraint (NFR-3) and keeps the trust surface small.
+- **Delegation is permanent** (final EIP-7702 spec — the transient variant was
+  dropped). After the first 7702 tx the account behaves as a smart account
+  indefinitely; each `submit_self_pay` re-includes the authorization (idempotent,
+  harmless re-confirmation of the same delegation).
+
+### What ERC-4337 would still buy (and when to revisit)
+
+- **Gas sponsorship / relaying** — someone *else* (an app, a faucet, a relayer)
+  pays the gas for a user's batch. Self-pay can't do this by definition.
+- **Ecosystem interop** — dApps/aggregators that only integrate through the 4337
+  EntryPoint (bundler APIs, `getUserOpHash` verification flows).
+- **Meta-transaction UX** — signatures submitted by a third party.
+
+Revisit 4337 only when one of those becomes a product requirement **or** a
+PulseChain EntryPoint/bundler decision is made (deploy our own vs. use an existing
+one) — until then, `build.rs`'s 4337 path stays a stub with this doc as the
+recorded rationale.

@@ -45,10 +45,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ## Phase 3 — Privacy + smart accounts
 
-- [ ] Harden kohaku-rs: add stealth test vectors + `kohaku-core` tests (FR-3.1)
-- [ ] Fix kohaku-rs railgun build (git dep / submodule instead of sync script) (FR-3.1)
-- [ ] Publish `kohaku-core` + `kohaku-stealth` to crates.io (FR-3.1)
-- [ ] Wire ERC-5564 stealth addresses into Vaughan (FR-3.2)
+- [ ] Harden kohaku-rs: add stealth test vectors + `kohaku-core` tests (FR-3.1) — **deferred by decision**: upstream RAILGUN key-derivation bug (BIP-32 vs babyjubjub seed tree) makes keys incompatible/unrecoverable; see `docs/kohaku-go-no-go.md`
+- [ ] Fix kohaku-rs railgun build (git dep / submodule instead of sync script) (FR-3.1) — deferred with FR-3.1
+- [ ] Publish `kohaku-core` + `kohaku-stealth` to crates.io (FR-3.1) — deferred with FR-3.1
+- [ ] Wire ERC-5564 stealth addresses into Vaughan (FR-3.2) — deferred with FR-3.1
 - [ ] Ambire smart accounts in Rust — see `docs/ambire-aa.md` (FR-3.3)
   - [x] Create the `vaughan-aa` workspace crate and document the AGPL-3.0/GPL → MIT/Apache reimplementation boundary
   - [x] Define the smart-account ABI (`sol!`) + `scw_transaction`/`SignatureMode` types from the on-chain `AmbireAccount` contract (Vaughan-Dioxus as guide only)
@@ -56,12 +56,12 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
   - [x] Encode the inner `Transaction[]` batch calldata (`execute` selector + `abi.encode`, round-trip tested). *(Fixture byte-equality is covered by the differential harness below — still pending fixtures.)*
   - [x] Sign a `scw_transaction` and recover/verify the 66-byte `r‖s‖v‖mode` signature (raw-hash + EIP-191)
   - [x] EIP-7702 assembly (`build.rs`): sign the `Authorization` delegating the account EOA to the Ambire implementation and build the `TxEip7702` carrying `execute(txns, signature)` (self-pay, testnet-first). Authority/chain-id are validated against the batch before assembling.
-  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — needs an EntryPoint/bundler decision, deferred
+  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — **deferred by decision**: self-pay 7702 is the broadcast route for testnet-first; 4337 only buys gas sponsorship + EntryPoint interop. See `docs/ambire-aa.md` §7.
   - [x] Broadcast via `EvmAdapter` (`adapter.rs`): the **self-pay** path is wired — fetch the account's *pending* nonce (uncached), derive EIP-1559 fees through the adapter's existing heuristic (pinned gas limit, since `eth_estimateGas` can't price a pre-delegation 7702 call), sign the 7702 envelope (auth nonce = account nonce + 1 per EIP-7702's "after the sender's nonce is incremented"), and submit via the adapter's primary + fallback broadcast. Relayer / bundler routes still TBD.
   - [x] Differential test harness: fixtures captured from the **EVM reference** (self-contained forge test in `vaughan-aa/.fixtures-capture/`, gitignored — Solidity's own encoder is the canonical independent implementation); `tests/differential.rs` asserts Rust matches byte-for-byte on preimage + digest + `execute` calldata across 5 cases (single zero-value, native transfer, multi-txn batch, empty batch revert, ERC-20 transfer). See `tests/fixtures/README.md`.
   - [x] Live E2E on a forked testnet (`tests/self_pay_e2e.rs`): forks PulseChain testnet (943, where the real `AmbireAccount` impl lives at `0x2A2b…684EF`), bootstraps the account key privilege via a self-call `setAddrPrivilege(account, bytes32(1))` 7702 tx (a fresh EOA otherwise reverts `INSUFFICIENT_PRIVILEGE`), then `submit_self_pay` signs + broadcasts the batch — the recipient receives exactly the value, and the delegation persists as `0xef0100 || impl` per the final EIP-7702 (delegations are permanent; the transient variant was dropped in the spec).
   - [ ] (Later) TUI integration: AA account type + batched send UX
-- [ ] Railgun / privacy pools (FR-3.4)
+- [ ] Railgun / privacy pools (FR-3.4) — deferred with FR-3.1 (derivation incompatibility)
 
 ## Phase 4 — Contract browser (terminal DEX browsing)
 
