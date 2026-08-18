@@ -96,6 +96,96 @@ impl Drop for Anvil {
     }
 }
 
+/// An `anvil` instance forking PulseChain testnet (943), where Ambire's
+/// `AmbireAccount` implementation is deployed — the AA batched-send tests run
+/// against the real contract. Dev accounts are funded on the fork (same as a
+/// plain anvil), so the wallet restored from `ANVIL_MNEMONIC` can pay gas.
+///
+/// `start()` returns `None` when the testnet RPC is unreachable; tests then
+/// skip (network required for the fork).
+pub struct ForkedAnvil {
+    child: Child,
+    port: u16,
+}
+
+impl ForkedAnvil {
+    const TESTNET_RPC: &'static str = "https://rpc.v4.testnet.pulsechain.com";
+
+    pub fn start() -> Option<Self> {
+        let port = free_port();
+        let child = Command::new("anvil")
+            .args([
+                "--fork-url",
+                Self::TESTNET_RPC,
+                "--chain-id",
+                "943",
+                "--port",
+                &port.to_string(),
+                "--hardfork",
+                "prague", // EIP-7702 support
+                "--silent",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("anvil must be on PATH (foundry)");
+        let anvil = Self { child, port };
+        // Bounded readiness probe: the fork must load the testnet head.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            match anvil.rpc("eth_chainId", json!([])) {
+                Ok(v) if v.as_str() == Some("0x3af") => return Some(anvil),
+                Ok(_) => {
+                    drop(anvil);
+                    panic!("forked anvil reported the wrong chain id");
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
+        drop(anvil);
+        None
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn rpc(&self, method: &str, params: Value) -> Result<Value, String> {
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        let out = Command::new("curl")
+            .args(["-s", "-X", "POST", "-H", "Content-Type: application/json"])
+            .arg("-d")
+            .arg(body.to_string())
+            .arg(self.url())
+            .output()
+            .expect("curl must be available");
+        let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        if let Some(err) = v.get("error") {
+            return Err(err.to_string());
+        }
+        Ok(v["result"].clone())
+    }
+
+    /// Native balance of `addr` in wei.
+    pub fn wei_balance(&self, addr: &str) -> u128 {
+        let v = self.rpc("eth_getBalance", json!([addr, "latest"])).unwrap();
+        u128::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+    }
+
+    /// The code at `addr` (`0x`-prefixed hex; "0x" for an EOA).
+    pub fn code(&self, addr: &str) -> String {
+        let v = self.rpc("eth_getCode", json!([addr, "latest"])).unwrap();
+        v.as_str().unwrap().to_string()
+    }
+}
+
+impl Drop for ForkedAnvil {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// A brand-new, uninitialized wallet in a temp vault (no mnemonic yet) — for
 /// onboarding flows that create the wallet themselves.
 pub fn fresh_wallet(dir: &Path) -> WalletState {
@@ -106,6 +196,12 @@ pub fn fresh_wallet(dir: &Path) -> WalletState {
 /// pointed at the local anvil RPC (chain id 943 matches the built-in
 /// pulsechain-testnet-v4 network, so signing/fee-estimation hit anvil).
 pub fn funded_wallet(dir: &Path, anvil: &Anvil) -> WalletState {
+    funded_wallet_at(dir, &anvil.url())
+}
+
+/// Same as [`funded_wallet`] but against an arbitrary RPC URL (e.g. a forked
+/// anvil carrying the Ambire implementation).
+pub fn funded_wallet_at(dir: &Path, rpc_url: &str) -> WalletState {
     let path = dir.join("wallet.json");
     let mut wallet = WalletState::load(path).unwrap();
     let mnemonic = validate_mnemonic(ANVIL_MNEMONIC).unwrap();
@@ -113,7 +209,7 @@ pub fn funded_wallet(dir: &Path, anvil: &Anvil) -> WalletState {
         .create(&SecretString::from(PASSWORD.to_string()), mnemonic)
         .unwrap();
     wallet.set_active_network("pulsechain-testnet-v4").unwrap();
-    wallet.set_rpc_override(anvil.url());
+    wallet.set_rpc_override(rpc_url);
     wallet
 }
 

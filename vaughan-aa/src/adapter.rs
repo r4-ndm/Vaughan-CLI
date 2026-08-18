@@ -11,19 +11,30 @@
 //! The relayer / ERC-4337-bundler routes are intentionally not implemented
 //! here — see TASKS.md (FR-3.3) and `docs/ambire-aa.md`.
 
-use alloy::consensus::SignableTransaction;
+use alloy::consensus::{SignableTransaction, TxEip7702};
 use alloy::eips::eip2718::Encodable2718;
-use alloy::primitives::Address;
+use alloy::eips::eip7702::Authorization;
+use alloy::primitives::{Address, B256, TxKind, U256};
+use alloy::providers::Provider;
+use alloy::rpc::types::eth::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;
+use alloy::sol_types::SolCall;
 
 use vaughan_core::chains::evm::EvmAdapter;
 use vaughan_core::chains::{ChainAdapter, ChainTransaction, EvmTransaction, FeeDetails, TxHash};
 use vaughan_core::error::WalletError;
 
+use crate::abi::{AmbireAccount, Transaction};
 use crate::build::{build_7702_transaction, sign_authorization};
 use crate::encode::encode_execute;
-use crate::scw::ScwTransaction;
+use crate::scw::{ScwTransaction, SignatureMode};
+use crate::sign::sign_scw_transaction;
+
+/// Conservative gas limit for the bootstrap `setAddrPrivilege` self-call.
+/// Pinned like [`DEFAULT_BATCH_GAS_LIMIT`]: unused gas is refunded, so
+/// over-estimating only wastes a fee buffer, never actual spend.
+const BOOTSTRAP_GAS_LIMIT: u64 = 250_000;
 
 /// Default gas limit for the 7702 execute call when the caller has no tighter
 /// estimate.
@@ -34,6 +45,13 @@ use crate::scw::ScwTransaction;
 /// only wastes a fee *buffer*, never actual spend; once the account is
 /// delegated, callers can pass a tighter limit.
 pub const DEFAULT_BATCH_GAS_LIMIT: u64 = 1_000_000;
+
+/// The deployed `AmbireAccount` implementation address — present on both
+/// PulseChain testnet (943) and mainnet (369) at the same address.
+pub const AMBIRE_IMPLEMENTATION: Address = Address::new([
+    0x2a, 0x2b, 0x85, 0xeb, 0x10, 0x54, 0xd6, 0xf0, 0xc6, 0xc2, 0xe3, 0x7d, 0xa0, 0x5e, 0xd3, 0xe5,
+    0xfe, 0xa6, 0x84, 0xef,
+]);
 
 /// Build the `ChainTransaction::Evm` mirroring the 7702 execute call, used to
 /// derive EIP-1559 fees through the adapter's existing heuristic.
@@ -69,9 +87,17 @@ pub async fn estimate_self_pay_fee(
     gas_limit: Option<u64>,
 ) -> Result<(u64, u128, u128), WalletError> {
     let gas_limit = gas_limit.unwrap_or(DEFAULT_BATCH_GAS_LIMIT);
-    let fee = adapter
-        .estimate_fee(&fee_mirror(tx, signature, gas_limit))
-        .await?;
+    estimate_call_fees(adapter, fee_mirror(tx, signature, gas_limit)).await
+}
+
+/// Run `adapter`'s EIP-1559 fee heuristic against a 7702 fee mirror and
+/// unwrap the EVM details. Shared by the batch path ([`estimate_self_pay_fee`])
+/// and the bootstrap path ([`bootstrap_delegation`]).
+async fn estimate_call_fees(
+    adapter: &dyn ChainAdapter,
+    mirror: ChainTransaction,
+) -> Result<(u64, u128, u128), WalletError> {
+    let fee = adapter.estimate_fee(&mirror).await?;
     let FeeDetails::Evm {
         gas_limit,
         max_fee_per_gas,
@@ -97,6 +123,146 @@ pub async fn estimate_self_pay_fee(
         None => 0,
     };
     Ok((gas_limit, max_fee, priority))
+}
+
+/// True when `account`'s code is an EIP-7702 delegation designator
+/// (`0xef0100 || implementation`), i.e. the account is currently delegated.
+pub async fn is_delegated(adapter: &EvmAdapter, account: Address) -> Result<bool, WalletError> {
+    let code = adapter
+        .provider()
+        .get_code_at(account)
+        .await
+        .map_err(|e| WalletError::RpcError(e.to_string()))?;
+    Ok(code.starts_with(&[0xef, 0x01, 0x00]))
+}
+
+/// The account's `AmbireAccount` nonce (replay protection), read via
+/// `eth_call` through the delegation.
+///
+/// Only meaningful once the account is delegated ([`is_delegated`]); an
+/// undelegated EOA has no code, so the call returns empty and this errors.
+pub async fn get_account_nonce(adapter: &EvmAdapter, account: Address) -> Result<u64, WalletError> {
+    let request = TransactionRequest {
+        to: Some(TxKind::Call(account)),
+        input: AmbireAccount::nonceCall {}.abi_encode().into(),
+        ..Default::default()
+    };
+    let result = adapter
+        .provider()
+        .call(request)
+        .await
+        .map_err(|e| WalletError::RpcError(e.to_string()))?;
+    let nonce = AmbireAccount::nonceCall::abi_decode_returns(&result)
+        .map_err(|e| WalletError::RpcError(e.to_string()))?;
+    u64::try_from(nonce).map_err(|_| WalletError::Other("account nonce overflow".to_string()))
+}
+
+/// Delegate `account` (the `signer`'s address) to `implementation` and grant
+/// the account key the execute privilege, all in one 7702 transaction.
+///
+/// A fresh EOA has no keys in `AmbireAccount` storage, so a direct `execute`
+/// would revert `INSUFFICIENT_PRIVILEGE`. This bootstrap self-calls
+/// `setAddrPrivilege(account, bytes32(1))` — inside the delegated call
+/// `msg.sender == address(this)`, which the contract requires. Harmless (but
+/// wasteful) if the account is already delegated; callers should check
+/// [`is_delegated`] first.
+pub async fn bootstrap_delegation(
+    adapter: &EvmAdapter,
+    signer: &PrivateKeySigner,
+    implementation: Address,
+) -> Result<TxHash, WalletError> {
+    let account = signer.address();
+    let nonce0 = adapter.get_pending_nonce(&account.to_string()).await?;
+    let calldata = AmbireAccount::setAddrPrivilegeCall {
+        addr: account,
+        r#priv: B256::from(U256::from(1u64)),
+    }
+    .abi_encode();
+
+    let auth = Authorization {
+        chain_id: U256::from(adapter.chain_id()),
+        address: implementation,
+        nonce: nonce0 + 1, // EIP-7702: checked after the sender nonce increments
+    };
+    let auth_hash = auth.signature_hash();
+    let signed_auth = auth.into_signed(
+        signer
+            .sign_hash_sync(&auth_hash)
+            .map_err(|e| WalletError::SigningFailed(e.to_string()))?,
+    );
+
+    let mirror = ChainTransaction::Evm(EvmTransaction {
+        from: account.to_string(),
+        to: account.to_string(),
+        value: "0".into(),
+        data: Some(format!("0x{}", hex::encode(&calldata))),
+        gas_limit: Some(BOOTSTRAP_GAS_LIMIT),
+        gas_price: None,
+        max_fee_per_gas: None,
+        max_priority_fee_per_gas: None,
+        nonce: None,
+        chain_id: adapter.chain_id(),
+    });
+    let (gas_limit, max_fee, priority) = estimate_call_fees(adapter, mirror).await?;
+
+    let tx = TxEip7702 {
+        chain_id: adapter.chain_id(),
+        nonce: nonce0,
+        gas_limit,
+        max_fee_per_gas: max_fee,
+        max_priority_fee_per_gas: priority,
+        to: account,
+        value: U256::ZERO,
+        access_list: Default::default(),
+        authorization_list: vec![signed_auth],
+        input: calldata.into(),
+    };
+    let envelope_sig = signer
+        .sign_hash_sync(&tx.signature_hash())
+        .map_err(|e| WalletError::SigningFailed(e.to_string()))?;
+    adapter.broadcast_raw(tx.into_signed(envelope_sig).encoded_2718()).await
+}
+
+/// Outcome of a [`submit_batch`] call.
+#[derive(Debug, Clone)]
+pub struct BatchSubmitResult {
+    /// The submitted batch transaction hash.
+    pub tx_hash: TxHash,
+    /// True when the account had to be delegated first (first AA transaction
+    /// from a fresh EOA).
+    pub bootstrapped: bool,
+}
+
+/// Sign and submit a batch through the 7702 self-pay path, delegating the
+/// account first if it isn't already — a one-shot "bootstrap + batch".
+///
+/// Reads the account's `AmbireAccount` nonce, signs the batch with the
+/// account key (raw-hash mode), and broadcasts via [`submit_self_pay`].
+pub async fn submit_batch(
+    adapter: &EvmAdapter,
+    signer: &PrivateKeySigner,
+    txns: Vec<Transaction>,
+    implementation: Address,
+) -> Result<BatchSubmitResult, WalletError> {
+    let account = signer.address();
+    let bootstrapped = !is_delegated(adapter, account).await?;
+    if bootstrapped {
+        bootstrap_delegation(adapter, signer, implementation).await?;
+    }
+    let nonce = get_account_nonce(adapter, account).await?;
+    let batch = ScwTransaction {
+        account,
+        chain_id: adapter.chain_id(),
+        nonce,
+        txns,
+    };
+    let signature = sign_scw_transaction(signer, &batch, SignatureMode::RawHash)?;
+    let tx_hash =
+        submit_self_pay(adapter, signer, &batch, &signature, implementation, None).await?;
+    Ok(BatchSubmitResult {
+        tx_hash,
+        bootstrapped,
+    })
 }
 
 /// Sign the EIP-7702 envelope that submits `tx`'s batch, returning the raw

@@ -22,5 +22,10 @@ alloy::sol! {
         function execute(Transaction[] calldata txns, bytes calldata signature) external;
         /// The account nonce (replay protection).
         function nonce() external view returns (uint256);
+        /// Grant/revoke a key's privilege. Only callable by the account
+        /// itself (`msg.sender == address(this)`), i.e. via a self-call in a
+        /// delegated transaction — used by the bootstrap flow to grant the
+        /// account EOA's own key the execute privilege.
+        function setAddrPrivilege(address addr, bytes32 priv) external;
     }
 }

@@ -13,7 +13,8 @@ use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    ApproveView, DashboardView, OnboardingView, ReceiveView, SendView, SettingsView, UnlockView,
+    AaSendView, ApproveView, DashboardView, OnboardingView, ReceiveView, SendView, SettingsView,
+    UnlockView,
 };
 
 /// The active screen.
@@ -23,6 +24,7 @@ pub enum Screen {
     Unlock,
     Dashboard,
     Send,
+    AaSend,
     Receive,
     Settings,
     Approve,
@@ -35,6 +37,7 @@ impl Screen {
             Self::Unlock => "Unlock",
             Self::Dashboard => "Dashboard",
             Self::Send => "Send",
+            Self::AaSend => "Batch Send",
             Self::Receive => "Receive",
             Self::Settings => "Settings",
             Self::Approve => "Approve",
@@ -63,6 +66,7 @@ pub enum View {
     Unlock(UnlockView),
     Dashboard(DashboardView),
     Send(SendView),
+    AaSend(AaSendView),
     Receive(ReceiveView),
     Settings(SettingsView),
     Approve(ApproveView),
@@ -75,6 +79,7 @@ impl View {
             Self::Unlock(_) => Screen::Unlock,
             Self::Dashboard(_) => Screen::Dashboard,
             Self::Send(_) => Screen::Send,
+            Self::AaSend(_) => Screen::AaSend,
             Self::Receive(_) => Screen::Receive,
             Self::Settings(_) => Screen::Settings,
             Self::Approve(_) => Screen::Approve,
@@ -87,6 +92,7 @@ impl View {
             Self::Unlock(v) => v.render(frame, area, wallet),
             Self::Dashboard(v) => v.render(frame, area, wallet),
             Self::Send(v) => v.render(frame, area, wallet),
+            Self::AaSend(v) => v.render(frame, area, wallet),
             Self::Receive(v) => v.render(frame, area, wallet),
             Self::Settings(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
@@ -105,6 +111,7 @@ impl View {
             Self::Unlock(v) => v.handle_key(key, wallet, handle, events),
             Self::Dashboard(v) => v.handle_key(key, wallet, handle, events),
             Self::Send(v) => v.handle_key(key, wallet, handle, events),
+            Self::AaSend(v) => v.handle_key(key, wallet, handle, events),
             Self::Receive(v) => v.handle_key(key, wallet, handle, events),
             Self::Settings(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
@@ -213,7 +220,8 @@ impl App {
             GlobalAction::CycleScreens => {
                 let next = match self.screen() {
                     Screen::Dashboard => Screen::Send,
-                    Screen::Send => Screen::Receive,
+                    Screen::Send => Screen::AaSend,
+                    Screen::AaSend => Screen::Receive,
                     Screen::Receive => Screen::Settings,
                     Screen::Settings => Screen::Dashboard,
                     other => other,
@@ -349,6 +357,7 @@ impl App {
                 View::Dashboard(DashboardView::with_balance(balance))
             }
             Screen::Send => View::Send(SendView::default()),
+            Screen::AaSend => View::AaSend(AaSendView::default()),
             Screen::Receive => View::Receive(ReceiveView),
             Screen::Settings => {
                 let active_id = self.wallet.networks().active_id().to_string();

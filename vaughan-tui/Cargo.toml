@@ -5,8 +5,10 @@ edition.workspace = true
 description = "ratatui terminal frontend for Vaughan"
 
 [dependencies]
+vaughan-aa = { path = "../vaughan-aa" }
 vaughan-core = { path = "../vaughan-core" }
 vaughan-provider = { path = "../vaughan-provider" }
+alloy = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
@@ -19,7 +21,6 @@ url = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-alloy = { workspace = true }
 tempfile = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }

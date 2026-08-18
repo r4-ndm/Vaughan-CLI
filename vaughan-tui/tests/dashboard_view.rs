@@ -57,7 +57,7 @@ fn dashboard_view_renders_address_network_and_balance() {
         "must render the live balance:\n{text}"
     );
     assert!(
-        text.contains("s send   v receive   n networks   r refresh   l lock"),
+        text.contains("s send   b batch   v receive   n networks   r refresh   l lock"),
         "must render the shortcut bar:\n{text}"
     );
 }
@@ -118,7 +118,7 @@ fn dashboard_view_lock_shortcut_locks_and_publishes_event() {
     );
 }
 
-/// `s` / `v` / `n` navigate to send, receive, and settings.
+/// `s` / `b` / `v` / `n` navigate to send, batch send, receive, and settings.
 #[test]
 fn dashboard_view_shortcuts_navigate() {
     let anvil = Anvil::start();
@@ -131,6 +131,10 @@ fn dashboard_view_shortcuts_navigate() {
     assert!(matches!(
         view.handle_key(key(KeyCode::Char('s')), &mut wallet, &handle, &events),
         KeyOutcome::Navigate(Screen::Send)
+    ));
+    assert!(matches!(
+        view.handle_key(key(KeyCode::Char('b')), &mut wallet, &handle, &events),
+        KeyOutcome::Navigate(Screen::AaSend)
     ));
     assert!(matches!(
         view.handle_key(key(KeyCode::Char('v')), &mut wallet, &handle, &events),

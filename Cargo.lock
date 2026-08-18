@@ -5156,6 +5156,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
+ "vaughan-aa",
  "vaughan-core",
  "vaughan-provider",
  "zeroize",

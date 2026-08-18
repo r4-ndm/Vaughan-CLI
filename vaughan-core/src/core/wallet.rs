@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
+use alloy::signers::local::PrivateKeySigner;
 use bip39::Mnemonic;
 use secrecy::SecretString;
 use zeroize::Zeroize;
@@ -106,6 +107,19 @@ impl WalletState {
     /// The active account address (requires an unlocked wallet).
     pub fn active_address(&self) -> Result<&str, WalletError> {
         Ok(self.require_unlocked()?.active_address())
+    }
+
+    /// The active account's signing key (requires an unlocked wallet).
+    ///
+    /// Exposed for flows that sign outside the built-in send path (e.g. the
+    /// AA batched-send view); the caller drops the key when done.
+    pub fn active_signer(&self) -> Result<PrivateKeySigner, WalletError> {
+        self.require_unlocked()?.active_signer()
+    }
+
+    /// The effective RPC URL of the active network (override if set).
+    pub fn active_rpc_url(&self) -> String {
+        self.effective_rpc()
     }
 
     // ---- onboarding ----
