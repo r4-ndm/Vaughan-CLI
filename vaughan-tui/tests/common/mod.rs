@@ -96,6 +96,12 @@ impl Drop for Anvil {
     }
 }
 
+/// A brand-new, uninitialized wallet in a temp vault (no mnemonic yet) — for
+/// onboarding flows that create the wallet themselves.
+pub fn fresh_wallet(dir: &Path) -> WalletState {
+    WalletState::load(dir.join("wallet.json")).unwrap()
+}
+
 /// A funded wallet (restored from the anvil mnemonic) in a temp vault,
 /// pointed at the local anvil RPC (chain id 943 matches the built-in
 /// pulsechain-testnet-v4 network, so signing/fee-estimation hit anvil).

@@ -161,6 +161,15 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Headless render helper (`render_frame`) moved to `tests/common/mod.rs`; all three view test binaries share it
 - [x] 162 tests green workspace-wide (incl. 25 anvil integration tests); no new clippy warnings
 
+### Onboarding + unlock views — TestBackend tests (`onboarding_view.rs`, `unlock_view.rs`, added 2026-08-18) — done
+
+- [x] Onboarding create flow: `c` generates and renders a 12-word mnemonic; password + confirmation create a persisted, unlocked wallet and navigate to the dashboard
+- [x] Onboarding failure paths: mismatched confirmation → "Passwords do not match." back to the password stage; weak password rejected by policy; invalid restore phrase stays on phrase entry — wallet never created
+- [x] Onboarding restore flow: valid phrase → password → confirmation creates the wallet; active address matches foundry's canonical derivation of the phrase
+- [x] Unlock: correct password unlocks, navigates to the dashboard, and fires `accountsChanged` with the live address; wrong password keeps the wallet locked, shows "wrong password", never navigates or fires the event
+- [x] `fresh_wallet` helper added to `tests/common/mod.rs` (onboarding creates its own wallet; no anvil needed — fully offline)
+- [x] 169 tests green workspace-wide (incl. 32 anvil/TestBackend integration tests); no new clippy warnings
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)
