@@ -77,11 +77,26 @@ impl SendView {
                 );
             }
             Stage::Confirm => {
-                let fee_total = self
-                    .fee
-                    .as_ref()
-                    .map(|f| f.total.clone())
-                    .unwrap_or_default();
+                let fee = self.fee.as_ref();
+                let fee_total = fee.map(|f| f.total.clone()).unwrap_or_default();
+                // EIP-1559 breakdown: max fee per gas (gwei) + gas limit.
+                let fee_detail = fee
+                    .and_then(|f| match &f.details {
+                        vaughan_core::chains::FeeDetails::Evm {
+                            gas_limit,
+                            max_fee_per_gas,
+                            ..
+                        } => Some((*gas_limit, max_fee_per_gas.as_deref())),
+                        _ => None,
+                    })
+                    .map(|(gas_limit, max_fee)| {
+                        let gwei = max_fee
+                            .and_then(|mf| mf.parse::<u128>().ok())
+                            .map(|wei| wei as f64 / 1e9)
+                            .map(|g| format!("{g:.2} gwei"))
+                            .unwrap_or_else(|| "—".to_string());
+                        format!("max {gwei}/gas · limit {gas_limit}")
+                    });
                 let text = vec![
                     Line::from(format!(
                         "Send {} {} to:",
@@ -95,6 +110,10 @@ impl SendView {
                     Line::from(""),
                     Line::from(format!("Network: {}{testnet}", net.name)),
                     Line::from(format!("Fee:      {fee_total}")),
+                    Line::from(format!(
+                        "          {}",
+                        fee_detail.as_deref().unwrap_or("—")
+                    )),
                     Line::from(""),
                     Line::from("Enter — broadcast   Esc — cancel"),
                 ];

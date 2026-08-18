@@ -161,3 +161,92 @@ async fn assets_detect_native_and_erc20_on_pulsechain_fork() {
     assert_eq!(decimals, 18, "unknown token defaults to 18 decimals");
     assert!(symbol.contains('…'), "unknown token shows a shortened address: {symbol}");
 }
+
+/// Same scenario, but with Multicall3 **absent** (its code wiped on the fork):
+/// `get_assets` must fall back to sequential `balanceOf` reads and still
+/// return the exact same asset set. This is the path a chain *without*
+/// Multicall3 takes, and it must not silently lose tokens.
+#[tokio::test]
+#[ignore = "requires anvil (foundry) + network fork of PulseChain mainnet"]
+async fn assets_detect_without_multicall3_sequential_fallback() {
+    let anvil = spawn_anvil();
+    let adapter = EvmAdapter::new(&anvil.url, 369, "PulseChain Mainnet", &[])
+        .await
+        .expect("adapter");
+
+    let signer: PrivateKeySigner = ANVIL_KEY.parse().expect("anvil key");
+    let me = signer.address();
+    let wp = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(signer))
+        .connect_http(anvil.url.parse().unwrap());
+
+    let mut ready = false;
+    for _ in 0..60 {
+        if wp.get_chain_id().await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(ready, "anvil did not come up on {}", anvil.url);
+
+    // ---- wipe Multicall3's code so the probe sees an empty address ----
+    wp.client()
+        .request::<_, ()>(
+            "anvil_setCode",
+            (vaughan_core::chains::evm::adapter::MULTICALL3, "0x"),
+        )
+        .await
+        .expect("anvil_setCode");
+
+    // ---- wrap 1 PLS → WPLS (same as the batch test) ----
+    let mainnet = tokens::pulsechain_mainnet_tokens();
+    let wpls: Address = mainnet
+        .iter()
+        .find(|t| t.symbol == "WPLS")
+        .expect("registry WPLS")
+        .address
+        .parse()
+        .unwrap();
+    let pending = wp
+        .send_transaction(
+            TransactionRequest::default()
+                .to(wpls)
+                .value(U256::from(10u128.pow(18)))
+                .input(vec![0xd0, 0xe3, 0x0d, 0xb0].into()),
+        )
+        .await
+        .expect("wrap broadcast");
+    let receipt = pending.get_receipt().await.expect("wrap receipt");
+    assert!(receipt.status(), "WPLS wrap reverted");
+
+    // ---- get_assets via the sequential fallback: same result set ----
+    let assets = adapter
+        .get_assets(&me.to_string())
+        .await
+        .expect("get_assets without Multicall3");
+
+    let native = assets
+        .iter()
+        .find(|b| b.token.contract_address.is_none())
+        .expect("native PLS balance present");
+    assert_eq!(native.token.symbol, "PLS");
+    assert_ne!(native.raw, "0", "dev account is funded on the fork");
+
+    let wpls_bal = assets
+        .iter()
+        .find(|b| b.token.symbol == "WPLS")
+        .expect("WPLS detected through the sequential fallback");
+    assert_eq!(wpls_bal.token.name, "Wrapped Pulse");
+    assert!(
+        wpls_bal.formatted.starts_with('1'),
+        "wrapped exactly 1 PLS, got {}",
+        wpls_bal.formatted
+    );
+
+    // Zero-balance curated tokens still excluded on this path.
+    assert!(
+        assets.iter().all(|b| b.token.symbol != "HEX"),
+        "zero-balance tokens must not appear in the asset list"
+    );
+}

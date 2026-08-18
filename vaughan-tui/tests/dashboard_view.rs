@@ -57,7 +57,7 @@ fn dashboard_view_renders_address_network_and_balance() {
         "must render the live balance:\n{text}"
     );
     assert!(
-        text.contains("s send   b batch   v receive   n networks   r refresh   l lock"),
+        text.contains("s send   b batch   v receive   n networks   a assets   r refresh   l lock"),
         "must render the shortcut bar:\n{text}"
     );
 }

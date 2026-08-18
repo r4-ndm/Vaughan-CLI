@@ -61,7 +61,6 @@ pub struct EvmAdapter {
     /// Network-specific EIP-1559 tip used by `estimate_fee`.
     priority_fee_wei: u64,
     balance_cache: moka::future::Cache<String, Balance>,
-    gas_price_cache: moka::future::Cache<u64, String>,
     nonce_cache: moka::future::Cache<String, u64>,
     /// ERC-20 metadata cache: token address → (symbol, name, decimals).
     token_meta_cache: moka::future::Cache<String, (String, String, u8)>,
@@ -100,9 +99,6 @@ impl EvmAdapter {
             priority_fee_wei,
             balance_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
-                .build(),
-            gas_price_cache: moka::future::Cache::builder()
-                .time_to_live(Duration::from_secs(15))
                 .build(),
             nonce_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(5))
@@ -196,25 +192,6 @@ impl EvmAdapter {
         }
     }
 
-    async fn get_gas_price_cached(&self) -> Result<String, WalletError> {
-        if let Some(cached) = self.gas_price_cache.get(&self.chain_id).await {
-            return Ok(cached);
-        }
-        let gas_price = self
-            .with_provider(|provider| async move {
-                provider
-                    .get_gas_price()
-                    .await
-                    .map_err(|e| WalletError::RpcError(e.to_string()))
-            })
-            .await?;
-        let gas_price = gas_price.to_string();
-        self.gas_price_cache
-            .insert(self.chain_id, gas_price.clone())
-            .await;
-        Ok(gas_price)
-    }
-
     /// EVM-specific: fetch the next transaction nonce for `address`.
     ///
     /// **Read/display paths only.** The value is cached for 5s, so it can go
@@ -302,8 +279,15 @@ impl EvmAdapter {
                 }
             })
             .await?;
-        let raw_balance = IERC20Metadata::balanceOfCall::abi_decode_returns(&raw)
-            .map_err(|e| WalletError::Other(format!("bad balanceOf return: {e}")))?;
+        // An address with no code (token not deployed on this chain) returns
+        // `0x` as a *successful* call — treat that as a zero balance rather
+        // than failing the whole read.
+        let raw_balance = if raw.is_empty() {
+            U256::ZERO
+        } else {
+            IERC20Metadata::balanceOfCall::abi_decode_returns(&raw)
+                .map_err(|e| WalletError::Other(format!("bad balanceOf return: {e}")))?
+        };
         let (symbol, name, decimals) = self.get_token_metadata(token_address).await?;
         let formatted =
             format_units(raw_balance, decimals).unwrap_or_else(|_| "0.0".to_string());
@@ -741,30 +725,45 @@ impl ChainAdapter for EvmAdapter {
             .await?
         };
 
-        // EIP-1559 heuristic with the network's default tip (audit 4.2).
+        // EIP-1559 fee market: prefer alloy's feeHistory-percentile estimate
+        // (the ethers-rs/MetaMask algorithm, EIP-1559), falling back to the
+        // base-fee × 2 + tip heuristic (audit 4.2) when feeHistory is
+        // unavailable, and to legacy gas price when there is no base fee.
         let priority_fee = U256::from(self.priority_fee_wei);
-        let latest = self
+        let (max_fee_per_gas, max_priority_fee_per_gas) = self
             .with_provider(|provider| async move {
-                provider
-                    .get_block_by_number(BlockNumberOrTag::Latest)
-                    .await
-                    .map_err(|e| WalletError::RpcError(e.to_string()))
+                match provider.estimate_eip1559_fees().await {
+                    Ok(est) => Ok((
+                        Some(est.max_fee_per_gas.to_string()),
+                        Some(est.max_priority_fee_per_gas.to_string()),
+                    )),
+                    Err(_) => {
+                        // feeHistory unavailable (e.g. legacy-only RPC):
+                        // fall back to the base-fee heuristic.
+                        let latest = provider
+                            .get_block_by_number(BlockNumberOrTag::Latest)
+                            .await
+                            .map_err(|e| WalletError::RpcError(e.to_string()))?;
+                        match latest.and_then(|b| b.header.base_fee_per_gas) {
+                            Some(base_fee) => {
+                                let base_fee = U256::from(base_fee);
+                                let max_fee = base_fee
+                                    .saturating_mul(U256::from(2u64))
+                                    .saturating_add(priority_fee);
+                                Ok((Some(max_fee.to_string()), Some(priority_fee.to_string())))
+                            }
+                            None => {
+                                let gas_price = provider
+                                    .get_gas_price()
+                                    .await
+                                    .map_err(|e| WalletError::RpcError(e.to_string()))?;
+                                Ok((Some(gas_price.to_string()), None))
+                            }
+                        }
+                    }
+                }
             })
             .await?;
-        let (max_fee_per_gas, max_priority_fee_per_gas) =
-            match latest.and_then(|b| b.header.base_fee_per_gas) {
-                Some(base_fee) => {
-                    let base_fee = U256::from(base_fee);
-                    let max_fee = base_fee
-                        .saturating_mul(U256::from(2u64))
-                        .saturating_add(priority_fee);
-                    (Some(max_fee.to_string()), Some(priority_fee.to_string()))
-                }
-                None => {
-                    let gas_price = self.get_gas_price_cached().await?;
-                    (Some(gas_price), None)
-                }
-            };
 
         let (symbol, _name, decimals) = self.native_asset();
         let per_gas = U256::from_str(max_fee_per_gas.as_deref().unwrap_or("0")).unwrap_or_default();

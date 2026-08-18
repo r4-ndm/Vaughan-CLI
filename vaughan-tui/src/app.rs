@@ -13,8 +13,8 @@ use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, ApproveView, DashboardView, OnboardingView, ReceiveView, SendView, SettingsView,
-    UnlockView,
+    AaSendView, ApproveView, AssetsView, DashboardView, OnboardingView, ReceiveView, SendView,
+    SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -27,6 +27,7 @@ pub enum Screen {
     AaSend,
     Receive,
     Settings,
+    Assets,
     Approve,
 }
 
@@ -40,6 +41,7 @@ impl Screen {
             Self::AaSend => "Batch Send",
             Self::Receive => "Receive",
             Self::Settings => "Settings",
+            Self::Assets => "Assets",
             Self::Approve => "Approve",
         }
     }
@@ -69,6 +71,7 @@ pub enum View {
     AaSend(AaSendView),
     Receive(ReceiveView),
     Settings(SettingsView),
+    Assets(AssetsView),
     Approve(ApproveView),
 }
 
@@ -82,6 +85,7 @@ impl View {
             Self::AaSend(_) => Screen::AaSend,
             Self::Receive(_) => Screen::Receive,
             Self::Settings(_) => Screen::Settings,
+            Self::Assets(_) => Screen::Assets,
             Self::Approve(_) => Screen::Approve,
         }
     }
@@ -95,6 +99,7 @@ impl View {
             Self::AaSend(v) => v.render(frame, area, wallet),
             Self::Receive(v) => v.render(frame, area, wallet),
             Self::Settings(v) => v.render(frame, area, wallet),
+            Self::Assets(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
     }
@@ -114,6 +119,7 @@ impl View {
             Self::AaSend(v) => v.handle_key(key, wallet, handle, events),
             Self::Receive(v) => v.handle_key(key, wallet, handle, events),
             Self::Settings(v) => v.handle_key(key, wallet, handle, events),
+            Self::Assets(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
     }
@@ -223,7 +229,8 @@ impl App {
                     Screen::Send => Screen::AaSend,
                     Screen::AaSend => Screen::Receive,
                     Screen::Receive => Screen::Settings,
-                    Screen::Settings => Screen::Dashboard,
+                    Screen::Settings => Screen::Assets,
+                    Screen::Assets => Screen::Dashboard,
                     other => other,
                 };
                 if next != self.screen() {
@@ -369,6 +376,10 @@ impl App {
                     .position(|n| n.id == active_id)
                     .unwrap_or(0);
                 View::Settings(SettingsView::new(selected))
+            }
+            Screen::Assets => {
+                let assets = self.handle.block_on(self.wallet.assets());
+                View::Assets(AssetsView::with_assets(assets))
             }
             // Approve is entered directly from `poll_provider` (it needs the
             // pending request + reply channel), never via navigation; this arm

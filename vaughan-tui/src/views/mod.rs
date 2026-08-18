@@ -2,6 +2,7 @@
 
 pub mod aa_send;
 pub mod approve;
+pub mod assets;
 pub mod dashboard;
 pub mod onboarding;
 pub mod receive;
@@ -11,6 +12,7 @@ pub mod unlock;
 
 pub use aa_send::AaSendView;
 pub use approve::ApproveView;
+pub use assets::AssetsView;
 pub use dashboard::DashboardView;
 pub use onboarding::OnboardingView;
 pub use receive::ReceiveView;
