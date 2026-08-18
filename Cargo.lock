@@ -5088,6 +5088,7 @@ dependencies = [
  "hex",
  "rpassword",
  "secrecy",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

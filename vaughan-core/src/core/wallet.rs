@@ -36,6 +36,9 @@ use crate::security::hd_wallet::validate_mnemonic;
 pub struct WalletState {
     state: StateManager,
     networks: NetworkService,
+    /// Optional RPC override applied to the active network (CLI `--rpc-url`,
+    /// testnet/dev nodes). Never persisted.
+    rpc_override: Option<String>,
     persisted: Option<PersistedState>,
     accounts: Option<AccountManager>,
 }
@@ -50,6 +53,7 @@ impl WalletState {
                 return Ok(Self {
                     state,
                     networks: NetworkService::default(),
+                    rpc_override: None,
                     persisted: None,
                     accounts: None,
                 });
@@ -60,6 +64,7 @@ impl WalletState {
         Ok(Self {
             state,
             networks,
+            rpc_override: None,
             persisted: Some(persisted),
             accounts: None,
         })
@@ -73,6 +78,19 @@ impl WalletState {
     /// The network service (listing + active selection).
     pub fn networks(&self) -> &NetworkService {
         &self.networks
+    }
+
+    /// Override the RPC endpoint used for the active network (not persisted;
+    /// for `--rpc-url`, dev nodes, or a dedicated provider).
+    pub fn set_rpc_override(&mut self, url: impl Into<String>) {
+        self.rpc_override = Some(url.into());
+    }
+
+    /// The effective RPC url for the active network (override wins).
+    fn effective_rpc(&self) -> String {
+        self.rpc_override
+            .clone()
+            .unwrap_or_else(|| self.networks.active().rpc_url.clone())
     }
 
     /// True once a vault exists on disk.
@@ -176,7 +194,7 @@ impl WalletState {
     pub async fn balance(&self) -> Result<Balance, WalletError> {
         let (net, address) = self.active_context()?;
         let adapter = EvmAdapter::new(
-            &net.rpc_url,
+            &self.effective_rpc(),
             net.chain_id,
             &net.name,
             &net.fallback_rpc_urls,
@@ -189,7 +207,7 @@ impl WalletState {
     pub async fn estimate_fee(&self, to: &str, value_wei: &str) -> Result<Fee, WalletError> {
         let (net, address) = self.active_context()?;
         let adapter = EvmAdapter::new(
-            &net.rpc_url,
+            &self.effective_rpc(),
             net.chain_id,
             &net.name,
             &net.fallback_rpc_urls,
@@ -243,7 +261,7 @@ impl WalletState {
         self.require_unlocked()?;
         let net = self.networks.active();
         let adapter = EvmAdapter::new(
-            &net.rpc_url,
+            &self.effective_rpc(),
             net.chain_id,
             &net.name,
             &net.fallback_rpc_urls,
@@ -276,7 +294,7 @@ impl WalletState {
         let net = self.networks.active();
         let signer = accounts.active_signer()?;
         let adapter = EvmAdapter::with_signer(
-            &net.rpc_url,
+            &self.effective_rpc(),
             net.chain_id,
             &net.name,
             signer,

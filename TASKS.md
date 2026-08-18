@@ -104,6 +104,19 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] ⚠️ Fixed HTTPS RPC: added `reqwest-default-tls` to workspace alloy (hyper transport was HTTP-only; balance/send failed on all HTTPS RPCs)
 - [x] 137 tests green workspace-wide; clippy clean; verified live: create → balance on mainnet (PLS) + testnet (tPLS)
 
+### Bomb-proofing — Anvil integration tests (`vaughan-cli/tests/deploy.rs`, added 2026-08-18) — done
+
+> Each test spawns its own `anvil --chain-id 943` (matches the built-in testnet network) and exercises the real `vaughan` binary. Run: `cargo test -p vaughan-cli --test deploy`.
+
+- [x] `--rpc-url` override on `send`/`balance` (+ `WalletState::set_rpc_override`, never persisted) — points any command at a dev node
+- [x] ⚠️ Core fix: adapter now emits `TxKind::Create` when `to` is the zero address and `--data` is non-empty — **contract creation was previously impossible** (always `TxKind::Call`)
+- [x] Test: deploy contract, read `contractAddress` from the receipt, assert deployed code matches
+- [x] Test: native transfer moves the exact wei to the recipient
+- [x] Test: balance reports the funded account (anvil dev mnemonic == vault derivation, `m/44'/60'/0'/0`)
+- [x] Test: insufficient funds fails with a clear error
+- [x] Test: wrong password fails with a clear error
+- [x] 142 tests green workspace-wide (incl. 5 anvil integration tests); clippy clean
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)

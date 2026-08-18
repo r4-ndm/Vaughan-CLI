@@ -312,9 +312,12 @@ impl EvmAdapter {
         let value = U256::from_str(&evm_tx.value).map_err(|_| {
             WalletError::InvalidAmount(format!("Invalid wei value: {}", evm_tx.value))
         })?;
+        // Zero `to` + calldata = contract creation (TxKind::Create). A plain
+        // value transfer to the zero address is a burn, not a create.
+        let is_create = to.is_zero() && evm_tx.data.as_deref().is_some_and(|d| !d.trim_start_matches("0x").is_empty());
         let mut req = TransactionRequest {
             from: Some(from),
-            to: Some(TxKind::Call(to)),
+            to: Some(if is_create { TxKind::Create } else { TxKind::Call(to) }),
             value: Some(value),
             chain_id: Some(evm_tx.chain_id),
             nonce: evm_tx.nonce,
@@ -444,9 +447,10 @@ impl ChainAdapter for EvmAdapter {
         let value = U256::from_str(&evm_tx.value).map_err(|_| {
             WalletError::InvalidAmount(format!("Invalid wei value: {}", evm_tx.value))
         })?;
+        let is_create = to.is_zero() && evm_tx.data.as_deref().is_some_and(|d| !d.trim_start_matches("0x").is_empty());
         let mut req = TransactionRequest {
             from: Some(from),
-            to: Some(TxKind::Call(to)),
+            to: Some(if is_create { TxKind::Create } else { TxKind::Call(to) }),
             value: Some(value),
             ..Default::default()
         };

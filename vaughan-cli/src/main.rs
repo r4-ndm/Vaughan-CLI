@@ -31,8 +31,9 @@ enum Command {
     /// Prints the tx hash. This is the deploy path: pass a contract's
     /// creation bytecode or a call's calldata as `--data`.
     Send {
-        /// Destination address (contract or EOA).
-        to: String,
+        /// Destination address (contract or EOA). Omit for contract creation
+        /// (creation bytecode in `--data`).
+        to: Option<String>,
         /// Calldata hex (`0x...`); omit for a plain value transfer.
         #[arg(long)]
         data: Option<String>,
@@ -42,6 +43,9 @@ enum Command {
         /// Network id (built-in: pulsechain, pulsechain-testnet-v4).
         #[arg(long)]
         network: Option<String>,
+        /// RPC url override (dev node, dedicated provider).
+        #[arg(long)]
+        rpc_url: Option<String>,
         /// Env var holding the wallet password (non-interactive).
         #[arg(long)]
         password_env: Option<String>,
@@ -51,6 +55,9 @@ enum Command {
         /// Network id override.
         #[arg(long)]
         network: Option<String>,
+        /// RPC url override (dev node, dedicated provider).
+        #[arg(long)]
+        rpc_url: Option<String>,
         /// Env var holding the wallet password (non-interactive).
         #[arg(long)]
         password_env: Option<String>,
@@ -122,10 +129,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("wallet restored at {}", wallet.path().display());
             println!("address: {}", wallet.active_address()?);
         }
-        Command::Balance { network, password_env } => {
+        Command::Balance {
+            network,
+            rpc_url,
+            password_env,
+        } => {
             unlock(&mut wallet, password_env.as_deref())?;
             if let Some(id) = network {
                 wallet.set_active_network(&id)?;
+            }
+            if let Some(url) = rpc_url {
+                wallet.set_rpc_override(&url);
             }
             let balance = wallet.balance().await?;
             println!(
@@ -140,17 +154,33 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             data,
             value,
             network,
+            rpc_url,
             password_env,
         } => {
             unlock(&mut wallet, password_env.as_deref())?;
             if let Some(id) = network {
                 wallet.set_active_network(&id)?;
             }
+            if let Some(url) = rpc_url {
+                wallet.set_rpc_override(&url);
+            }
+            let data = data.as_deref().unwrap_or("");
+            let to = match (to, data.is_empty()) {
+                (Some(to), _) => to,
+                (None, false) => {
+                    // Contract creation: no recipient; the adapter fills the
+                    // create address from the signed tx.
+                    "0x0000000000000000000000000000000000000000".to_string()
+                }
+                (None, true) => {
+                    anyhow::bail!("a recipient `TO` is required when `--data` is empty")
+                }
+            };
             let net = wallet.networks().active();
             let tx = TransactionService::new().build_contract_call(
                 wallet.active_address()?,
                 to,
-                data.as_deref().unwrap_or(""),
+                data,
                 value,
                 net.chain_id,
             )?;
