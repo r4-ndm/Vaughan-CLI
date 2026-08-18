@@ -154,6 +154,13 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Shared anvil/`funded_wallet` helpers extracted to `tests/common/mod.rs` (both test binaries consume it)
 - [x] 154 tests green workspace-wide (incl. 17 anvil integration tests); no new clippy warnings
 
+### Receive + settings views — anvil/TestBackend tests (`receive_view.rs`, `settings_view.rs`, added 2026-08-18) — done
+
+- [x] Receive: renders the active address + network; locked wallet shows `(locked)` (no address leak); live network switch reflected in the render; Esc → dashboard
+- [x] Settings: lists all built-in networks with chain ids and marks the active one with `*`; Enter switches (wallet state + marker move + `Switched to …` status); the `chainChanged` event fires with the new chain id; arrow keys move the highlight; Esc → dashboard
+- [x] Headless render helper (`render_frame`) moved to `tests/common/mod.rs`; all three view test binaries share it
+- [x] 162 tests green workspace-wide (incl. 25 anvil integration tests); no new clippy warnings
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)

@@ -16,10 +16,8 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{anvil_dev_address, funded_wallet, Anvil};
+use common::{anvil_dev_address, funded_wallet, render_frame, Anvil};
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::backend::TestBackend;
-use ratatui::Terminal;
 use serde_json::json;
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
@@ -43,15 +41,8 @@ fn type_text(view: &mut SendView, text: &str, wallet: &WalletState, handle: &Han
 }
 
 /// Render the view into a headless buffer and return its full text.
-fn render(view: &SendView, terminal: &mut Terminal<TestBackend>, wallet: &WalletState) -> String {
-    terminal.draw(|f| view.render(f, f.area(), wallet)).unwrap();
-    let buf = terminal.backend().buffer();
-    let width = buf.area().width as usize;
-    buf.content()
-        .chunks(width)
-        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-        .collect::<Vec<_>>()
-        .join("\n")
+fn render(view: &SendView, wallet: &WalletState) -> String {
+    render_frame(100, 30, |f| view.render(f, f.area(), wallet))
 }
 
 /// Extract the first `0x` + 64-hex transaction hash in `text`.
@@ -102,7 +93,6 @@ fn send_view_broadcasts_and_shows_receipt() {
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
     let value_wei = 10u128.pow(18); // 1 tPLS
 
@@ -113,7 +103,7 @@ fn send_view_broadcasts_and_shows_receipt() {
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
 
     // Confirm screen: fee shown, recipient shown, broadcast hint.
-    let text = render(&view, &mut terminal, &wallet);
+    let text = render(&view, &wallet);
     assert!(text.contains("broadcast"), "confirm stage must offer broadcast:\n{text}");
     assert!(text.contains("Fee:"), "confirm stage must show the fee:\n{text}");
     assert!(
@@ -126,7 +116,7 @@ fn send_view_broadcasts_and_shows_receipt() {
 
     // Enter → broadcast → done stage with the tx hash.
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
-    let text = render(&view, &mut terminal, &wallet);
+    let text = render(&view, &wallet);
     assert!(
         text.contains("Transaction broadcast"),
         "done stage must confirm the broadcast:\n{text}"
@@ -181,12 +171,11 @@ fn send_view_insufficient_funds_fails_cleanly() {
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
     // 1,000,000 tPLS — anvil dev accounts only hold 10,000.
     drive_send(&mut view, &recipient, "1000000", &wallet, &handle, &events);
 
-    let text = render(&view, &mut terminal, &wallet);
+    let text = render(&view, &wallet);
     assert!(
         !text.contains("Transaction broadcast"),
         "insufficient funds must not broadcast:\n{text}"
@@ -215,11 +204,10 @@ fn send_view_invalid_amount_stays_on_input() {
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
     drive_send(&mut view, &recipient, "abc", &wallet, &handle, &events);
 
-    let text = render(&view, &mut terminal, &wallet);
+    let text = render(&view, &wallet);
     assert!(
         !text.contains("broadcast"),
         "invalid amount must not reach confirm:\n{text}"
@@ -245,19 +233,18 @@ fn send_view_esc_cancels_confirm() {
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
     // Reach the confirm stage.
     type_text(&mut view, &recipient, &wallet, &handle, &events);
     view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
     type_text(&mut view, "0.5", &wallet, &handle, &events);
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
-    let text = render(&view, &mut terminal, &wallet);
+    let text = render(&view, &wallet);
     assert!(text.contains("broadcast"), "must reach confirm first:\n{text}");
 
     // Esc cancels: back to the form, nothing broadcast.
     view.handle_key(key(KeyCode::Esc), &wallet, &handle, &events);
-    let text = render(&view, &mut terminal, &wallet);
+    let text = render(&view, &wallet);
     assert!(
         !text.contains("broadcast"),
         "Esc must leave the confirm stage:\n{text}"

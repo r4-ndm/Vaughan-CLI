@@ -13,6 +13,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use ratatui::{backend::TestBackend, Frame, Terminal};
 use secrecy::SecretString;
 use serde_json::{json, Value};
 use vaughan_core::core::WalletState;
@@ -118,4 +119,20 @@ pub fn anvil_dev_address(index: u32) -> String {
         .output()
         .expect("cast must be available");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Render a view into a headless ratatui buffer and return its full text.
+///
+/// The closure receives a `Frame` covering the whole `width`×`height` buffer,
+/// so a view's `render(frame, f.area(), …)` can be driven without a terminal.
+pub fn render_frame(width: u16, height: u16, draw: impl FnOnce(&mut Frame)) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(draw).unwrap();
+    let buf = terminal.backend().buffer();
+    let w = buf.area().width as usize;
+    buf.content()
+        .chunks(w)
+        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
