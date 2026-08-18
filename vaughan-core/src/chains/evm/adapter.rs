@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::eips::eip2718::Encodable2718;
-use alloy::network::{Ethereum, EthereumWallet, TransactionBuilder};
+use alloy::network::{Ethereum, EthereumWallet, NetworkTransactionBuilder};
 use alloy::primitives::{utils::format_units, TxKind, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::client::RpcClient;

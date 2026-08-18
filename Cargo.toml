@@ -16,7 +16,7 @@ repository = "https://github.com/r4-ndm/vaughan-cli"
 
 [workspace.dependencies]
 # Chain / Ethereum. Single Alloy version for the whole workspace.
-alloy = { version = "1.7", default-features = false, features = [
+alloy = { version = "2", default-features = false, features = [
     "std",
     "network",
     "providers",
