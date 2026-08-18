@@ -6,11 +6,14 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Handle;
+use tokio::sync::{mpsc, oneshot};
 use vaughan_core::core::{StateManager, WalletState};
 use vaughan_core::error::WalletError;
+use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
+use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    DashboardView, OnboardingView, ReceiveView, SendView, SettingsView, UnlockView,
+    ApproveView, DashboardView, OnboardingView, ReceiveView, SendView, SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -22,6 +25,7 @@ pub enum Screen {
     Send,
     Receive,
     Settings,
+    Approve,
 }
 
 impl Screen {
@@ -33,8 +37,24 @@ impl Screen {
             Self::Send => "Send",
             Self::Receive => "Receive",
             Self::Settings => "Settings",
+            Self::Approve => "Approve",
         }
     }
+}
+
+/// How the active view handled a key.
+///
+/// The app uses this to decide whether global shortcuts apply: a `Consumed`
+/// key (e.g. `'q'` or `Tab` typed into a text field) must never trigger a
+/// global action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyOutcome {
+    /// The view consumed the key; the app must not apply global shortcuts.
+    Consumed,
+    /// The view did not use the key; the app may apply global shortcuts.
+    NotHandled,
+    /// The view wants to navigate to a new screen.
+    Navigate(Screen),
 }
 
 /// The active view (screen + its state).
@@ -45,6 +65,7 @@ pub enum View {
     Send(SendView),
     Receive(ReceiveView),
     Settings(SettingsView),
+    Approve(ApproveView),
 }
 
 impl View {
@@ -56,6 +77,7 @@ impl View {
             Self::Send(_) => Screen::Send,
             Self::Receive(_) => Screen::Receive,
             Self::Settings(_) => Screen::Settings,
+            Self::Approve(_) => Screen::Approve,
         }
     }
 
@@ -67,6 +89,7 @@ impl View {
             Self::Send(v) => v.render(frame, area, wallet),
             Self::Receive(v) => v.render(frame, area, wallet),
             Self::Settings(v) => v.render(frame, area, wallet),
+            Self::Approve(v) => v.render(frame, area, wallet),
         }
     }
 
@@ -75,16 +98,24 @@ impl View {
         key: KeyEvent,
         wallet: &mut WalletState,
         handle: &Handle,
-    ) -> Option<Screen> {
+        events: &EventBus,
+    ) -> KeyOutcome {
         match self {
-            Self::Onboarding(v) => v.handle_key(key, wallet, handle),
-            Self::Unlock(v) => v.handle_key(key, wallet, handle),
-            Self::Dashboard(v) => v.handle_key(key, wallet, handle),
-            Self::Send(v) => v.handle_key(key, wallet, handle),
-            Self::Receive(v) => v.handle_key(key, wallet, handle),
-            Self::Settings(v) => v.handle_key(key, wallet, handle),
+            Self::Onboarding(v) => v.handle_key(key, wallet, handle, events),
+            Self::Unlock(v) => v.handle_key(key, wallet, handle, events),
+            Self::Dashboard(v) => v.handle_key(key, wallet, handle, events),
+            Self::Send(v) => v.handle_key(key, wallet, handle, events),
+            Self::Receive(v) => v.handle_key(key, wallet, handle, events),
+            Self::Settings(v) => v.handle_key(key, wallet, handle, events),
+            Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
     }
+}
+
+/// A sign/send request waiting on the user's approve/deny decision.
+struct PendingApproval {
+    kind: ApprovalKind,
+    reply: oneshot::Sender<Result<String, ProviderError>>,
 }
 
 /// Root application state.
@@ -93,6 +124,14 @@ pub struct App {
     handle: Handle,
     view: View,
     quitting: bool,
+    /// Provider events published to connected dApps (chain/account changes).
+    events: EventBus,
+    /// Requests forwarded from the provider server; drained on the UI thread.
+    host_rx: mpsc::UnboundedReceiver<HostRequest>,
+    /// The approval currently on screen, if any.
+    pending_approval: Option<PendingApproval>,
+    /// Screen to return to after the pending approval resolves.
+    approve_return: Screen,
 }
 
 impl App {
@@ -107,11 +146,18 @@ impl App {
         } else {
             Screen::Dashboard
         };
+        let events = EventBus::new();
+        let (host_tx, host_rx) = mpsc::unbounded_channel();
+        provider::spawn_provider_server(&handle, host_tx, events.clone());
         let mut app = Self {
             wallet,
             handle,
             view: View::Onboarding(OnboardingView::default()),
             quitting: false,
+            events,
+            host_rx,
+            pending_approval: None,
+            approve_return: Screen::Dashboard,
         };
         app.navigate(screen);
         Ok(app)
@@ -132,6 +178,9 @@ impl App {
     /// Run the terminal event loop until the user quits.
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.quitting {
+            // Service provider requests first so an incoming approval prompt
+            // is on screen before the next draw.
+            self.poll_provider();
             terminal.draw(|frame| crate::views::render(frame, self))?;
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
@@ -145,36 +194,134 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        // Global quit keys.
-        let quit = match key.code {
-            KeyCode::Char('q') => true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
-            _ => false,
-        };
-        if quit {
+        // The approval prompt owns its own key handling (approve/deny) and its
+        // reply channel, so global shortcuts don't apply while it is shown.
+        if self.screen() == Screen::Approve {
+            self.handle_approval_key(key);
+            return;
+        }
+
+        let outcome = self
+            .view
+            .handle_key(key, &mut self.wallet, &self.handle, &self.events);
+
+        match global_action(key, outcome) {
+            GlobalAction::Quit => {
+                self.quitting = true;
+                return;
+            }
+            GlobalAction::CycleScreens => {
+                let next = match self.screen() {
+                    Screen::Dashboard => Screen::Send,
+                    Screen::Send => Screen::Receive,
+                    Screen::Receive => Screen::Settings,
+                    Screen::Settings => Screen::Dashboard,
+                    other => other,
+                };
+                if next != self.screen() {
+                    self.navigate(next);
+                }
+                return;
+            }
+            GlobalAction::None => {}
+        }
+
+        if let KeyOutcome::Navigate(screen) = outcome {
+            self.navigate(screen);
+        }
+    }
+
+    /// Drain the provider request channel, answering read queries inline and
+    /// surfacing sign/send requests as an approval prompt.
+    fn poll_provider(&mut self) {
+        while let Ok(request) = self.host_rx.try_recv() {
+            match request {
+                HostRequest::Accounts { reply } | HostRequest::RequestAccounts { reply } => {
+                    let _ = reply.send(Ok(self.visible_accounts()));
+                }
+                HostRequest::ChainId { reply } => {
+                    let id = self.wallet.networks().active().chain_id;
+                    let _ = reply.send(Ok(format!("0x{id:x}")));
+                }
+                HostRequest::SwitchChain { chain_id, reply } => {
+                    let _ = reply.send(self.switch_chain(&chain_id));
+                }
+                HostRequest::Approval {
+                    kind,
+                    origin,
+                    reply,
+                } => {
+                    self.approve_return = self.screen();
+                    let (title, details) = provider::describe_approval(&kind, &self.wallet);
+                    self.view = View::Approve(ApproveView::new(title, origin, details));
+                    self.pending_approval = Some(PendingApproval { kind: *kind, reply });
+                    // One approval on screen at a time; remaining queued
+                    // requests are served once this one resolves.
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The account list visible to dApps: the active account, or `[]` when the
+    /// wallet is locked/uninitialized.
+    fn visible_accounts(&self) -> Vec<String> {
+        if !self.wallet.is_unlocked() {
+            return Vec::new();
+        }
+        self.wallet
+            .active_address()
+            .map(|a| vec![a.to_string()])
+            .unwrap_or_default()
+    }
+
+    /// `wallet_switchEthereumChain`: switch to a built-in network by chain id.
+    fn switch_chain(&mut self, chain_id: &str) -> Result<(), ProviderError> {
+        use vaughan_core::chains::evm::networks::get_network_by_chain_id;
+        let id: u64 = chain_id
+            .parse()
+            .map_err(|_| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
+        let net = get_network_by_chain_id(id)
+            .ok_or_else(|| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
+        self.wallet
+            .set_active_network(&net.id)
+            .map_err(|e| ProviderError::Internal(e.user_message()))?;
+        self.events
+            .publish(ProviderEvent::ChainChanged(format!("0x{id:x}")));
+        Ok(())
+    }
+
+    /// Resolve the on-screen approval: deny on `n`/Esc, approve on `y`/Enter.
+    /// Ctrl+C/Ctrl+Q still quit; dropping `pending_approval`'s reply channel
+    /// makes the waiting handler future observe a closed channel.
+    fn handle_approval_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
             self.quitting = true;
             return;
         }
-
-        // Global Tab navigation (cycles the unlocked screens).
-        if key.code == KeyCode::Tab {
-            let next = match self.screen() {
-                Screen::Dashboard => Screen::Send,
-                Screen::Send => Screen::Receive,
-                Screen::Receive => Screen::Settings,
-                Screen::Settings => Screen::Dashboard,
-                other => other,
-            };
-            if next != self.screen() {
-                self.navigate(next);
-            }
+        let approve = matches!(
+            key.code,
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+        );
+        let deny = matches!(
+            key.code,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc
+        );
+        if !approve && !deny {
             return;
         }
-
-        let handle = self.handle.clone();
-        if let Some(screen) = self.view.handle_key(key, &mut self.wallet, &handle) {
-            self.navigate(screen);
-        }
+        let Some(pending) = self.pending_approval.take() else {
+            return;
+        };
+        let result = if deny {
+            Err(ProviderError::UserRejected)
+        } else {
+            provider::execute_approval(&pending.kind, &self.wallet, &self.handle)
+        };
+        let _ = pending.reply.send(result);
+        let back = self.approve_return;
+        self.navigate(back);
     }
 
     /// Build the default view for `screen` (refreshing balance on Dashboard).
@@ -199,7 +346,129 @@ impl App {
                     .unwrap_or(0);
                 View::Settings(SettingsView::new(selected))
             }
+            // Approve is entered directly from `poll_provider` (it needs the
+            // pending request + reply channel), never via navigation; this arm
+            // is only here to keep the match exhaustive.
+            Screen::Approve => View::Approve(ApproveView::new(
+                "Approve request".to_string(),
+                None,
+                Vec::new(),
+            )),
         };
         self.view = view;
+    }
+}
+
+/// What the app should do with a key after the active view handled it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalAction {
+    /// Nothing beyond the view's own handling.
+    None,
+    /// Quit the app.
+    Quit,
+    /// Cycle to the next screen (Tab navigation).
+    CycleScreens,
+}
+
+/// Decide global shortcuts for `key` given how the active view handled it.
+///
+/// Pure and unit-tested: this is where the "typing 'q' must not quit" and
+/// "Tab inside a form must not switch screens" rules live.
+fn global_action(key: KeyEvent, outcome: KeyOutcome) -> GlobalAction {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Ctrl+C / Ctrl+Q always quit, even mid-typing.
+    if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
+        return GlobalAction::Quit;
+    }
+
+    // A bare 'q' quits only when the active view did not consume the key.
+    if key.code == KeyCode::Char('q') && !ctrl && matches!(outcome, KeyOutcome::NotHandled) {
+        return GlobalAction::Quit;
+    }
+
+    // Tab cycles screens only when the active view did not consume it.
+    if key.code == KeyCode::Tab && matches!(outcome, KeyOutcome::NotHandled) {
+        return GlobalAction::CycleScreens;
+    }
+
+    GlobalAction::None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn tab() -> KeyEvent {
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn typing_q_never_quits() {
+        // The exact audit 2.2 regression: 'q' typed into a text field.
+        assert_eq!(
+            global_action(press('q'), KeyOutcome::Consumed),
+            GlobalAction::None
+        );
+        assert_eq!(
+            global_action(press('q'), KeyOutcome::Navigate(Screen::Dashboard)),
+            GlobalAction::None
+        );
+    }
+
+    #[test]
+    fn q_quits_only_when_unhandled() {
+        assert_eq!(
+            global_action(press('q'), KeyOutcome::NotHandled),
+            GlobalAction::Quit
+        );
+    }
+
+    #[test]
+    fn ctrl_quit_always_wins() {
+        assert_eq!(
+            global_action(ctrl('c'), KeyOutcome::Consumed),
+            GlobalAction::Quit
+        );
+        assert_eq!(
+            global_action(ctrl('q'), KeyOutcome::Consumed),
+            GlobalAction::Quit
+        );
+        assert_eq!(
+            global_action(ctrl('q'), KeyOutcome::NotHandled),
+            GlobalAction::Quit
+        );
+    }
+
+    #[test]
+    fn tab_cycles_only_when_unhandled() {
+        assert_eq!(
+            global_action(tab(), KeyOutcome::Consumed),
+            GlobalAction::None
+        );
+        assert_eq!(
+            global_action(tab(), KeyOutcome::NotHandled),
+            GlobalAction::CycleScreens
+        );
+    }
+
+    #[test]
+    fn other_keys_are_inert() {
+        assert_eq!(
+            global_action(press('x'), KeyOutcome::NotHandled),
+            GlobalAction::None
+        );
+        assert_eq!(
+            global_action(press('q'), KeyOutcome::Navigate(Screen::Send)),
+            GlobalAction::None
+        );
     }
 }

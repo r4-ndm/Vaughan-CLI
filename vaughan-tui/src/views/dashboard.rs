@@ -12,8 +12,9 @@ use tokio::runtime::Handle;
 use vaughan_core::chains::Balance;
 use vaughan_core::core::WalletState;
 use vaughan_core::error::WalletError;
+use vaughan_provider::{EventBus, ProviderEvent};
 
-use crate::app::Screen;
+use crate::app::{KeyOutcome, Screen};
 use crate::views::{body_areas, status_paragraph};
 
 #[derive(Default)]
@@ -71,20 +72,23 @@ impl DashboardView {
         key: KeyEvent,
         wallet: &mut WalletState,
         handle: &Handle,
-    ) -> Option<Screen> {
+        events: &EventBus,
+    ) -> KeyOutcome {
         match key.code {
             KeyCode::Char('r') => {
                 self.refresh(wallet, handle);
-                None
+                KeyOutcome::Consumed
             }
             KeyCode::Char('l') => {
                 wallet.lock();
-                Some(Screen::Unlock)
+                // Connected dApps must learn the account list went empty.
+                events.publish(ProviderEvent::AccountsChanged(vec![]));
+                KeyOutcome::Navigate(Screen::Unlock)
             }
-            KeyCode::Char('s') => Some(Screen::Send),
-            KeyCode::Char('v') => Some(Screen::Receive),
-            KeyCode::Char('n') => Some(Screen::Settings),
-            _ => None,
+            KeyCode::Char('s') => KeyOutcome::Navigate(Screen::Send),
+            KeyCode::Char('v') => KeyOutcome::Navigate(Screen::Receive),
+            KeyCode::Char('n') => KeyOutcome::Navigate(Screen::Settings),
+            _ => KeyOutcome::NotHandled,
         }
     }
 

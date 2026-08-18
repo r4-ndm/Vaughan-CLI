@@ -37,7 +37,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 - [x] `vaughan-provider` crate: local EIP-1193 WebSocket server (loopback) (FR-2.1)
 - [x] Implement provider methods: accounts, chainId, sendTransaction, sign, signTypedData_v4, switchEthereumChain + `vaughan_signTransaction` (FR-2.2)
-- [ ] TUI approval flow: approve/deny prompts for sign/send (FR-2.3)
+- [x] TUI approval flow: approve/deny prompts for sign/send (FR-2.3). `ProviderHost` (a `WalletHandle` impl) forwards every provider request to the UI thread over an MPSC channel; sign/send requests surface as a full-screen approve/deny prompt, and the provider server auto-starts on app launch. Core gained `personal_sign` (EIP-191), `eth_signTypedData_v4` (EIP-712), `vaughan_signTransaction` (raw signed tx), and general `send_transaction`. *(Known gap: the prompt shows recipient/value/chain/data but not the fee — it's estimated at execution; see `provider.rs` TODO.)*
 - [ ] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4)
 - [x] Account/chain change event push to clients (`EventBus` → JSON-RPC notifications) (FR-2.2)
 - [ ] Freedom Browser signer backend PR (out-of-repo) (FR-2.5)
@@ -48,7 +48,17 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] Fix kohaku-rs railgun build (git dep / submodule instead of sync script) (FR-3.1)
 - [ ] Publish `kohaku-core` + `kohaku-stealth` to crates.io (FR-3.1)
 - [ ] Wire ERC-5564 stealth addresses into Vaughan (FR-3.2)
-- [ ] Ambire smart accounts in Rust (borrow `ambire_abi`/`scw_transaction`) (FR-3.3)
+- [ ] Ambire smart accounts in Rust — see `docs/ambire-aa.md` (FR-3.3)
+  - [x] Create the `vaughan-aa` workspace crate and document the AGPL-3.0/GPL → MIT/Apache reimplementation boundary
+  - [x] Define the smart-account ABI (`sol!`) + `scw_transaction`/`SignatureMode` types from the on-chain `AmbireAccount` contract (Vaughan-Dioxus as guide only)
+  - [x] Digest = `keccak256(abi.encode(account, chainId, nonce, txns))`; sign raw hash (`sign_hash`, mode `0`) or EIP-191 (`personal_sign`, mode `1`), append the mode byte. Core gained `security::signing::sign_hash`; the digest is verified byte-for-byte against a hand-built ABI-spec vector.
+  - [x] Encode the inner `Transaction[]` batch calldata (`execute` selector + `abi.encode`, round-trip tested). *(Fixture byte-equality is covered by the differential harness below — still pending fixtures.)*
+  - [x] Sign a `scw_transaction` and recover/verify the 66-byte `r‖s‖v‖mode` signature (raw-hash + EIP-191)
+  - [x] EIP-7702 assembly (`build.rs`): sign the `Authorization` delegating the account EOA to the Ambire implementation and build the `TxEip7702` carrying `execute(txns, signature)` (self-pay, testnet-first). Authority/chain-id are validated against the batch before assembling.
+  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — needs an EntryPoint/bundler decision, deferred
+  - [x] Broadcast via `EvmAdapter` (`adapter.rs`): the **self-pay** path is wired — fetch the account's *pending* nonce (uncached), derive EIP-1559 fees through the adapter's existing heuristic (pinned gas limit, since `eth_estimateGas` can't price a pre-delegation 7702 call), sign the 7702 envelope (auth nonce = account nonce + 1 per EIP-7702's "after the sender's nonce is incremented"), and submit via the adapter's primary + fallback broadcast. Relayer / bundler routes still TBD.
+  - [ ] Differential test harness: `tests/differential.rs` scaffolded (consumes `tests/fixtures/*.json`, skips when none); fixtures must be captured outside this workspace — see `tests/fixtures/README.md`
+  - [ ] (Later) TUI integration: AA account type + batched send UX
 - [ ] Railgun / privacy pools (FR-3.4)
 
 ## Later — non-EVM families (deferred, no FR yet)

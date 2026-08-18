@@ -81,6 +81,15 @@ These expand rules 2, 4, 5, and 7. Every one is binding.
    public types and functions carry `///` docs explaining what and why (not how),
    and non-obvious decisions get a comment. `cargo doc` should read cleanly with
    no extra context.
+5. **Sibling repos are guides, never code sources.** `Vaughan-Dioxus` and other
+   in-house repos may be read to understand *how* a problem is structured — never
+   copied, translated, or vendored. Every line here is written fresh and derived
+   only from battle-tested upstream sources: the accepted libraries in the
+   allowlist, published specs (EIPs), and the verified on-chain contracts we
+   interoperate with. Where an upstream source is GPL/AGPL (e.g. Ambire's
+   contracts and SDK), carry over only the *interface facts* required for interop
+   (ABI selectors, struct shapes, digest/signature layouts) and write the
+   implementation yourself — see `docs/ambire-aa.md`.
 
 ### Accepted libraries (on-disk allowlist)
 
@@ -142,7 +151,7 @@ REQUIREMENTS.md  PLAN.md  TASKS.md   # requirements / plan / task backlog
 
 Key external references (do not edit unless asked; these are separate repos):
 
-- `r4-ndm/Vaughan-Dioxus` — architecture source for `vaughan-core` layering and Ambire AA
+- `r4-ndm/Vaughan-Dioxus` — reference guide only (layering ideas, Ambire AA approach); never a code source
 - `r4-ndm/Kohaku-rs` — privacy SDK (also ours; hardened in Phase 3, consumed as a git dep)
 - `solardev-xyz/freedom-browser` — dApp browser we bridge to (Phase 2, out-of-repo PR)
 

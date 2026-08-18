@@ -280,18 +280,27 @@ fn parse_personal_sign(params: &Value) -> Result<(String, String), ProviderError
             "personal_sign: expected [message, address]".into(),
         ));
     }
-    let message = array[0]
+    let first = array[0]
         .as_str()
         .ok_or_else(|| {
-            ProviderError::InvalidParams("personal_sign: message must be a string".into())
+            ProviderError::InvalidParams("personal_sign: params must be strings".into())
         })?
         .to_string();
-    let address = array[1]
+    let second = array[1]
         .as_str()
         .ok_or_else(|| {
-            ProviderError::InvalidParams("personal_sign: address must be a string".into())
+            ProviderError::InvalidParams("personal_sign: params must be strings".into())
         })?
         .to_string();
+
+    // Standard EIP-1193 order is `[message, address]`, but legacy web3.js /
+    // older dApps send `[address, message]`. Auto-detect by shape: an address
+    // in the first slot means the legacy order.
+    let (message, address) = if is_address_like(&first) {
+        (second, first)
+    } else {
+        (first, second)
+    };
     if !is_address_like(&address) {
         return Err(ProviderError::InvalidParams(format!(
             "personal_sign: invalid address: {address}"
@@ -440,6 +449,18 @@ mod tests {
         assert!(parse_personal_sign(&json!(["0x68656c6c6f"])).is_err());
         assert!(parse_personal_sign(&json!(["0x68656c6c6f", "not-an-address"])).is_err());
         assert!(parse_personal_sign(&json!({})).is_err());
+    }
+
+    #[test]
+    fn personal_sign_accepts_legacy_address_first_order() {
+        // Legacy web3.js order: [address, message].
+        let (message, address) = parse_personal_sign(&json!([
+            "0x9858effd232b4033e47d90003d41ec34ecaeda94",
+            "0x68656c6c6f"
+        ]))
+        .unwrap();
+        assert_eq!(message, "0x68656c6c6f");
+        assert_eq!(address, "0x9858effd232b4033e47d90003d41ec34ecaeda94");
     }
 
     #[test]

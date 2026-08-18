@@ -23,7 +23,7 @@ use zeroize::Zeroize;
 
 use crate::chains::evm::networks::EvmNetworkConfig;
 use crate::chains::evm::EvmAdapter;
-use crate::chains::{Balance, ChainAdapter, Fee, TxHash};
+use crate::chains::{Balance, ChainAdapter, ChainTransaction, EvmTransaction, Fee, TxHash};
 use crate::core::account::AccountManager;
 use crate::core::network::NetworkService;
 use crate::core::persistence::{PersistedState, StateManager};
@@ -175,14 +175,26 @@ impl WalletState {
     /// Native balance of the active account on the active network.
     pub async fn balance(&self) -> Result<Balance, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(&net.rpc_url, net.chain_id, &net.name).await?;
+        let adapter = EvmAdapter::new(
+            &net.rpc_url,
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
         adapter.get_balance(address).await
     }
 
     /// Estimate the fee to send `value_wei` (base units) to `to`.
     pub async fn estimate_fee(&self, to: &str, value_wei: &str) -> Result<Fee, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(&net.rpc_url, net.chain_id, &net.name).await?;
+        let adapter = EvmAdapter::new(
+            &net.rpc_url,
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
         let service = TransactionService::new();
         let tx = service.build_native_transfer(address, to, value_wei, net.chain_id)?;
         service.estimate_fee(&adapter, &tx).await
@@ -193,19 +205,84 @@ impl WalletState {
     pub async fn send(&self, to: &str, value_wei: &str) -> Result<TxHash, WalletError> {
         let accounts = self.require_unlocked()?;
         let net = self.networks.active();
-        let signer = accounts.active_signer()?;
-        let adapter =
-            EvmAdapter::with_signer(&net.rpc_url, net.chain_id, &net.name, signer).await?;
-        let service = TransactionService::new();
-        let mut tx = service.build_native_transfer(
+        let tx = TransactionService::new().build_native_transfer(
             accounts.active_address(),
             to,
             value_wei,
             net.chain_id,
         )?;
-        let fee = adapter.estimate_fee(&tx).await?;
-        service.apply_fee(&mut tx, &fee)?;
-        service.send(&adapter, tx).await
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".to_string(),
+            ));
+        };
+        self.send_transaction(evm_tx).await
+    }
+
+    /// Build, estimate, sign, and broadcast an arbitrary EVM transaction
+    /// (native transfer or contract call, with optional `data`). Missing
+    /// gas/fee parameters are filled from a fee estimate. The caller must have
+    /// shown the user the request and obtained explicit approval first.
+    pub async fn send_transaction(&self, tx: EvmTransaction) -> Result<TxHash, WalletError> {
+        let (adapter, tx) = self.signed_adapter_and_tx(tx).await?;
+        let service = TransactionService::new();
+        service.send(&adapter, ChainTransaction::Evm(tx)).await
+    }
+
+    /// Sign an EVM transaction without broadcasting it; returns the raw signed
+    /// tx as `0x`-prefixed hex (serves `vaughan_signTransaction`).
+    pub async fn sign_transaction(&self, tx: EvmTransaction) -> Result<String, WalletError> {
+        let (adapter, tx) = self.signed_adapter_and_tx(tx).await?;
+        adapter.sign_transaction(ChainTransaction::Evm(tx)).await
+    }
+
+    /// Sign `message` as an EIP-191 personal message with the active account;
+    /// returns the signature as a `0x`-prefixed hex string.
+    pub fn sign_message(&self, message: &[u8]) -> Result<String, WalletError> {
+        let signer = self.require_unlocked()?.active_signer()?;
+        crate::security::signing::sign_personal_message(&signer, message)
+    }
+
+    /// Sign an EIP-712 typed-data payload with the active account; returns the
+    /// signature as a `0x`-prefixed hex string.
+    pub fn sign_typed_data(&self, typed_data: &serde_json::Value) -> Result<String, WalletError> {
+        let signer = self.require_unlocked()?.active_signer()?;
+        crate::security::signing::sign_typed_data(&signer, typed_data)
+    }
+
+    /// Build a signer-backed adapter for the active network and prepare `tx`
+    /// (fill missing gas/fees) for signing or broadcast.
+    async fn signed_adapter_and_tx(
+        &self,
+        mut tx: EvmTransaction,
+    ) -> Result<(EvmAdapter, EvmTransaction), WalletError> {
+        let accounts = self.require_unlocked()?;
+        let net = self.networks.active();
+        let signer = accounts.active_signer()?;
+        let adapter = EvmAdapter::with_signer(
+            &net.rpc_url,
+            net.chain_id,
+            &net.name,
+            signer,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        // Only estimate when the caller left gas/fees unspecified; a
+        // fully-specified tx (e.g. from the browser signer backend) is signed
+        // exactly as given.
+        let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
+        if tx.gas_limit.is_none() || missing_fees {
+            let mut chain_tx = ChainTransaction::Evm(tx);
+            let fee = adapter.estimate_fee(&chain_tx).await?;
+            TransactionService::new().apply_fee(&mut chain_tx, &fee)?;
+            let ChainTransaction::Evm(prepared) = chain_tx else {
+                return Err(WalletError::InvalidTransaction(
+                    "expected an EVM transaction".to_string(),
+                ));
+            };
+            tx = prepared;
+        }
+        Ok((adapter, tx))
     }
 
     // ---- helpers ----
@@ -342,6 +419,64 @@ mod tests {
         assert!(matches!(
             w.require_unlocked(),
             Err(WalletError::WalletLocked)
+        ));
+    }
+
+    #[test]
+    fn sign_message_and_typed_data_use_active_account() {
+        let mut w = WalletState::load(tmp_path()).unwrap();
+        w.create(&password(), mnemonic()).unwrap();
+
+        let sig = w.sign_message(b"hello").unwrap();
+        assert!(sig.starts_with("0x"));
+        let bytes = hex::decode(&sig[2..]).unwrap();
+        assert_eq!(bytes.len(), 65);
+        let signature = alloy::primitives::Signature::from_raw(bytes.as_slice()).unwrap();
+        let recovered = signature.recover_address_from_msg(b"hello").unwrap();
+        assert_eq!(recovered.to_string().to_lowercase(), TEST_ADDRESS_0);
+
+        let payload = serde_json::json!({
+            "types": {
+                "EIP712Domain": [],
+                "Message": [{"name": "x", "type": "string"}]
+            },
+            "primaryType": "Message",
+            "domain": {},
+            "message": {"x": "y"},
+        });
+        let sig = w.sign_typed_data(&payload).unwrap();
+        assert!(sig.starts_with("0x"));
+        assert_eq!(hex::decode(&sig[2..]).unwrap().len(), 65);
+    }
+
+    #[tokio::test]
+    async fn sign_transaction_offline_with_fully_specified_tx() {
+        let mut w = WalletState::load(tmp_path()).unwrap();
+        w.create(&password(), mnemonic()).unwrap();
+        // A fully-specified tx skips fee estimation, so signing needs no RPC.
+        let tx = EvmTransaction {
+            from: w.active_address().unwrap().to_string(),
+            to: "0x0000000000000000000000000000000000000000".to_string(),
+            value: "0".to_string(),
+            data: Some("0x".to_string()),
+            gas_limit: Some(21_000),
+            gas_price: None,
+            max_fee_per_gas: Some("2000000000".to_string()),
+            max_priority_fee_per_gas: Some("1000000000".to_string()),
+            nonce: Some(0),
+            chain_id: 943,
+        };
+        let raw = w.sign_transaction(tx).await.unwrap();
+        assert!(raw.starts_with("0x"));
+        assert!(raw.len() > 4, "signed tx must carry an RLP body");
+    }
+
+    #[test]
+    fn signing_requires_unlocked_wallet() {
+        let w = WalletState::load(tmp_path()).unwrap();
+        assert!(matches!(
+            w.sign_message(b"x"),
+            Err(WalletError::NotInitialized)
         ));
     }
 }

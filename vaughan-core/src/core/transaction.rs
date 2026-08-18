@@ -7,7 +7,7 @@
 
 use std::str::FromStr;
 
-use alloy::primitives::utils::parse_units;
+use alloy::primitives::utils::{format_units, parse_units};
 use alloy::primitives::U256;
 
 use crate::chains::{ChainAdapter, ChainTransaction, EvmTransaction, Fee, FeeDetails, TxHash};
@@ -110,6 +110,28 @@ pub fn parse_native_amount(value: &str, decimals: u8) -> Result<String, WalletEr
     Ok(wei.to_string())
 }
 
+/// Format a raw base-unit amount (wei) as a human-readable decimal string
+/// using `decimals` (the inverse of [`parse_native_amount`]). Trailing zeros
+/// are trimmed for display; falls back to the raw string when parsing fails so
+/// display paths never panic on bad data.
+pub fn format_base_units(value: &str, decimals: u8) -> String {
+    match U256::from_str(value) {
+        Ok(units) => format_units(units, decimals)
+            .map(|s| trim_trailing_zeros(&s))
+            .unwrap_or_else(|_| value.to_string()),
+        Err(_) => value.to_string(),
+    }
+}
+
+/// Trim trailing fractional zeros (and a dangling `.`) from a decimal string.
+fn trim_trailing_zeros(s: &str) -> String {
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +146,15 @@ mod tests {
         assert_eq!(parse_native_amount("1.5", 9).unwrap(), "1500000000");
         assert!(parse_native_amount("-1.0", 18).is_err());
         assert!(parse_native_amount("abc", 18).is_err());
+    }
+
+    #[test]
+    fn format_base_units_roundtrips() {
+        assert_eq!(format_base_units("10000000000000000", 18), "0.01");
+        assert_eq!(format_base_units("1500000000", 9), "1.5");
+        assert_eq!(format_base_units("0", 18), "0");
+        assert_eq!(format_base_units("1000000000000000000", 18), "1");
+        assert_eq!(format_base_units("not-a-number", 18), "not-a-number");
     }
 
     #[test]

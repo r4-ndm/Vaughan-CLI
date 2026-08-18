@@ -5,9 +5,10 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
+use vaughan_provider::{EventBus, ProviderEvent};
 
-use crate::app::Screen;
-use crate::input::Input;
+use crate::app::{KeyOutcome, Screen};
+use crate::input::{Input, InputAction};
 use crate::views::{body_areas, labeled_input, status_paragraph};
 
 pub struct UnlockView {
@@ -36,14 +37,28 @@ impl UnlockView {
         key: KeyEvent,
         wallet: &mut WalletState,
         _handle: &Handle,
-    ) -> Option<Screen> {
-        if self.input.handle_key(key) {
-            let password = self.input.take_secret();
-            match wallet.unlock(&password) {
-                Ok(()) => return Some(Screen::Dashboard),
-                Err(e) => self.status = e.user_message(),
+        events: &EventBus,
+    ) -> KeyOutcome {
+        match self.input.handle_key(key) {
+            InputAction::Ignored => KeyOutcome::NotHandled,
+            InputAction::Submitted => {
+                let password = self.input.take_secret();
+                match wallet.unlock(&password) {
+                    Ok(()) => {
+                        // Connected dApps must learn the account is live again.
+                        if let Ok(address) = wallet.active_address() {
+                            events
+                                .publish(ProviderEvent::AccountsChanged(vec![address.to_string()]));
+                        }
+                        KeyOutcome::Navigate(Screen::Dashboard)
+                    }
+                    Err(e) => {
+                        self.status = e.user_message();
+                        KeyOutcome::Consumed
+                    }
+                }
             }
+            InputAction::Consumed => KeyOutcome::Consumed,
         }
-        None
     }
 }

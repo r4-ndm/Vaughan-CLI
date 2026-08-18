@@ -204,14 +204,22 @@ This document aggregates specific architectural, security, performance, ergonomi
 
 ## 6. Action Item Checklist
 
-- [ ] **Fix Global `'q'`**: Restrict single-character `'q'` quit handling to non-input views; use `Ctrl+C`/`Ctrl+Q` globally.
-- [ ] **Fix `Tab` Key Flow**: Delegate `Tab` to view inputs before cycling screens.
-- [ ] **Non-blocking TUI**: Replace `handle.block_on` in TUI views with async task spawning and channel messages.
-- [ ] **Set POSIX `0o600` Permissions**: Restrict `wallet.json` and directory permissions on Unix.
-- [ ] **Remove Nonce Caching**: Query `BlockNumberOrTag::Pending` directly during transaction creation.
-- [ ] **Optimize HD Derivation**: Cache master/parent derivation to eliminate redundant PBKDF2 iterations.
-- [ ] **Support `personal_sign` Param Order**: Auto-detect `[data, address]` vs `[address, data]`.
-- [ ] **Enhance `Input` Widget**: Add cursor navigation (`Left`/`Right`/`Delete`/`Home`/`End`).
-- [ ] **Terminal Panic Hook**: Ensure clean terminal restore on unexpected panics.
-- [ ] **Wire `EventBus` to Settings**: Emit `ChainChanged` on network change.
-- [ ] **Gas Precedence**: Only set `gas_price` if `max_fee_per_gas` is absent.
+- [x] **Fix Global `'q'`**: Restrict single-character `'q'` quit handling to non-input views; use `Ctrl+C`/`Ctrl+Q` globally. Views report `KeyOutcome::Consumed` for keys they use; bare `'q'` quits only when the active view did not consume it. (Fixed — `vaughan-tui/src/app.rs` + all views.)
+- [x] **Fix `Tab` Key Flow**: Delegate `Tab` to view inputs before cycling screens. `SendView` now uses Tab to move between Recipient/Amount; the app-level cycle fires only when the view does not consume Tab. (Fixed — `vaughan-tui/src/app.rs`, `views/send.rs`.)
+- [ ] **Non-blocking TUI**: Replace `handle.block_on` in TUI views with async task spawning and channel messages. *(Partially done — the FR-2.3 approval flow now bridges the provider server to the UI over an MPSC + `oneshot` channel, so dApp sign/send requests no longer block the handler. The remaining `handle.block_on` calls in the dashboard/send views (`balance`, `estimate_fee`, `send`) still run inline on the UI thread.)*
+- [x] **Set POSIX `0o600` Permissions**: Restrict `wallet.json` and directory permissions on Unix. Directory `0o700`, vault + temp file `0o600`, with a permissions unit test. `load()` also locks down pre-existing vaults written before this rule (best effort, non-fatal). (Fixed — `vaughan-core/src/core/persistence.rs`.)
+- [x] **Remove Nonce Caching**: Query `BlockNumberOrTag::Pending` directly during transaction creation. `send_transaction` now queries the pending nonce directly, bypassing the 5s-TTL cache. (Fixed — `vaughan-core/src/chains/evm/adapter.rs`.)
+- [x] **Optimize HD Derivation**: Cache master/parent derivation to eliminate redundant PBKDF2 iterations. `derive_account_parent` derives `m/44'/60'/0'/0` once; account unlock derives children from it (~10x fewer PBKDF2 runs). (Fixed — `vaughan-core/src/security/hd_wallet.rs`, `core/account.rs`.)
+- [x] **Support `personal_sign` Param Order**: Auto-detect `[data, address]` vs `[address, data]` by address shape in slot 0. (Fixed — `vaughan-provider/src/methods.rs`, with a legacy-order test.)
+- [x] **Enhance `Input` Widget**: Add cursor navigation (`Left`/`Right`/`Delete`/`Home`/`End`) with a cursor-aware render and `InputAction` results. (Fixed — `vaughan-tui/src/input.rs`.)
+- [x] **Terminal Panic Hook**: Ensure clean terminal restore on unexpected panics. *No change needed — `ratatui::init()` already installs a panic hook that restores the terminal (verified in ratatui 0.29 `terminal/init.rs`).*
+- [x] **Wire `EventBus` to Settings**: Emit `ChainChanged` on network change. Settings publishes `ProviderEvent::ChainChanged` via the app-owned `EventBus`; lock/unlock also publish `accountsChanged` (`[]` on lock, active address on unlock). (Fixed — `vaughan-tui/src/views/settings.rs`, `app.rs`, `views/dashboard.rs`, `views/unlock.rs`.)
+
+### Still open (not part of the checklist)
+
+- **2.1 Non-blocking TUI** — the provider→UI bridge is now channel-based (done with FR-2.3); the remaining piece is replacing `handle.block_on` in the dashboard/send views (balance/estimate/broadcast) with `tokio::spawn` + channel messages.
+
+### Recently closed (was in §4, not the checklist)
+
+- [x] **4.2 PulseChain priority-fee tuning + RPC fallbacks** — `EvmNetworkConfig` now carries `default_priority_fee_wei` and `fallback_rpc_urls` (serde-defaulted). PulseChain mainnet/testnet use 0.01 gwei tips (vs Ethereum's 1.5 gwei); Polygon/BSC/Base get chain-appropriate defaults. The EVM adapter builds a primary + fallback provider chain with a sticky last-known-good endpoint, retrying only transport-ish failures (RPC/network/gas/broadcast) and failing fast on local errors; broadcasting to a fallback is safe (same nonce → on-chain no-op). Covered by unit tests (classification + fallback loop, offline). (Fixed — `vaughan-core/src/chains/evm/networks.rs`, `chains/evm/adapter.rs`, `core/wallet.rs`, `chains/mod.rs`.)
+- [x] **Gas Precedence**: Only set `gas_price` if `max_fee_per_gas` is absent. (Fixed — `vaughan-core/src/chains/evm/adapter.rs`.)

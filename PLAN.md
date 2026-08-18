@@ -64,7 +64,7 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 | HD wallet | bip39 + bip32 | RustCrypto stack, actively maintained; bip39 for mnemonics, bip32 for derivation |
 | Vault crypto | Argon2id + AES-256-GCM | Argon2id KDF, authenticated encryption |
 | kohaku-rs | git dep, later phases | Own repo; hardened in Phase 3 |
-| Ambire AA | Rust + Alloy + Ambire ABI | Borrow `ambire_abi`/`scw_transaction` from Vaughan-Dioxus |
+| Ambire AA | Rust + Alloy + Ambire ABI | Reimplement from the on-chain `AmbireAccount` contract; Vaughan-Dioxus as guide only |
 | dApp bridge | local EIP-1193 JSON-RPC (WebSocket) | Mirrors Vaughan-Dioxus provider-style RPC; loopback only |
 
 ## Phases
@@ -78,8 +78,8 @@ send native PLS, receive, network switching. No bridge, no tokens.
 Freedom Browser signer-backend PR (out-of-repo, MPL-2.0).
 
 ### Phase 3 — Privacy + smart accounts
-Harden kohaku-rs (tests + publish), wire ERC-5564 stealth, then Ambire AA in Rust,
-then railgun/privacy pools when upstream stabilizes.
+Harden kohaku-rs (tests + publish), wire ERC-5564 stealth, then Ambire AA in Rust
+(see `docs/ambire-aa.md`), then railgun/privacy pools when upstream stabilizes.
 
 ## Security model
 

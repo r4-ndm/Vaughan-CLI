@@ -1,0 +1,17 @@
+[package]
+name = "vaughan-aa"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ambire smart-account (AA) support: EOA-signed smart-wallet batches, reimplemented from the on-chain AmbireAccount contract."
+
+[dependencies]
+alloy = { workspace = true }
+vaughan-core = { path = "../vaughan-core" }
+hex = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

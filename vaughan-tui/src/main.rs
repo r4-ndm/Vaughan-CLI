@@ -2,6 +2,7 @@
 
 mod app;
 mod input;
+mod provider;
 mod views;
 
 use std::io;

@@ -168,8 +168,15 @@ server already captures `Origin` during the WS handshake.
   quantity normalization; 4902 for unknown chains.
 - FR-2.2 events ✅ — `EventBus` → `accountsChanged`/`chainChanged` relayed as JSON-RPC
   notifications to all connected clients.
-- FR-2.3 — approval flow: TUI implements `WalletHandle`, shows approve/deny prompts for
-  every sign/send (next task).
+- FR-2.3 ✅ — approval flow: TUI implements `WalletHandle` (`ProviderHost`), shows a
+  full-screen approve/deny prompt for every sign/send. The provider server auto-starts on
+  app launch (loopback `8745`); a bind failure is non-fatal. Every provider request funnels
+  through the UI thread via an MPSC channel + `oneshot` reply, so key material never leaves
+  the UI thread and nothing signs without the prompt. Core signing: EIP-191
+  `personal_sign`, EIP-712 `eth_signTypedData_v4`, raw `vaughan_signTransaction`, and
+  general `send_transaction`.
+  *Known gap: the prompt shows recipient/value/chain/data but not the fee (estimated at
+  execution) — TODO in `vaughan-tui/src/provider.rs`.*
 - FR-2.4 — trusted-host gate (Origin/app token).
 - Dapps launcher (user vision): TUI screen lists dApp URLs → launches Freedom Browser with
   the provider ready.

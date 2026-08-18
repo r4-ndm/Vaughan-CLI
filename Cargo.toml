@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "vaughan-aa",
     "vaughan-core",
     "vaughan-provider",
     "vaughan-tui",
@@ -25,6 +26,7 @@ alloy = { version = "1.7", default-features = false, features = [
     "signer-local",
     "rpc-types-eth",
     "consensus",
+    "eips",
     "contract",
     "sol-types",
     "rlp",
@@ -33,6 +35,10 @@ alloy = { version = "1.7", default-features = false, features = [
     "transports",
     "rpc-client",
 ] }
+# EIP-712 dynamic typed-data signing. `alloy`'s top-level `eip712` feature
+# also enables optional cloud/ledger signer crates whose published versions
+# don't resolve, so we enable the feature on the dyn-abi sub-crate directly.
+alloy-dyn-abi = { version = "1.6", features = ["eip712"] }
 async-trait = "0.1"
 url = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "net", "io-util"] }

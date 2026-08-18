@@ -10,8 +10,9 @@ use ratatui::{
 };
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
+use vaughan_provider::{EventBus, ProviderEvent};
 
-use crate::app::Screen;
+use crate::app::{KeyOutcome, Screen};
 use crate::views::{body_areas, status_paragraph};
 
 pub struct SettingsView {
@@ -65,30 +66,37 @@ impl SettingsView {
         key: KeyEvent,
         wallet: &mut WalletState,
         _handle: &Handle,
-    ) -> Option<Screen> {
+        events: &EventBus,
+    ) -> KeyOutcome {
         let len = wallet.networks().networks().len();
         match key.code {
-            KeyCode::Esc => Some(Screen::Dashboard),
+            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
-                None
+                KeyOutcome::Consumed
             }
             KeyCode::Down => {
                 self.selected = (self.selected + 1).min(len.saturating_sub(1));
-                None
+                KeyOutcome::Consumed
             }
             KeyCode::Enter => {
                 if let Some(net) = wallet.networks().networks().get(self.selected) {
                     let id = net.id.clone();
                     let name = net.name.clone();
+                    let chain_id = net.chain_id;
                     match wallet.set_active_network(&id) {
-                        Ok(()) => self.status = format!("Switched to {name}."),
+                        Ok(()) => {
+                            self.status = format!("Switched to {name}.");
+                            // Connected dApps must learn about the new chain
+                            // without a refresh (FR-2.2 events).
+                            events.publish(ProviderEvent::ChainChanged(format!("0x{chain_id:x}")));
+                        }
                         Err(e) => self.status = e.user_message(),
                     }
                 }
-                None
+                KeyOutcome::Consumed
             }
-            _ => None,
+            _ => KeyOutcome::NotHandled,
         }
     }
 }

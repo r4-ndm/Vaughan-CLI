@@ -1,5 +1,6 @@
 //! View layer: shared chrome plus per-screen views.
 
+pub mod approve;
 pub mod dashboard;
 pub mod onboarding;
 pub mod receive;
@@ -7,6 +8,7 @@ pub mod send;
 pub mod settings;
 pub mod unlock;
 
+pub use approve::ApproveView;
 pub use dashboard::DashboardView;
 pub use onboarding::OnboardingView;
 pub use receive::ReceiveView;

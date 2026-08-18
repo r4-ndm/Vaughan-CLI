@@ -6,8 +6,16 @@ description = "ratatui terminal frontend for Vaughan"
 
 [dependencies]
 vaughan-core = { path = "../vaughan-core" }
+vaughan-provider = { path = "../vaughan-provider" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

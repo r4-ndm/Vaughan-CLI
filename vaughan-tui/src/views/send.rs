@@ -11,9 +11,10 @@ use ratatui::{
 use tokio::runtime::Handle;
 use vaughan_core::chains::Fee;
 use vaughan_core::core::{parse_native_amount, WalletState};
+use vaughan_provider::EventBus;
 
-use crate::app::Screen;
-use crate::input::Input;
+use crate::app::{KeyOutcome, Screen};
+use crate::input::{Input, InputAction};
 use crate::views::{body_areas, labeled_input, status_paragraph};
 
 enum Stage {
@@ -130,43 +131,62 @@ impl SendView {
         key: KeyEvent,
         wallet: &WalletState,
         handle: &Handle,
-    ) -> Option<Screen> {
+        _events: &EventBus,
+    ) -> KeyOutcome {
         match self.stage {
             Stage::Input => match self.focus {
                 Focus::Recipient => {
                     if key.code == KeyCode::Esc {
-                        return Some(Screen::Dashboard);
+                        return KeyOutcome::Navigate(Screen::Dashboard);
                     }
-                    if self.recipient.handle_key(key) {
+                    // Tab moves between fields; the view consumes it so the
+                    // app-level Tab screen-cycle never fires mid-form.
+                    if key.code == KeyCode::Tab {
                         self.focus = Focus::Amount;
+                        return KeyOutcome::Consumed;
                     }
-                    None
+                    match self.recipient.handle_key(key) {
+                        InputAction::Ignored => KeyOutcome::NotHandled,
+                        InputAction::Submitted => {
+                            self.focus = Focus::Amount;
+                            KeyOutcome::Consumed
+                        }
+                        InputAction::Consumed => KeyOutcome::Consumed,
+                    }
                 }
                 Focus::Amount => {
                     if key.code == KeyCode::Esc {
                         self.focus = Focus::Recipient;
-                        return None;
+                        return KeyOutcome::Consumed;
                     }
-                    if self.amount.handle_key(key) {
-                        self.estimate(wallet, handle);
+                    if key.code == KeyCode::Tab {
+                        self.focus = Focus::Recipient;
+                        return KeyOutcome::Consumed;
                     }
-                    None
+                    match self.amount.handle_key(key) {
+                        InputAction::Ignored => KeyOutcome::NotHandled,
+                        InputAction::Submitted => {
+                            self.estimate(wallet, handle);
+                            KeyOutcome::Consumed
+                        }
+                        InputAction::Consumed => KeyOutcome::Consumed,
+                    }
                 }
             },
             Stage::Confirm => match key.code {
                 KeyCode::Esc => {
                     self.stage = Stage::Input;
-                    None
+                    KeyOutcome::Consumed
                 }
                 KeyCode::Enter => {
                     self.send(wallet, handle);
-                    None
+                    KeyOutcome::Consumed
                 }
-                _ => None,
+                _ => KeyOutcome::NotHandled,
             },
             Stage::Done => match key.code {
-                KeyCode::Enter | KeyCode::Esc => Some(Screen::Dashboard),
-                _ => None,
+                KeyCode::Enter | KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                _ => KeyOutcome::NotHandled,
             },
         }
     }

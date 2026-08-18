@@ -2,6 +2,7 @@
 
 pub mod encryption;
 pub mod hd_wallet;
+pub mod signing;
 
 /// Re-export of the BIP-39 [`Mnemonic`] type used throughout the wallet core.
 pub use bip39::Mnemonic;

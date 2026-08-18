@@ -6,6 +6,7 @@ description = "Shared wallet core: chains, core logic, security, persistence"
 
 [dependencies]
 alloy = { workspace = true }
+alloy-dyn-abi = { workspace = true }
 async-trait = { workspace = true }
 url = { workspace = true }
 tokio = { workspace = true }

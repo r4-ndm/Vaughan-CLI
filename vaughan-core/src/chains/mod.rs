@@ -73,7 +73,13 @@ impl ChainRegistry {
         &self,
         network: &EvmNetworkConfig,
     ) -> Result<Box<dyn ChainAdapter>, WalletError> {
-        let adapter = EvmAdapter::new(&network.rpc_url, network.chain_id, &network.name).await?;
+        let adapter = EvmAdapter::new(
+            &network.rpc_url,
+            network.chain_id,
+            &network.name,
+            &network.fallback_rpc_urls,
+        )
+        .await?;
         Ok(Box::new(adapter))
     }
 }

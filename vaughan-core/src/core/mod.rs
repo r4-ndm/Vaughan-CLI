@@ -10,5 +10,5 @@ pub mod wallet;
 pub use account::{Account, AccountManager};
 pub use network::NetworkService;
 pub use persistence::{PersistedState, StateManager};
-pub use transaction::{parse_native_amount, TransactionService};
+pub use transaction::{format_base_units, parse_native_amount, TransactionService};
 pub use wallet::WalletState;

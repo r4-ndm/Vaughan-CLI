@@ -14,10 +14,11 @@ use vaughan_core::core::WalletState;
 use vaughan_core::security::encryption::validate_password_policy;
 use vaughan_core::security::hd_wallet::{generate_mnemonic, validate_mnemonic};
 use vaughan_core::security::Mnemonic;
+use vaughan_provider::EventBus;
 use zeroize::Zeroize;
 
-use crate::app::Screen;
-use crate::input::Input;
+use crate::app::{KeyOutcome, Screen};
+use crate::input::{Input, InputAction};
 use crate::views::{body_areas, labeled_input, status_paragraph};
 
 /// Which step of onboarding the user is on.
@@ -122,36 +123,36 @@ impl OnboardingView {
         key: KeyEvent,
         wallet: &mut WalletState,
         _handle: &Handle,
-    ) -> Option<Screen> {
+        _events: &EventBus,
+    ) -> KeyOutcome {
         match self.stage {
-            Stage::Choose => {
-                match key.code {
-                    KeyCode::Char('c') => match generate_mnemonic() {
-                        Ok(mnemonic) => {
-                            self.mnemonic = Some(mnemonic);
-                            self.status.clear();
-                            self.stage = Stage::ShowMnemonic;
-                        }
-                        Err(e) => self.status = e.user_message(),
-                    },
-                    KeyCode::Char('r') => {
-                        self.input = Input::new(false, "abandon abandon ... about");
+            Stage::Choose => match key.code {
+                KeyCode::Char('c') => match generate_mnemonic() {
+                    Ok(mnemonic) => {
+                        self.mnemonic = Some(mnemonic);
                         self.status.clear();
-                        self.stage = Stage::EnterMnemonic;
+                        self.stage = Stage::ShowMnemonic;
                     }
-                    _ => {}
+                    Err(e) => self.status = e.user_message(),
+                },
+                KeyCode::Char('r') => {
+                    self.input = Input::new(false, "abandon abandon ... about");
+                    self.status.clear();
+                    self.stage = Stage::EnterMnemonic;
                 }
-                None
-            }
+                _ => return KeyOutcome::NotHandled,
+            },
             Stage::ShowMnemonic => {
                 if key.code == KeyCode::Enter {
                     self.input = Input::new(true, "");
                     self.stage = Stage::SetPassword;
+                } else {
+                    return KeyOutcome::NotHandled;
                 }
-                None
             }
-            Stage::EnterMnemonic => {
-                if self.input.handle_key(key) {
+            Stage::EnterMnemonic => match self.input.handle_key(key) {
+                InputAction::Ignored => return KeyOutcome::NotHandled,
+                InputAction::Submitted => {
                     let mut phrase = self.input.take_string();
                     match validate_mnemonic(&phrase) {
                         Ok(mnemonic) => {
@@ -167,10 +168,11 @@ impl OnboardingView {
                         }
                     }
                 }
-                None
-            }
-            Stage::SetPassword => {
-                if self.input.handle_key(key) {
+                InputAction::Consumed => {}
+            },
+            Stage::SetPassword => match self.input.handle_key(key) {
+                InputAction::Ignored => return KeyOutcome::NotHandled,
+                InputAction::Submitted => {
                     let password = self.input.take_secret();
                     match validate_password_policy(&password) {
                         Ok(()) => {
@@ -182,10 +184,14 @@ impl OnboardingView {
                         Err(e) => self.status = e.user_message(),
                     }
                 }
-                None
-            }
+                InputAction::Consumed => {}
+            },
             Stage::ConfirmPassword => {
-                if self.input.handle_key(key) {
+                let action = self.input.handle_key(key);
+                if action == InputAction::Ignored {
+                    return KeyOutcome::NotHandled;
+                }
+                if action == InputAction::Submitted {
                     let confirm = self.input.take_secret();
                     let matches = match &self.pending_password {
                         Some(pending) => pending.expose_secret() == confirm.expose_secret(),
@@ -197,25 +203,22 @@ impl OnboardingView {
                         match wallet.create(&password, mnemonic) {
                             Ok(()) => {
                                 self.mnemonic = None;
-                                Some(Screen::Dashboard)
+                                return KeyOutcome::Navigate(Screen::Dashboard);
                             }
                             Err(e) => {
                                 self.pending_password = Some(password);
                                 self.status = e.user_message();
                                 self.stage = Stage::SetPassword;
-                                None
                             }
                         }
                     } else {
                         self.pending_password = None;
                         self.status = "Passwords do not match.".to_string();
                         self.stage = Stage::SetPassword;
-                        None
                     }
-                } else {
-                    None
                 }
             }
         }
+        KeyOutcome::Consumed
     }
 }

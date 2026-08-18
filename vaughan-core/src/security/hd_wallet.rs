@@ -8,7 +8,7 @@
 use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
-use bip32::{DerivationPath, XPrv};
+use bip32::{ChildNumber, DerivationPath, XPrv};
 use bip39::{Language, Mnemonic};
 
 use crate::error::WalletError;
@@ -34,17 +34,37 @@ pub fn validate_mnemonic(phrase: &str) -> Result<Mnemonic, WalletError> {
     })
 }
 
-/// Derive the Ethereum account signer at `m/44'/60'/0'/0/{index}`.
-pub fn derive_account(mnemonic: &Mnemonic, index: u32) -> Result<PrivateKeySigner, WalletError> {
+/// Derive the hardened parent key at `m/44'/60'/0'/0`.
+///
+/// This is the expensive step (PBKDF2 over the mnemonic + the hardened BIP-32
+/// path); child accounts derive cheaply from the returned parent, so callers
+/// that need several accounts should derive the parent once and reuse it.
+pub fn derive_account_parent(mnemonic: &Mnemonic) -> Result<XPrv, WalletError> {
     let seed = mnemonic.to_seed("");
-    let path = format!("{ETH_DERIVATION_PATH}/{index}");
-    let path = DerivationPath::from_str(&path)
+    let path = DerivationPath::from_str(ETH_DERIVATION_PATH)
         .map_err(|e| WalletError::KeyDerivationFailed(e.to_string()))?;
-    let xprv = XPrv::derive_from_path(seed, &path)
+    XPrv::derive_from_path(seed, &path).map_err(|e| WalletError::KeyDerivationFailed(e.to_string()))
+}
+
+/// Derive account `index` from an already-derived [`derive_account_parent`]
+/// parent key (the non-hardened child step).
+pub fn derive_account_from_parent(
+    parent: &XPrv,
+    index: u32,
+) -> Result<PrivateKeySigner, WalletError> {
+    let child = ChildNumber::new(index, false)
+        .map_err(|e| WalletError::KeyDerivationFailed(e.to_string()))?;
+    let xprv = parent
+        .derive_child(child)
         .map_err(|e| WalletError::KeyDerivationFailed(e.to_string()))?;
     Ok(PrivateKeySigner::from_signing_key(
         xprv.private_key().clone(),
     ))
+}
+
+/// Derive the Ethereum account signer at `m/44'/60'/0'/0/{index}`.
+pub fn derive_account(mnemonic: &Mnemonic, index: u32) -> Result<PrivateKeySigner, WalletError> {
+    derive_account_from_parent(&derive_account_parent(mnemonic)?, index)
 }
 
 #[cfg(test)]

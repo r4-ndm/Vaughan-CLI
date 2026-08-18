@@ -4,7 +4,9 @@ use alloy::signers::local::PrivateKeySigner;
 use bip39::Mnemonic;
 
 use crate::error::WalletError;
-use crate::security::hd_wallet::{derive_account, validate_mnemonic};
+use crate::security::hd_wallet::{
+    derive_account, derive_account_from_parent, derive_account_parent, validate_mnemonic,
+};
 
 /// A derived account: its derivation index and checksummed address.
 ///
@@ -46,9 +48,12 @@ impl AccountManager {
         active_index: u32,
         count: u32,
     ) -> Result<Self, WalletError> {
+        // Derive the hardened parent key once; children reuse it instead of
+        // re-running PBKDF2 for every account (~10x faster on unlock).
+        let parent = derive_account_parent(&mnemonic)?;
         let mut accounts = Vec::with_capacity(count as usize);
         for index in 0..count {
-            let signer = derive_account(&mnemonic, index)?;
+            let signer = derive_account_from_parent(&parent, index)?;
             accounts.push(Account {
                 index,
                 address: signer.address().to_string(),

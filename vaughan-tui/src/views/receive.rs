@@ -10,8 +10,9 @@ use ratatui::{
 };
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
+use vaughan_provider::EventBus;
 
-use crate::app::Screen;
+use crate::app::{KeyOutcome, Screen};
 
 pub struct ReceiveView;
 
@@ -40,10 +41,11 @@ impl ReceiveView {
         key: KeyEvent,
         _wallet: &mut WalletState,
         _handle: &Handle,
-    ) -> Option<Screen> {
+        _events: &EventBus,
+    ) -> KeyOutcome {
         match key.code {
-            KeyCode::Esc => Some(Screen::Dashboard),
-            _ => None,
+            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            _ => KeyOutcome::NotHandled,
         }
     }
 }
