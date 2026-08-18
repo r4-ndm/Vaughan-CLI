@@ -37,8 +37,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 - [x] `vaughan-provider` crate: local EIP-1193 WebSocket server (loopback) (FR-2.1)
 - [x] Implement provider methods: accounts, chainId, sendTransaction, sign, signTypedData_v4, switchEthereumChain + `vaughan_signTransaction` (FR-2.2)
-- [x] TUI approval flow: approve/deny prompts for sign/send (FR-2.3). `ProviderHost` (a `WalletHandle` impl) forwards every provider request to the UI thread over an MPSC channel; sign/send requests surface as a full-screen approve/deny prompt, and the provider server auto-starts on app launch. Core gained `personal_sign` (EIP-191), `eth_signTypedData_v4` (EIP-712), `vaughan_signTransaction` (raw signed tx), and general `send_transaction`. *(Known gap: the prompt shows recipient/value/chain/data but not the fee — it's estimated at execution; see `provider.rs` TODO.)*
-- [ ] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4)
+- [x] TUI approval flow: approve/deny prompts for sign/send (FR-2.3). `ProviderHost` (a `WalletHandle` impl) forwards every provider request to the UI thread over an MPSC channel; sign/send requests surface as a full-screen approve/deny prompt, and the provider server auto-starts on app launch. Core gained `personal_sign` (EIP-191), `eth_signTypedData_v4` (EIP-712), `vaughan_signTransaction` (raw signed tx), and general `send_transaction`. Approval details now include fee before user consent (from explicit gas/fee fields when present, otherwise pre-estimated over RPC).
+- [x] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4). `ProviderServer::with_trusted_origins` now enforces a canonicalized `Origin` allowlist (missing/untrusted origins are rejected at connection time); `vaughan-tui` enables it from `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` (comma-separated origins).
+- [x] Trusted-host startup validation path: TUI tests now cover env-derived origin parsing and startup-time server wiring with allowlist enforcement (missing-origin clients are rejected; trusted-origin clients are served).
 - [x] Account/chain change event push to clients (`EventBus` → JSON-RPC notifications) (FR-2.2)
 - [ ] Freedom Browser signer backend PR (out-of-repo) (FR-2.5)
 
@@ -60,6 +61,34 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
   - [ ] Differential test harness: `tests/differential.rs` scaffolded (consumes `tests/fixtures/*.json`, skips when none); fixtures must be captured outside this workspace — see `tests/fixtures/README.md`
   - [ ] (Later) TUI integration: AA account type + batched send UX
 - [ ] Railgun / privacy pools (FR-3.4)
+
+## Phase 4 — Contract browser (terminal DEX browsing)
+
+> Full scope: `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5). **Pure Rust, no cast subprocess** — alloy is the battle-tested core (it's the library Foundry itself is built on). Engine is generic wallet tooling (browses/calls *any* contract, not just DEXes). Read-only on other DEXes in v0.1; money-moving flows only through Vaughan's existing alloy signer layer. No FRs yet — scoped cross-repo, tracked here as the implementation home.
+
+### vaughan-core — browser engine (generic, no DEX knowledge)
+- [ ] ABI resolution: explorer `getabi` fetch (verified working on `api.scan.pulsechain.com`) + local cache; probe fallback for unverified contracts
+- [ ] Selector-probe capability library (ERC20 / V2 factory+pair / V3 factory+pool / WETH / …) → protocol fingerprint
+- [ ] Selector extraction from bytecode: PUSH4 opcode parse over `getCode` (~30 lines, unit-tested)
+- [ ] Signature lookup: 4byte.directory HTTP API (reqwest)
+- [ ] Generic call: alloy dyn-abi encode/decode (read-only) — `alloy-dyn-abi` already a core dep
+- [ ] Event-scan discovery: `pairs <factory>` via `PairCreated`/`PoolCreated` logs (no init hashes needed)
+- [ ] Unit tests: probe fingerprints against known contracts (PulseX factory `0x29eA…C523`, Multicall3 `0xcA11…`), PUSH4 parser, ABI cache
+
+### vaughan-tui — browser REPL view
+- [ ] `views/browser.rs`: input line + scrolling output pane, reusing existing `input.rs` (ratatui + crossterm)
+- [ ] Stateful context: `browse 0x…` sets current contract; `pairs`, `call …`, `info`, `probe` operate on it
+- [ ] History + tab completion + `help` (small glue; e.g. `tui-input`)
+- [ ] Batch mode for scripting: `vaughan browser -c "cmd"` (non-interactive, same engine)
+
+### DEX views — from wiz4rd-sdk (after engine exists; wiz4rd-sdk joins this workspace at integration)
+- [ ] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
+- [ ] Optional `dex price` aggregation view across probed DEXes
+- [ ] Deferred: write calls on other DEXes, cross-DEX routing
+
+### Known facts (verified 2026-08-18)
+- PulseX Router `0x165C…552d9` → Factory `0x29eA…C523`, PLSX `0x95B3…90ab`, 186,244 pairs
+- `getabi` endpoint works on `api.scan.pulsechain.com` (tested on Multicall3)
 
 ## Later — non-EVM families (deferred, no FR yet)
 

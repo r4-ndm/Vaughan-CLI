@@ -81,6 +81,15 @@ Freedom Browser signer-backend PR (out-of-repo, MPL-2.0).
 Harden kohaku-rs (tests + publish), wire ERC-5564 stealth, then Ambire AA in Rust
 (see `docs/ambire-aa.md`), then railgun/privacy pools when upstream stabilizes.
 
+### Phase 4 — Contract browser (terminal DEX browsing)
+Generic browser engine in `vaughan-core` (pure Rust, alloy-native: explorer-ABI
+fetch + cache, selector probing, dyn-abi generic calls, event-scan pair/pool
+discovery — browses/calls *any* contract, not just DEXes), surfaced as an
+interactive REPL view in `vaughan-tui` (stateful context, history/completion,
+batch mode). DEX-specific views (V2 reserve price, V3 `slot0` + tick math) come
+from `wiz4rd-sdk` when it joins the workspace. Read-only on other DEXes in v0.1.
+Full scope: `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5).
+
 ## Security model
 
 - Mnemonic encrypted at rest (Argon2id -> AES-256-GCM); plaintext only in memory while unlocked.
