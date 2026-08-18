@@ -4,6 +4,7 @@
 //! fee estimation, and transaction signing/broadcast. EVM-specific operations
 //! (nonce, ERC-20) live on [`EvmAdapter`] itself rather than the shared trait.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,10 +13,10 @@ use std::time::Duration;
 
 use alloy::eips::eip2718::Encodable2718;
 use alloy::network::{Ethereum, EthereumWallet, NetworkTransactionBuilder};
-use alloy::primitives::{utils::format_units, Address, Bytes, TxKind, B256, U256};
+use alloy::primitives::{keccak256, utils::format_units, Address, Bytes, TxKind, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::client::RpcClient;
-use alloy::rpc::types::eth::TransactionRequest;
+use alloy::rpc::types::eth::{Filter, TransactionRequest};
 use alloy::rpc::types::BlockNumberOrTag;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::SolCall;
@@ -45,6 +46,20 @@ pub const DEFAULT_PRIORITY_FEE_WEI: u64 = 1_500_000_000; // 1.5 gwei
 /// (3808 bytes on both, 2026-08-18; see `docs/optimizations.md`).
 pub const MULTICALL3: Address =
     alloy::primitives::address!("cA11bde05977b3631167028862bE2a173976CA11");
+
+/// EIP-20 `Transfer` event topic0 — `keccak256("Transfer(address,address,uint256)")`
+/// (EIP-20 §1). Auto asset discovery scans logs with this signature to find
+/// every token the wallet has ever sent or received. Computed once (alloy's
+/// `keccak256` is not const).
+pub fn transfer_topic0() -> B256 {
+    keccak256(b"Transfer(address,address,uint256)")
+}
+
+/// How far back auto asset discovery scans `Transfer` logs (blocks).
+/// Bounded so the `getLogs` call stays cheap on every scan; tokens received
+/// before the window are still reachable via the curated list or a raw
+/// address query.
+pub const DISCOVERY_BLOCK_WINDOW: u64 = 1_000_000;
 
 /// EVM adapter built on Alloy's HTTP provider, with transparent fallback to
 /// alternate RPC endpoints when the primary is down or rate-limited.
@@ -355,7 +370,12 @@ impl EvmAdapter {
     }
 
     /// EVM-specific: all balances of `wallet_address` — the native asset plus
-    /// every curated per-chain ERC-20 (auto asset detection).
+    /// every ERC-20 the wallet holds, detected from two sources:
+    ///
+    /// 1. the **curated per-chain registry** (see `tokens.rs`);
+    /// 2. **`Transfer`-event discovery** — any token the wallet has ever sent
+    ///    or received shows up in the EIP-20 `Transfer` logs, so it's added
+    ///    even when it's not on the curated list.
     ///
     /// ERC-20 balances are read in **one** Multicall3 `tryAggregate` call
     /// (provenance: mds1/multicall) with `requireSuccess=false`, so a token
@@ -365,8 +385,23 @@ impl EvmAdapter {
     pub async fn get_assets(&self, wallet_address: &str) -> Result<Vec<Balance>, WalletError> {
         let wallet = parse_address(wallet_address)?;
         let mut out = vec![self.get_balance(wallet_address).await?];
-        let tokens = tokens_for_chain(self.chain_id);
-        if tokens.is_empty() {
+
+        // Token set: curated registry + Transfer-event discovery (deduped,
+        // case-insensitive). Metadata for discovered tokens is read from the
+        // contract at scan time with graceful fallbacks (see
+        // `get_token_metadata`), so no registry entry is required.
+        let mut addresses: Vec<String> = tokens_for_chain(self.chain_id)
+            .into_iter()
+            .map(|t| t.address.to_string())
+            .collect();
+        for addr in self.discover_token_addresses(wallet_address).await? {
+            let a = addr.to_string();
+            if !addresses.iter().any(|existing| existing.eq_ignore_ascii_case(&a)) {
+                addresses.push(a);
+            }
+        }
+
+        if addresses.is_empty() {
             return Ok(out);
         }
 
@@ -386,13 +421,13 @@ impl EvmAdapter {
             .unwrap_or(false);
 
         if !multicall3_present {
-            return self.get_assets_sequential(wallet_address, out).await;
+            return self.get_assets_sequential(wallet_address, addresses, out).await;
         }
 
-        let calls: Vec<IMulticall3::Call> = tokens
+        let calls: Vec<IMulticall3::Call> = addresses
             .iter()
-            .map(|t| IMulticall3::Call {
-                target: parse_address(t.address).expect("registry addresses are valid"),
+            .map(|address| IMulticall3::Call {
+                target: parse_address(address).expect("addresses are valid"),
                 callData: IERC20Metadata::balanceOfCall { account: wallet }
                     .abi_encode()
                     .into(),
@@ -424,20 +459,20 @@ impl EvmAdapter {
                 let ret = IMulticall3::tryAggregateCall::abi_decode_returns(&raw)
                     .map_err(|e| WalletError::Other(format!("bad tryAggregate return: {e}")))?;
                 // `Result[]` — one `(success, returnData)` struct per call.
-                for (token, result) in tokens.iter().zip(ret.iter()) {
+                for (address, result) in addresses.iter().zip(ret.iter()) {
                     if !result.success {
                         continue; // reverting token — skip, don't fail the batch
                     }
                     match IERC20Metadata::balanceOfCall::abi_decode_returns(&result.returnData) {
                         Ok(raw_balance) if !raw_balance.is_zero() => {
                             let (symbol, name, decimals) =
-                                self.get_token_metadata(token.address).await?;
+                                self.get_token_metadata(address).await?;
                             out.push(Balance {
                                 token: TokenInfo {
                                     symbol,
                                     name,
                                     decimals,
-                                    contract_address: Some(token.address.to_string()),
+                                    contract_address: Some(address.clone()),
                                 },
                                 raw: raw_balance.to_string(),
                                 formatted: format_units(raw_balance, decimals)
@@ -459,16 +494,16 @@ impl EvmAdapter {
     }
 
     /// Sequential per-token fallback when Multicall3 is absent (or the batch
-    /// path can't run). One `eth_call` per curated token — same result set as
-    /// the batch, just more RPC round-trips.
+    /// path can't run). One `eth_call` per token — same result set as the
+    /// batch, just more RPC round-trips.
     async fn get_assets_sequential(
         &self,
         wallet_address: &str,
+        addresses: Vec<String>,
         mut out: Vec<Balance>,
     ) -> Result<Vec<Balance>, WalletError> {
-        let tokens = tokens_for_chain(self.chain_id);
-        for token in &tokens {
-            let bal = self.get_token_balance(token.address, wallet_address).await?;
+        for address in &addresses {
+            let bal = self.get_token_balance(address, wallet_address).await?;
             if !bal.raw.is_empty()
                 && U256::from_str(&bal.raw).unwrap_or_default() != U256::ZERO
             {
@@ -476,6 +511,64 @@ impl EvmAdapter {
             }
         }
         Ok(out)
+    }
+
+    /// Auto asset discovery: scan EIP-20 `Transfer` logs (topic0
+    /// [`transfer_topic0`]) involving `wallet_address` over the last
+    /// [`DISCOVERY_BLOCK_WINDOW`] blocks and return the unique token
+    /// addresses seen. Tokens sent *or* received count (both directions), so
+    /// anything the wallet has ever interacted with shows up in Assets even
+    /// when it's not on the curated list.
+    ///
+    /// The window is bounded so `getLogs` stays cheap per scan; this is a
+    /// best-effort helper — RPC `getLogs` limits (block range, result size)
+    /// may silently truncate, so the curated list remains the trusted seed.
+    pub async fn discover_token_addresses(
+        &self,
+        wallet_address: &str,
+    ) -> Result<Vec<Address>, WalletError> {
+        let wallet = parse_address(wallet_address)?;
+        let latest = self
+            .with_provider(|provider| async move {
+                provider
+                    .get_block_number()
+                    .await
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            })
+            .await?;
+        let from = latest.saturating_sub(DISCOVERY_BLOCK_WINDOW);
+
+        // Two queries (OR is not expressible across topic positions):
+        // 1. wallet as `to` (received), 2. wallet as `from` (sent).
+        let mut seen = HashSet::new();
+        for filter in [
+            Filter::new()
+                .from_block(from)
+                .to_block(latest)
+                .event_signature(transfer_topic0())
+                .topic2(wallet),
+            Filter::new()
+                .from_block(from)
+                .to_block(latest)
+                .event_signature(transfer_topic0())
+                .topic1(wallet),
+        ] {
+            let logs = self
+                .with_provider(|provider| {
+                    let filter = filter.clone();
+                    async move {
+                        provider
+                            .get_logs(&filter)
+                            .await
+                            .map_err(|e| WalletError::RpcError(e.to_string()))
+                    }
+                })
+                .await?;
+            for log in logs {
+                seen.insert(log.inner.address);
+            }
+        }
+        Ok(seen.into_iter().collect())
     }
 
     /// Best-effort `symbol()` read for `token` (EIP-20 metadata). A revert
@@ -836,6 +929,17 @@ impl ChainAdapter for EvmAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The EIP-20 Transfer topic0 is the canonical keccak of the event
+    /// signature (the same hash every ERC-20 emits, e.g. on Etherscan).
+    #[test]
+    fn transfer_topic0_is_canonical() {
+        let canonical: B256 =
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+                .parse()
+                .unwrap();
+        assert_eq!(transfer_topic0(), canonical);
+    }
 
     /// An adapter whose endpoints are never actually contacted (Http connects
     /// lazily per request), so the fallback loop can be tested offline.

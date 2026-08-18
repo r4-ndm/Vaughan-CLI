@@ -17,7 +17,12 @@ use alloy::sol;
 
 sol! {
     /// EIP-20 + optional metadata surface used for token balances.
+    ///
+    /// `Transfer` is the event auto asset detection scans (EIP-20 §1, the
+    /// only event the standard requires) — see `EvmAdapter::discover_*`.
     interface IERC20Metadata {
+        event Transfer(address indexed from, address indexed to, uint256 value);
+
         function balanceOf(address account) external view returns (uint256);
         function decimals() external view returns (uint8);
         function symbol() external view returns (string memory);
