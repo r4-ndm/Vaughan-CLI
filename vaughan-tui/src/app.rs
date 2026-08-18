@@ -251,8 +251,15 @@ impl App {
                     origin,
                     reply,
                 } => {
+                    let preview = provider::describe_approval(&kind, &self.wallet, &self.handle);
+                    let (title, details) = match preview {
+                        Ok(preview) => preview,
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                            continue;
+                        }
+                    };
                     self.approve_return = self.screen();
-                    let (title, details) = provider::describe_approval(&kind, &self.wallet);
                     self.view = View::Approve(ApproveView::new(title, origin, details));
                     self.pending_approval = Some(PendingApproval { kind: *kind, reply });
                     // One approval on screen at a time; remaining queued

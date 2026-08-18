@@ -236,6 +236,22 @@ impl WalletState {
         adapter.sign_transaction(ChainTransaction::Evm(tx)).await
     }
 
+    /// Estimate the fee for an arbitrary EVM transaction payload.
+    ///
+    /// Used by provider approval UX to show the user a fee before signing.
+    pub async fn estimate_transaction_fee(&self, tx: EvmTransaction) -> Result<Fee, WalletError> {
+        self.require_unlocked()?;
+        let net = self.networks.active();
+        let adapter = EvmAdapter::new(
+            &net.rpc_url,
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        adapter.estimate_fee(&ChainTransaction::Evm(tx)).await
+    }
+
     /// Sign `message` as an EIP-191 personal message with the active account;
     /// returns the signature as a `0x`-prefixed hex string.
     pub fn sign_message(&self, message: &[u8]) -> Result<String, WalletError> {

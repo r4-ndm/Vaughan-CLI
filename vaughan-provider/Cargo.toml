@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 # The same crate doubles as the test client; "connect" adds the client side.

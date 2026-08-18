@@ -12,6 +12,7 @@
 //! non-object payloads) are answered with JSON-RPC error responses and the
 //! connection stays open; only transport failures close it.
 
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
@@ -22,6 +23,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 };
 use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 use tokio_tungstenite::{accept_hdr_async_with_config, WebSocketStream};
+use url::Url;
 
 use crate::error::ProviderError;
 use crate::events::EventBus;
@@ -35,10 +37,72 @@ pub const DEFAULT_PORT: u16 = 8745;
 /// Largest accepted JSON-RPC frame (typed-data payloads can be sizable).
 const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
+/// Canonicalized trusted-origin allowlist (FR-2.4).
+///
+/// When empty, no origin filtering is enforced (legacy-compatible mode).
+#[derive(Debug, Clone, Default)]
+struct TrustedHosts {
+    allowed_origins: HashSet<String>,
+}
+
+impl TrustedHosts {
+    /// Build from human-entered origin strings (`scheme://host[:port]`).
+    fn try_from_origins<I, S>(origins: I) -> Result<Self, ProviderError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut allowed_origins = HashSet::new();
+        for raw in origins {
+            let raw = raw.as_ref().trim();
+            if raw.is_empty() {
+                continue;
+            }
+            let normalized = normalize_origin(raw)?;
+            allowed_origins.insert(normalized);
+        }
+        Ok(Self { allowed_origins })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.allowed_origins.is_empty()
+    }
+
+    /// Whether this origin is permitted to use the provider.
+    fn allows(&self, origin: Option<&str>) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let Some(origin) = origin else {
+            return false;
+        };
+        match normalize_origin(origin) {
+            Ok(origin) => self.allowed_origins.contains(&origin),
+            Err(_) => false,
+        }
+    }
+}
+
+/// Normalize an origin so matching is stable across case/slash variations.
+fn normalize_origin(raw: &str) -> Result<String, ProviderError> {
+    let url = Url::parse(raw).map_err(|_| {
+        ProviderError::InvalidParams(format!(
+            "invalid trusted origin `{raw}` (expected scheme://host[:port])"
+        ))
+    })?;
+    match url.origin() {
+        url::Origin::Opaque(_) => Err(ProviderError::InvalidParams(format!(
+            "invalid trusted origin `{raw}` (origin must include host)"
+        ))),
+        origin => Ok(origin.unicode_serialization()),
+    }
+}
+
 /// Loopback-only JSON-RPC server.
 pub struct ProviderServer {
     listener: TcpListener,
     local_addr: SocketAddr,
+    trusted_hosts: TrustedHosts,
 }
 
 impl ProviderServer {
@@ -53,7 +117,21 @@ impl ProviderServer {
         Ok(Self {
             listener,
             local_addr,
+            trusted_hosts: TrustedHosts::default(),
         })
+    }
+
+    /// Configure the trusted-origin allowlist (FR-2.4).
+    ///
+    /// Entries must be full origins (`scheme://host[:port]`). When at least one
+    /// origin is configured, requests without an `Origin` header are denied.
+    pub fn with_trusted_origins<I, S>(mut self, origins: I) -> Result<Self, ProviderError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.trusted_hosts = TrustedHosts::try_from_origins(origins)?;
+        Ok(self)
     }
 
     /// The bound address (useful after binding port `0`).
@@ -89,8 +167,9 @@ impl ProviderServer {
             }
             let handler = Arc::clone(&handler);
             let events = events.clone();
+            let trusted_hosts = self.trusted_hosts.clone();
             tokio::spawn(async move {
-                handle_connection(stream, peer, handler, events).await;
+                handle_connection(stream, peer, handler, events, trusted_hosts).await;
             });
         }
     }
@@ -126,6 +205,7 @@ async fn handle_connection(
     peer: SocketAddr,
     handler: Arc<dyn RequestHandler>,
     events: EventBus,
+    trusted_hosts: TrustedHosts,
 ) {
     let origin = Arc::new(Mutex::new(None::<String>));
     // `WebSocketConfig` is `#[non_exhaustive]`, so mutate the defaults.
@@ -148,6 +228,10 @@ async fn handle_connection(
         .lock()
         .expect("origin capture mutex poisoned")
         .clone();
+    if !trusted_hosts.allows(origin.as_deref()) {
+        tracing::warn!(%peer, ?origin, "rejecting untrusted provider origin");
+        return;
+    }
     let ctx = RequestCtx { peer, origin };
     let mut events_rx = events.subscribe();
     tracing::debug!(%peer, "provider client connected");
@@ -285,8 +369,13 @@ mod tests {
     async fn start_server(
         handler: Arc<dyn RequestHandler>,
         events: Option<EventBus>,
+        trusted_origins: Option<Vec<&str>>,
     ) -> (JoinHandle, String, EventBus) {
         let server = ProviderServer::bind(0).await.unwrap();
+        let server = match trusted_origins {
+            Some(origins) => server.with_trusted_origins(origins).unwrap(),
+            None => server,
+        };
         let url = server.url();
         let events = events.unwrap_or_default();
         let task = tokio::spawn(server.serve(handler, events.clone()));
@@ -316,10 +405,21 @@ mod tests {
         assert_eq!(server.url(), format!("ws://127.0.0.1:{}", addr.port()));
     }
 
+    #[test]
+    fn trusted_origins_reject_bad_entries() {
+        let server = ProviderServer::bind(0);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let server = rt.block_on(server).unwrap();
+        let err = server.with_trusted_origins(["not-an-origin"]);
+        assert!(err.is_err(), "must reject invalid origin");
+        let err = err.err().unwrap();
+        assert_eq!(err.code(), crate::error::codes::INVALID_PARAMS);
+    }
+
     #[tokio::test]
     async fn answers_request_over_real_websocket() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None).await;
+        let (task, url, _events) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text(
@@ -352,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn echoes_origin_header() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None).await;
+        let (task, url, _events) = start_server(erased, None, None).await;
 
         // Build from the URL so tungstenite fills in the handshake headers,
         // then add the Origin header the server should capture.
@@ -383,7 +483,7 @@ mod tests {
     async fn answers_errors_with_matching_id() {
         let (_, erased) =
             recording_handler(Some(ProviderError::Unauthorized("unknown origin".into())));
-        let (task, url, _events) = start_server(erased, None).await;
+        let (task, url, _events) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text(
@@ -405,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn replies_to_malformed_frames_with_parse_error() {
         let (_, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None).await;
+        let (task, url, _events) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text("{not json".into())).await.unwrap();
@@ -422,7 +522,7 @@ mod tests {
     #[tokio::test]
     async fn notifications_get_no_reply() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None).await;
+        let (task, url, _events) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text(
@@ -444,7 +544,7 @@ mod tests {
     #[tokio::test]
     async fn keeps_connection_open_after_request() {
         let (_, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None).await;
+        let (task, url, _events) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         for id in 1..=3 {
@@ -468,7 +568,7 @@ mod tests {
     #[tokio::test]
     async fn relays_events_to_connected_clients() {
         let (_, erased) = recording_handler(None);
-        let (task, url, events) = start_server(erased, None).await;
+        let (task, url, events) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         // Publish after the connection is established.
@@ -493,6 +593,78 @@ mod tests {
         let value = parse_reply(second);
         assert_eq!(value["method"], "chainChanged");
         assert_eq!(value["params"], "0x171");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_origin_when_allowlist_enabled() {
+        let (_, erased) = recording_handler(None);
+        let (task, url, _events) =
+            start_server(erased, None, Some(vec!["https://app.example"])).await;
+
+        let mut ws = connect(&url).await;
+        ws.send(Message::Text(
+            r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let next = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .expect("socket closes");
+        assert!(matches!(next, Ok(Message::Close(_)) | Err(_)));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn allows_trusted_origin_when_allowlist_enabled() {
+        let (handler, erased) = recording_handler(None);
+        let (task, url, _events) =
+            start_server(erased, None, Some(vec!["https://app.example"])).await;
+
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://app.example/".parse().unwrap());
+        let (mut ws, _) = connect_async(request).await.unwrap();
+        ws.send(Message::Text(
+            r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let reply = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let value = parse_reply(reply);
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["result"], "ok:eth_chainId");
+        assert_eq!(handler.exchanges().lock().unwrap().len(), 1);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_untrusted_origin_when_allowlist_enabled() {
+        let (_, erased) = recording_handler(None);
+        let (task, url, _events) =
+            start_server(erased, None, Some(vec!["https://allowed.example"])).await;
+
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://evil.example".parse().unwrap());
+        let (mut ws, _) = connect_async(request).await.unwrap();
+        ws.send(Message::Text(
+            r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let next = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .expect("socket closes");
+        assert!(matches!(next, Ok(Message::Close(_)) | Err(_)));
         task.abort();
     }
 }
