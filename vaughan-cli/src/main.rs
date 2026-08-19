@@ -120,6 +120,17 @@ enum Command {
         #[arg(long)]
         rpc_url: Option<String>,
     },
+    /// Ask the AI Agent to inspect contracts, query balances, or prepare proposals.
+    Agent {
+        /// The query or instruction for the AI agent subsystem.
+        prompt: String,
+        /// Network id override (e.g. pulsechain, pulsechain-testnet-v4).
+        #[arg(long)]
+        network: Option<String>,
+        /// RPC url override.
+        #[arg(long)]
+        rpc_url: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -386,6 +397,91 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 })
                 .await?;
+        }
+        Command::Agent {
+            prompt,
+            network,
+            rpc_url,
+        } => {
+            use std::str::FromStr;
+            if mode == OperatingMode::HumanOnly {
+                anyhow::bail!("AI agent is disabled in Human-Only operating mode (use --mode assist or --mode degen)");
+            }
+            if let Some(id) = network {
+                wallet.set_active_network(&id)?;
+            }
+            let active_net = wallet.networks().active();
+            let effective_rpc = rpc_url.unwrap_or_else(|| active_net.rpc_url.clone());
+
+            let context = vaughan_agent::tools::ToolContext {
+                rpc_url: effective_rpc,
+                chain_id: active_net.chain_id,
+                active_address: wallet
+                    .active_address()
+                    .ok()
+                    .and_then(|a| alloy::primitives::Address::from_str(a).ok()),
+            };
+
+            let registry = vaughan_agent::tools::default_assist_registry();
+            let tokens: Vec<&str> = prompt.split_whitespace().collect();
+            if tokens.is_empty() {
+                anyhow::bail!("empty prompt");
+            }
+            let cmd = tokens[0].to_lowercase();
+            match cmd.as_str() {
+                "inspect" => {
+                    if tokens.len() < 2 {
+                        anyhow::bail!("usage: vaughan agent \"inspect <0xAddress>\"");
+                    }
+                    let res = registry
+                        .execute(
+                            "inspect_contract",
+                            serde_json::json!({ "address": tokens[1] }),
+                            &context,
+                        )
+                        .await?;
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                }
+                "balance" => {
+                    let addr = if tokens.len() > 1 {
+                        tokens[1].to_string()
+                    } else if let Some(a) = context.active_address {
+                        format!("{a:#x}")
+                    } else {
+                        anyhow::bail!("no account address provided");
+                    };
+                    let res = registry
+                        .execute(
+                            "get_balance",
+                            serde_json::json!({ "account_address": addr }),
+                            &context,
+                        )
+                        .await?;
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                }
+                "transfer" => {
+                    if tokens.len() < 3 {
+                        anyhow::bail!(
+                            "usage: vaughan agent \"transfer <0xRecipient> <amount_wei>\""
+                        );
+                    }
+                    let res = registry
+                        .execute(
+                            "propose_transfer",
+                            serde_json::json!({
+                                "recipient": tokens[1],
+                                "amount": tokens[2],
+                                "explanation": format!("CLI agent transfer of {} wei to {}", tokens[2], tokens[1])
+                            }),
+                            &context,
+                        )
+                        .await?;
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                }
+                _ => {
+                    println!("[Agent Response]: Processed prompt: \"{prompt}\"");
+                }
+            }
         }
     }
     Ok(())

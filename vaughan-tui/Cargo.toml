@@ -6,6 +6,7 @@ description = "ratatui terminal frontend for Vaughan"
 
 [dependencies]
 vaughan-aa = { path = "../vaughan-aa" }
+vaughan-agent = { path = "../vaughan-agent" }
 vaughan-core = { path = "../vaughan-core" }
 vaughan-provider = { path = "../vaughan-provider" }
 alloy = { workspace = true }

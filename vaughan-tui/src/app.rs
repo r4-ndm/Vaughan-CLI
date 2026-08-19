@@ -11,10 +11,12 @@ use vaughan_core::core::{StateManager, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
+use std::str::FromStr;
+
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, ApproveView, AssetsView, BrowserView, DashboardView, OnboardingView, ReceiveView,
-    SendView, SettingsView, UnlockView,
+    AaSendView, AgentView, ApproveView, AssetsView, BrowserView, DashboardView, OnboardingView,
+    ReceiveView, SendView, SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -29,6 +31,7 @@ pub enum Screen {
     Settings,
     Assets,
     Browser,
+    Agent,
     Approve,
 }
 
@@ -44,6 +47,7 @@ impl Screen {
             Self::Settings => "Settings",
             Self::Assets => "Assets",
             Self::Browser => "Contract Browser",
+            Self::Agent => "AI Agent",
             Self::Approve => "Approve",
         }
     }
@@ -75,6 +79,7 @@ pub enum View {
     Settings(SettingsView),
     Assets(AssetsView),
     Browser(BrowserView),
+    Agent(AgentView),
     Approve(ApproveView),
 }
 
@@ -90,6 +95,7 @@ impl View {
             Self::Settings(_) => Screen::Settings,
             Self::Assets(_) => Screen::Assets,
             Self::Browser(_) => Screen::Browser,
+            Self::Agent(_) => Screen::Agent,
             Self::Approve(_) => Screen::Approve,
         }
     }
@@ -105,6 +111,7 @@ impl View {
             Self::Settings(v) => v.render(frame, area, wallet),
             Self::Assets(v) => v.render(frame, area, wallet),
             Self::Browser(v) => v.render(frame, area, wallet),
+            Self::Agent(v) => v.render(frame, area, wallet.operating_mode()),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
     }
@@ -126,6 +133,17 @@ impl View {
             Self::Settings(v) => v.handle_key(key, wallet, handle, events),
             Self::Assets(v) => v.handle_key(key, wallet, handle, events),
             Self::Browser(v) => v.handle_key(key, wallet, handle, events),
+            Self::Agent(v) => {
+                let context = vaughan_agent::tools::ToolContext {
+                    rpc_url: wallet.networks().active().rpc_url.clone(),
+                    chain_id: wallet.networks().active().chain_id,
+                    active_address: wallet
+                        .active_address()
+                        .ok()
+                        .and_then(|a| alloy::primitives::Address::from_str(a).ok()),
+                };
+                v.handle_key(key, wallet.operating_mode(), &context)
+            }
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
     }
@@ -237,7 +255,8 @@ impl App {
                     Screen::Receive => Screen::Settings,
                     Screen::Settings => Screen::Assets,
                     Screen::Assets => Screen::Browser,
-                    Screen::Browser => Screen::Dashboard,
+                    Screen::Browser => Screen::Agent,
+                    Screen::Agent => Screen::Dashboard,
                     other => other,
                 };
                 if next != self.screen() {
@@ -389,6 +408,7 @@ impl App {
                 View::Assets(AssetsView::with_assets(assets))
             }
             Screen::Browser => View::Browser(BrowserView::default()),
+            Screen::Agent => View::Agent(AgentView::default()),
             // Approve is entered directly from `poll_provider` (it needs the
             // pending request + reply channel), never via navigation; this arm
             // is only here to keep the match exhaustive.

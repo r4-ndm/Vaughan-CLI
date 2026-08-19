@@ -111,6 +111,7 @@ impl DashboardView {
             KeyCode::Char('n') => KeyOutcome::Navigate(Screen::Settings),
             KeyCode::Char('a') => KeyOutcome::Navigate(Screen::Assets),
             KeyCode::Char('c') => KeyOutcome::Navigate(Screen::Browser),
+            KeyCode::Char('g') => KeyOutcome::Navigate(Screen::Agent),
             _ => KeyOutcome::NotHandled,
         }
     }

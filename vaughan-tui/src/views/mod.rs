@@ -1,6 +1,7 @@
 //! View layer: shared chrome plus per-screen views.
 
 pub mod aa_send;
+pub mod agent;
 pub mod approve;
 pub mod assets;
 pub mod browser;
@@ -12,6 +13,7 @@ pub mod settings;
 pub mod unlock;
 
 pub use aa_send::AaSendView;
+pub use agent::AgentView;
 pub use approve::ApproveView;
 pub use assets::AssetsView;
 pub use browser::BrowserView;
