@@ -86,8 +86,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 
 
-### DEX views — from wiz4rd-sdk (after engine exists; wiz4rd-sdk joins this workspace at integration)
-- [ ] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
+### DEX views — from wiz4rd-sdk (integrated into workspace)
+- [x] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
 - [ ] Optional `dex price` aggregation view across probed DEXes
 - [ ] Deferred: write calls on other DEXes, cross-DEX routing
 
