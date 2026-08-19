@@ -183,8 +183,54 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] `s`/`v`/`n` navigate to Send/Receive/Settings; locked wallet renders `(locked)` instead of the address
 - [x] 174 tests green workspace-wide (incl. 37 integration tests); no new clippy warnings
 
+## Phase 5 — AI Agent Integration & Multi-Mode Security Sandbox
+
+> Full specification: `docs/AI-AGENT-ARCHITECTURE.md`.
+> Complete security sandboxing: 3-tier operating mode decided at startup, zero private key access for the advisor, isolated burner profile for degen bot, deterministic circuit breakers.
+
+### Step 1: 3-Tier Operating Mode & Profile Isolation
+- [ ] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `DegenTrader` (FR-5.1)
+- [ ] Session-level immutability: mode is selected at startup/welcome screen and locked permanently for that process (FR-5.1)
+- [ ] Profile Directory Isolation: Degen Mode runs in isolated directory `~/.vaughan/profiles/degen/` with separate keys/vault (FR-5.2)
+- [ ] Unit & integration tests: assert `HumanOnly` mode completely unloads AI modules and disallows toggling
+
+### Step 2: `vaughan-agent` Workspace Crate & Provider Adapters
+- [ ] New `vaughan-agent` crate added to workspace
+- [ ] LLM Provider trait: `LlmClient` with streaming chat completion & function calling
+- [ ] Local Ollama / `llama.cpp` provider (`http://127.0.0.1:11434`) (FR-5.7)
+- [ ] Cloud provider (Google Gemini API / OpenAI) with encrypted vault storage of API keys (FR-5.7)
+
+### Step 3: Structured Tool Registry & Sensory Layer
+- [ ] Tool trait & JSON schema generation
+- [ ] Read-only tools wrapping `wiz4rd-engine`: `inspect_contract`, `get_balance`, `get_dex_reserves`, `search_pairs` (FR-5.4)
+- [ ] Pre-flight simulation tool: `simulate_call` via `eth_call` (FR-5.4)
+
+### Step 4: Propose-Only Write Tools (Assist Mode)
+- [ ] `TxProposal` struct (typed target, calldata, value, fee estimate, simulation result) (FR-5.5)
+- [ ] Proposal tools: `propose_transfer`, `propose_swap`, `propose_batch_7702`, `propose_contract_call` (FR-5.5)
+- [ ] Human confirmation gate: UI decodes raw bytecode independently of AI prompt (FR-5.5)
+
+### Step 5: Degen Mode Autonomous Trader & Circuit Breakers
+- [ ] Autonomous execution loop with isolated burner wallet signer (FR-5.6)
+- [ ] Circuit breaker: position sizing limit (max % of balance per trade) (FR-5.6)
+- [ ] Circuit breaker: gas burn ceiling & consecutive error tripwire (FR-5.6)
+- [ ] Circuit breaker: hard slippage limit (max 1.0%) (FR-5.6)
+- [ ] Emergency stop (kill-switch via `Esc`/`q`) (FR-5.6)
+
+### Step 6: TUI Agent View & CLI Non-Interactive Execution
+- [ ] `vaughan-tui/src/views/agent.rs`: Interactive chat REPL with streaming responses, tool call status, and confirmation cards (FR-5.8)
+- [ ] Welcome screen 3-way mode selector UI (FR-5.1)
+- [ ] `vaughan agent "<prompt>"` non-interactive CLI subcommand (FR-5.8)
+
+### Step 7: Bomb-Proofing & Anvil Integration Tests
+- [ ] `vaughan-agent/tests/agent_anvil.rs`: End-to-end tests driving the agent against local Anvil node
+- [ ] Test: Agent correctly inspects Anvil-deployed token and executes read tools
+- [ ] Test: Agent proposes transfer -> Human approves -> Tx confirms on Anvil
+- [ ] Test: Degen Mode circuit breaker triggers and halts on excessive gas or high slippage
+
 ## Later — non-EVM families (deferred, no FR yet)
 
 - [ ] `chains/bitcoin/` adapter (UTXO model, coin selection, `bdk`)
 - [ ] `chains/polkadot/` adapter (Substrate, SS58 addresses, weight-based fees, `subxt`)
+
 - [ ] Family-aware derivation schemes (BIP-44 per coin type; Substrate `//`-path secret URIs)
