@@ -125,20 +125,33 @@ impl BrowserView {
                     } else {
                         String::new()
                     };
-                    format!(" [V2 Pair | Reserves: {}, {}{}]", reserve0, reserve1, price_str)
+                    format!(
+                        " [V2 Pair | Reserves: {}, {}{}]",
+                        reserve0, reserve1, price_str
+                    )
                 }
                 ContractFingerprint::UniswapV2Factory { all_pairs_length } => {
                     format!(" [V2 Factory | Pairs: {}]", all_pairs_length.unwrap_or(0))
                 }
-                ContractFingerprint::UniswapV3Pool { fee, tick, liquidity, .. } => {
+                ContractFingerprint::UniswapV3Pool {
+                    fee,
+                    tick,
+                    liquidity,
+                    ..
+                } => {
                     let price_str = if let Some(p) = insp.fingerprint.v3_spot_price(18, 18) {
                         format!(" | Price: {:.6}", p)
                     } else {
                         String::new()
                     };
                     let tick_str = tick.map(|t| format!(" | Tick: {}", t)).unwrap_or_default();
-                    let liq_str = liquidity.map(|l| format!(" | Liq: {}", l)).unwrap_or_default();
-                    format!(" [V3 Pool | Fee: {}{}{}{}]", fee, price_str, tick_str, liq_str)
+                    let liq_str = liquidity
+                        .map(|l| format!(" | Liq: {}", l))
+                        .unwrap_or_default();
+                    format!(
+                        " [V3 Pool | Fee: {}{}{}{}]",
+                        fee, price_str, tick_str, liq_str
+                    )
                 }
                 ContractFingerprint::UniswapV3Factory => " [V3 Factory]".to_string(),
                 ContractFingerprint::Multicall3 => " [Multicall3]".to_string(),

@@ -674,3 +674,69 @@ async fn sign_transaction_denied_returns_4001_and_broadcasts_nothing() {
     consumer.abort();
     task.abort();
 }
+
+/// `eth_sendTransaction` with calldata to a planted contract: the call lands
+/// (receipt status `0x1`) and the `to` field is the contract.
+#[tokio::test(flavor = "multi_thread")]
+async fn approve_contract_call_with_data() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+
+    const CONTRACT: &str = "0x1111111111111111111111111111111111111111";
+    anvil
+        .rpc("anvil_setCode", json!([CONTRACT, "0x602a60005260206000f3"]))
+        .expect("anvil_setCode");
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(rx, wallet, |_| Ok(()), seen2));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "eth_sendTransaction",
+        json!([{
+            "from": sender,
+            "to": CONTRACT,
+            "data": "0x00",
+            "value": "0x0"
+        }]),
+    )
+    .await;
+    if reply["error"].is_object() {
+        panic!("eth_sendTransaction returned an error: {}", reply["error"]);
+    }
+    let tx_hash = reply["result"].as_str().expect("tx hash").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut receipt = None;
+    while Instant::now() < deadline {
+        if let Ok(r) = anvil.rpc("eth_getTransactionReceipt", json!([tx_hash.clone()])) {
+            if !r.is_null() {
+                receipt = Some(r);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let receipt = receipt.expect("contract-call receipt");
+    assert_eq!(receipt["status"].as_str().unwrap(), "0x1");
+    assert!(
+        receipt["to"]
+            .as_str()
+            .unwrap()
+            .eq_ignore_ascii_case(CONTRACT),
+        "receipt.to must be the planted contract"
+    );
+    assert!(
+        seen.lock().unwrap().iter().any(|s| s.starts_with("send:")),
+        "approval prompt must have been shown"
+    );
+
+    consumer.abort();
+    task.abort();
+}

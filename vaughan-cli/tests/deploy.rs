@@ -11,7 +11,7 @@
 //! ```
 
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -108,7 +108,7 @@ impl Drop for Anvil {
 }
 
 /// A fresh vault in a temp dir, restored from the anvil mnemonic (funded).
-fn new_vault(dir: &PathBuf) -> PathBuf {
+fn new_vault(dir: &Path) -> PathBuf {
     let vault = dir.join("wallet.json");
     let out = Command::new(bin())
         .args(["--vault"])
@@ -153,7 +153,7 @@ fn cli_send(vault: &PathBuf, anvil: &Anvil, args: &[&str]) -> (bool, String, Str
 fn deploy_contract_and_verify_code() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let vault = new_vault(&dir.path().to_path_buf());
+    let vault = new_vault(dir.path());
 
     // Minimal contract: runtime is `PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20
     // PUSH1 0x00 RETURN` (returns 0x2a). Full creation bytecode: copy the
@@ -188,7 +188,7 @@ fn deploy_contract_and_verify_code() {
 fn native_transfer_moves_balance() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let vault = new_vault(&dir.path().to_path_buf());
+    let vault = new_vault(dir.path());
 
     // Second anvil dev account (derived from the mnemonic, index 1).
     let recipient = anvil_dev_address(1);
@@ -219,7 +219,7 @@ fn native_transfer_moves_balance() {
 fn balance_reports_funded_account() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let vault = new_vault(&dir.path().to_path_buf());
+    let vault = new_vault(dir.path());
 
     let out = Command::new(bin())
         .args(["--vault"])
@@ -283,7 +283,7 @@ fn insufficient_funds_fails_cleanly() {
 fn wrong_password_fails_cleanly() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let vault = new_vault(&dir.path().to_path_buf());
+    let vault = new_vault(dir.path());
 
     let out = Command::new(bin())
         .args(["--vault"])
@@ -316,7 +316,7 @@ fn wrong_password_fails_cleanly() {
 fn browse_deployed_contract_and_raw_call() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let vault = new_vault(&dir.path().to_path_buf());
+    let vault = new_vault(dir.path());
 
     // Deploy minimal contract that returns 0x2a
     let runtime = "602a60005260206000f3";
@@ -377,6 +377,71 @@ fn browse_deployed_contract_and_raw_call() {
     );
 }
 
+#[test]
+fn assets_reports_native_balance() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = new_vault(dir.path());
+
+    let out = Command::new(bin())
+        .args(["--vault"])
+        .arg(&vault)
+        .args([
+            "assets",
+            "--network",
+            "pulsechain-testnet-v4",
+            "--rpc-url",
+            &anvil.url(),
+        ])
+        .args(["--password-env", PASSWORD_ENV])
+        .env(PASSWORD_ENV, PASSWORD)
+        .output()
+        .expect("vaughan assets");
+    assert!(
+        out.status.success(),
+        "assets failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tPLS"),
+        "assets must list the native testnet token:\n{stdout}"
+    );
+}
+
+#[test]
+fn contract_call_to_deployed_code_succeeds() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = new_vault(dir.path());
+
+    let runtime = "602a60005260206000f3";
+    let bytecode = format!("0x600a600c600039600a6000f3{runtime}");
+    let (ok, stdout, stderr) = cli_send(&vault, &anvil, &["--data", &bytecode, "--value", "0"]);
+    assert!(ok, "deploy failed: {stderr}");
+    let tx_hash = stdout.trim().to_string();
+    let contract = receipt_contract_address(&anvil, &tx_hash).expect("contract address");
+
+    let (ok, stdout, stderr) =
+        cli_send(&vault, &anvil, &[&contract, "--data", "0x", "--value", "0"]);
+    assert!(ok, "contract call failed: {stderr}");
+    let call_hash = stdout.trim().to_string();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut status = None;
+    while Instant::now() < deadline {
+        if let Some(s) = receipt_status(&anvil, &call_hash) {
+            status = Some(s);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        status.as_deref(),
+        Some("0x1"),
+        "call to deployed runtime must succeed"
+    );
+}
+
 // ---- helpers ----
 
 // The vault restored from the anvil mnemonic derives the same addresses
@@ -410,4 +475,15 @@ fn receipt_contract_address(anvil: &Anvil, tx_hash: &str) -> Option<String> {
         return None;
     }
     receipt["contractAddress"].as_str().map(|s| s.to_string())
+}
+
+/// Receipt `status` (`0x1` / `0x0`) once mined.
+fn receipt_status(anvil: &Anvil, tx_hash: &str) -> Option<String> {
+    let receipt = anvil
+        .rpc("eth_getTransactionReceipt", json!([tx_hash]))
+        .ok()?;
+    if receipt.is_null() {
+        return None;
+    }
+    receipt["status"].as_str().map(|s| s.to_string())
 }

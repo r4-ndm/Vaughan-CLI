@@ -53,7 +53,10 @@ pub enum ContractFingerprint {
 impl ContractFingerprint {
     /// Calculate V2 spot price (token1 per token0) normalized for decimals.
     pub fn v2_spot_price(&self, decimals_token0: u8, decimals_token1: u8) -> Option<f64> {
-        if let ContractFingerprint::UniswapV2Pair { reserve0, reserve1, .. } = self {
+        if let ContractFingerprint::UniswapV2Pair {
+            reserve0, reserve1, ..
+        } = self
+        {
             let r0 = reserve0.to::<u128>() as f64 / 10f64.powi(decimals_token0 as i32);
             let r1 = reserve1.to::<u128>() as f64 / 10f64.powi(decimals_token1 as i32);
             if r0 > 0.0 {
@@ -65,7 +68,11 @@ impl ContractFingerprint {
 
     /// Calculate V3 spot price (token1 per token0) from sqrtPriceX96 normalized for decimals.
     pub fn v3_spot_price(&self, decimals_token0: u8, decimals_token1: u8) -> Option<f64> {
-        if let ContractFingerprint::UniswapV3Pool { sqrt_price_x96: Some(sqrt), .. } = self {
+        if let ContractFingerprint::UniswapV3Pool {
+            sqrt_price_x96: Some(sqrt),
+            ..
+        } = self
+        {
             let sqrt_val = sqrt.to::<u128>() as f64 / 2f64.powi(96);
             let raw_p = sqrt_val * sqrt_val;
             let dec_adj = 10f64.powi(decimals_token0 as i32 - decimals_token1 as i32);
@@ -135,7 +142,11 @@ impl ContractProber {
             probe_u32(provider, target, selectors::FEE).await,
         ) {
             let slot0_data = probe_slot0(provider, target).await;
-            if slot0_data.is_some() || probe_call(provider, target, selectors::SLOT0).await.is_some() {
+            if slot0_data.is_some()
+                || probe_call(provider, target, selectors::SLOT0)
+                    .await
+                    .is_some()
+            {
                 let (sqrt_price_x96, tick) = slot0_data.unwrap_or((None, None));
                 let liquidity = probe_u128(provider, target, selectors::LIQUIDITY).await;
                 return ContractFingerprint::UniswapV3Pool {
@@ -314,7 +325,10 @@ async fn probe_u128<P: Provider>(provider: &P, target: Address, selector: [u8; 4
     }
 }
 
-async fn probe_slot0<P: Provider>(provider: &P, target: Address) -> Option<(Option<U256>, Option<i32>)> {
+async fn probe_slot0<P: Provider>(
+    provider: &P,
+    target: Address,
+) -> Option<(Option<U256>, Option<i32>)> {
     let out = probe_call(provider, target, selectors::SLOT0).await?;
     if out.len() >= 64 {
         let sqrt = U256::from_be_slice(&out[..32]);

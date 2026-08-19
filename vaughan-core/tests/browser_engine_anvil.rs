@@ -12,7 +12,7 @@ use alloy::providers::RootProvider;
 use alloy::transports::http::reqwest::Url;
 use alloy_dyn_abi::DynSolValue;
 use serde_json::{json, Value};
-use vaughan_core::browser::events::PairDiscovery;
+use vaughan_core::browser::events::{PairDiscovery, PAIR_CREATED_TOPIC};
 use vaughan_core::browser::probe::ContractFingerprint;
 use vaughan_core::browser::BrowserEngine;
 
@@ -110,7 +110,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         current_offset += 1 + chunks * 36 + 6;
     }
@@ -138,7 +138,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         for c in 0..chunks {
             let start = c * 32;
@@ -503,7 +503,7 @@ async fn test_anvil_v2_spot_price_calculation() {
     let routes = vec![
         ([0x0d, 0xfe, 0x16, 0x81], abi_encode_address(token0)), // token0()
         ([0xd2, 0x12, 0x20, 0xa7], abi_encode_address(token1)), // token1()
-        ([0x09, 0x02, 0xf1, 0xac], reserves_val.abi_encode()), // getReserves()
+        ([0x09, 0x02, 0xf1, 0xac], reserves_val.abi_encode()),  // getReserves()
     ];
     anvil.set_code(pair_addr, &assemble_dispatcher(&routes));
 
@@ -516,7 +516,11 @@ async fn test_anvil_v2_spot_price_calculation() {
     ));
 
     let spot_price = inspection.fingerprint.v2_spot_price(18, 18);
-    assert_eq!(spot_price, Some(2.0), "spot price token1/token0 must be 2.0");
+    assert_eq!(
+        spot_price,
+        Some(2.0),
+        "spot price token1/token0 must be 2.0"
+    );
 }
 
 #[tokio::test]
@@ -544,7 +548,10 @@ async fn test_anvil_v3_pool_slot0_price_and_liquidity() {
         ([0xdd, 0xca, 0x3f, 0x43], abi_encode_u256(U256::from(500))), // fee() = 0.05%
         ([0x0d, 0xfe, 0x16, 0x81], abi_encode_address(token0)), // token0()
         ([0xd2, 0x12, 0x20, 0xa7], abi_encode_address(token1)), // token1()
-        ([0x1a, 0x68, 0x65, 0x02], abi_encode_u256(U256::from(5_000_000u128))), // liquidity()
+        (
+            [0x1a, 0x68, 0x65, 0x02],
+            abi_encode_u256(U256::from(5_000_000u128)),
+        ), // liquidity()
     ];
     anvil.set_code(pool_addr, &assemble_dispatcher(&routes));
 
@@ -566,5 +573,72 @@ async fn test_anvil_v3_pool_slot0_price_and_liquidity() {
     }
 
     let spot_price = inspection.fingerprint.v3_spot_price(18, 18);
-    assert_eq!(spot_price, Some(1.0), "spot price token1/token0 must be 1.0");
+    assert_eq!(
+        spot_price,
+        Some(1.0),
+        "spot price token1/token0 must be 1.0"
+    );
+}
+
+/// Runtime that emits `PairCreated(token0, token1, pair, 1)` on any call.
+fn pair_created_log_runtime(token0: Address, token1: Address, pair: Address) -> Vec<u8> {
+    let mut code = Vec::new();
+    // mem[0..32] = pair (left-padded address)
+    code.push(0x7f);
+    let mut word = [0u8; 32];
+    word[12..].copy_from_slice(pair.as_slice());
+    code.extend_from_slice(&word);
+    code.extend_from_slice(&[0x60, 0x00, 0x52]);
+    // mem[32..64] = 1
+    code.extend_from_slice(&[0x60, 0x01, 0x60, 0x20, 0x52]);
+    // LOG3 pops offset (top), size, topic0, topic1, topic2 — push in reverse.
+    let mut t1 = [0u8; 32];
+    t1[12..].copy_from_slice(token1.as_slice());
+    code.push(0x7f);
+    code.extend_from_slice(&t1); // topic2 = token1
+    let mut t0 = [0u8; 32];
+    t0[12..].copy_from_slice(token0.as_slice());
+    code.push(0x7f);
+    code.extend_from_slice(&t0); // topic1 = token0
+    code.push(0x7f);
+    code.extend_from_slice(PAIR_CREATED_TOPIC.as_slice()); // topic0
+    code.extend_from_slice(&[0x60, 0x40]); // size
+    code.extend_from_slice(&[0x60, 0x00]); // offset
+    code.push(0xa3); // LOG3
+    code.push(0x00); // STOP
+    code
+}
+
+#[tokio::test]
+async fn test_anvil_scan_pair_created_logs() {
+    let anvil = Anvil::start();
+    let provider = anvil.provider();
+    let factory = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let token0 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let token1 = address!("cccccccccccccccccccccccccccccccccccccccc");
+    let pair = address!("dddddddddddddddddddddddddddddddddddddddd");
+    anvil.set_code(factory, &pair_created_log_runtime(token0, token1, pair));
+
+    anvil
+        .rpc(
+            "eth_sendTransaction",
+            json!([{
+                "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+                "to": format!("{factory:#x}"),
+                "data": "0x",
+                "gas": "0x7a120"
+            }]),
+        )
+        .expect("factory call must mine");
+
+    let latest_hex = anvil.rpc("eth_blockNumber", json!([])).unwrap();
+    let latest =
+        u64::from_str_radix(latest_hex.as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+    let pairs = PairDiscovery::scan_pair_created_logs(&provider, factory, 0, latest)
+        .await
+        .expect("scan_pair_created_logs");
+    assert_eq!(pairs.len(), 1, "exactly one PairCreated log");
+    assert_eq!(pairs[0].pair_address, pair);
+    assert_eq!(pairs[0].token0, Some(token0));
+    assert_eq!(pairs[0].token1, Some(token1));
 }

@@ -3,6 +3,7 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::json;
 use tempfile::tempdir;
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
@@ -173,5 +174,43 @@ fn browser_view_repl_interactive_session_with_anvil() {
     assert!(
         !text3.contains("Loaded contract:"),
         "console must be cleared:\n{text3}"
+    );
+}
+
+/// `callraw` against a planted runtime that returns `0x2a`.
+#[test]
+fn browser_view_callraw_against_planted_contract() {
+    let anvil = common::Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = common::funded_wallet(dir.path(), &anvil);
+    let events = EventBus::new();
+    let (_rt, handle) = runtime_handle();
+    let mut view = BrowserView::default();
+
+    const CONTRACT: &str = "0x1111111111111111111111111111111111111111";
+    anvil
+        .rpc("anvil_setCode", json!([CONTRACT, "0x602a60005260206000f3"]))
+        .expect("anvil_setCode");
+
+    type_text(
+        &mut view,
+        &format!("browse {CONTRACT}"),
+        &mut wallet,
+        &handle,
+        &events,
+    );
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+
+    type_text(&mut view, "callraw 0x", &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+
+    let text = common::render_frame(100, 30, |frame| view.render(frame, frame.area(), &wallet));
+    assert!(
+        text.contains("Raw Output"),
+        "must show raw call output:\n{text}"
+    );
+    assert!(
+        text.to_lowercase().contains("2a"),
+        "planted runtime returns 0x2a:\n{text}"
     );
 }
