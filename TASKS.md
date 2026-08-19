@@ -213,12 +213,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Proposal tools: `propose_transfer`, `propose_swap`, `propose_batch_7702`, `propose_contract_call` (FR-5.5)
 - [x] Pre-flight simulation verification and deterministic Anvil proposal integration test suite (FR-5.5)
 
-### Step 5: Degen Mode Autonomous Trader & Circuit Breakers
-- [ ] Autonomous execution loop with isolated burner wallet signer (FR-5.6)
-- [ ] Circuit breaker: position sizing limit (max % of balance per trade) (FR-5.6)
-- [ ] Circuit breaker: gas burn ceiling & consecutive error tripwire (FR-5.6)
-- [ ] Circuit breaker: hard slippage limit (max 1.0%) (FR-5.6)
-- [ ] Emergency stop (kill-switch via `Esc`/`q`) (FR-5.6)
+### Step 5: Degen Mode Autonomous Trader & Circuit Breakers (Done)
+- [x] Autonomous execution loop with isolated burner wallet signer (`DegenTrader`) (FR-5.6)
+- [x] Circuit breaker: position sizing limit (max % of balance per trade) (FR-5.6)
+- [x] Circuit breaker: gas burn ceiling & consecutive error tripwire (FR-5.6)
+- [x] Circuit breaker: hard slippage limit (max 1.0%) (FR-5.6)
+- [x] Multi-RPC quorum validation to defeat rogue/compromised or stale RPCs (FR-5.6)
+- [x] Emergency stop (kill-switch via `Esc`/`q`) (FR-5.6)
+- [x] Deterministic Anvil autonomous trader test suite passing (FR-5.6)
 
 ### Step 6: TUI Agent View & CLI Non-Interactive Execution
 - [ ] `vaughan-tui/src/views/agent.rs`: Interactive chat REPL with streaming responses, tool call status, and confirmation cards (FR-5.8)
