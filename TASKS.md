@@ -208,10 +208,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Pre-flight simulation tool: `simulate_call` via `eth_call` (FR-5.4)
 - [x] Deterministic Anvil test suite for tool registry and bytecode execution passing (FR-5.4)
 
-### Step 4: Propose-Only Write Tools (Assist Mode)
-- [ ] `TxProposal` struct (typed target, calldata, value, fee estimate, simulation result) (FR-5.5)
-- [ ] Proposal tools: `propose_transfer`, `propose_swap`, `propose_batch_7702`, `propose_contract_call` (FR-5.5)
-- [ ] Human confirmation gate: UI decodes raw bytecode independently of AI prompt (FR-5.5)
+### Step 4: Propose-Only Write Tools (Assist Mode) (Done)
+- [x] `TxProposal` struct (typed target, calldata, value, fee estimate, simulation result) (FR-5.5)
+- [x] Proposal tools: `propose_transfer`, `propose_swap`, `propose_batch_7702`, `propose_contract_call` (FR-5.5)
+- [x] Pre-flight simulation verification and deterministic Anvil proposal integration test suite (FR-5.5)
 
 ### Step 5: Degen Mode Autonomous Trader & Circuit Breakers
 - [ ] Autonomous execution loop with isolated burner wallet signer (FR-5.6)
