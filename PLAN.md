@@ -2,11 +2,12 @@
 
 ## Vision
 
-Vaughan-CLI is a Rust multi-chain CLI wallet TUI:
+Vaughan-CLI is a sovereign Rust multi-chain CLI wallet TUI:
 
 - **Alloy** — wallet core: keys, signing, RPC, transaction building/broadcast.
-- **kohaku-rs** — privacy (stealth, later railgun), consumed as a git dep; **deferred
-  by decision** (see `docs/kohaku-go-no-go.md`).
+- **wiz4rd-engine** — contract browser, dynamic call encoder/decoder, capability prober, DEX factory/pair indexer.
+- **vaughan-agent** — multi-mode AI agent subsystem (Pure Human, AI Assist, Degen Bot) with hard security sandboxing.
+- **kohaku-rs** — privacy (stealth, later railgun), consumed as a git dep; **deferred by decision** (see `docs/kohaku-go-no-go.md`).
 - **ratatui** — terminal UI.
 - **Freedom Browser** — dApp browser that uses Vaughan as its native signing provider.
 
@@ -20,13 +21,15 @@ vaughan-cli/
 ├─ Cargo.toml            # workspace + shared deps
 ├─ vaughan-core/         # library — no UI, fully testable
 │  ├─ chains/            # ChainAdapter trait + ChainRegistry + types; evm/ (Alloy), bitcoin/ + polkadot/ (future)
-│  ├─ core/              # WalletState, AccountManager, NetworkService, StateManager,
-│  │                     #   TransactionService
+│  ├─ core/              # WalletState, AccountManager, NetworkService, StateManager, TransactionService
+│  ├─ browser/           # wiz4rd-engine (ABI resolver, prober, selectors, sigdb, call, events)
 │  ├─ security/          # hd_wallet (BIP-39/32/44), encryption (Argon2id + AES-256-GCM)
 │  └─ error.rs, logging.rs
-├─ vaughan-tui/          # ratatui binary
-│  └─ views/             # onboarding, unlock, dashboard, send, receive, settings
-└─ vaughan-provider/     # [Phase 2] local EIP-1193 bridge + approval UX + trusted hosts
+├─ vaughan-aa/           # EIP-7702 / Ambire smart accounts & batching
+├─ vaughan-agent/        # [Phase 5] AI Agent engine, LLM clients, tool registry, Degen circuit breakers
+├─ vaughan-provider/     # [Phase 2] local EIP-1193 bridge + approval UX + trusted hosts
+├─ vaughan-cli/          # Non-interactive CLI binary (send, balance, deploy, browse, agent)
+└─ vaughan-tui/          # Interactive ratatui TUI binary (views, REPL, agent console)
 ```
 
 ## Multi-chain architecture
@@ -64,66 +67,60 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 | Core layering | reimplement | Clean control; mirror Vaughan-Dioxus, don't vendor |
 | HD wallet | bip39 + bip32 | RustCrypto stack, actively maintained; bip39 for mnemonics, bip32 for derivation |
 | Vault crypto | Argon2id + AES-256-GCM | Argon2id KDF, authenticated encryption |
+| Contract Engine | pure Rust (`wiz4rd-engine`) | Alloy JSON ABI + `alloy-dyn-abi` dynamic encoding + PUSH4 parser + event log scanner |
+| AI Agent | `vaughan-agent` | Advisor-by-default, local Ollama / encrypted cloud LLM, schema tool-calling, Degen circuit breakers |
 | kohaku-rs | git dep, later phases | **Deferred** — upstream RAILGUN key derivation is incompatible with the canonical engine (see `docs/kohaku-go-no-go.md`) |
 | Ambire AA | Rust + Alloy + Ambire ABI | Reimplement from the on-chain `AmbireAccount` contract; Vaughan-Dioxus as guide only |
 | dApp bridge | local EIP-1193 JSON-RPC (WebSocket) | Mirrors Vaughan-Dioxus provider-style RPC; loopback only |
 
 ## Phases
 
-### Phase 1 — EOA wallet on PulseChain
+### Phase 1 — EOA wallet on PulseChain (Done)
 Create/restore (BIP-39), password-encrypted vault, HD `m/44'/60'/0'/0/0`, balance,
-send native PLS, receive, network switching. No bridge, no tokens.
+send native PLS, receive, network switching.
 
-### Phase 2 — Native provider bridge
+### Phase 2 — Native provider bridge (Done)
 `vaughan-provider` local EIP-1193 server + TUI approval flow + trusted hosts, and a
 Freedom Browser signer-backend PR (out-of-repo, MPL-2.0).
 
-### Phase 3 — Privacy + smart accounts
+### Phase 3 — Privacy + smart accounts (Done)
 Ambire AA in Rust (see `docs/ambire-aa.md`) is **done**: `vaughan-aa` verified
 byte-for-byte against EVM-reference fixtures, 7702 self-pay proven end-to-end on a
-forked testnet, and the TUI batched-send view ships it (ERC-4337 `UserOperation`
-stays deferred by decision — self-pay 7702 is the route).
+forked testnet, and the TUI batched-send view ships it.
 
-kohaku-rs (hardening, ERC-5564 stealth, railgun/privacy pools) is **deferred by
-decision**: upstream's RAILGUN key derivation (BIP-32) is incompatible with the
-canonical engine's babyjubjub seed tree, so keys could be unrecoverable. Revisit
-only when upstream fixes it (with proof vectors) and tags a release, or when a
-spec-first ERC-5564 implementation is scoped. See `docs/kohaku-go-no-go.md`.
-
-### Phase 4 — Contract browser (terminal DEX browsing)
+### Phase 4 — Contract browser & DEX engine (`wiz4rd-engine`) (Done)
 Generic browser engine in `vaughan-core` (pure Rust, alloy-native: explorer-ABI
 fetch + cache, selector probing, dyn-abi generic calls, event-scan pair/pool
-discovery — browses/calls *any* contract, not just DEXes), surfaced as an
-interactive REPL view in `vaughan-tui` (stateful context, history/completion,
-batch mode). DEX-specific views (V2 reserve price, V3 `slot0` + tick math) come
-from `wiz4rd-sdk` when it joins the workspace. Read-only on other DEXes in v0.1.
-Full scope: `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5).
+discovery), surfaced as an interactive REPL view in `vaughan-tui` and non-interactive
+CLI batch execution (`vaughan browse <address>`). Anvil test suite verified.
+
+### Phase 5 — AI Agent Integration & Multi-Mode Security Sandbox (Current)
+Three-tier operating mode decided at startup (`HumanOnly`, `AiAssisted`, `DegenTrader`).
+Zero private key access for the advisor, physical capital isolation (burner profile)
+for autonomous degen trading, dual-horizon gas ceilings, and ground-truth UI rendering.
+Full spec: `docs/AI-AGENT-ARCHITECTURE.md`.
 
 ## Security model
 
-- Mnemonic encrypted at rest (Argon2id -> AES-256-GCM); plaintext only in memory while unlocked.
-- Secrets zeroized; password policy enforced (>= 12 chars, mixed classes).
-- Signing requires explicit user approval; dApp origins gated by a trusted-host allowlist.
-- No telemetry/analytics. Testnet-first for fund-moving features.
+- **Mnemonic encrypted at rest**: Argon2id -> AES-256-GCM; plaintext only in memory while unlocked.
+- **Zero AI key exposure**: `vaughan-agent` has zero memory references to `Vault` or `SignerContext`.
+- **Ground-truth rendering**: The TUI confirmation modal displays independently decoded bytecode, ignoring all LLM commentary.
+- **Physical capital isolation**: Degen mode runs strictly in `~/.vaughan/profiles/degen/` with separate seed phrases.
+- **Circuit breakers**: Max position sizing % per trade, dual-horizon gas caps, adaptive slippage ceilings, and emergency kill-switches (`Esc`/`q`).
+- **No telemetry/analytics**: Local Ollama option for 100% offline private execution. Testnet-first for all fund-moving features.
 
 ## Build order
 
-1. `vaughan-core`: error + logging
-2. `vaughan-core`: chains (types, networks, Alloy EVM adapter)
-3. `vaughan-core`: security (hd_wallet, encryption)
-4. `vaughan-core`: services (accounts, persistence, wallet state, transaction)
-5. `vaughan-tui`: onboarding -> unlock -> dashboard -> send -> receive -> settings
-6. `cargo build` + unit tests + `clippy` + `fmt`
+1. `vaughan-core`: chains, core, security, browser engine (`wiz4rd-engine`)
+2. `vaughan-provider`: local EIP-1193 bridge + trusted hosts
+3. `vaughan-aa`: EIP-7702 smart account batching
+4. `vaughan-agent`: multi-mode engine, tool registry, LLM clients, circuit breakers
+5. `vaughan-tui`: views (onboarding, unlock, dashboard, send, browser, agent, aa_send, settings)
+6. `vaughan-cli`: CLI commands (send, balance, deploy, browse, agent)
+7. `cargo build` + unit tests + Anvil e2e tests + `clippy` + `fmt`
 
 ## Risks / open items
 
-- **Freedom Browser bridge** — transport requires a new signer backend + local socket
-  (confirmed by inspecting its `signers.js`/injection flow).
-- **kohaku-rs maturity** — **deferred by decision**: upstream's RAILGUN key
-  derivation is incompatible with the canonical engine (unrecoverable-funds risk)
-  and upstream is unaudited; not hardened or consumed until resolved (see
-  `docs/kohaku-go-no-go.md`).
-- **PulseChain RPC availability** — public endpoints; may need fallback URLs.
-- **Alloy version** — on 2.x since 2026-08 (early-stage project, so the 1.7
-  Vaughan-Dioxus pin was dropped). Future major upgrades are isolated to a
-  single workspace pin (`Cargo.toml`).
+- **Freedom Browser bridge** — transport requires a new signer backend + local socket.
+- **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
+- **Local LLM latency** — local Ollama response time depends on user hardware; provide streaming token feedback in TUI.

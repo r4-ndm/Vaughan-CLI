@@ -7,9 +7,12 @@ authoritative for how work gets done here.
 
 **Vaughan-CLI** — a Rust multi-chain CLI wallet TUI. EVM-first, PulseChain-optimized.
 
-- `vaughan-core/` — library: chain adapters (Alloy EVM), core services, security, persistence
-- `vaughan-tui/` — ratatui terminal frontend
-- `vaughan-provider/` — *[Phase 2]* local EIP-1193 bridge for Freedom Browser
+- `vaughan-core/` — library: chain adapters (Alloy EVM), core services, browser engine (`wiz4rd-engine`), security, persistence
+- `vaughan-aa/` — EIP-7702 / Ambire smart accounts and batched sends
+- `vaughan-agent/` — [Phase 5] AI Agent engine, LLM clients, tool registry, Degen circuit breakers
+- `vaughan-provider/` — [Phase 2] local EIP-1193 bridge for Freedom Browser
+- `vaughan-cli/` — non-interactive CLI commands (`vaughan` binary)
+- `vaughan-tui/` — ratatui terminal frontend (`vaughan-tui` binary)
 
 This is a Rust-only repository.
 
