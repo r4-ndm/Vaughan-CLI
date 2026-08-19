@@ -56,7 +56,7 @@ impl DashboardView {
             Line::from(format!("Network:  {}{testnet}", net.name)),
             Line::from(format!("Balance:  {balance_line}")),
             Line::from(""),
-            Line::from("s send   b batch   v receive   n networks   a assets   r refresh   l lock"),
+            Line::from("s send   b batch   v receive   n networks   a assets   c browse   r refresh   l lock"),
         ];
         frame.render_widget(
             Paragraph::new(text)
@@ -90,6 +90,7 @@ impl DashboardView {
             KeyCode::Char('v') => KeyOutcome::Navigate(Screen::Receive),
             KeyCode::Char('n') => KeyOutcome::Navigate(Screen::Settings),
             KeyCode::Char('a') => KeyOutcome::Navigate(Screen::Assets),
+            KeyCode::Char('c') => KeyOutcome::Navigate(Screen::Browser),
             _ => KeyOutcome::NotHandled,
         }
     }

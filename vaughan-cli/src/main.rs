@@ -92,6 +92,26 @@ enum Command {
         #[arg(long)]
         password_env: Option<String>,
     },
+    /// Browse and inspect a smart contract, probe interface, or execute read-only calls.
+    Browse {
+        /// Contract address (0x...).
+        address: String,
+        /// Optional function name to call against verified ABI (e.g. `getReserves`, `name`).
+        #[arg(long)]
+        call: Option<String>,
+        /// Optional arguments for the function call.
+        #[arg(long, num_args = 1..)]
+        args: Vec<String>,
+        /// Optional raw calldata hex to execute as read-only eth_call.
+        #[arg(long)]
+        call_raw: Option<String>,
+        /// Network id override (e.g. pulsechain, pulsechain-testnet-v4).
+        #[arg(long)]
+        network: Option<String>,
+        /// RPC url override.
+        #[arg(long)]
+        rpc_url: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -250,6 +270,103 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             );
             let hash = wallet.send_transaction(evm).await?;
             println!("{hash}");
+        }
+        Command::Browse {
+            address,
+            call,
+            args,
+            call_raw,
+            network,
+            rpc_url,
+        } => {
+            let addr: alloy::primitives::Address = address
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid target address: {e}"))?;
+
+            if let Some(id) = network {
+                wallet.set_active_network(&id)?;
+            }
+            if let Some(url) = rpc_url {
+                wallet.set_rpc_override(&url);
+            }
+
+            let net = wallet.networks().active();
+            let chain_id = net.chain_id;
+            let adapter = wallet.active_adapter().await?;
+            let engine = vaughan_core::browser::BrowserEngine::new();
+
+            adapter
+                .with_provider(|provider| {
+                    let eng = engine.clone();
+                    let c = call.clone();
+                    let av = args.clone();
+                    let cr = call_raw.clone();
+                    async move {
+                        if let Some(raw_hex) = cr {
+                            let clean = raw_hex.trim().strip_prefix("0x").unwrap_or(raw_hex.trim());
+                            let bytes = alloy::primitives::Bytes::from(
+                                hex::decode(clean).map_err(|e| {
+                                    vaughan_core::error::WalletError::InvalidTransaction(
+                                        e.to_string(),
+                                    )
+                                })?,
+                            );
+                            let out = eng
+                                .call_raw(&provider, addr, bytes)
+                                .await
+                                .map_err(vaughan_core::error::WalletError::RpcError)?;
+                            println!("0x{}", hex::encode(&out));
+                            return Ok(());
+                        }
+
+                        let insp = eng.inspect(&provider, chain_id, addr).await;
+                        println!("Address:     {}", addr.to_checksum(None));
+                        println!("Chain:       {} ({})", net.name, chain_id);
+                        println!("Fingerprint: {:?}", insp.fingerprint);
+
+                        match &insp.abi_resolution {
+                            vaughan_core::browser::abi::AbiResolution::Verified(abi) => {
+                                println!(
+                                    "ABI:         Verified ({} functions)",
+                                    abi.functions.len()
+                                );
+                                if let Some(fn_name) = c {
+                                    let res = eng
+                                        .call_named(&provider, addr, abi, &fn_name, &av)
+                                        .await
+                                        .map_err(vaughan_core::error::WalletError::RpcError)?;
+                                    if res.decoded_values.is_empty() {
+                                        println!("Result:      0x{}", hex::encode(&res.raw_output));
+                                    } else {
+                                        println!("Result:      {}", res.decoded_values.join(", "));
+                                    }
+                                } else {
+                                    let mut names: Vec<_> =
+                                        abi.functions.keys().map(|k| k.as_str()).collect();
+                                    names.sort_unstable();
+                                    println!("Functions:   {}", names.join(", "));
+                                }
+                            }
+                            vaughan_core::browser::abi::AbiResolution::Unverified => {
+                                println!(
+                                    "ABI:         Unverified ({} candidate selectors)",
+                                    insp.candidate_selectors.len()
+                                );
+                                let hex_list: Vec<_> = insp
+                                    .candidate_selectors
+                                    .iter()
+                                    .map(|s| vaughan_core::browser::selectors::selector_to_hex(*s))
+                                    .collect();
+                                println!("Selectors:   {}", hex_list.join(", "));
+                            }
+                            vaughan_core::browser::abi::AbiResolution::Error(err) => {
+                                println!("ABI:         Error ({err})");
+                            }
+                        }
+                        Ok(())
+                    }
+                })
+                .await?;
         }
     }
     Ok(())

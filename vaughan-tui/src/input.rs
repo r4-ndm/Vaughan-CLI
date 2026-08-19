@@ -47,6 +47,11 @@ impl Input {
         &self.buffer
     }
 
+    pub fn set_value(&mut self, text: impl Into<String>) {
+        self.buffer = text.into();
+        self.cursor = self.buffer.len();
+    }
+
     /// Handle a key; returns what the input did with it.
     pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
         match key.code {

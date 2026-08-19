@@ -78,10 +78,12 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 
 ### vaughan-tui — browser REPL view
-- [ ] `views/browser.rs`: input line + scrolling output pane, reusing existing `input.rs` (ratatui + crossterm) (FR-4.7)
-- [ ] Stateful context: `browse 0x…` sets current contract; `pairs`, `call …`, `info`, `probe`, `token` operate on it (FR-4.7)
-- [ ] History + tab completion + `help` command (FR-4.7)
-- [ ] Non-interactive CLI batch mode: `vaughan browse <address> --call "fn(args)"` (FR-4.7)
+- [x] `views/browser.rs`: input line + scrolling output pane, reusing existing `input.rs` (ratatui + crossterm) (FR-4.7)
+- [x] Stateful context: `browse 0x…` sets current contract; `pairs`, `call …`, `callraw …`, `info`, `probe` operate on it (FR-4.7)
+- [x] History + scrolling + `help` command, dashboard `c` shortcut, Tab screen cycle (FR-4.7)
+- [x] Non-interactive CLI batch mode: `vaughan browse <address> [--call "fn(args)"] [--call-raw 0x...]` (FR-4.7)
+- [x] Headless ratatui TestBackend integration tests (`tests/browser_view.rs`) & Anvil E2E tests (`vaughan-cli/tests/deploy.rs`)
+
 
 
 ### DEX views — from wiz4rd-sdk (after engine exists; wiz4rd-sdk joins this workspace at integration)

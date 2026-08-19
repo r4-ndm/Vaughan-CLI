@@ -159,7 +159,7 @@ impl EvmAdapter {
     /// first, then the others in order. Only transport-ish failures (RPC,
     /// network, gas estimation, broadcast) trigger a fallback; validation or
     /// signing errors fail fast.
-    async fn with_provider<T, F, Fut>(&self, call: F) -> Result<T, WalletError>
+    pub async fn with_provider<T, F, Fut>(&self, call: F) -> Result<T, WalletError>
     where
         F: Fn(Arc<AlloyProvider>) -> Fut,
         Fut: Future<Output = Result<T, WalletError>>,

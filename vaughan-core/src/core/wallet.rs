@@ -204,6 +204,18 @@ impl WalletState {
 
     // ---- unlocked operations ----
 
+    /// Create an `EvmAdapter` for the active network.
+    pub async fn active_adapter(&self) -> Result<EvmAdapter, WalletError> {
+        let net = self.networks.active();
+        EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await
+    }
+
     /// Native balance of the active account on the active network.
     pub async fn balance(&self) -> Result<Balance, WalletError> {
         let (net, address) = self.active_context()?;

@@ -13,8 +13,8 @@ use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, ApproveView, AssetsView, DashboardView, OnboardingView, ReceiveView, SendView,
-    SettingsView, UnlockView,
+    AaSendView, ApproveView, AssetsView, BrowserView, DashboardView, OnboardingView, ReceiveView,
+    SendView, SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -28,6 +28,7 @@ pub enum Screen {
     Receive,
     Settings,
     Assets,
+    Browser,
     Approve,
 }
 
@@ -42,6 +43,7 @@ impl Screen {
             Self::Receive => "Receive",
             Self::Settings => "Settings",
             Self::Assets => "Assets",
+            Self::Browser => "Contract Browser",
             Self::Approve => "Approve",
         }
     }
@@ -72,6 +74,7 @@ pub enum View {
     Receive(ReceiveView),
     Settings(SettingsView),
     Assets(AssetsView),
+    Browser(BrowserView),
     Approve(ApproveView),
 }
 
@@ -86,6 +89,7 @@ impl View {
             Self::Receive(_) => Screen::Receive,
             Self::Settings(_) => Screen::Settings,
             Self::Assets(_) => Screen::Assets,
+            Self::Browser(_) => Screen::Browser,
             Self::Approve(_) => Screen::Approve,
         }
     }
@@ -100,6 +104,7 @@ impl View {
             Self::Receive(v) => v.render(frame, area, wallet),
             Self::Settings(v) => v.render(frame, area, wallet),
             Self::Assets(v) => v.render(frame, area, wallet),
+            Self::Browser(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
     }
@@ -120,6 +125,7 @@ impl View {
             Self::Receive(v) => v.handle_key(key, wallet, handle, events),
             Self::Settings(v) => v.handle_key(key, wallet, handle, events),
             Self::Assets(v) => v.handle_key(key, wallet, handle, events),
+            Self::Browser(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
     }
@@ -230,7 +236,8 @@ impl App {
                     Screen::AaSend => Screen::Receive,
                     Screen::Receive => Screen::Settings,
                     Screen::Settings => Screen::Assets,
-                    Screen::Assets => Screen::Dashboard,
+                    Screen::Assets => Screen::Browser,
+                    Screen::Browser => Screen::Dashboard,
                     other => other,
                 };
                 if next != self.screen() {
@@ -381,6 +388,7 @@ impl App {
                 let assets = self.handle.block_on(self.wallet.assets());
                 View::Assets(AssetsView::with_assets(assets))
             }
+            Screen::Browser => View::Browser(BrowserView::default()),
             // Approve is entered directly from `poll_provider` (it needs the
             // pending request + reply channel), never via navigation; this arm
             // is only here to keep the match exhaustive.

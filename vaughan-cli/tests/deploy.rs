@@ -311,6 +311,72 @@ fn wrong_password_fails_cleanly() {
     );
 }
 
+/// `vaughan browse <contract> --call-raw <calldata>` executes read-only call.
+#[test]
+fn browse_deployed_contract_and_raw_call() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = new_vault(&dir.path().to_path_buf());
+
+    // Deploy minimal contract that returns 0x2a
+    let runtime = "602a60005260206000f3";
+    let bytecode = format!("0x600a600c600039600a6000f3{runtime}");
+    let (ok, stdout, stderr) = cli_send(&vault, &anvil, &["--data", &bytecode, "--value", "0"]);
+    assert!(ok, "deploy failed: {stderr}");
+    let tx_hash = stdout.trim().to_string();
+    let contract_addr =
+        receipt_contract_address(&anvil, &tx_hash).expect("must have contract address");
+
+    // 1. Run browse to inspect contract
+    let browse_out = Command::new(bin())
+        .arg("--vault")
+        .arg(&vault)
+        .args([
+            "browse",
+            &contract_addr,
+            "--rpc-url",
+            &anvil.url(),
+            "--network",
+            "pulsechain-testnet-v4",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        browse_out.status.success(),
+        "browse must succeed: {:?}",
+        browse_out
+    );
+    let stdout = String::from_utf8_lossy(&browse_out.stdout);
+    assert!(stdout.contains("Address:"), "must print address:\n{stdout}");
+
+    // 2. Execute raw call (calls fallback runtime returning 0x2a padded to 32 bytes)
+    let call_out = Command::new(bin())
+        .arg("--vault")
+        .arg(&vault)
+        .args([
+            "browse",
+            &contract_addr,
+            "--call-raw",
+            "0x",
+            "--rpc-url",
+            &anvil.url(),
+            "--network",
+            "pulsechain-testnet-v4",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        call_out.status.success(),
+        "raw call must succeed: {:?}",
+        call_out
+    );
+    let call_stdout = String::from_utf8_lossy(&call_out.stdout);
+    assert!(
+        call_stdout.contains("0x000000000000000000000000000000000000000000000000000000000000002a"),
+        "must return 0x2a from contract call:\n{call_stdout}"
+    );
+}
+
 // ---- helpers ----
 
 // The vault restored from the anvil mnemonic derives the same addresses
