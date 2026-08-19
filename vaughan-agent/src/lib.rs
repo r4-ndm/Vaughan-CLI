@@ -8,6 +8,7 @@
 //! - Multi-RPC quorum validation and hard circuit breakers for autonomous trading.
 
 pub mod client;
+pub mod degen;
 pub mod error;
 pub mod proposal;
 pub mod providers;
@@ -15,6 +16,9 @@ pub mod tools;
 pub mod types;
 
 pub use client::LlmClient;
+pub use degen::{
+    CircuitBreaker, CircuitBreakerConfig, DegenTrader, QuorumReserves, QuorumValidator,
+};
 pub use error::AgentError;
 pub use proposal::{ProposalType, TxProposal};
 pub use providers::create_llm_client;

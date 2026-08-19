@@ -28,4 +28,7 @@ pub enum AgentError {
 
     #[error("Operation not permitted in current operating mode: {0}")]
     ModeViolation(String),
+
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
 }
