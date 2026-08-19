@@ -78,7 +78,11 @@ fn onboarding_create_flow_generates_mnemonic_and_creates_wallet() {
         .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphabetic()))
         .filter(|w| !w.is_empty())
         .collect();
-    assert_eq!(words.len(), 12, "must render a 12-word phrase, got {words:?}:\n{text}");
+    assert_eq!(
+        words.len(),
+        12,
+        "must render a 12-word phrase, got {words:?}:\n{text}"
+    );
 
     // Enter → set password.
     view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
@@ -93,7 +97,10 @@ fn onboarding_create_flow_generates_mnemonic_and_creates_wallet() {
 
     assert!(matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)));
     assert!(wallet.is_initialized(), "wallet must be persisted to disk");
-    assert!(wallet.is_unlocked(), "wallet must be unlocked after onboarding");
+    assert!(
+        wallet.is_unlocked(),
+        "wallet must be unlocked after onboarding"
+    );
 }
 
 /// Mismatched password confirmation goes back to the password stage with an
@@ -113,10 +120,16 @@ fn onboarding_password_mismatch_returns_to_set_password() {
     type_text(&mut view, "Different123!", &mut wallet, &handle, &events);
     let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
 
-    assert!(!matches!(outcome, KeyOutcome::Navigate(_)), "must not navigate");
+    assert!(
+        !matches!(outcome, KeyOutcome::Navigate(_)),
+        "must not navigate"
+    );
     let text = render(&view, &wallet);
     assert!(text.contains("Passwords do not match."), "{text}");
-    assert!(text.contains("Choose a password"), "back at the password stage:\n{text}");
+    assert!(
+        text.contains("Choose a password"),
+        "back at the password stage:\n{text}"
+    );
     assert!(!wallet.is_initialized(), "wallet must not be created");
 }
 
@@ -135,8 +148,14 @@ fn onboarding_weak_password_rejected() {
     view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
 
     let text = render(&view, &wallet);
-    assert!(text.contains("Choose a password"), "still on the password stage:\n{text}");
-    assert!(!text.contains("Confirm password"), "must not advance:\n{text}");
+    assert!(
+        text.contains("Choose a password"),
+        "still on the password stage:\n{text}"
+    );
+    assert!(
+        !text.contains("Confirm password"),
+        "must not advance:\n{text}"
+    );
     assert!(!wallet.is_initialized());
 }
 

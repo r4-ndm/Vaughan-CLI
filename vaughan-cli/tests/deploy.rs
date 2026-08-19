@@ -19,8 +19,7 @@ use serde_json::{json, Value};
 
 /// Anvil's default dev mnemonic — the wallet restored from it is the funded
 /// account, so no faucet step is needed.
-const ANVIL_MNEMONIC: &str =
-    "test test test test test test test test test test test junk";
+const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
 
 const PASSWORD_ENV: &str = "VAUGHAN_TEST_PW";
 const PASSWORD: &str = "BombProof123!";
@@ -31,7 +30,11 @@ fn bin() -> &'static str {
 
 /// Find a free localhost port.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 struct Anvil {
@@ -43,13 +46,7 @@ impl Anvil {
     fn start() -> Self {
         let port = free_port();
         let child = Command::new("anvil")
-            .args([
-                "--port",
-                &port.to_string(),
-                "--chain-id",
-                "943",
-                "--silent",
-            ])
+            .args(["--port", &port.to_string(), "--chain-id", "943", "--silent"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -129,15 +126,17 @@ fn new_vault(dir: &PathBuf) -> PathBuf {
 }
 
 /// `vaughan send`; returns (status, stdout, stderr).
-fn cli_send(
-    vault: &PathBuf,
-    anvil: &Anvil,
-    args: &[&str],
-) -> (bool, String, String) {
+fn cli_send(vault: &PathBuf, anvil: &Anvil, args: &[&str]) -> (bool, String, String) {
     let out = Command::new(bin())
         .args(["--vault"])
         .arg(vault)
-        .args(["send", "--network", "pulsechain-testnet-v4", "--rpc-url", &anvil.url()])
+        .args([
+            "send",
+            "--network",
+            "pulsechain-testnet-v4",
+            "--rpc-url",
+            &anvil.url(),
+        ])
         .args(args)
         .args(["--password-env", PASSWORD_ENV])
         .env(PASSWORD_ENV, PASSWORD)
@@ -164,7 +163,10 @@ fn deploy_contract_and_verify_code() {
     let (ok, stdout, stderr) = cli_send(&vault, &anvil, &["--data", &bytecode, "--value", "0"]);
     assert!(ok, "deploy failed: {stderr}");
     let stdout = stdout.trim().to_string();
-    assert!(stdout.starts_with("0x"), "expected a tx hash, got: {stdout}");
+    assert!(
+        stdout.starts_with("0x"),
+        "expected a tx hash, got: {stdout}"
+    );
 
     // The created address comes from the tx receipt (the sender's nonce may
     // already be non-zero, so deriving it is unreliable). Poll until the
@@ -194,13 +196,23 @@ fn native_transfer_moves_balance() {
     let before: u128 = wei_balance(&anvil, &recipient);
     let amount_wei = 10u128.pow(18); // 1 tPLS
 
-    let (ok, stdout, stderr) =
-        cli_send(&vault, &anvil, &[&recipient, "--value", &amount_wei.to_string()]);
+    let (ok, stdout, stderr) = cli_send(
+        &vault,
+        &anvil,
+        &[&recipient, "--value", &amount_wei.to_string()],
+    );
     assert!(ok, "transfer failed: {stderr}");
-    assert!(stdout.trim().starts_with("0x"), "expected tx hash: {stdout}");
+    assert!(
+        stdout.trim().starts_with("0x"),
+        "expected tx hash: {stdout}"
+    );
 
     let after: u128 = wei_balance(&anvil, &recipient);
-    assert_eq!(after - before, amount_wei, "recipient must receive the value");
+    assert_eq!(
+        after - before,
+        amount_wei,
+        "recipient must receive the value"
+    );
 }
 
 #[test]
@@ -212,12 +224,22 @@ fn balance_reports_funded_account() {
     let out = Command::new(bin())
         .args(["--vault"])
         .arg(&vault)
-        .args(["balance", "--network", "pulsechain-testnet-v4", "--rpc-url", &anvil.url()])
+        .args([
+            "balance",
+            "--network",
+            "pulsechain-testnet-v4",
+            "--rpc-url",
+            &anvil.url(),
+        ])
         .args(["--password-env", PASSWORD_ENV])
         .env(PASSWORD_ENV, PASSWORD)
         .output()
         .expect("vaughan balance");
-    assert!(out.status.success(), "balance failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "balance failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Anvil funds every dev account with 10000 ETH.
     assert!(stdout.contains("tPLS"), "balance output: {stdout}");
@@ -245,8 +267,11 @@ fn insufficient_funds_fails_cleanly() {
     assert!(out.status.success());
 
     let recipient = anvil_dev_address(1);
-    let (ok, _stdout, stderr) =
-        cli_send(&vault, &anvil, &[&recipient, "--value", "1000000000000000000"]);
+    let (ok, _stdout, stderr) = cli_send(
+        &vault,
+        &anvil,
+        &[&recipient, "--value", "1000000000000000000"],
+    );
     assert!(!ok, "zero-balance send must fail");
     assert!(
         stderr.to_lowercase().contains("insufficient") || stderr.to_lowercase().contains("funds"),
@@ -263,15 +288,25 @@ fn wrong_password_fails_cleanly() {
     let out = Command::new(bin())
         .args(["--vault"])
         .arg(&vault)
-        .args(["balance", "--network", "pulsechain-testnet-v4", "--rpc-url", &anvil.url()])
+        .args([
+            "balance",
+            "--network",
+            "pulsechain-testnet-v4",
+            "--rpc-url",
+            &anvil.url(),
+        ])
         .args(["--password-env", PASSWORD_ENV])
         .env(PASSWORD_ENV, "WrongPassword")
         .output()
         .unwrap();
     assert!(!out.status.success(), "wrong password must fail");
     assert!(
-        String::from_utf8_lossy(&out.stderr).to_lowercase().contains("password")
-            || String::from_utf8_lossy(&out.stderr).to_lowercase().contains("decrypt"),
+        String::from_utf8_lossy(&out.stderr)
+            .to_lowercase()
+            .contains("password")
+            || String::from_utf8_lossy(&out.stderr)
+                .to_lowercase()
+                .contains("decrypt"),
         "error should mention password/decryption"
     );
 }
@@ -294,13 +329,17 @@ fn anvil_dev_address(index: u32) -> String {
 
 /// Native balance of `addr` on the anvil node (wei).
 fn wei_balance(anvil: &Anvil, addr: &str) -> u128 {
-    let v = anvil.rpc("eth_getBalance", json!([addr, "latest"])).unwrap();
+    let v = anvil
+        .rpc("eth_getBalance", json!([addr, "latest"]))
+        .unwrap();
     u128::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
 }
 
 /// `contractAddress` from the receipt of `tx_hash` (None until mined).
 fn receipt_contract_address(anvil: &Anvil, tx_hash: &str) -> Option<String> {
-    let receipt = anvil.rpc("eth_getTransactionReceipt", json!([tx_hash])).ok()?;
+    let receipt = anvil
+        .rpc("eth_getTransactionReceipt", json!([tx_hash]))
+        .ok()?;
     if receipt.is_null() {
         return None;
     }

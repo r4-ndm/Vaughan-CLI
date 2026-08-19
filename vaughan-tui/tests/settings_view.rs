@@ -81,11 +81,18 @@ fn settings_view_enter_switches_network_and_publishes_event() {
 
     let text = render(&view, &wallet);
     assert!(
-        text.lines().find(|l| l.contains("chain 369")).unwrap().contains('*'),
+        text.lines()
+            .find(|l| l.contains("chain 369"))
+            .unwrap()
+            .contains('*'),
         "marker must move to the new network:\n{text}"
     );
     assert!(
-        !text.lines().find(|l| l.contains("chain 943")).unwrap().contains('*'),
+        !text
+            .lines()
+            .find(|l| l.contains("chain 943"))
+            .unwrap()
+            .contains('*'),
         "old network must lose its marker:\n{text}"
     );
     assert!(

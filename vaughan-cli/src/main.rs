@@ -103,10 +103,12 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let path = cli.vault.unwrap_or_else(|| StateManager::default_path().unwrap_or_else(|_| {
-        eprintln!("error: could not resolve the default vault path; pass --vault");
-        std::process::exit(1);
-    }));
+    let path = cli.vault.unwrap_or_else(|| {
+        StateManager::default_path().unwrap_or_else(|_| {
+            eprintln!("error: could not resolve the default vault path; pass --vault");
+            std::process::exit(1);
+        })
+    });
     let mut wallet = WalletState::load(path)?;
 
     match cli.command {
@@ -134,7 +136,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("\n⚠️  mnemonic (write this down, it is shown only once):");
             println!("{mnemonic}");
         }
-        Command::Restore { phrase, password_env } => {
+        Command::Restore {
+            phrase,
+            password_env,
+        } => {
             if wallet.is_initialized() {
                 anyhow::bail!("a wallet already exists at {}", wallet.path().display());
             }

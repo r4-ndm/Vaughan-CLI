@@ -87,9 +87,7 @@ fn assets_view_refresh_and_navigation() {
     let expected = handle.block_on(wallet.assets()).unwrap();
     let text = render(&view, &wallet);
     assert!(
-        expected
-            .iter()
-            .any(|b| text.contains(&b.token.symbol)),
+        expected.iter().any(|b| text.contains(&b.token.symbol)),
         "refresh must populate the list:\\n{text}"
     );
 

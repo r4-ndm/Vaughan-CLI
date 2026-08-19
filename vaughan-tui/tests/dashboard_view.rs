@@ -87,7 +87,10 @@ fn dashboard_view_refresh_fetches_balance() {
         text.contains(&format!("{} tPLS", expected.formatted)),
         "refresh must show the live balance:\n{text}"
     );
-    assert!(!text.contains("Balance:  —"), "balance placeholder must be gone");
+    assert!(
+        !text.contains("Balance:  —"),
+        "balance placeholder must be gone"
+    );
 }
 
 /// `l` locks the wallet, navigates to the unlock screen, and tells connected

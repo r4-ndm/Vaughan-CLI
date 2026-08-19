@@ -53,11 +53,7 @@ impl AssetsView {
             self.assets
                 .iter()
                 .map(|b| {
-                    let label = format!(
-                        "  {:<20} {}",
-                        b.token.symbol,
-                        b.formatted
-                    );
+                    let label = format!("  {:<20} {}", b.token.symbol, b.formatted);
                     let style = if b.token.contract_address.is_none() {
                         Style::default().fg(Color::Yellow)
                     } else {
@@ -68,11 +64,10 @@ impl AssetsView {
                 .collect()
         };
 
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Assets — {}{testnet} (r refresh, d back) ", net.name)),
-        );
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+            " Assets — {}{testnet} (r refresh, d back) ",
+            net.name
+        )));
         frame.render_widget(list, content);
         frame.render_widget(status_paragraph(&self.status), status_area);
     }

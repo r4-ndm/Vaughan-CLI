@@ -38,7 +38,13 @@ fn runtime_handle() -> (tokio::runtime::Runtime, Handle) {
 }
 
 /// Type `text` into the focused input of `view` using the real wallet/handle.
-fn type_into(view: &mut AaSendView, text: &str, wallet: &WalletState, handle: &Handle, events: &EventBus) {
+fn type_into(
+    view: &mut AaSendView,
+    text: &str,
+    wallet: &WalletState,
+    handle: &Handle,
+    events: &EventBus,
+) {
     for c in text.chars() {
         view.handle_key(char_key(c), wallet, handle, events);
     }
@@ -79,7 +85,10 @@ fn aa_send_view_broadcasts_batch_and_recipients_receive() {
 
     // Confirm screen: both rows, total, fee, and the one-time delegation note.
     let text = render(&view, &wallet);
-    assert!(text.contains("Send batch of 2 transfers:"), "batch header:\n{text}");
+    assert!(
+        text.contains("Send batch of 2 transfers:"),
+        "batch header:\n{text}"
+    );
     // The view renders exactly what was typed (checksummed, no 0x prefix).
     assert!(text.contains(&recipient1[2..]), "row 1 recipient:\n{text}");
     assert!(text.contains(&recipient2[2..]), "row 2 recipient:\n{text}");
@@ -98,8 +107,14 @@ fn aa_send_view_broadcasts_batch_and_recipients_receive() {
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
 
     let text = render(&view, &wallet);
-    assert!(text.contains("Transaction broadcast"), "done screen:\n{text}");
-    assert!(text.contains("Account delegated"), "bootstrap confirmation:\n{text}");
+    assert!(
+        text.contains("Transaction broadcast"),
+        "done screen:\n{text}"
+    );
+    assert!(
+        text.contains("Account delegated"),
+        "bootstrap confirmation:\n{text}"
+    );
     let hash_line = text
         .lines()
         .map(|l| l.trim().trim_matches('│').trim()) // strip the box border
@@ -155,7 +170,10 @@ fn aa_send_view_esc_cancels_confirm() {
 
     // Back in the editor, nothing broadcast, account untouched.
     let text = render(&view, &wallet);
-    assert!(text.contains("ctrl+a add"), "must be back in the editor:\n{text}");
+    assert!(
+        text.contains("ctrl+a add"),
+        "must be back in the editor:\n{text}"
+    );
     assert_eq!(
         anvil.wei_balance(&recipient),
         before,
@@ -186,7 +204,10 @@ fn aa_send_view_invalid_amount_stays_on_edit() {
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
 
     let text = render(&view, &wallet);
-    assert!(text.contains("ctrl+a add"), "must stay in the editor:\n{text}");
+    assert!(
+        text.contains("ctrl+a add"),
+        "must stay in the editor:\n{text}"
+    );
     assert!(
         text.to_lowercase().contains("invalid"),
         "must surface the parse error:\n{text}"
@@ -217,7 +238,10 @@ fn aa_send_view_empty_batch_is_rejected() {
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
 
     let text = render(&view, &wallet);
-    assert!(text.contains("ctrl+a add"), "must stay in the editor:\n{text}");
+    assert!(
+        text.contains("ctrl+a add"),
+        "must stay in the editor:\n{text}"
+    );
     assert!(
         text.contains("at least one transfer"),
         "must explain the empty batch:\n{text}"

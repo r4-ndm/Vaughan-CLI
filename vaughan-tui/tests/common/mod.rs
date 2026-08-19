@@ -26,7 +26,11 @@ pub const ANVIL_KEY0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efc
 pub const PASSWORD: &str = "BombProof123!";
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 pub struct Anvil {
@@ -84,7 +88,9 @@ impl Anvil {
 
     /// The nonce of `addr` at the latest block.
     pub fn nonce(&self, addr: &str) -> u64 {
-        let v = self.rpc("eth_getTransactionCount", json!([addr, "latest"])).unwrap();
+        let v = self
+            .rpc("eth_getTransactionCount", json!([addr, "latest"]))
+            .unwrap();
         u64::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
     }
 }

@@ -269,8 +269,9 @@ fn bridge_decision(raw_env: Option<&str>) -> Option<Vec<String>> {
 /// in vaughan-provider) so `bridge_decision` can reject bad input up front.
 fn validate_origins(origins: &[String]) -> Result<(), ProviderError> {
     for origin in origins {
-        let url = url::Url::parse(origin)
-            .map_err(|_| ProviderError::InvalidParams(format!("invalid trusted origin `{origin}`")))?;
+        let url = url::Url::parse(origin).map_err(|_| {
+            ProviderError::InvalidParams(format!("invalid trusted origin `{origin}`"))
+        })?;
         if matches!(url.origin(), url::Origin::Opaque(_)) {
             return Err(ProviderError::InvalidParams(format!(
                 "invalid trusted origin `{origin}` (origin must include host)"

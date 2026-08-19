@@ -63,24 +63,26 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
   - [x] TUI integration: AA batched-send view (`vaughan-tui/src/views/aa_send.rs`, dashboard `b` shortcut). Compose N native transfers (ctrl+a/d rows, ↑↓/tab navigation), confirm shows the per-row list + estimated fee + a one-time delegation note when the account isn't yet delegated, and Enter broadcasts through the 7702 self-pay path. New `vaughan-aa` adapter helpers: `AMBIRE_IMPLEMENTATION` const, `is_delegated` (eth_getCode), `get_account_nonce` (eth_call `nonce()`), `bootstrap_delegation` (delegate + self-call `setAddrPrivilege`), and `submit_batch` (one-shot bootstrap + sign + submit). `WalletState` gained `active_signer`/`active_rpc_url` for flows that compose outside the built-in send path. Tested end-to-end in `vaughan-tui/tests/aa_send_view.rs` against a *forked* testnet (the real AmbireAccount impl): a 2-transfer batch lands both payments on-chain and the account ends permanently delegated.
 - [ ] Railgun / privacy pools (FR-3.4) — deferred with FR-3.1 (derivation incompatibility)
 
-## Phase 4 — Contract browser (terminal DEX browsing)
+## Phase 4 — Contract browser & DEX engine (`wiz4rd-engine`)
 
-> Full scope: `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5). **Pure Rust, no cast subprocess** — alloy is the battle-tested core (it's the library Foundry itself is built on). Engine is generic wallet tooling (browses/calls *any* contract, not just DEXes). Read-only on other DEXes in v0.1; money-moving flows only through Vaughan's existing alloy signer layer. No FRs yet — scoped cross-repo, tracked here as the implementation home.
+> Full scope: `docs/browser-engine.md` and `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5). **Pure Rust, no cast subprocess** — alloy is the battle-tested core (it's the library Foundry itself is built on). Engine is generic wallet tooling (browses/calls *any* contract, not just DEXes). Read-only on other DEXes in v0.1; money-moving flows only through Vaughan's existing alloy signer layer.
 
-### vaughan-core — browser engine (generic, no DEX knowledge)
-- [ ] ABI resolution: explorer `getabi` fetch (verified working on `api.scan.pulsechain.com`) + local cache; probe fallback for unverified contracts
-- [ ] Selector-probe capability library (ERC20 / V2 factory+pair / V3 factory+pool / WETH / …) → protocol fingerprint
-- [ ] Selector extraction from bytecode: PUSH4 opcode parse over `getCode` (~30 lines, unit-tested)
-- [ ] Signature lookup: 4byte.directory HTTP API (reqwest)
-- [ ] Generic call: alloy dyn-abi encode/decode (read-only) — `alloy-dyn-abi` already a core dep
-- [ ] Event-scan discovery: `pairs <factory>` via `PairCreated`/`PoolCreated` logs (no init hashes needed)
-- [ ] Unit tests: probe fingerprints against known contracts (PulseX factory `0x29eA…C523`, Multicall3 `0xcA11…`), PUSH4 parser, ABI cache
+### vaughan-core — browser engine (`wiz4rd-engine`, generic, no DEX knowledge)
+- [x] `browser/abi.rs`: Explorer `getabi` fetch (`api.scan.pulsechain.com`) + persistent disk cache (FR-4.1)
+- [x] `browser/probe.rs`: Selector-probe capability library (ERC20 / V2 factory+pair / V3 factory+pool / WETH / Multicall3) → protocol fingerprint (FR-4.2)
+- [x] `browser/selectors.rs`: PUSH4 opcode parse over bytecode from `eth_getCode` (~30 lines, unit-tested) (FR-4.3)
+- [x] `browser/sigdb.rs`: Signature lookup via 4byte.directory HTTP API (reqwest) with hex fallback (FR-4.4)
+- [x] `browser/call.rs`: Generic read-only call encode/decode via `alloy-dyn-abi` (FR-4.5)
+- [x] `browser/events.rs`: Event-scan discovery: `pairs <factory>` via `PairCreated`/`PoolCreated` logs (no init hashes needed) (FR-4.6)
+- [x] Unit tests & fixtures: probe fingerprints against known contracts, PUSH4 parser, ABI cache roundtrips, offline signature resolution
+
 
 ### vaughan-tui — browser REPL view
-- [ ] `views/browser.rs`: input line + scrolling output pane, reusing existing `input.rs` (ratatui + crossterm)
-- [ ] Stateful context: `browse 0x…` sets current contract; `pairs`, `call …`, `info`, `probe` operate on it
-- [ ] History + tab completion + `help` (small glue; e.g. `tui-input`)
-- [ ] Batch mode for scripting: `vaughan browser -c "cmd"` (non-interactive, same engine)
+- [ ] `views/browser.rs`: input line + scrolling output pane, reusing existing `input.rs` (ratatui + crossterm) (FR-4.7)
+- [ ] Stateful context: `browse 0x…` sets current contract; `pairs`, `call …`, `info`, `probe`, `token` operate on it (FR-4.7)
+- [ ] History + tab completion + `help` command (FR-4.7)
+- [ ] Non-interactive CLI batch mode: `vaughan browse <address> --call "fn(args)"` (FR-4.7)
+
 
 ### DEX views — from wiz4rd-sdk (after engine exists; wiz4rd-sdk joins this workspace at integration)
 - [ ] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes

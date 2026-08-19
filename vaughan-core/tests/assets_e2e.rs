@@ -30,8 +30,8 @@ use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 
-use vaughan_core::chains::evm::EvmAdapter;
 use vaughan_core::chains::evm::tokens;
+use vaughan_core::chains::evm::EvmAdapter;
 
 /// anvil's first dev account: pre-funded on forks, deterministic key.
 const ANVIL_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -57,7 +57,13 @@ fn spawn_anvil() -> Anvil {
         .port();
     let url = format!("http://127.0.0.1:{port}");
     let child = Command::new("anvil")
-        .args(["--fork-url", FORK_RPC, "--port", &port.to_string(), "--silent"])
+        .args([
+            "--fork-url",
+            FORK_RPC,
+            "--port",
+            &port.to_string(),
+            "--silent",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -159,7 +165,10 @@ async fn assets_detect_native_and_erc20_on_pulsechain_fork() {
         .await
         .expect("metadata fallback");
     assert_eq!(decimals, 18, "unknown token defaults to 18 decimals");
-    assert!(symbol.contains('…'), "unknown token shows a shortened address: {symbol}");
+    assert!(
+        symbol.contains('…'),
+        "unknown token shows a shortened address: {symbol}"
+    );
 }
 
 /// Same scenario, but with Multicall3 **absent** (its code wiped on the fork):

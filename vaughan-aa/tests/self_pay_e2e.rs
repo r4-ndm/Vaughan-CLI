@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use alloy::consensus::{SignableTransaction, TxEip7702};
 use alloy::eips::eip2718::Encodable2718;
 use alloy::eips::eip7702::Authorization;
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::signers::SignerSync;
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
@@ -49,7 +49,11 @@ const IMPLEMENTATION: &str = "0x2A2b85EB1054d6f0c6c2E37dA05eD3E5feA684EF";
 const TESTNET_RPC: &str = "https://rpc.v4.testnet.pulsechain.com";
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 struct ForkedAnvil {
@@ -103,11 +107,20 @@ impl ForkedAnvil {
     fn rpc_chain_id(&self) -> Result<u64, String> {
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}"#;
         let out = Command::new("curl")
-            .args(["-s", "-X", "POST", "-H", "Content-Type: application/json", "-d", body])
+            .args([
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                body,
+            ])
             .arg(&self.url)
             .output()
             .map_err(|e| e.to_string())?;
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
         v["result"]
             .as_str()
             .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap())
@@ -115,11 +128,17 @@ impl ForkedAnvil {
     }
 
     fn rpc(&self, method: &str, params: &str) -> serde_json::Value {
-        let body = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#
-        );
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
         let out = Command::new("curl")
-            .args(["-s", "-X", "POST", "-H", "Content-Type: application/json", "-d", &body])
+            .args([
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                &body,
+            ])
             .arg(&self.url)
             .output()
             .unwrap();
@@ -172,13 +191,18 @@ async fn self_pay_7702_executes_batch_on_forked_testnet() {
     let account = signer.address();
     let implementation = Address::parse_checksummed(IMPLEMENTATION, None).unwrap();
 
-    let adapter = EvmAdapter::new(&anvil.url, 943, "anvil-fork", &[]).await.unwrap();
+    let adapter = EvmAdapter::new(&anvil.url, 943, "anvil-fork", &[])
+        .await
+        .unwrap();
 
     // ---- 1. Bootstrap: delegate + grant the account execute privilege ----
     // A fresh EOA has no keys in AmbireAccount storage, so a direct `execute`
     // would revert INSUFFICIENT_PRIVILEGE. This first 7702 tx self-calls
     // setAddrPrivilege(account, bytes32(1)) (msg.sender == address(this)).
-    let nonce0 = adapter.get_pending_nonce(&account.to_string()).await.unwrap();
+    let nonce0 = adapter
+        .get_pending_nonce(&account.to_string())
+        .await
+        .unwrap();
     let bootstrap_calldata = AmbireAccountBootstrap::setAddrPrivilegeCall {
         addr: account,
         r#priv: B256::from(U256::from(1u64)),
@@ -205,10 +229,17 @@ async fn self_pay_7702_executes_batch_on_forked_testnet() {
         authorization_list: vec![signed_auth],
         input: bootstrap_calldata.into(),
     };
-    let envelope_sig = signer.sign_hash_sync(&bootstrap_tx.signature_hash()).unwrap();
+    let envelope_sig = signer
+        .sign_hash_sync(&bootstrap_tx.signature_hash())
+        .unwrap();
     let raw = bootstrap_tx.into_signed(envelope_sig).encoded_2718();
-    let bootstrap_hash = adapter.broadcast_raw(raw).await.expect("bootstrap broadcast");
-    let status = anvil.wait_mined(&bootstrap_hash.0).expect("bootstrap must mine");
+    let bootstrap_hash = adapter
+        .broadcast_raw(raw)
+        .await
+        .expect("bootstrap broadcast");
+    let status = anvil
+        .wait_mined(&bootstrap_hash.0)
+        .expect("bootstrap must mine");
     assert_eq!(status, "0x1", "bootstrap (setAddrPrivilege) must succeed");
 
     // Verify the privilege landed in the account's storage (mapping slot 0:
@@ -242,16 +273,9 @@ async fn self_pay_7702_executes_batch_on_forked_testnet() {
     assert_eq!(signature.len(), 66, "r‖s‖v‖mode signature");
 
     let before = anvil.wei_balance(&recipient.address().to_string());
-    let batch_hash = submit_self_pay(
-        &adapter,
-        &signer,
-        &batch,
-        &signature,
-        implementation,
-        None,
-    )
-    .await
-    .expect("7702 self-pay broadcast must succeed");
+    let batch_hash = submit_self_pay(&adapter, &signer, &batch, &signature, implementation, None)
+        .await
+        .expect("7702 self-pay broadcast must succeed");
     let status = anvil.wait_mined(&batch_hash.0).expect("batch tx must mine");
     if status != "0x1" {
         let trace = anvil.rpc(
@@ -260,7 +284,10 @@ async fn self_pay_7702_executes_batch_on_forked_testnet() {
         );
         eprintln!("DEBUG batch revert: {}", trace["result"]["revertReason"]);
     }
-    assert_eq!(status, "0x1", "batch execute must succeed (tx {batch_hash})");
+    assert_eq!(
+        status, "0x1",
+        "batch execute must succeed (tx {batch_hash})"
+    );
 
     // The batch executed on-chain: the recipient received exactly the value,
     // which only happens if the delegation was applied and `execute` ran
@@ -274,7 +301,10 @@ async fn self_pay_7702_executes_batch_on_forked_testnet() {
     // sender, once as the authority in its authorization list (EIP-7702
     // bumps the authority's nonce too). Two 7702 txs => +4.
     assert_eq!(
-        adapter.get_pending_nonce(&account.to_string()).await.unwrap(),
+        adapter
+            .get_pending_nonce(&account.to_string())
+            .await
+            .unwrap(),
         nonce0 + 4,
         "sender nonce must advance 4 (bootstrap + batch, sender + authority each)"
     );

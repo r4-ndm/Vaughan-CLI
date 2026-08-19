@@ -7,6 +7,7 @@
 //! signed as one `execute(txns, signature)` batch, and the account self-pays
 //! gas. See `docs/ambire-aa.md` for the 7702 self-pay decision.
 
+use alloy::primitives::U256;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -15,7 +16,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use alloy::primitives::U256;
 use tokio::runtime::Handle;
 use vaughan_aa::abi::Transaction;
 use vaughan_aa::adapter::{
@@ -138,16 +138,17 @@ impl AaSendView {
 
         match self.stage {
             Stage::Edit => {
-                let hint = "ctrl+a add   ctrl+d delete   ↑↓ row   tab field   enter next   esc back";
-                let [hint_area, rows_area] = Layout::vertical([
-                    Constraint::Length(1),
-                    Constraint::Min(1),
-                ])
-                .areas(content);
-                frame.render_widget(Paragraph::new(Line::from(Span::styled(
-                    hint,
-                    Style::default().fg(Color::DarkGray),
-                ))), hint_area);
+                let hint =
+                    "ctrl+a add   ctrl+d delete   ↑↓ row   tab field   enter next   esc back";
+                let [hint_area, rows_area] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(content);
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        hint,
+                        Style::default().fg(Color::DarkGray),
+                    ))),
+                    hint_area,
+                );
 
                 let row_areas: Vec<Rect> = Layout::vertical(
                     std::iter::repeat_n(Constraint::Length(3), self.rows.len()).collect::<Vec<_>>(),
@@ -168,13 +169,18 @@ impl AaSendView {
                         Style::default()
                     };
                     frame.render_widget(
-                        Paragraph::new(Line::from(format!("{}", i + 1)))
-                            .block(Block::default().borders(Borders::ALL).border_style(border_style)),
+                        Paragraph::new(Line::from(format!("{}", i + 1))).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(border_style),
+                        ),
                         num,
                     );
-                    let [rec, amt] =
-                        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
-                            .areas(rest);
+                    let [rec, amt] = Layout::horizontal([
+                        Constraint::Percentage(60),
+                        Constraint::Percentage(40),
+                    ])
+                    .areas(rest);
                     frame.render_widget(
                         labeled_input(
                             "Recipient",

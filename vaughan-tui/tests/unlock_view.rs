@@ -81,7 +81,10 @@ fn unlock_view_correct_password_unlocks_and_publishes_event() {
 
     // The password field is masked while typing.
     let text = render(&view, &wallet);
-    assert!(text.contains("Password"), "must show the password field:\n{text}");
+    assert!(
+        text.contains("Password"),
+        "must show the password field:\n{text}"
+    );
 }
 
 /// A wrong password shows an error, keeps the wallet locked, and never
@@ -97,10 +100,19 @@ fn unlock_view_wrong_password_stays_locked() {
     let mut rx = events.subscribe();
     let mut view = UnlockView::default();
 
-    type_text(&mut view, "DefinitelyNotThePassword!", &mut wallet, &handle, &events);
+    type_text(
+        &mut view,
+        "DefinitelyNotThePassword!",
+        &mut wallet,
+        &handle,
+        &events,
+    );
     let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
 
-    assert!(!matches!(outcome, KeyOutcome::Navigate(_)), "must not navigate");
+    assert!(
+        !matches!(outcome, KeyOutcome::Navigate(_)),
+        "must not navigate"
+    );
     assert!(!wallet.is_unlocked(), "wallet must stay locked");
     assert!(
         rx.try_recv().is_err(),

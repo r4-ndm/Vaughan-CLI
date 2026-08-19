@@ -29,12 +29,24 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 /// Type one character into the focused field.
-fn type_char(view: &mut SendView, c: char, wallet: &WalletState, handle: &Handle, events: &EventBus) {
+fn type_char(
+    view: &mut SendView,
+    c: char,
+    wallet: &WalletState,
+    handle: &Handle,
+    events: &EventBus,
+) {
     view.handle_key(key(KeyCode::Char(c)), wallet, handle, events);
 }
 
 /// Type a whole string into the focused field.
-fn type_text(view: &mut SendView, text: &str, wallet: &WalletState, handle: &Handle, events: &EventBus) {
+fn type_text(
+    view: &mut SendView,
+    text: &str,
+    wallet: &WalletState,
+    handle: &Handle,
+    events: &EventBus,
+) {
     for c in text.chars() {
         type_char(view, c, wallet, handle, events);
     }
@@ -104,15 +116,25 @@ fn send_view_broadcasts_and_shows_receipt() {
 
     // Confirm screen: fee shown, recipient shown, broadcast hint.
     let text = render(&view, &wallet);
-    assert!(text.contains("broadcast"), "confirm stage must offer broadcast:\n{text}");
-    assert!(text.contains("Fee:"), "confirm stage must show the fee:\n{text}");
+    assert!(
+        text.contains("broadcast"),
+        "confirm stage must offer broadcast:\n{text}"
+    );
+    assert!(
+        text.contains("Fee:"),
+        "confirm stage must show the fee:\n{text}"
+    );
     assert!(
         text.to_lowercase().contains(&recipient.to_lowercase()),
         "confirm stage must show the recipient:\n{text}"
     );
 
     // Nothing broadcast yet.
-    assert_eq!(anvil.wei_balance(&recipient), before, "nothing moved before confirm");
+    assert_eq!(
+        anvil.wei_balance(&recipient),
+        before,
+        "nothing moved before confirm"
+    );
 
     // Enter → broadcast → done stage with the tx hash.
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
@@ -122,7 +144,10 @@ fn send_view_broadcasts_and_shows_receipt() {
         "done stage must confirm the broadcast:\n{text}"
     );
     let tx_hash = find_tx_hash(&text).expect("done stage must show the tx hash");
-    assert!(tx_hash.starts_with("0x") && tx_hash.len() == 66, "hash shape: {tx_hash}");
+    assert!(
+        tx_hash.starts_with("0x") && tx_hash.len() == 66,
+        "hash shape: {tx_hash}"
+    );
 
     // The receipt exists, is mined (status 0x1), and matches the form input.
     let tx = anvil
@@ -141,7 +166,11 @@ fn send_view_broadcasts_and_shows_receipt() {
     let receipt = anvil
         .rpc("eth_getTransactionReceipt", json!([tx_hash]))
         .unwrap();
-    assert_eq!(receipt["status"].as_str(), Some("0x1"), "receipt must be mined");
+    assert_eq!(
+        receipt["status"].as_str(),
+        Some("0x1"),
+        "receipt must be mined"
+    );
 
     // Funds moved and the sender nonce advanced.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -152,7 +181,11 @@ fn send_view_broadcasts_and_shows_receipt() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(anvil.wei_balance(&recipient), before + value_wei);
-    assert_eq!(anvil.nonce(&sender), nonce_before + 1, "sender nonce must advance");
+    assert_eq!(
+        anvil.nonce(&sender),
+        nonce_before + 1,
+        "sender nonce must advance"
+    );
 }
 
 /// An amount far above the balance: the confirm → broadcast attempt fails
@@ -186,7 +219,10 @@ fn send_view_insufficient_funds_fails_cleanly() {
     assert_eq!(anvil.nonce(&sender), nonce_before);
 
     // The view is back at the input stage (form fields visible again).
-    assert!(text.contains("Amount"), "view must return to the form:\n{text}");
+    assert!(
+        text.contains("Amount"),
+        "view must return to the form:\n{text}"
+    );
 }
 
 /// A non-numeric amount never leaves the input stage and never broadcasts.
@@ -212,7 +248,10 @@ fn send_view_invalid_amount_stays_on_input() {
         !text.contains("broadcast"),
         "invalid amount must not reach confirm:\n{text}"
     );
-    assert!(text.contains("Amount"), "view must stay on the form:\n{text}");
+    assert!(
+        text.contains("Amount"),
+        "view must stay on the form:\n{text}"
+    );
     assert_eq!(anvil.wei_balance(&recipient), before);
     assert_eq!(anvil.nonce(&sender), nonce_before);
 }
@@ -240,7 +279,10 @@ fn send_view_esc_cancels_confirm() {
     type_text(&mut view, "0.5", &wallet, &handle, &events);
     view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
     let text = render(&view, &wallet);
-    assert!(text.contains("broadcast"), "must reach confirm first:\n{text}");
+    assert!(
+        text.contains("broadcast"),
+        "must reach confirm first:\n{text}"
+    );
 
     // Esc cancels: back to the form, nothing broadcast.
     view.handle_key(key(KeyCode::Esc), &wallet, &handle, &events);

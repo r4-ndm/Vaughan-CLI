@@ -14,7 +14,7 @@
 use alloy::consensus::{SignableTransaction, TxEip7702};
 use alloy::eips::eip2718::Encodable2718;
 use alloy::eips::eip7702::Authorization;
-use alloy::primitives::{Address, B256, TxKind, U256};
+use alloy::primitives::{Address, TxKind, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
@@ -220,7 +220,9 @@ pub async fn bootstrap_delegation(
     let envelope_sig = signer
         .sign_hash_sync(&tx.signature_hash())
         .map_err(|e| WalletError::SigningFailed(e.to_string()))?;
-    adapter.broadcast_raw(tx.into_signed(envelope_sig).encoded_2718()).await
+    adapter
+        .broadcast_raw(tx.into_signed(envelope_sig).encoded_2718())
+        .await
 }
 
 /// Outcome of a [`submit_batch`] call.

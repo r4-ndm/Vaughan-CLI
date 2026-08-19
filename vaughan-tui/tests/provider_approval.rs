@@ -35,15 +35,21 @@ use vaughan_tui::provider::{ApprovalKind, HostRequest, ProviderHost};
 /// were signed (the provider decodes the `0x`-hex wire value before signing).
 fn verify_eip191(address: &str, decoded_message: &str, signature: &str) -> bool {
     let out = Command::new("cast")
-        .args(["wallet", "verify", "--address", address, decoded_message, signature])
+        .args([
+            "wallet",
+            "verify",
+            "--address",
+            address,
+            decoded_message,
+            signature,
+        ])
         .output()
         .expect("cast must be available");
     out.status.success()
 }
 
 /// Spawn the full provider stack and return (server task, ws URL, request rx).
-async fn spawn_provider_stack(
-) -> (
+async fn spawn_provider_stack() -> (
     tokio::task::JoinHandle<Result<(), vaughan_provider::ProviderError>>,
     String,
     mpsc::UnboundedReceiver<HostRequest>,
@@ -129,22 +135,18 @@ async fn run_approval_consumer(
                 match get_network_by_chain_id(id) {
                     Some(net) => {
                         let result = wallet.set_active_network(&net.id);
-                        let _ = reply.send(result.map_err(|e| {
-                            ProviderError::Internal(e.user_message())
-                        }));
+                        let _ = reply
+                            .send(result.map_err(|e| ProviderError::Internal(e.user_message())));
                     }
                     None => {
-                        let _ = reply.send(Err(ProviderError::UnrecognizedChain(
-                            format!("0x{id:x}"),
-                        )));
+                        let _ =
+                            reply.send(Err(ProviderError::UnrecognizedChain(format!("0x{id:x}"))));
                     }
                 }
             }
         }
     }
 }
-
-
 
 /// Send one JSON-RPC request over `ws` and return the parsed reply.
 async fn rpc_call(
@@ -154,7 +156,9 @@ async fn rpc_call(
     params: Value,
 ) -> Value {
     ws.send(Message::Text(
-        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string().into(),
+        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();
@@ -179,7 +183,9 @@ async fn approve_send_broadcasts_to_anvil() {
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(1);
     let before = anvil.wei_balance(&recipient);
-    let sender_nonce_before = anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let sender_nonce_before = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
 
     let (task, url, rx) = spawn_provider_stack().await;
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -192,7 +198,10 @@ async fn approve_send_broadcasts_to_anvil() {
     let reply = rpc_call(&mut ws, 1, "eth_chainId", json!([])).await;
     assert_eq!(reply["result"], "0x3af");
     let reply = rpc_call(&mut ws, 2, "eth_accounts", json!([])).await;
-    assert_eq!(reply["result"][0].as_str().unwrap().to_lowercase(), sender.to_lowercase());
+    assert_eq!(
+        reply["result"][0].as_str().unwrap().to_lowercase(),
+        sender.to_lowercase()
+    );
 
     // The sign/send request — value 1 tPLS.
     let value_wei = 10u128.pow(18);
@@ -224,15 +233,22 @@ async fn approve_send_broadcasts_to_anvil() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(anvil.wei_balance(&recipient), before + value_wei);
-    let sender_nonce_after =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let sender_nonce_after = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
     let nonce_before = u64::from_str_radix(
-        sender_nonce_before.as_str().unwrap().trim_start_matches("0x"),
+        sender_nonce_before
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
     let nonce_after = u64::from_str_radix(
-        sender_nonce_after.as_str().unwrap().trim_start_matches("0x"),
+        sender_nonce_after
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
@@ -252,8 +268,9 @@ async fn deny_send_returns_4001_and_broadcasts_nothing() {
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(2);
     let before = anvil.wei_balance(&recipient);
-    let sender_nonce_before =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let sender_nonce_before = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
 
     let (task, url, rx) = spawn_provider_stack().await;
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -281,14 +298,21 @@ async fn deny_send_returns_4001_and_broadcasts_nothing() {
     // Nothing moved, nonce untouched.
     assert_eq!(anvil.wei_balance(&recipient), before);
     let nonce = u64::from_str_radix(
-        sender_nonce_before.as_str().unwrap().trim_start_matches("0x"),
+        sender_nonce_before
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
-    let sender_nonce_after =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let sender_nonce_after = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
     let nonce_after = u64::from_str_radix(
-        sender_nonce_after.as_str().unwrap().trim_start_matches("0x"),
+        sender_nonce_after
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
         16,
     )
     .unwrap();
@@ -331,11 +355,13 @@ async fn locked_wallet_reads_answer_but_signing_fails() {
     .await;
     assert!(reply["error"].is_object(), "send must fail while locked");
     assert_eq!(
-        reply["error"]["code"],
-        4100,
+        reply["error"]["code"], 4100,
         "locked wallet rejects with EIP-1193 unauthorized (4100)"
     );
-    assert!(seen.lock().unwrap().is_empty(), "no approval prompt when locked");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "no approval prompt when locked"
+    );
     // Nothing moved.
     assert_eq!(
         anvil.wei_balance(&recipient),
@@ -517,8 +543,7 @@ async fn switch_chain_switches_builtin_and_rejects_unknown() {
     )
     .await;
     assert_eq!(
-        reply["error"]["code"],
-        4902,
+        reply["error"]["code"], 4902,
         "unknown chain rejects with EIP-1193 unrecognized chain (4902)"
     );
 
@@ -537,8 +562,9 @@ async fn sign_transaction_returns_valid_raw_tx_that_broadcasts() {
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(4);
     let before = anvil.wei_balance(&recipient);
-    let nonce_before =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let nonce_before = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
 
     let (task, url, rx) = spawn_provider_stack().await;
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -556,7 +582,10 @@ async fn sign_transaction_returns_valid_raw_tx_that_broadcasts() {
     )
     .await;
     if reply["error"].is_object() {
-        panic!("vaughan_signTransaction returned an error: {}", reply["error"]);
+        panic!(
+            "vaughan_signTransaction returned an error: {}",
+            reply["error"]
+        );
     }
     let raw_tx = reply["result"].as_str().expect("raw signed tx").to_string();
     assert!(raw_tx.starts_with("0x"), "raw tx is 0x-hex");
@@ -586,8 +615,9 @@ async fn sign_transaction_returns_valid_raw_tx_that_broadcasts() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(anvil.wei_balance(&recipient), before + value_wei);
-    let nonce_after =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let nonce_after = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
     assert_ne!(nonce_after, nonce_before, "sender nonce must advance");
 
     consumer.abort();
@@ -604,8 +634,9 @@ async fn sign_transaction_denied_returns_4001_and_broadcasts_nothing() {
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(5);
     let before = anvil.wei_balance(&recipient);
-    let nonce_before =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
+    let nonce_before = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
 
     let (task, url, rx) = spawn_provider_stack().await;
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -632,9 +663,13 @@ async fn sign_transaction_denied_returns_4001_and_broadcasts_nothing() {
 
     // Nothing moved, nonce untouched.
     assert_eq!(anvil.wei_balance(&recipient), before);
-    let nonce_after =
-        anvil.rpc("eth_getTransactionCount", json!([sender, "latest"])).unwrap();
-    assert_eq!(nonce_after, nonce_before, "denied sign must not consume a nonce");
+    let nonce_after = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
+    assert_eq!(
+        nonce_after, nonce_before,
+        "denied sign must not consume a nonce"
+    );
 
     consumer.abort();
     task.abort();

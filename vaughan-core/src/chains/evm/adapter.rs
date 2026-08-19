@@ -304,8 +304,7 @@ impl EvmAdapter {
                 .map_err(|e| WalletError::Other(format!("bad balanceOf return: {e}")))?
         };
         let (symbol, name, decimals) = self.get_token_metadata(token_address).await?;
-        let formatted =
-            format_units(raw_balance, decimals).unwrap_or_else(|_| "0.0".to_string());
+        let formatted = format_units(raw_balance, decimals).unwrap_or_else(|_| "0.0".to_string());
         let bal = Balance {
             token: TokenInfo {
                 symbol,
@@ -396,7 +395,10 @@ impl EvmAdapter {
             .collect();
         for addr in self.discover_token_addresses(wallet_address).await? {
             let a = addr.to_string();
-            if !addresses.iter().any(|existing| existing.eq_ignore_ascii_case(&a)) {
+            if !addresses
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&a))
+            {
                 addresses.push(a);
             }
         }
@@ -421,7 +423,9 @@ impl EvmAdapter {
             .unwrap_or(false);
 
         if !multicall3_present {
-            return self.get_assets_sequential(wallet_address, addresses, out).await;
+            return self
+                .get_assets_sequential(wallet_address, addresses, out)
+                .await;
         }
 
         let calls: Vec<IMulticall3::Call> = addresses
@@ -433,14 +437,14 @@ impl EvmAdapter {
                     .into(),
             })
             .collect();
-        let req = TransactionRequest::default()
-            .to(MULTICALL3)
-            .input(IMulticall3::tryAggregateCall {
+        let req = TransactionRequest::default().to(MULTICALL3).input(
+            IMulticall3::tryAggregateCall {
                 requireSuccess: false,
                 calls,
             }
             .abi_encode()
-            .into());
+            .into(),
+        );
 
         let multicall = self
             .with_provider(|provider| {
@@ -465,8 +469,7 @@ impl EvmAdapter {
                     }
                     match IERC20Metadata::balanceOfCall::abi_decode_returns(&result.returnData) {
                         Ok(raw_balance) if !raw_balance.is_zero() => {
-                            let (symbol, name, decimals) =
-                                self.get_token_metadata(address).await?;
+                            let (symbol, name, decimals) = self.get_token_metadata(address).await?;
                             out.push(Balance {
                                 token: TokenInfo {
                                     symbol,
@@ -504,9 +507,7 @@ impl EvmAdapter {
     ) -> Result<Vec<Balance>, WalletError> {
         for address in &addresses {
             let bal = self.get_token_balance(address, wallet_address).await?;
-            if !bal.raw.is_empty()
-                && U256::from_str(&bal.raw).unwrap_or_default() != U256::ZERO
-            {
+            if !bal.raw.is_empty() && U256::from_str(&bal.raw).unwrap_or_default() != U256::ZERO {
                 out.push(bal);
             }
         }
@@ -650,10 +651,18 @@ impl EvmAdapter {
         })?;
         // Zero `to` + calldata = contract creation (TxKind::Create). A plain
         // value transfer to the zero address is a burn, not a create.
-        let is_create = to.is_zero() && evm_tx.data.as_deref().is_some_and(|d| !d.trim_start_matches("0x").is_empty());
+        let is_create = to.is_zero()
+            && evm_tx
+                .data
+                .as_deref()
+                .is_some_and(|d| !d.trim_start_matches("0x").is_empty());
         let mut req = TransactionRequest {
             from: Some(from),
-            to: Some(if is_create { TxKind::Create } else { TxKind::Call(to) }),
+            to: Some(if is_create {
+                TxKind::Create
+            } else {
+                TxKind::Call(to)
+            }),
             value: Some(value),
             chain_id: Some(evm_tx.chain_id),
             nonce: evm_tx.nonce,
@@ -789,10 +798,18 @@ impl ChainAdapter for EvmAdapter {
         let value = U256::from_str(&evm_tx.value).map_err(|_| {
             WalletError::InvalidAmount(format!("Invalid wei value: {}", evm_tx.value))
         })?;
-        let is_create = to.is_zero() && evm_tx.data.as_deref().is_some_and(|d| !d.trim_start_matches("0x").is_empty());
+        let is_create = to.is_zero()
+            && evm_tx
+                .data
+                .as_deref()
+                .is_some_and(|d| !d.trim_start_matches("0x").is_empty());
         let mut req = TransactionRequest {
             from: Some(from),
-            to: Some(if is_create { TxKind::Create } else { TxKind::Call(to) }),
+            to: Some(if is_create {
+                TxKind::Create
+            } else {
+                TxKind::Call(to)
+            }),
             value: Some(value),
             ..Default::default()
         };
@@ -934,10 +951,9 @@ mod tests {
     /// signature (the same hash every ERC-20 emits, e.g. on Etherscan).
     #[test]
     fn transfer_topic0_is_canonical() {
-        let canonical: B256 =
-            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-                .parse()
-                .unwrap();
+        let canonical: B256 = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+            .parse()
+            .unwrap();
         assert_eq!(transfer_topic0(), canonical);
     }
 

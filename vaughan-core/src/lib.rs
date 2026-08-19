@@ -7,6 +7,7 @@
 //! - `error` — [`error::WalletError`] + retry helper
 //! - `logging` — tracing setup
 
+pub mod browser;
 pub mod chains;
 pub mod core;
 pub mod error;

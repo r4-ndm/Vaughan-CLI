@@ -76,6 +76,17 @@ Requirement IDs are referenced by `TASKS.md`.
   `docs/kohaku-go-no-go.md`); revisit only when the derivation incompatibility is
   resolved upstream or a spec-first implementation is scoped.
 
+### Phase 4 — Contract Browser & DEX Engine (`wiz4rd-engine`)
+
+- **FR-4.1** Explorer ABI Resolution: Fetch verified smart contract ABIs from block explorer APIs (`api.scan.pulsechain.com`) with a persistent local disk cache.
+- **FR-4.2** Capability Selector Probing: Fingerprint contract types (ERC-20, Uniswap V2/PulseX Factory & Pair, Uniswap V3 Factory & Pool, WETH, Multicall3) by executing non-reverting `eth_call` probes against known selector suites.
+- **FR-4.3** Bytecode Selector Extraction: Parse PUSH4 opcode candidate function selectors directly from deployed bytecode (`eth_getCode`) for unverified contracts.
+- **FR-4.4** Signature Database Lookup: Reverse-lookup extracted 4-byte selectors via 4byte.directory HTTP API with graceful offline fallback to hex selectors.
+- **FR-4.5** Generic Dynamic Calls: Execute read-only contract function calls with dynamic type encoding and decoding via `alloy-dyn-abi`.
+- **FR-4.6** Event-Scan Pair Discovery: Discover DEX liquidity pairs and pools by scanning `PairCreated` and `PoolCreated` logs directly from factory contracts without hardcoded init-code hashes.
+- **FR-4.7** Interactive Browser REPL & Batch Mode: Surfaced as a stateful interactive REPL view in `vaughan-tui` (`browse <address>`, `call <sig>`, `pairs`, `token`, `info`, `probe`) and non-interactive CLI batch execution (`vaughan browse <address> --call <sig>`).
+
+
 ## Non-functional requirements
 
 - **NFR-1** Secrets never persisted unencrypted; zeroized in memory after use.
