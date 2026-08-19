@@ -222,10 +222,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Emergency stop (kill-switch via `Esc`/`q`) (FR-5.6)
 - [x] Deterministic Anvil autonomous trader test suite passing (FR-5.6)
 
-### Step 6: TUI Agent View & CLI Non-Interactive Execution
-- [ ] `vaughan-tui/src/views/agent.rs`: Interactive chat REPL with streaming responses, tool call status, and confirmation cards (FR-5.8)
-- [ ] Welcome screen 3-way mode selector UI (FR-5.1)
-- [ ] `vaughan agent "<prompt>"` non-interactive CLI subcommand (FR-5.8)
+### Step 6: TUI Agent View & CLI Non-Interactive Execution (Done)
+- [x] `vaughan-tui/src/views/agent.rs`: Interactive chat REPL with tool status, cold-storage human-only barrier, and confirmation cards (FR-5.8)
+- [x] Welcome screen 3-way mode selector UI & dashboard operating badges (FR-5.1)
+- [x] `vaughan agent "<prompt>"` non-interactive CLI subcommand with sensory & proposal tool invocation (FR-5.8)
 
 ### Step 7: Bomb-Proofing & Anvil Integration Tests
 - [ ] `vaughan-agent/tests/agent_anvil.rs`: End-to-end tests driving the agent against local Anvil node
