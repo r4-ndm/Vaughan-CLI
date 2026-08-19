@@ -1,0 +1,67 @@
+//! Structured Sensory and Proposal Tool Engine.
+
+pub mod get_balance;
+pub mod get_dex_reserves;
+pub mod inspect_contract;
+pub mod registry;
+pub mod search_pairs;
+pub mod simulate_call;
+
+pub use get_balance::GetBalanceTool;
+pub use get_dex_reserves::GetDexReservesTool;
+pub use inspect_contract::InspectContractTool;
+pub use registry::ToolRegistry;
+pub use search_pairs::SearchPairsTool;
+pub use simulate_call::SimulateCallTool;
+
+use alloy::primitives::Address;
+use async_trait::async_trait;
+use serde_json::Value;
+use std::sync::Arc;
+
+use crate::error::AgentError;
+use crate::types::ToolDefinition;
+
+/// Execution context provided to each tool invocation.
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    pub rpc_url: String,
+    pub chain_id: u64,
+    pub active_address: Option<Address>,
+}
+
+/// Construct a default [`ToolRegistry`] populated with all read-only sensory tools.
+pub fn default_sensory_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(InspectContractTool::new()));
+    registry.register(Arc::new(GetBalanceTool::new()));
+    registry.register(Arc::new(GetDexReservesTool::new()));
+    registry.register(Arc::new(SearchPairsTool::new()));
+    registry.register(Arc::new(SimulateCallTool::new()));
+    registry
+}
+
+/// Trait implemented by all agent tools.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    /// Tool function name matched by LLM function calls.
+    fn name(&self) -> &str;
+
+    /// Human-readable purpose and capability description for the LLM prompt.
+    fn description(&self) -> &str;
+
+    /// JSON Schema describing accepted arguments.
+    fn parameters(&self) -> Value;
+
+    /// Generates the standard [`ToolDefinition`].
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: self.description().to_string(),
+            parameters: self.parameters(),
+        }
+    }
+
+    /// Execute the tool given validated arguments and context.
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value, AgentError>;
+}

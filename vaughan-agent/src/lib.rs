@@ -10,9 +10,11 @@
 pub mod client;
 pub mod error;
 pub mod providers;
+pub mod tools;
 pub mod types;
 
 pub use client::LlmClient;
 pub use error::AgentError;
 pub use providers::create_llm_client;
+pub use tools::{default_sensory_registry, Tool, ToolContext, ToolRegistry};
 pub use types::{ChatMessage, ModelConfig, ProviderType, Role, ToolCall, ToolDefinition};
