@@ -307,7 +307,7 @@ async fn test_anvil_inspect_uniswap_v2_factory_and_pair_discovery() {
     ]);
     let pair_routes = vec![
         ([0x09, 0x02, 0xf1, 0xac], tuple_val.abi_encode()), // getReserves()
-        ([0x0f, 0xfe, 0xdf, 0xf8], abi_encode_address(token0_addr)), // token0()
+        ([0x0d, 0xfe, 0x16, 0x81], abi_encode_address(token0_addr)), // token0()
         ([0xd2, 0x12, 0x20, 0xa7], abi_encode_address(token1_addr)), // token1()
     ];
     anvil.set_code(pair_addr, &assemble_dispatcher(&pair_routes));
@@ -386,7 +386,7 @@ async fn test_anvil_inspect_uniswap_v3_pool() {
     let pool_routes = vec![
         ([0x38, 0x50, 0xc7, 0xbd], slot0_val.abi_encode()), // slot0()
         ([0xdd, 0xca, 0x3f, 0x43], abi_encode_u256(U256::from(3000))), // fee()
-        ([0x0f, 0xfe, 0xdf, 0xf8], abi_encode_address(token0_addr)), // token0()
+        ([0x0d, 0xfe, 0x16, 0x81], abi_encode_address(token0_addr)), // token0()
         ([0xd2, 0x12, 0x20, 0xa7], abi_encode_address(token1_addr)), // token1()
     ];
     anvil.set_code(pool_addr, &assemble_dispatcher(&pool_routes));
@@ -481,4 +481,90 @@ async fn test_anvil_inspect_generic_unverified_bytecode() {
         .await
         .expect("raw call");
     assert_eq!(U256::from_be_slice(&res), U256::from(42));
+}
+
+#[tokio::test]
+async fn test_anvil_v2_spot_price_calculation() {
+    let anvil = Anvil::start();
+    let provider = anvil.provider();
+    let pair_addr = address!("2222222222222222222222222222222222222222");
+    let token0 = address!("3333333333333333333333333333333333333333");
+    let token1 = address!("4444444444444444444444444444444444444444");
+
+    // Mock V2 Pair: reserve0 = 100 * 10^18, reserve1 = 200 * 10^18 (spot price = 2.0)
+    let r0 = U256::from(100) * U256::from(10).pow(U256::from(18));
+    let r1 = U256::from(200) * U256::from(10).pow(U256::from(18));
+    let reserves_val = DynSolValue::Tuple(vec![
+        DynSolValue::Uint(r0, 112),
+        DynSolValue::Uint(r1, 112),
+        DynSolValue::Uint(U256::from(1700000000), 32),
+    ]);
+
+    let routes = vec![
+        ([0x0d, 0xfe, 0x16, 0x81], abi_encode_address(token0)), // token0()
+        ([0xd2, 0x12, 0x20, 0xa7], abi_encode_address(token1)), // token1()
+        ([0x09, 0x02, 0xf1, 0xac], reserves_val.abi_encode()), // getReserves()
+    ];
+    anvil.set_code(pair_addr, &assemble_dispatcher(&routes));
+
+    let engine = BrowserEngine::new();
+    let inspection = engine.inspect(&provider, 943, pair_addr).await;
+
+    assert!(matches!(
+        inspection.fingerprint,
+        ContractFingerprint::UniswapV2Pair { .. }
+    ));
+
+    let spot_price = inspection.fingerprint.v2_spot_price(18, 18);
+    assert_eq!(spot_price, Some(2.0), "spot price token1/token0 must be 2.0");
+}
+
+#[tokio::test]
+async fn test_anvil_v3_pool_slot0_price_and_liquidity() {
+    let anvil = Anvil::start();
+    let provider = anvil.provider();
+    let pool_addr = address!("5555555555555555555555555555555555555555");
+    let token0 = address!("6666666666666666666666666666666666666666");
+    let token1 = address!("7777777777777777777777777777777777777777");
+
+    // sqrtPriceX96 = 2^96 (represents 1.0 price ratio), tick = 0
+    let sqrt_price_2_pow_96 = U256::from(1) << 96;
+    let slot0_val = DynSolValue::Tuple(vec![
+        DynSolValue::Uint(sqrt_price_2_pow_96, 160),
+        DynSolValue::Int(alloy::primitives::I256::ZERO, 24),
+        DynSolValue::Uint(U256::from(1), 16),
+        DynSolValue::Uint(U256::from(10), 16),
+        DynSolValue::Uint(U256::from(10), 16),
+        DynSolValue::Uint(U256::ZERO, 8),
+        DynSolValue::Bool(true),
+    ]);
+
+    let routes = vec![
+        ([0x38, 0x50, 0xc7, 0xbd], slot0_val.abi_encode()), // slot0()
+        ([0xdd, 0xca, 0x3f, 0x43], abi_encode_u256(U256::from(500))), // fee() = 0.05%
+        ([0x0d, 0xfe, 0x16, 0x81], abi_encode_address(token0)), // token0()
+        ([0xd2, 0x12, 0x20, 0xa7], abi_encode_address(token1)), // token1()
+        ([0x1a, 0x68, 0x65, 0x02], abi_encode_u256(U256::from(5_000_000u128))), // liquidity()
+    ];
+    anvil.set_code(pool_addr, &assemble_dispatcher(&routes));
+
+    let engine = BrowserEngine::new();
+    let inspection = engine.inspect(&provider, 943, pool_addr).await;
+
+    if let ContractFingerprint::UniswapV3Pool {
+        fee,
+        tick,
+        liquidity,
+        ..
+    } = &inspection.fingerprint
+    {
+        assert_eq!(*fee, 500);
+        assert_eq!(*tick, Some(0));
+        assert_eq!(*liquidity, Some(5_000_000));
+    } else {
+        panic!("expected UniswapV3Pool fingerprint");
+    }
+
+    let spot_price = inspection.fingerprint.v3_spot_price(18, 18);
+    assert_eq!(spot_price, Some(1.0), "spot price token1/token0 must be 1.0");
 }

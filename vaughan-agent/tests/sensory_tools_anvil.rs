@@ -131,6 +131,72 @@ async fn test_tool_registry_and_sensory_tools_with_anvil() {
     assert!(inspect_res["candidate_selectors"].as_array().unwrap().len() >= 6);
 }
 
+#[tokio::test]
+async fn test_get_dex_reserves_spot_price_on_anvil() {
+    let anvil = AnvilGuard::spawn(8556);
+    let registry = default_sensory_registry();
+    let pair_addr = address!("2222222222222222222222222222222222222222");
+    let token0 = address!("3333333333333333333333333333333333333333");
+    let token1 = address!("4444444444444444444444444444444444444444");
+
+    // reserve0 = 100 * 10^18, reserve1 = 200 * 10^18 -> spot price = 2.0
+    let mut reserves_bytes = vec![0u8; 96];
+    let r0 = alloy::primitives::U256::from(100) * alloy::primitives::U256::from(10).pow(alloy::primitives::U256::from(18));
+    let r1 = alloy::primitives::U256::from(200) * alloy::primitives::U256::from(10).pow(alloy::primitives::U256::from(18));
+    reserves_bytes[..32].copy_from_slice(&r0.to_be_bytes::<32>());
+    reserves_bytes[32..64].copy_from_slice(&r1.to_be_bytes::<32>());
+    reserves_bytes[64..96].copy_from_slice(&alloy::primitives::U256::from(1700000000).to_be_bytes::<32>());
+
+    let mut t0_bytes = vec![0u8; 32];
+    t0_bytes[12..32].copy_from_slice(token0.as_slice());
+
+    let mut t1_bytes = vec![0u8; 32];
+    t1_bytes[12..32].copy_from_slice(token1.as_slice());
+
+    let routes = vec![
+        ([0x0d, 0xfe, 0x16, 0x81], t0_bytes), // token0()
+        ([0xd2, 0x12, 0x20, 0xa7], t1_bytes), // token1()
+        ([0x09, 0x02, 0xf1, 0xac], reserves_bytes), // getReserves()
+    ];
+
+    let code_hex = format!("0x{}", hex::encode(assemble_dispatcher(&routes)));
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "anvil_setCode",
+        "params": [format!("{pair_addr:#x}"), code_hex]
+    });
+
+    let _ = std::process::Command::new("curl")
+        .args(["-s", "-X", "POST", "-H", "Content-Type: application/json"])
+        .arg("-d")
+        .arg(body.to_string())
+        .arg(&anvil.rpc_url)
+        .output()
+        .unwrap();
+
+    let context = ToolContext {
+        rpc_url: anvil.rpc_url.clone(),
+        chain_id: 31337,
+        active_address: Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
+    };
+
+    let res = registry
+        .execute(
+            "get_dex_reserves",
+            json!({
+                "pair_address": format!("{pair_addr:#x}")
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res["token0"], format!("{token0:#x}"));
+    assert_eq!(res["token1"], format!("{token1:#x}"));
+    assert_eq!(res["spot_price_token1_per_token0"], 2.0);
+}
+
 fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut bytecode = vec![0x60, 0x00, 0x35, 0x60, 0xe0, 0x1c];
     let dispatch_size = bytecode.len() + routes.len() * 11 + 5;

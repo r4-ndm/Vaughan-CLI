@@ -72,7 +72,7 @@ impl SignatureDb {
         known.insert([0x18, 0x16, 0x0d, 0xdd], vec!["totalSupply()".to_string()]);
         known.insert([0x09, 0x02, 0xf1, 0xac], vec!["getReserves()".to_string()]);
         known.insert([0x38, 0x50, 0xc7, 0xbd], vec!["slot0()".to_string()]);
-        known.insert([0x0f, 0xfe, 0xdf, 0xf8], vec!["token0()".to_string()]);
+        known.insert([0x0d, 0xfe, 0x16, 0x81], vec!["token0()".to_string()]);
         known.insert([0xd2, 0x12, 0x20, 0xa7], vec!["token1()".to_string()]);
         known.insert([0xc4, 0x5a, 0x01, 0x53], vec!["factory()".to_string()]);
         known.insert(
