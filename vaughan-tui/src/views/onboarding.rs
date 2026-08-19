@@ -10,7 +10,7 @@ use ratatui::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
-use vaughan_core::core::WalletState;
+use vaughan_core::core::{OperatingMode, WalletState};
 use vaughan_core::security::encryption::validate_password_policy;
 use vaughan_core::security::hd_wallet::{generate_mnemonic, validate_mnemonic};
 use vaughan_core::security::Mnemonic;
@@ -23,6 +23,8 @@ use crate::views::{body_areas, labeled_input, status_paragraph};
 
 /// Which step of onboarding the user is on.
 enum Stage {
+    /// Select operating mode (Human, Assist, Degen) or action.
+    SelectMode,
     /// Choose create vs restore.
     Choose,
     /// Display the freshly generated mnemonic (create flow).
@@ -46,7 +48,7 @@ pub struct OnboardingView {
 impl Default for OnboardingView {
     fn default() -> Self {
         Self {
-            stage: Stage::Choose,
+            stage: Stage::SelectMode,
             input: Input::new(false, ""),
             mnemonic: None,
             pending_password: None,
@@ -56,14 +58,46 @@ impl Default for OnboardingView {
 }
 
 impl OnboardingView {
-    pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
         let block = Block::default().borders(Borders::ALL);
 
         match self.stage {
-            Stage::Choose => {
+            Stage::SelectMode => {
                 let text = vec![
                     Line::from("Welcome to Vaughan."),
+                    Line::from(""),
+                    Line::from("Select operating mode for this session:"),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("1 — Classic Human Mode: ", Style::default().fg(Color::Cyan)),
+                        Span::raw("Zero AI, 100% manual sovereignty"),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("2 — AI Assisted Mode:  ", Style::default().fg(Color::Green)),
+                        Span::raw("AI advisor with manual human confirmation"),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(
+                            "3 — Degen Bot Mode:    ",
+                            Style::default().fg(Color::Magenta),
+                        ),
+                        Span::raw("Autonomous trading in isolated burner wallet"),
+                    ]),
+                    Line::from(""),
+                    Line::from("Or press:"),
+                    Line::from("c — create a new wallet (generates a 12-word recovery phrase)"),
+                    Line::from("r — restore a wallet from an existing phrase"),
+                ];
+                frame.render_widget(
+                    Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
+                    content,
+                );
+            }
+            Stage::Choose => {
+                let mode_badge = wallet.operating_mode().display_label();
+                let text = vec![
+                    Line::from(format!("Mode selected: {mode_badge}")),
                     Line::from(""),
                     Line::from("c — create a new wallet (generates a 12-word recovery phrase)"),
                     Line::from("r — restore a wallet from an existing phrase"),
@@ -126,6 +160,39 @@ impl OnboardingView {
         _events: &EventBus,
     ) -> KeyOutcome {
         match self.stage {
+            Stage::SelectMode => match key.code {
+                KeyCode::Char('1') => {
+                    wallet.set_operating_mode(OperatingMode::HumanOnly);
+                    self.status.clear();
+                    self.stage = Stage::Choose;
+                }
+                KeyCode::Char('2') => {
+                    wallet.set_operating_mode(OperatingMode::AiAssisted);
+                    self.status.clear();
+                    self.stage = Stage::Choose;
+                }
+                KeyCode::Char('3') => {
+                    wallet.set_operating_mode(OperatingMode::DegenTrader);
+                    self.status.clear();
+                    self.stage = Stage::Choose;
+                }
+                KeyCode::Char('c') => match generate_mnemonic() {
+                    Ok(mnemonic) => {
+                        wallet.set_operating_mode(OperatingMode::HumanOnly);
+                        self.mnemonic = Some(mnemonic);
+                        self.status.clear();
+                        self.stage = Stage::ShowMnemonic;
+                    }
+                    Err(e) => self.status = e.user_message(),
+                },
+                KeyCode::Char('r') => {
+                    wallet.set_operating_mode(OperatingMode::HumanOnly);
+                    self.input = Input::new(false, "abandon abandon ... about");
+                    self.status.clear();
+                    self.stage = Stage::EnterMnemonic;
+                }
+                _ => return KeyOutcome::NotHandled,
+            },
             Stage::Choose => match key.code {
                 KeyCode::Char('c') => match generate_mnemonic() {
                     Ok(mnemonic) => {

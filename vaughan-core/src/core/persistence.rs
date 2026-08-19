@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::profile::OperatingMode;
 use crate::error::WalletError;
 use crate::security::encryption::EncryptedVault;
 
@@ -19,6 +20,12 @@ pub const CURRENT_VERSION: u32 = 1;
 /// Default wallet data file name.
 pub const WALLET_FILE: &str = "wallet.json";
 
+/// Default profile name.
+pub const DEFAULT_PROFILE: &str = "default";
+
+/// Isolated degen profile name.
+pub const DEGEN_PROFILE: &str = "degen";
+
 /// Everything persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedState {
@@ -26,6 +33,14 @@ pub struct PersistedState {
     pub vault: EncryptedVault,
     pub active_network_id: String,
     pub active_account_index: u32,
+    #[serde(default)]
+    pub operating_mode: OperatingMode,
+    #[serde(default = "default_profile_string")]
+    pub profile_name: String,
+}
+
+fn default_profile_string() -> String {
+    DEFAULT_PROFILE.to_string()
 }
 
 impl PersistedState {
@@ -35,6 +50,24 @@ impl PersistedState {
             vault,
             active_network_id: active_network_id.into(),
             active_account_index: 0,
+            operating_mode: OperatingMode::HumanOnly,
+            profile_name: DEFAULT_PROFILE.to_string(),
+        }
+    }
+
+    pub fn with_mode_and_profile(
+        vault: EncryptedVault,
+        active_network_id: impl Into<String>,
+        operating_mode: OperatingMode,
+        profile_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            vault,
+            active_network_id: active_network_id.into(),
+            active_account_index: 0,
+            operating_mode,
+            profile_name: profile_name.into(),
         }
     }
 }
@@ -51,10 +84,31 @@ impl StateManager {
 
     /// The default location: `<data_dir>/vaughan-cli/wallet.json`.
     pub fn default_path() -> Result<PathBuf, WalletError> {
+        Self::profile_path(DEFAULT_PROFILE)
+    }
+
+    /// Profile-specific location:
+    /// - "default" -> `<data_dir>/vaughan-cli/wallet.json`
+    /// - other (e.g. "degen") -> `<data_dir>/vaughan-cli/profiles/<name>/wallet.json`
+    pub fn profile_path(profile_name: &str) -> Result<PathBuf, WalletError> {
         let base = dirs::data_dir().ok_or_else(|| {
             WalletError::Io("could not determine the user data directory".to_string())
         })?;
-        Ok(base.join("vaughan-cli").join(WALLET_FILE))
+        let vaughan_base = base.join("vaughan-cli");
+        if profile_name.is_empty() || profile_name == DEFAULT_PROFILE {
+            Ok(vaughan_base.join(WALLET_FILE))
+        } else {
+            Ok(vaughan_base
+                .join("profiles")
+                .join(profile_name)
+                .join(WALLET_FILE))
+        }
+    }
+
+    /// Construct a StateManager for a specific profile.
+    pub fn for_profile(profile_name: &str) -> Result<Self, WalletError> {
+        let path = Self::profile_path(profile_name)?;
+        Ok(Self::new(path))
     }
 
     pub fn path(&self) -> &Path {
@@ -232,5 +286,36 @@ mod tests {
         assert_eq!(file_mode, 0o600, "load must lock down the vault file");
         let dir_mode = fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "load must lock down the vault dir");
+    }
+
+    #[test]
+    fn profile_mode_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("degen_wallet.json");
+        let sm = StateManager::new(path);
+        let state = PersistedState::with_mode_and_profile(
+            dummy_vault(),
+            "pulsechain-testnet-v4",
+            OperatingMode::DegenTrader,
+            "degen",
+        );
+        sm.save(&state).unwrap();
+
+        let loaded = sm.load().unwrap();
+        assert_eq!(loaded.operating_mode, OperatingMode::DegenTrader);
+        assert_eq!(loaded.profile_name, "degen");
+        assert_eq!(loaded.active_network_id, "pulsechain-testnet-v4");
+    }
+
+    #[test]
+    fn profile_path_resolution() {
+        let default_path = StateManager::profile_path(DEFAULT_PROFILE).unwrap();
+        assert!(default_path.ends_with("vaughan-cli/wallet.json"));
+
+        let degen_path = StateManager::profile_path(DEGEN_PROFILE).unwrap();
+        assert!(degen_path.ends_with("vaughan-cli/profiles/degen/wallet.json"));
+
+        let custom_path = StateManager::profile_path("bot1").unwrap();
+        assert!(custom_path.ends_with("vaughan-cli/profiles/bot1/wallet.json"));
     }
 }

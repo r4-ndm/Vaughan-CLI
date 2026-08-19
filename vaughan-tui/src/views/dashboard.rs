@@ -46,17 +46,37 @@ impl DashboardView {
             Some(balance) => format!("{} {}", balance.formatted, balance.token.symbol),
             None => "—".to_string(),
         };
+        let mode_color = match wallet.operating_mode() {
+            vaughan_core::core::OperatingMode::HumanOnly => Color::Cyan,
+            vaughan_core::core::OperatingMode::AiAssisted => Color::Green,
+            vaughan_core::core::OperatingMode::DegenTrader => Color::Magenta,
+        };
+        let mode_badge = wallet.operating_mode().badge();
         let testnet = if net.is_testnet { " (testnet)" } else { "" };
+        let profile_info = if wallet.profile_name() != "default" {
+            format!("  (profile: {})", wallet.profile_name())
+        } else {
+            String::new()
+        };
+
+        let shortcut_line = if wallet.operating_mode().is_ai_enabled() {
+            "s send   b batch   v receive   n networks   a assets   c browse   g agent   r refresh   l lock"
+        } else {
+            "s send   b batch   v receive   n networks   a assets   c browse   r refresh   l lock"
+        };
 
         let text = vec![
             Line::from(vec![
                 Span::raw("Address:  "),
                 Span::styled(address, Style::default().fg(Color::Yellow)),
+                Span::raw("  ["),
+                Span::styled(mode_badge, Style::default().fg(mode_color)),
+                Span::raw(format!("]{profile_info}")),
             ]),
             Line::from(format!("Network:  {}{testnet}", net.name)),
             Line::from(format!("Balance:  {balance_line}")),
             Line::from(""),
-            Line::from("s send   b batch   v receive   n networks   a assets   c browse   r refresh   l lock"),
+            Line::from(shortcut_line),
         ];
         frame.render_widget(
             Paragraph::new(text)

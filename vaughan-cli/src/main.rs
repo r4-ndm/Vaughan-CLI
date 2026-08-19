@@ -10,14 +10,22 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use secrecy::SecretString;
 use vaughan_core::chains::ChainTransaction;
-use vaughan_core::core::{StateManager, TransactionService, WalletState};
+use vaughan_core::core::{OperatingMode, StateManager, TransactionService, WalletState};
 
 #[derive(Debug, Parser)]
 #[command(name = "vaughan", version, about = "Vaughan wallet CLI")]
 struct Cli {
-    /// Vault file path (default: the standard data dir).
+    /// Vault file path (default: the profile data dir).
     #[arg(long, global = true)]
     vault: Option<PathBuf>,
+
+    /// Profile name (default: "default"; isolated degen bot: "degen").
+    #[arg(long, global = true, default_value = "default")]
+    profile: String,
+
+    /// Operating mode (human, assist, degen).
+    #[arg(long, global = true)]
+    mode: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -123,13 +131,24 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let path = cli.vault.unwrap_or_else(|| {
-        StateManager::default_path().unwrap_or_else(|_| {
-            eprintln!("error: could not resolve the default vault path; pass --vault");
+    let profile = cli.profile;
+    let mode = match cli.mode.as_deref() {
+        Some("degen") | Some("degen-trader") => OperatingMode::DegenTrader,
+        Some("assist") | Some("ai-assisted") => OperatingMode::AiAssisted,
+        Some("human") | Some("human-only") | None => OperatingMode::HumanOnly,
+        Some(unknown) => {
+            anyhow::bail!("unknown operating mode: '{unknown}'. Valid: human, assist, degen")
+        }
+    };
+    let path = if let Some(custom_vault) = cli.vault {
+        custom_vault
+    } else {
+        StateManager::profile_path(&profile).unwrap_or_else(|_| {
+            eprintln!("error: could not resolve the profile vault path; pass --vault");
             std::process::exit(1);
         })
-    });
-    let mut wallet = WalletState::load(path)?;
+    };
+    let mut wallet = WalletState::load_with_session(path, mode, profile)?;
 
     match cli.command {
         Command::Networks => {

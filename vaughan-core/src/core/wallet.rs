@@ -27,7 +27,8 @@ use crate::chains::evm::EvmAdapter;
 use crate::chains::{Balance, ChainAdapter, ChainTransaction, EvmTransaction, Fee, TxHash};
 use crate::core::account::AccountManager;
 use crate::core::network::NetworkService;
-use crate::core::persistence::{PersistedState, StateManager};
+use crate::core::persistence::{PersistedState, StateManager, DEFAULT_PROFILE};
+use crate::core::profile::OperatingMode;
 use crate::core::transaction::TransactionService;
 use crate::error::WalletError;
 use crate::security::encryption::{decrypt, encrypt};
@@ -42,11 +43,25 @@ pub struct WalletState {
     rpc_override: Option<String>,
     persisted: Option<PersistedState>,
     accounts: Option<AccountManager>,
+    /// Session-locked operating mode.
+    session_mode: OperatingMode,
+    /// Active profile name (e.g. "default", "degen").
+    session_profile: String,
 }
 
 impl WalletState {
-    /// Load (or discover) the wallet at `path`.
+    /// Load (or discover) the wallet at `path` with default session settings.
     pub fn load(path: PathBuf) -> Result<Self, WalletError> {
+        Self::load_with_session(path, OperatingMode::HumanOnly, DEFAULT_PROFILE)
+    }
+
+    /// Load (or discover) the wallet at `path` with an explicit session operating mode and profile.
+    pub fn load_with_session(
+        path: PathBuf,
+        mode: OperatingMode,
+        profile: impl Into<String>,
+    ) -> Result<Self, WalletError> {
+        let profile_str = profile.into();
         let state = StateManager::new(path);
         let persisted = match state.load() {
             Ok(persisted) => persisted,
@@ -57,18 +72,56 @@ impl WalletState {
                     rpc_override: None,
                     persisted: None,
                     accounts: None,
+                    session_mode: mode,
+                    session_profile: profile_str,
                 });
             }
             Err(e) => return Err(e),
         };
         let networks = NetworkService::new(&persisted.active_network_id)?;
+        let effective_mode = if mode != OperatingMode::HumanOnly {
+            mode
+        } else {
+            persisted.operating_mode
+        };
+        let effective_profile = if profile_str != DEFAULT_PROFILE {
+            profile_str
+        } else {
+            persisted.profile_name.clone()
+        };
         Ok(Self {
             state,
             networks,
             rpc_override: None,
             persisted: Some(persisted),
             accounts: None,
+            session_mode: effective_mode,
+            session_profile: effective_profile,
         })
+    }
+
+    /// Load wallet state for a named profile (e.g. "default", "degen").
+    pub fn load_profile(profile_name: &str, mode: OperatingMode) -> Result<Self, WalletError> {
+        let path = StateManager::profile_path(profile_name)?;
+        Self::load_with_session(path, mode, profile_name)
+    }
+
+    /// The active operating mode for this session.
+    pub fn operating_mode(&self) -> OperatingMode {
+        self.session_mode
+    }
+
+    /// Set operating mode (used at welcome screen before session lock).
+    pub fn set_operating_mode(&mut self, mode: OperatingMode) {
+        self.session_mode = mode;
+        if let Some(ref mut p) = self.persisted {
+            p.operating_mode = mode;
+        }
+    }
+
+    /// The active profile name.
+    pub fn profile_name(&self) -> &str {
+        &self.session_profile
     }
 
     /// The vault file path.
@@ -140,7 +193,12 @@ impl WalletState {
         let vault = encrypt(phrase.as_bytes(), password)?;
         phrase.zeroize();
 
-        let persisted = PersistedState::new(vault, self.networks.active_id());
+        let persisted = PersistedState::with_mode_and_profile(
+            vault,
+            self.networks.active_id(),
+            self.session_mode,
+            &self.session_profile,
+        );
         self.state.save(&persisted)?;
         let accounts = AccountManager::new(mnemonic, AccountManager::DEFAULT_ACCOUNT_COUNT)?;
         self.persisted = Some(persisted);
