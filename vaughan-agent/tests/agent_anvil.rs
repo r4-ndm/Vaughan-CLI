@@ -211,6 +211,92 @@ async fn test_degen_mode_circuit_breaker_halts_on_risk_violation() {
     assert!(err2.to_string().contains("Trading halted"));
 }
 
+#[tokio::test]
+async fn test_agent_v3_dex_swap_proposal_simulation_and_broadcast() {
+    let anvil = AnvilGuard::spawn(8561);
+    let rpc_url = anvil.rpc_url.clone();
+    let provider: RootProvider<Ethereum> = RootProvider::new_http(Url::parse(&rpc_url).unwrap());
+
+    let signer: PrivateKeySigner =
+        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .unwrap();
+    let sender = signer.address();
+    let router_addr = address!("1111111111111111111111111111111111111111");
+
+    // Deploy mock SwapRouter returning amountOut = 99 * 10^18
+    let amount_out = U256::from(99) * U256::from(10).pow(U256::from(18));
+    let mut out_bytes = vec![0u8; 32];
+    out_bytes.copy_from_slice(&amount_out.to_be_bytes::<32>());
+
+    let exact_input_single_sel = [0x04, 0xe4, 0x5a, 0xaf]; // exactInputSingle
+    let routes = vec![(exact_input_single_sel, out_bytes)];
+    let bytecode = assemble_dispatcher(&routes);
+    let _: () = provider
+        .raw_request(
+            "anvil_setCode".into(),
+            (router_addr, format!("0x{}", hex::encode(bytecode))),
+        )
+        .await
+        .unwrap();
+
+    let registry = default_assist_registry();
+    let context = ToolContext {
+        rpc_url: rpc_url.clone(),
+        chain_id: 31337,
+        active_address: Some(sender),
+    };
+
+    // Agent executes propose_contract_call for exactInputSingle
+    let mut calldata = vec![0x04, 0xe4, 0x5a, 0xaf];
+    calldata.extend_from_slice(&vec![0u8; 32 * 8]); // dummy params
+
+    let proposal_val = registry
+        .execute(
+            "propose_contract_call",
+            json!({
+                "to": format!("{router_addr:#x}"),
+                "calldata": format!("0x{}", hex::encode(&calldata)),
+                "value_wei": "1000000000000000000",
+                "function_name": "exactInputSingle",
+                "explanation": "Swap 1 ETH for Token via SwapRouter"
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    let proposal: TxProposal = serde_json::from_value(proposal_val).unwrap();
+    assert_eq!(proposal.to, router_addr);
+    assert_eq!(proposal.value_wei, U256::from(1_000_000_000_000_000_000u64));
+    assert!(proposal.simulation_success, "pre-flight simulation must succeed on Anvil");
+
+    // Human approves and broadcasts
+    let mut tx = TransactionRequest::default()
+        .from(sender)
+        .to(proposal.to)
+        .input(proposal.calldata.into())
+        .value(proposal.value_wei);
+
+    let nonce = provider.get_transaction_count(sender).await.unwrap();
+    tx.nonce = Some(nonce);
+    tx.gas = Some(proposal.gas_limit);
+    tx.max_fee_per_gas = Some(2_000_000_000);
+    tx.max_priority_fee_per_gas = Some(1_000_000_000);
+    tx.chain_id = Some(31337);
+
+    let wallet = EthereumWallet::from(signer);
+    let signed = tx.build(&wallet).await.unwrap();
+
+    let pending = provider
+        .send_raw_transaction(&signed.encoded_2718())
+        .await
+        .unwrap();
+
+    let receipt = pending.get_receipt().await.unwrap();
+    assert_eq!(receipt.status(), true, "Swap transaction must confirm on Anvil");
+}
+
 fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut bytecode = vec![0x60, 0x00, 0x35, 0x60, 0xe0, 0x1c];
     let dispatch_size = bytecode.len() + routes.len() * 11 + 5;
