@@ -71,8 +71,8 @@ impl BrowserEngine {
         // 2. Resolve ABI
         let abi_res = self.abi_resolver.resolve(chain_id, address).await;
 
-        // 3. Extract candidate bytecode selectors if unverified
-        let candidate_selectors = if matches!(abi_res, AbiResolution::Unverified) {
+        // 3. Extract candidate bytecode selectors if not verified
+        let candidate_selectors = if !matches!(abi_res, AbiResolution::Verified(_)) {
             let code = provider.get_code_at(address).await.unwrap_or_default();
             selectors::extract_selectors(&code)
         } else {

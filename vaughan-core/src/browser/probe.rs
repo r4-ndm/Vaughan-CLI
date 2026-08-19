@@ -56,10 +56,12 @@ mod selectors {
     pub const GET_RESERVES: [u8; 4] = [0x09, 0x02, 0xf1, 0xac]; // getReserves()
     pub const TOKEN0: [u8; 4] = [0x0f, 0xfe, 0xdf, 0xf8]; // token0()
     pub const TOKEN1: [u8; 4] = [0xd2, 0x12, 0x20, 0xa7]; // token1()
-    pub const ALL_PAIRS_LENGTH: [u8; 4] = [0x57, 0x4e, 0xe4, 0xd9]; // allPairsLength()
+    pub const ALL_PAIRS_LENGTH: [u8; 4] = [0x57, 0x4f, 0x2b, 0xa3]; // allPairsLength()
     pub const SLOT0: [u8; 4] = [0x38, 0x50, 0xc7, 0xbd]; // slot0()
     pub const FEE: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43]; // fee()
     pub const TRY_AGGREGATE: [u8; 4] = [0xb1, 0xa3, 0x20, 0x3d]; // tryAggregate(bool,Call[])
+    pub const DEPOSIT: [u8; 4] = [0xd0, 0xe3, 0x0d, 0xb0]; // deposit()
+    pub const WITHDRAW: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d]; // withdraw(uint256)
 }
 
 /// Capability Prober.
@@ -120,13 +122,21 @@ impl ContractProber {
             return ContractFingerprint::Multicall3;
         }
 
-        // 5. Probe for ERC-20 Token (symbol + decimals + totalSupply)
+        // 5. Probe for WETH / Wrapped Native (deposit + withdraw + ERC20)
+        let has_deposit = probe_selector_success(provider, target, selectors::DEPOSIT).await;
+        let has_withdraw = probe_selector_success(provider, target, selectors::WITHDRAW).await;
+
+        // 6. Probe for ERC-20 Token (symbol + decimals + totalSupply)
         let has_total_supply = probe_u256(provider, target, selectors::TOTAL_SUPPLY)
             .await
             .is_some();
         let sym = probe_string(provider, target, selectors::SYMBOL).await;
         let dec = probe_u8(provider, target, selectors::DECIMALS).await;
         let name = probe_string(provider, target, selectors::NAME).await;
+
+        if has_deposit && has_withdraw {
+            return ContractFingerprint::Weth;
+        }
 
         if has_total_supply || sym.is_some() || dec.is_some() {
             return ContractFingerprint::Erc20 {
