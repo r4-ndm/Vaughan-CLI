@@ -269,7 +269,10 @@ async fn test_agent_v3_dex_swap_proposal_simulation_and_broadcast() {
     let proposal: TxProposal = serde_json::from_value(proposal_val).unwrap();
     assert_eq!(proposal.to, router_addr);
     assert_eq!(proposal.value_wei, U256::from(1_000_000_000_000_000_000u64));
-    assert!(proposal.simulation_success, "pre-flight simulation must succeed on Anvil");
+    assert!(
+        proposal.simulation_success,
+        "pre-flight simulation must succeed on Anvil"
+    );
 
     // Human approves and broadcasts
     let mut tx = TransactionRequest::default()
@@ -294,7 +297,7 @@ async fn test_agent_v3_dex_swap_proposal_simulation_and_broadcast() {
         .unwrap();
 
     let receipt = pending.get_receipt().await.unwrap();
-    assert_eq!(receipt.status(), true, "Swap transaction must confirm on Anvil");
+    assert!(receipt.status(), "Swap transaction must confirm on Anvil");
 }
 
 fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
@@ -309,7 +312,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         current_offset += 1 + chunks * 36 + 6;
     }
@@ -335,7 +338,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         for c in 0..chunks {
             let start = c * 32;

@@ -87,9 +87,19 @@ async fn send_receipt(
     tx: TransactionRequest,
     step: &str,
 ) -> alloy::rpc::types::TransactionReceipt {
-    let pending = wp.send_transaction(tx).await.unwrap_or_else(|e| panic!("{step}: broadcast failed: {e}"));
-    let receipt = pending.get_receipt().await.unwrap_or_else(|e| panic!("{step}: no receipt: {e}"));
-    assert!(receipt.status(), "{step}: tx reverted: {}", receipt.transaction_hash);
+    let pending = wp
+        .send_transaction(tx)
+        .await
+        .unwrap_or_else(|e| panic!("{step}: broadcast failed: {e}"));
+    let receipt = pending
+        .get_receipt()
+        .await
+        .unwrap_or_else(|e| panic!("{step}: no receipt: {e}"));
+    assert!(
+        receipt.status(),
+        "{step}: tx reverted: {}",
+        receipt.transaction_hash
+    );
     eprintln!("{step}: ok ({})", receipt.transaction_hash);
     receipt
 }
@@ -103,7 +113,11 @@ fn units(n: u128) -> U256 {
 async fn erc20_balance(provider: &impl Provider, token: Address, who: Address) -> U256 {
     let call = IERC20Minimal::balanceOfCall { account: who };
     let raw = provider
-        .call(TransactionRequest::default().to(token).input(call.abi_encode().into()))
+        .call(
+            TransactionRequest::default()
+                .to(token)
+                .input(call.abi_encode().into()),
+        )
         .await
         .expect("balanceOf failed");
     IERC20Minimal::balanceOfCall::abi_decode_returns(&raw).expect("bad balanceOf return")
@@ -170,15 +184,14 @@ async fn liquidity_lifecycle_on_bsc_fork() {
     assert_eq!(pool.token1, wbnb);
 
     let swap_in = units(1) / U256::from(10); // 0.1 WBNB
-    // The router pulls WBNB from us in the swap callback — approve it first.
+                                             // The router pulls WBNB from us in the swap callback — approve it first.
     for tx in wiz4rd_sdk::allowance::ensure_allowance_txs(&provider, wbnb, me, router, swap_in)
         .await
         .expect("router allowance plan")
     {
         send_receipt(&wp, tx, "approve router WBNB").await;
     }
-    let quote = wiz4rd_sdk::quote_exact_in(&pool, swap_in, true)
-        .expect("exact-in quote");
+    let quote = wiz4rd_sdk::quote_exact_in(&pool, swap_in, true).expect("exact-in quote");
     let swap_tx = build_swap_exact_in(&cfg, &pool, wbnb, swap_in, U256::ZERO, me, deadline, None)
         .expect("swap builder");
     send_receipt(&wp, swap_tx, "swap").await;
@@ -257,9 +270,10 @@ async fn liquidity_lifecycle_on_bsc_fork() {
 
     // list_positions_from must find it (anvil serves getLogs for its own blocks).
     let mint_block = mint_receipt.block_number.expect("block number");
-    let owned = wiz4rd_sdk::positions::list_positions_from(&provider, &cfg, me, Some(mint_block), None)
-        .await
-        .expect("list positions");
+    let owned =
+        wiz4rd_sdk::positions::list_positions_from(&provider, &cfg, me, Some(mint_block), None)
+            .await
+            .expect("list positions");
     assert!(
         owned.iter().any(|p| p.token_id == token_id),
         "position {} appears in the owner's list",
@@ -281,8 +295,8 @@ async fn liquidity_lifecycle_on_bsc_fork() {
     .expect("decrease builder");
     send_receipt(&wp, dec_tx, "decrease").await;
 
-    let collect_tx = build_collect_tx(&cfg, token_id, me, u128::MAX, u128::MAX)
-        .expect("collect builder");
+    let collect_tx =
+        build_collect_tx(&cfg, token_id, me, u128::MAX, u128::MAX).expect("collect builder");
     send_receipt(&wp, collect_tx, "collect").await;
 
     // ---- 8. Principal is back (minus swap fees earned/lost on the range) ----
@@ -375,12 +389,14 @@ async fn swap_bounds_hold_on_bsc_fork() {
     let pool = wiz4rd_sdk::pool::get_pool_info_for_tokens(&provider, &cfg, wbnb, usdt, 500)
         .await
         .expect("WBNB/USDT 500 pool");
-    assert_eq!(pool.token1, wbnb, "WBNB is token1, so both swaps are one-for-zero");
+    assert_eq!(
+        pool.token1, wbnb,
+        "WBNB is token1, so both swaps are one-for-zero"
+    );
 
     // ---- exact-in: sell 0.05 WBNB, receive USDT ----
     let in_amount = units(1) / U256::from(20); // 0.05 WBNB
-    let quote = wiz4rd_sdk::quote_exact_in(&pool, in_amount, false)
-        .expect("exact-in quote");
+    let quote = wiz4rd_sdk::quote_exact_in(&pool, in_amount, false).expect("exact-in quote");
     let min_out = apply_slippage(quote.amount_out, 50); // 0.5% tolerance
     assert!(min_out < quote.amount_out);
 
@@ -390,7 +406,10 @@ async fn swap_bounds_hold_on_bsc_fork() {
     send_receipt(&wp, tx, "swap exact-in").await;
     let actual_out = erc20_balance(&provider, usdt, me).await - usdt_before;
 
-    assert!(actual_out >= min_out, "exact-in: got {actual_out} USDT < min {min_out}");
+    assert!(
+        actual_out >= min_out,
+        "exact-in: got {actual_out} USDT < min {min_out}"
+    );
     assert!(
         actual_out <= quote.amount_out,
         "exact-in: got {actual_out} > quote {}",
@@ -405,8 +424,7 @@ async fn swap_bounds_hold_on_bsc_fork() {
 
     // ---- exact-out: buy exactly 20 USDT with WBNB ----
     let out_amount = units(20);
-    let quote = wiz4rd_sdk::quote_exact_out(&pool, out_amount, false)
-        .expect("exact-out quote");
+    let quote = wiz4rd_sdk::quote_exact_out(&pool, out_amount, false).expect("exact-out quote");
     let max_in = apply_slippage_up(quote.amount_in, 50); // 0.5% tolerance
     assert!(max_in > quote.amount_in);
 
@@ -418,13 +436,19 @@ async fn swap_bounds_hold_on_bsc_fork() {
     let actual_in = wbnb_before - erc20_balance(&provider, wbnb, me).await;
     let usdt_delta = erc20_balance(&provider, usdt, me).await - usdt_before;
 
-    assert!(actual_in <= max_in, "exact-out: spent {actual_in} WBNB > max {max_in}");
+    assert!(
+        actual_in <= max_in,
+        "exact-out: spent {actual_in} WBNB > max {max_in}"
+    );
     assert!(
         actual_in <= quote.amount_in * U256::from(1001) / U256::from(1000),
         "exact-out: spent {actual_in} > 0.1% over required {}",
         quote.amount_in
     );
-    assert_eq!(usdt_delta, out_amount, "exact-out: received exactly the requested USDT");
+    assert_eq!(
+        usdt_delta, out_amount,
+        "exact-out: received exactly the requested USDT"
+    );
 
     // ---- guard: an unreachable minimum reverts on-chain ----
     // Re-quote at the *current* pool state (the exact-out swap above moved the
@@ -517,7 +541,8 @@ async fn price_impact_hard_stop_on_bsc_fork() {
     let normal = units(1) / U256::from(20); // 0.05 WBNB
     let deep_q = wiz4rd_sdk::quote_exact_in(&deep, normal, false).expect("deep quote");
     let shallow_q = wiz4rd_sdk::quote_exact_in(&shallow, normal, false).expect("shallow quote");
-    let deep_impact = wiz4rd_sdk::price_impact_pct(&deep, deep_q.amount_in, deep_q.amount_out, false);
+    let deep_impact =
+        wiz4rd_sdk::price_impact_pct(&deep, deep_q.amount_in, deep_q.amount_out, false);
     let shallow_impact =
         wiz4rd_sdk::price_impact_pct(&shallow, shallow_q.amount_in, shallow_q.amount_out, false);
 
@@ -542,7 +567,8 @@ async fn price_impact_hard_stop_on_bsc_fork() {
     // ---- size also matters: a huge swap on the *deep* pool trips the stop ----
     let huge = units(5_000); // 5,000 WBNB
     let huge_q = wiz4rd_sdk::quote_exact_in(&deep, huge, false).expect("huge deep quote");
-    let huge_impact = wiz4rd_sdk::price_impact_pct(&deep, huge_q.amount_in, huge_q.amount_out, false);
+    let huge_impact =
+        wiz4rd_sdk::price_impact_pct(&deep, huge_q.amount_in, huge_q.amount_out, false);
     eprintln!("5,000 WBNB on deep   : {huge_impact:.2}% impact");
     assert!(
         huge_impact > DEFAULT_MAX_PRICE_IMPACT,
@@ -551,7 +577,10 @@ async fn price_impact_hard_stop_on_bsc_fork() {
 
     // ---- the CLI's decision rule (swap.rs hard_stopped) applied to real
     //      on-chain numbers ----
-    assert!(!(deep_impact > DEFAULT_MAX_PRICE_IMPACT), "deep swap must proceed");
+    assert!(
+        deep_impact <= DEFAULT_MAX_PRICE_IMPACT,
+        "deep swap must proceed"
+    );
     assert!(
         shallow_impact > DEFAULT_MAX_PRICE_IMPACT,
         "shallow swap must be refused by the CLI"

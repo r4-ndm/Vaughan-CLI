@@ -11,8 +11,8 @@ authoritative for how work gets done here.
 - `vaughan-aa/` — EIP-7702 / Ambire smart accounts and batched sends
 - `vaughan-agent/` — [Phase 5] AI Agent engine, LLM clients, tool registry, Degen circuit breakers
 - `vaughan-provider/` — [Phase 2] local EIP-1193 bridge for Freedom Browser
-- `vaughan-cli/` — non-interactive CLI commands (`vaughan` binary)
-- `vaughan-tui/` — ratatui terminal frontend (`vaughan-tui` binary)
+- `vaughan-cli/` — unified `vaughan` binary (TUI by default; CLI subcommands for scripts)
+- `vaughan-tui/` — ratatui terminal frontend (library + dev `vaughan-tui` binary)
 
 This is a Rust-only repository.
 
@@ -131,7 +131,8 @@ listed here requires approval before it is added.
 
 ```bash
 cargo build --workspace          # build
-cargo run -p vaughan-tui         # run the wallet TUI
+cargo run -p vaughan-cli         # run the wallet TUI (or: vaughan after install)
+cargo run -p vaughan-cli -- balance   # CLI subcommand (dev)
 cargo test --workspace           # tests
 cargo fmt --check                # formatting
 cargo clippy --workspace -- -D warnings   # lint (treat warnings as errors)

@@ -77,13 +77,16 @@ pub async fn get_pool_info<P: Provider>(
 
     // slot0
     let raw = call_view(provider, pool, IPancakeV3Pool::slot0Call {}.abi_encode()).await?;
-    let s = IPancakeV3Pool::slot0Call::abi_decode_returns(&raw)
-        .map_err(SdkError::Decode)?;
+    let s = IPancakeV3Pool::slot0Call::abi_decode_returns(&raw).map_err(SdkError::Decode)?;
 
     // liquidity
-    let raw = call_view(provider, pool, IPancakeV3Pool::liquidityCall {}.abi_encode()).await?;
-    let l = IPancakeV3Pool::liquidityCall::abi_decode_returns(&raw)
-        .map_err(SdkError::Decode)?;
+    let raw = call_view(
+        provider,
+        pool,
+        IPancakeV3Pool::liquidityCall {}.abi_encode(),
+    )
+    .await?;
+    let l = IPancakeV3Pool::liquidityCall::abi_decode_returns(&raw).map_err(SdkError::Decode)?;
 
     let _ = &s; // silence unused if slot0 decode changes
     let _ = &l;
@@ -99,6 +102,18 @@ pub async fn get_pool_info<P: Provider>(
         fee_protocol: s.feeProtocol,
         liquidity: l,
     })
+}
+
+/// Resolve a pool's live state from token addresses + fee tier.
+pub async fn get_pool_info_for_tokens<P: Provider>(
+    provider: &P,
+    config: &Config,
+    token_a: Address,
+    token_b: Address,
+    fee: u32,
+) -> SdkResult<PoolInfo> {
+    let key = crate::pool_address::get_pool_key(token_a, token_b, fee);
+    get_pool_info(provider, config, key).await
 }
 
 #[cfg(test)]
@@ -117,32 +132,35 @@ mod tests {
         let cfg = Config {
             chain_id: 56,
             rpc_url: Some("https://bsc-dataseed.binance.org".into()),
-            factory: Some("0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865".parse().unwrap()),
+            factory: Some(
+                "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"
+                    .parse()
+                    .unwrap(),
+            ),
             ..Config::default()
         };
         let provider = cfg.provider().unwrap();
-        let wbnb = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c".parse().unwrap();
-        let usdt = "0x55d398326f99059fF775485246999027B3197955".parse().unwrap();
+        let wbnb = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+            .parse()
+            .unwrap();
+        let usdt = "0x55d398326f99059fF775485246999027B3197955"
+            .parse()
+            .unwrap();
 
-        let info = get_pool_info_for_tokens(&provider, &cfg, wbnb, usdt, 500).await.unwrap();
-        let expected_pool: Address = "0x36696169C63e42cd08ce11f5deeBbCeBae652050".parse().unwrap();
-        assert_eq!(info.pool, expected_pool, "pool must match CREATE2 derivation test");
+        let info = get_pool_info_for_tokens(&provider, &cfg, wbnb, usdt, 500)
+            .await
+            .unwrap();
+        let expected_pool: Address = "0x36696169C63e42cd08ce11f5deeBbCeBae652050"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            info.pool, expected_pool,
+            "pool must match CREATE2 derivation test"
+        );
         assert_eq!(info.token0, usdt, "USDT sorts before WBNB numerically");
         assert_eq!(info.token1, wbnb);
         assert_eq!(info.fee, 500);
         assert!(info.liquidity > 0, "WBNB/USDT pool has liquidity");
         assert!(info.sqrt_price_x96 > U256::ZERO);
     }
-}
-
-/// Resolve a pool's live state from token addresses + fee tier.
-pub async fn get_pool_info_for_tokens<P: Provider>(
-    provider: &P,
-    config: &Config,
-    token_a: Address,
-    token_b: Address,
-    fee: u32,
-) -> SdkResult<PoolInfo> {
-    let key = crate::pool_address::get_pool_key(token_a, token_b, fee);
-    get_pool_info(provider, config, key).await
 }

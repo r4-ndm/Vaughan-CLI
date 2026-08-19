@@ -1,9 +1,9 @@
-//! vaughan — non-interactive wallet commands.
+//! vaughan — Vaughan wallet: interactive TUI by default, scriptable subcommands.
 //!
-//! Scriptable access to the Vaughan vault: broadcast contract calls (the path
-//! used for testnet contract deploys), check balances, and manage the wallet.
-//! All commands that touch the vault require the wallet password — via
-//! `--password-env NAME` for automation, or an interactive prompt.
+//! Run `vaughan` with no arguments to open the terminal wallet. Subcommands
+//! (`send`, `balance`, `browse`, …) provide non-interactive vault access for
+//! scripts and CI. All vault-touching subcommands require the wallet password
+//! — via `--password-env NAME` for automation, or an interactive prompt.
 
 use std::path::PathBuf;
 
@@ -13,7 +13,11 @@ use vaughan_core::chains::ChainTransaction;
 use vaughan_core::core::{OperatingMode, StateManager, TransactionService, WalletState};
 
 #[derive(Debug, Parser)]
-#[command(name = "vaughan", version, about = "Vaughan wallet CLI")]
+#[command(
+    name = "vaughan",
+    version,
+    about = "Vaughan wallet — run with no args for the interactive TUI"
+)]
 struct Cli {
     /// Vault file path (default: the profile data dir).
     #[arg(long, global = true)]
@@ -28,11 +32,13 @@ struct Cli {
     mode: Option<String>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open the interactive terminal wallet (same as running `vaughan` alone).
+    Tui,
     /// Broadcast a transaction: contract call (`--data`) or value transfer.
     ///
     /// Estimates the fee, signs with the unlocked vault, and broadcasts.
@@ -133,17 +139,35 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run(Cli::parse()).await {
+fn main() {
+    let Cli {
+        vault,
+        profile,
+        mode,
+        command,
+    } = Cli::parse();
+    let result = match command {
+        None | Some(Command::Tui) => {
+            vaughan_tui::run_interactive().map_err(|e| anyhow::anyhow!("{}", e))
+        }
+        Some(command) => {
+            let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            runtime.block_on(run_cli(vault, profile, mode, command))
+        }
+    };
+    if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
-async fn run(cli: Cli) -> anyhow::Result<()> {
-    let profile = cli.profile;
-    let mode = match cli.mode.as_deref() {
+async fn run_cli(
+    vault: Option<PathBuf>,
+    profile: String,
+    mode: Option<String>,
+    command: Command,
+) -> anyhow::Result<()> {
+    let mode = match mode.as_deref() {
         Some("degen") | Some("degen-trader") => OperatingMode::DegenTrader,
         Some("assist") | Some("ai-assisted") => OperatingMode::AiAssisted,
         Some("human") | Some("human-only") | None => OperatingMode::HumanOnly,
@@ -151,7 +175,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             anyhow::bail!("unknown operating mode: '{unknown}'. Valid: human, assist, degen")
         }
     };
-    let path = if let Some(custom_vault) = cli.vault {
+    let path = if let Some(custom_vault) = vault {
         custom_vault
     } else {
         StateManager::profile_path(&profile).unwrap_or_else(|_| {
@@ -161,7 +185,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let mut wallet = WalletState::load_with_session(path, mode, profile)?;
 
-    match cli.command {
+    match command {
+        Command::Tui => unreachable!("tui handled in main"),
         Command::Networks => {
             for net in wallet.networks().networks() {
                 println!(

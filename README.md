@@ -16,9 +16,65 @@
 EVM-first and PulseChain-optimized, architected after the `vaughan-core` layering from
 [Vaughan-Dioxus](https://github.com/r4-ndm/Vaughan-Dioxus).
 
-> Status: prototype under active development. Phase 1 (EOA wallet) in progress.
+> Status: active development. Phase 1–5 core features implemented; install via release tarball or `cargo build`.
 
-## Features
+## Install
+
+**One-liner** (downloads a release tarball, verifies SHA256, installs to `~/.local/bin`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/r4-ndm/Vaughan-CLI/main/scripts/install.sh | sh
+```
+
+**Manual tarball** (auditable — no pipe-to-shell):
+
+```bash
+VERSION=v0.1.0
+PLATFORM=linux-x86_64   # or linux-aarch64, macos-x86_64, macos-aarch64
+
+curl -fsSL -O "https://github.com/r4-ndm/Vaughan-CLI/releases/download/${VERSION}/vaughan-${PLATFORM}.tar.gz"
+curl -fsSL -O "https://github.com/r4-ndm/Vaughan-CLI/releases/download/${VERSION}/SHA256SUMS"
+grep "vaughan-${PLATFORM}.tar.gz" SHA256SUMS | sha256sum -c -
+
+mkdir -p ~/.local/bin
+tar -xzf "vaughan-${PLATFORM}.tar.gz" -C /tmp
+install -m 755 /tmp/vaughan ~/.local/bin/vaughan
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+If no GitHub release exists yet, the install script falls back to `cargo install --git …`.
+
+Pin a version: `VAUGHAN_VERSION=v0.1.0 curl -fsSL …/install.sh | sh`
+
+## Launch
+
+```bash
+vaughan              # interactive wallet TUI (default)
+vaughan tui          # same as above
+vaughan balance      # scriptable CLI subcommands
+vaughan send …
+vaughan browse 0x…
+vaughan agent "inspect 0x…" --mode assist
+```
+
+Ensure `~/.local/bin` (or `~/.cargo/bin` when using the cargo fallback) is on your `PATH`.
+
+## Build from source (developers)
+
+```bash
+git clone https://github.com/r4-ndm/Vaughan-CLI.git
+cd Vaughan-CLI
+cargo build --release -p vaughan-cli
+install -m 755 target/release/vaughan ~/.local/bin/vaughan
+```
+
+Or run without installing:
+
+```bash
+cargo run -p vaughan-cli          # TUI
+cargo run -p vaughan-cli -- balance
+cargo run -p vaughan-tui           # TUI-only crate (dev convenience)
+```
 
 - 🔒 **Sovereign Self-Custody**: Password-encrypted vault (Argon2id + AES-256-GCM) with zero plain-text storage.
 - 🧾 **BIP-39 & HD Wallet**: Mnemonic creation/recovery with standard `m/44'/60'/0'/0/{index}` derivation.
@@ -40,25 +96,8 @@ vaughan-cli/
 ├─ vaughan-provider/  # Local EIP-1193 WebSocket JSON-RPC server and allowlist security
 ├─ vaughan-agent/     # Multi-provider LLM engine (Ollama, Gemini, OpenAI), sensory & proposal tools, circuit breakers
 ├─ vaughan-tui/       # Ratatui terminal frontend (views, dashboard, batch send, agent chat REPL)
-└─ vaughan-cli/       # Non-interactive CLI commands (send, balance, browse, agent)
+└─ vaughan-cli/       # Unified `vaughan` binary: TUI by default, CLI subcommands
 ```
-
-## Build & Run
-
-```bash
-# Build all crates
-cargo build --release
-
-# Run interactive TUI
-cargo run -p vaughan-tui
-
-# Run non-interactive CLI commands
-vaughan balance
-vaughan browse 0x165C3410fC91EF562C50559f7d2289fEbed552d9
-vaughan agent "inspect 0x165C3410fC91EF562C50559f7d2289fEbed552d9" --mode assist
-```
-
-## Documentation
 
 - [docs/agent-configuration.md](docs/agent-configuration.md) — Complete guide on configuring Ollama, Gemini, OpenAI, and agent profiles
 - [docs/AI-AGENT-ARCHITECTURE.md](docs/AI-AGENT-ARCHITECTURE.md) — AI Agent architecture and multi-tier sandboxing specification

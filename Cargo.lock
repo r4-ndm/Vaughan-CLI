@@ -5220,6 +5220,7 @@ dependencies = [
  "tracing",
  "vaughan-agent",
  "vaughan-core",
+ "vaughan-tui",
 ]
 
 [[package]]

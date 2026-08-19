@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn io_and_json_errors_convert() {
-        let io = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let io = std::io::Error::other("boom");
         assert!(matches!(
             ProviderError::from(io),
             ProviderError::Transport(_)

@@ -617,9 +617,7 @@ mod tests {
 
         let send = dispatch(
             &wallet,
-            &format!(
-                r#"{{"id":1,"method":"eth_sendTransaction","params":[{{"to":"0x0000000000000000000000000000000000000000","value":"0x1"}}]}}"#
-            ),
+            r#"{"id":1,"method":"eth_sendTransaction","params":[{"to":"0x0000000000000000000000000000000000000000","value":"0x1"}]}"#,
         )
         .await
         .unwrap();

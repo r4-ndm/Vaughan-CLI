@@ -141,11 +141,14 @@ async fn test_get_dex_reserves_spot_price_on_anvil() {
 
     // reserve0 = 100 * 10^18, reserve1 = 200 * 10^18 -> spot price = 2.0
     let mut reserves_bytes = vec![0u8; 96];
-    let r0 = alloy::primitives::U256::from(100) * alloy::primitives::U256::from(10).pow(alloy::primitives::U256::from(18));
-    let r1 = alloy::primitives::U256::from(200) * alloy::primitives::U256::from(10).pow(alloy::primitives::U256::from(18));
+    let r0 = alloy::primitives::U256::from(100)
+        * alloy::primitives::U256::from(10).pow(alloy::primitives::U256::from(18));
+    let r1 = alloy::primitives::U256::from(200)
+        * alloy::primitives::U256::from(10).pow(alloy::primitives::U256::from(18));
     reserves_bytes[..32].copy_from_slice(&r0.to_be_bytes::<32>());
     reserves_bytes[32..64].copy_from_slice(&r1.to_be_bytes::<32>());
-    reserves_bytes[64..96].copy_from_slice(&alloy::primitives::U256::from(1700000000).to_be_bytes::<32>());
+    reserves_bytes[64..96]
+        .copy_from_slice(&alloy::primitives::U256::from(1700000000).to_be_bytes::<32>());
 
     let mut t0_bytes = vec![0u8; 32];
     t0_bytes[12..32].copy_from_slice(token0.as_slice());
@@ -154,8 +157,8 @@ async fn test_get_dex_reserves_spot_price_on_anvil() {
     t1_bytes[12..32].copy_from_slice(token1.as_slice());
 
     let routes = vec![
-        ([0x0d, 0xfe, 0x16, 0x81], t0_bytes), // token0()
-        ([0xd2, 0x12, 0x20, 0xa7], t1_bytes), // token1()
+        ([0x0d, 0xfe, 0x16, 0x81], t0_bytes),       // token0()
+        ([0xd2, 0x12, 0x20, 0xa7], t1_bytes),       // token1()
         ([0x09, 0x02, 0xf1, 0xac], reserves_bytes), // getReserves()
     ];
 
@@ -209,7 +212,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         current_offset += 1 + chunks * 36 + 6;
     }
@@ -235,7 +238,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         for c in 0..chunks {
             let start = c * 32;

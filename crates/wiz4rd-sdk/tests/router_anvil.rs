@@ -30,7 +30,13 @@ impl Anvil {
             .unwrap()
             .port();
         let child = Command::new("anvil")
-            .args(["--port", &port.to_string(), "--chain-id", "31337", "--silent"])
+            .args([
+                "--port",
+                &port.to_string(),
+                "--chain-id",
+                "31337",
+                "--silent",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -67,7 +73,8 @@ impl Anvil {
             .arg(self.url())
             .output()
             .expect("curl must be available");
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
         if let Some(err) = v.get("error") {
             return Err(err.to_string());
         }
@@ -100,7 +107,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         current_offset += 1 + chunks * 36 + 6;
     }
@@ -125,7 +132,7 @@ fn assemble_dispatcher(routes: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let chunks = if ret_data.is_empty() {
             0
         } else {
-            (ret_data.len() + 31) / 32
+            ret_data.len().div_ceil(32)
         };
         for c in 0..chunks {
             let start = c * 32;
@@ -169,9 +176,10 @@ async fn test_anvil_v3_swap_router_execution() {
     anvil.set_code(router_addr, &assemble_dispatcher(&routes));
 
     // Setup caller wallet on Anvil (Account 0)
-    let signer: PrivateKeySigner = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-        .parse()
-        .unwrap();
+    let signer: PrivateKeySigner =
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .unwrap();
     let sender_addr = signer.address();
     let wallet = EthereumWallet::new(signer);
     let rpc_url: Url = anvil.url().parse().unwrap();
@@ -226,9 +234,8 @@ async fn test_anvil_v3_swap_router_execution() {
         .unwrap();
 
     let receipt = pending.get_receipt().await.unwrap();
-    assert_eq!(
+    assert!(
         receipt.status(),
-        true,
         "wiz4rd-sdk swap transaction must succeed on Anvil"
     );
 }
