@@ -227,11 +227,11 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Welcome screen 3-way mode selector UI & dashboard operating badges (FR-5.1)
 - [x] `vaughan agent "<prompt>"` non-interactive CLI subcommand with sensory & proposal tool invocation (FR-5.8)
 
-### Step 7: Bomb-Proofing & Anvil Integration Tests
-- [ ] `vaughan-agent/tests/agent_anvil.rs`: End-to-end tests driving the agent against local Anvil node
-- [ ] Test: Agent correctly inspects Anvil-deployed token and executes read tools
-- [ ] Test: Agent proposes transfer -> Human approves -> Tx confirms on Anvil
-- [ ] Test: Degen Mode circuit breaker triggers and halts on excessive gas or high slippage
+### Step 7: Bomb-Proofing & Anvil Integration Tests (Done)
+- [x] `vaughan-agent/tests/agent_anvil.rs`: End-to-end tests driving the agent against local Anvil node (FR-5.9)
+- [x] Test: Agent correctly inspects Anvil-deployed token and executes read tools (FR-5.9)
+- [x] Test: Agent proposes transfer -> Human approves -> Tx confirms on Anvil (FR-5.9)
+- [x] Test: Degen Mode circuit breaker triggers and halts on excessive gas or high slippage (FR-5.9)
 
 ## Later — non-EVM families (deferred, no FR yet)
 
