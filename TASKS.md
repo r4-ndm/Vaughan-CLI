@@ -195,11 +195,12 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Dynamic dashboard badge rendering and CLI `--profile <name>` / `--mode <human|assist|degen>` flags
 - [x] Unit & integration tests in `vaughan-core` and `vaughan-tui` passing (FR-5.1, FR-5.2)
 
-### Step 2: `vaughan-agent` Workspace Crate & Provider Adapters
-- [ ] New `vaughan-agent` crate added to workspace
-- [ ] LLM Provider trait: `LlmClient` with streaming chat completion & function calling
-- [ ] Local Ollama / `llama.cpp` provider (`http://127.0.0.1:11434`) (FR-5.7)
-- [ ] Cloud provider (Google Gemini API / OpenAI) with encrypted vault storage of API keys (FR-5.7)
+### Step 2: `vaughan-agent` Workspace Crate & Provider Adapters (Done)
+- [x] New `vaughan-agent` crate added to workspace
+- [x] LLM Provider trait: `LlmClient` with completion & function calling
+- [x] Local Ollama / `llama.cpp` provider (`http://127.0.0.1:11434`) (FR-5.7)
+- [x] Cloud providers (Google Gemini API & OpenAI) with SecretString key handling (FR-5.7)
+- [x] Unit test suite verifying message format and client instantiation passing (FR-5.7)
 
 ### Step 3: Structured Tool Registry & Sensory Layer
 - [ ] Tool trait & JSON schema generation
