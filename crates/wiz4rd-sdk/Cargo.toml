@@ -1,0 +1,19 @@
+[package]
+name = "wiz4rd-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level DEX operations for wiz4rd-swap (PulseChain PancakeSwap V3 fork)"
+repository = "https://github.com/r4-ndm/wiz4rd-swap"
+
+[dependencies]
+wiz4rd-math = { path = "../wiz4rd-math" }
+alloy = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

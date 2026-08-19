@@ -1,0 +1,15 @@
+[package]
+name = "wiz4rd-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concentrated-liquidity math for wiz4rd-swap (PulseChain PancakeSwap V3 fork)"
+repository = "https://github.com/r4-ndm/wiz4rd-swap"
+
+[dependencies]
+uniswap-v3-sdk = { workspace = true }
+alloy = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

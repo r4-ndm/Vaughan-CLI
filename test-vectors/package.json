@@ -1,0 +1,13 @@
+{
+  "name": "wiz4rd-test-vectors",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Generates parity test vectors for wiz4rd-math from @pancakeswap/v3-sdk",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "@pancakeswap/v3-sdk": "3.10.1"
+  }
+}
