@@ -202,10 +202,11 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Cloud providers (Google Gemini API & OpenAI) with SecretString key handling (FR-5.7)
 - [x] Unit test suite verifying message format and client instantiation passing (FR-5.7)
 
-### Step 3: Structured Tool Registry & Sensory Layer
-- [ ] Tool trait & JSON schema generation
-- [ ] Read-only tools wrapping `wiz4rd-engine`: `inspect_contract`, `get_balance`, `get_dex_reserves`, `search_pairs` (FR-5.4)
-- [ ] Pre-flight simulation tool: `simulate_call` via `eth_call` (FR-5.4)
+### Step 3: Structured Tool Registry & Sensory Layer (Done)
+- [x] Tool trait & JSON schema generation (`Tool`, `ToolContext`, `ToolRegistry`) (FR-5.4)
+- [x] Read-only tools wrapping `wiz4rd-engine`: `inspect_contract`, `get_balance`, `get_dex_reserves`, `search_pairs` (FR-5.4)
+- [x] Pre-flight simulation tool: `simulate_call` via `eth_call` (FR-5.4)
+- [x] Deterministic Anvil test suite for tool registry and bytecode execution passing (FR-5.4)
 
 ### Step 4: Propose-Only Write Tools (Assist Mode)
 - [ ] `TxProposal` struct (typed target, calldata, value, fee estimate, simulation result) (FR-5.5)
