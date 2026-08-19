@@ -9,12 +9,16 @@
 
 pub mod client;
 pub mod error;
+pub mod proposal;
 pub mod providers;
 pub mod tools;
 pub mod types;
 
 pub use client::LlmClient;
 pub use error::AgentError;
+pub use proposal::{ProposalType, TxProposal};
 pub use providers::create_llm_client;
-pub use tools::{default_sensory_registry, Tool, ToolContext, ToolRegistry};
+pub use tools::{
+    default_assist_registry, default_sensory_registry, Tool, ToolContext, ToolRegistry,
+};
 pub use types::{ChatMessage, ModelConfig, ProviderType, Role, ToolCall, ToolDefinition};
