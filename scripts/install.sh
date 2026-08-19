@@ -4,8 +4,13 @@
 # Downloads a release tarball from GitHub, verifies SHA256, and installs the
 # `vaughan` binary. Falls back to `cargo install` when no release exists yet.
 #
-# Quick install:
+# Quick install (public repo):
 #   curl -fsSL https://raw.githubusercontent.com/r4-ndm/Vaughan-CLI/main/scripts/install.sh | sh
+#
+# Private repo (requires `gh auth login` or GH_TOKEN):
+#   export GH_TOKEN="$(gh auth token)" && curl -fsSL \
+#     -H "Authorization: token $GH_TOKEN" \
+#     https://raw.githubusercontent.com/r4-ndm/Vaughan-CLI/main/scripts/install.sh | sh
 #
 # Pin a version:
 #   VAUGHAN_VERSION=v0.1.0 curl -fsSL …/install.sh | sh
@@ -15,6 +20,12 @@ set -eu
 REPO="${VAUGHAN_REPO:-r4-ndm/Vaughan-CLI}"
 INSTALL_DIR="${VAUGHAN_INSTALL_DIR:-${HOME}/.local/bin}"
 BASE_URL="https://github.com/${REPO}"
+GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+
+# Use GitHub CLI token when available (private repos).
+if [ -z "$GH_TOKEN" ] && command -v gh >/dev/null 2>&1; then
+    GH_TOKEN=$(gh auth token 2>/dev/null || true)
+fi
 
 say() {
     printf 'vaughan-install: %s\n' "$1"
@@ -23,6 +34,27 @@ say() {
 err() {
     say "error: $1" >&2
     exit 1
+}
+
+# curl with optional GitHub auth (required for private repos / release assets).
+gh_curl() {
+    if [ -n "$GH_TOKEN" ]; then
+        curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" "$@"
+    else
+        curl -fsSL "$@"
+    fi
+}
+
+# Release asset downloads need Accept: application/octet-stream on private repos.
+gh_curl_release() {
+    if [ -n "$GH_TOKEN" ]; then
+        curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$@"
+    else
+        curl -fsSL "$@"
+    fi
 }
 
 detect_platform() {
@@ -58,7 +90,7 @@ resolve_version() {
         return 0
     fi
     tag=$(
-        curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+        gh_curl "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
             | grep '"tag_name":' \
             | head -1 \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
@@ -81,12 +113,23 @@ install_from_tarball() {
     trap 'rm -rf "$tmpdir"' EXIT INT HUP TERM
 
     say "downloading ${archive} (${version})"
-    if ! curl -fsSL -o "${tmpdir}/${archive}" "$url"; then
-        return 1
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        if ! gh release download "$version" --repo "$REPO" \
+            -p "$archive" -p "SHA256SUMS" -D "$tmpdir" >/dev/null 2>&1; then
+            return 1
+        fi
+    else
+        if ! gh_curl_release -o "${tmpdir}/${archive}" "$url"; then
+            return 1
+        fi
+        say "fetching checksums"
+        if ! gh_curl_release -o "${tmpdir}/SHA256SUMS" "$sums_url"; then
+            return 1
+        fi
     fi
 
-    say "fetching checksums"
-    if ! curl -fsSL -o "${tmpdir}/SHA256SUMS" "$sums_url"; then
+    if [ ! -f "${tmpdir}/${archive}" ] || [ ! -f "${tmpdir}/SHA256SUMS" ]; then
+        say "release assets missing after download"
         return 1
     fi
     expected=$(
