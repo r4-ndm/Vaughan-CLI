@@ -451,6 +451,11 @@ impl WalletState {
         }
         self.accounts.as_ref().ok_or(WalletError::WalletLocked)
     }
+
+    /// Unlocked accounts for sibling core modules (stealth send/scan/sweep).
+    pub(crate) fn unlocked_accounts(&self) -> Result<&AccountManager, WalletError> {
+        self.require_unlocked()
+    }
 }
 
 #[cfg(test)]
@@ -629,5 +634,20 @@ mod tests {
             w.sign_message(b"x"),
             Err(WalletError::NotInitialized)
         ));
+    }
+
+    #[test]
+    fn stealth_uri_uses_eip3770_prefix_when_unlocked() {
+        let mut w = WalletState::load(tmp_path()).unwrap();
+        w.create(&password(), mnemonic()).unwrap();
+        let uri = w.stealth_uri().unwrap();
+        assert!(
+            uri.starts_with("st:pls:0x"),
+            "default network is PulseChain: {uri}"
+        );
+        assert_eq!(uri.len(), "st:pls:0x".len() + 132);
+        crate::security::stealth::StealthMetaAddress::parse(&uri).unwrap();
+        w.lock();
+        assert!(matches!(w.stealth_uri(), Err(WalletError::WalletLocked)));
     }
 }

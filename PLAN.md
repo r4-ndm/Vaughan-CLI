@@ -7,7 +7,7 @@ Vaughan-CLI is a sovereign Rust multi-chain CLI wallet TUI:
 - **Alloy** — wallet core: keys, signing, RPC, transaction building/broadcast.
 - **wiz4rd-engine** — contract browser, dynamic call encoder/decoder, capability prober, DEX factory/pair indexer.
 - **vaughan-agent** — multi-mode AI agent subsystem (Pure Human, AI Assist, Degen Bot) with hard security sandboxing.
-- **kohaku-rs** — privacy (stealth, later railgun), consumed as a git dep; **deferred by decision** (see `docs/kohaku-go-no-go.md`).
+- **ERC-5564 stealth** — spec-first in `vaughan-core` (`docs/erc-5564-stealth.md`). RAILGUN / Kohaku remain deferred (`docs/kohaku-go-no-go.md`).
 - **ratatui** — terminal UI.
 - **Freedom Browser** — dApp browser that uses Vaughan as its native signing provider.
 
@@ -61,7 +61,7 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Language | Rust (2021) | Alloy + ratatui + kohaku-rs are Rust; matches Vaughan-Dioxus |
+| Language | Rust (2021) | Alloy + ratatui + k256; matches Vaughan-Dioxus layering |
 | Ethereum lib | alloy 2.x (resolved 2.4.1) | Single workspace version; upgraded from 1.7 in 2026-08 (Vaughan is early-stage, so the Vaughan-Dioxus pin no longer applies) |
 | TUI | ratatui + crossterm | De-facto standard, async/tokio friendly |
 | Core layering | reimplement | Clean control; mirror Vaughan-Dioxus, don't vendor |
@@ -69,7 +69,8 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 | Vault crypto | Argon2id + AES-256-GCM | Argon2id KDF, authenticated encryption |
 | Contract Engine | pure Rust (`wiz4rd-engine`) | Alloy JSON ABI + `alloy-dyn-abi` dynamic encoding + PUSH4 parser + event log scanner |
 | AI Agent | `vaughan-agent` | Advisor-by-default, local Ollama / encrypted cloud LLM, schema tool-calling, Degen circuit breakers |
-| kohaku-rs | git dep, later phases | **Deferred** — upstream RAILGUN key derivation is incompatible with the canonical engine (see `docs/kohaku-go-no-go.md`) |
+| ERC-5564 stealth | `k256` + keccak256 in `vaughan-core` | Spec-first scheme 1; Kohaku unused |
+| kohaku-rs / RAILGUN | not a dep | **Deferred** — upstream RAILGUN derivation incompatibility |
 | Ambire AA | Rust + Alloy + Ambire ABI | Reimplement from the on-chain `AmbireAccount` contract; Vaughan-Dioxus as guide only |
 | dApp bridge | local EIP-1193 JSON-RPC (WebSocket) | Mirrors Vaughan-Dioxus provider-style RPC; loopback only |
 
@@ -83,10 +84,11 @@ send native PLS, receive, network switching.
 `vaughan-provider` local EIP-1193 server + TUI approval flow + trusted hosts, and a
 Freedom Browser signer-backend PR (out-of-repo, MPL-2.0).
 
-### Phase 3 — Privacy + smart accounts (Done)
-Ambire AA in Rust (see `docs/ambire-aa.md`) is **done**: `vaughan-aa` verified
-byte-for-byte against EVM-reference fixtures, 7702 self-pay proven end-to-end on a
-forked testnet, and the TUI batched-send view ships it.
+### Phase 3 — Privacy + smart accounts (AA done; stealth on 943)
+Ambire AA in Rust (see `docs/ambire-aa.md`) is **done**. ERC-5564 scheme-1 crypto,
+TUI `st:` send/scan/sweep, and the canonical announcer on PulseChain testnet 943
+are in (`docs/erc-5564-stealth.md`). Mainnet 369 announcer is still open.
+RAILGUN remains deferred.
 
 ### Phase 4 — Contract browser & DEX engine (`wiz4rd-engine`) (Done)
 Generic browser engine in `vaughan-core` (pure Rust, alloy-native: explorer-ABI

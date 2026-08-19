@@ -70,7 +70,7 @@ These expand rules 2, 4, 5, and 7. Every one is binding.
 ## Engineering rules
 
 1. **Only use the accepted libraries below — no custom code.** Everything is
-   built on battle-tested crates (Alloy for EVM, `kohaku-rs` for privacy, etc.).
+   built on battle-tested crates (Alloy for EVM, `k256` for ERC-5564 stealth).
    Never hand-roll crypto, key handling, or chain logic, and never add a new
    dependency without approval.
 2. **Never reinvent crypto, consensus, or key handling.** If a need isn't covered
@@ -123,7 +123,8 @@ listed here requires approval before it is added.
 | Terminal events | `crossterm` |
 | Provider WebSocket server (Phase 2) | `tokio-tungstenite` |
 | Stream/sink utilities for WS | `futures-util` |
-| Privacy / stealth (Phase 3) | `kohaku-rs` (git dep) |
+| secp256k1 arithmetic (ERC-5564) | `k256` |
+| Privacy / stealth (Phase 3) | `vaughan-core::security::stealth` (not Kohaku) |
 | Test temp dirs (dev only) | `tempfile` |
 
 ## Build, test, lint

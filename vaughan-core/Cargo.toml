@@ -27,6 +27,7 @@ wiz4rd-sdk = { workspace = true }
 # added as the core services that need them land.
 bip39 = { workspace = true }
 bip32 = { workspace = true }
+k256 = { workspace = true }
 argon2 = { workspace = true }
 aes-gcm = { workspace = true }
 secrecy = { workspace = true }

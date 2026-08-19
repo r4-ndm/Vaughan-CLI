@@ -11,6 +11,7 @@ use ratatui::{
 use tokio::runtime::Handle;
 use vaughan_core::chains::Fee;
 use vaughan_core::core::{parse_native_amount, WalletState};
+use vaughan_core::security::stealth::{StealthAnnouncement, StealthMetaAddress};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -36,6 +37,7 @@ pub struct SendView {
     amount: Input,
     fee: Option<Fee>,
     tx_hash: Option<String>,
+    stealth: Option<StealthAnnouncement>,
     status: String,
 }
 
@@ -48,6 +50,7 @@ impl Default for SendView {
             amount: Input::new(false, "0.0"),
             fee: None,
             tx_hash: None,
+            stealth: None,
             status: String::new(),
         }
     }
@@ -97,6 +100,12 @@ impl SendView {
                             .unwrap_or_else(|| "—".to_string());
                         format!("max {gwei}/gas · limit {gas_limit}")
                     });
+                let stealth_hint = self.stealth.as_ref().map(|s| {
+                    format!(
+                        "one-time stealth {} (sender/amount stay public)",
+                        s.stealth_address
+                    )
+                });
                 let text = vec![
                     Line::from(format!(
                         "Send {} {} to:",
@@ -104,7 +113,7 @@ impl SendView {
                         net.native_symbol
                     )),
                     Line::from(Span::styled(
-                        self.recipient.value(),
+                        stealth_hint.as_deref().unwrap_or(self.recipient.value()),
                         Style::default().fg(Color::Yellow),
                     )),
                     Line::from(""),
@@ -126,8 +135,13 @@ impl SendView {
             }
             Stage::Done => {
                 let hash = self.tx_hash.as_deref().unwrap_or("");
+                let label = if self.stealth.is_some() {
+                    "Stealth payment broadcast (pay + announce)"
+                } else {
+                    "Transaction broadcast"
+                };
                 let text = vec![
-                    Line::from("Transaction broadcast"),
+                    Line::from(label),
                     Line::from(""),
                     Line::from(Span::styled(hash, Style::default().fg(Color::Green))),
                     Line::from(""),
@@ -213,14 +227,23 @@ impl SendView {
     fn estimate(&mut self, wallet: &WalletState, handle: &Handle) {
         let net = wallet.networks().active();
         match parse_native_amount(self.amount.value(), net.decimals) {
-            Ok(wei) => match handle.block_on(wallet.estimate_fee(self.recipient.value(), &wei)) {
-                Ok(fee) => {
-                    self.fee = Some(fee);
-                    self.status.clear();
-                    self.stage = Stage::Confirm;
+            Ok(wei) => {
+                let to = match self.resolve_recipient(wallet) {
+                    Ok(to) => to,
+                    Err(e) => {
+                        self.status = e;
+                        return;
+                    }
+                };
+                match handle.block_on(wallet.estimate_fee(&to, &wei)) {
+                    Ok(fee) => {
+                        self.fee = Some(fee);
+                        self.status.clear();
+                        self.stage = Stage::Confirm;
+                    }
+                    Err(e) => self.status = e.user_message(),
                 }
-                Err(e) => self.status = e.user_message(),
-            },
+            }
             Err(e) => self.status = e.user_message(),
         }
     }
@@ -228,18 +251,49 @@ impl SendView {
     fn send(&mut self, wallet: &WalletState, handle: &Handle) {
         let net = wallet.networks().active();
         match parse_native_amount(self.amount.value(), net.decimals) {
-            Ok(wei) => match handle.block_on(wallet.send(self.recipient.value(), &wei)) {
-                Ok(hash) => {
-                    self.tx_hash = Some(hash.to_string());
-                    self.status.clear();
-                    self.stage = Stage::Done;
+            Ok(wei) => {
+                let result = if let Some(announcement) = self.stealth.as_ref() {
+                    handle
+                        .block_on(wallet.send_stealth(announcement, &wei))
+                        .map(|r| format!("{}/{}", r.pay_tx, r.announce_tx))
+                } else {
+                    handle
+                        .block_on(wallet.send(self.recipient.value(), &wei))
+                        .map(|h| h.to_string())
+                };
+                match result {
+                    Ok(hash) => {
+                        self.tx_hash = Some(hash);
+                        self.status.clear();
+                        self.stage = Stage::Done;
+                    }
+                    Err(e) => {
+                        self.status = e.user_message();
+                        self.stage = Stage::Input;
+                    }
+                }
+            }
+            Err(e) => self.status = e.user_message(),
+        }
+    }
+
+    fn resolve_recipient(&mut self, wallet: &WalletState) -> Result<String, String> {
+        let raw = self.recipient.value().trim();
+        if StealthMetaAddress::looks_like_uri(raw) {
+            match wallet.prepare_stealth_payment(raw) {
+                Ok(announcement) => {
+                    let to = format!("{:#x}", announcement.stealth_address);
+                    self.stealth = Some(announcement);
+                    Ok(to)
                 }
                 Err(e) => {
-                    self.status = e.user_message();
-                    self.stage = Stage::Input;
+                    self.stealth = None;
+                    Err(e.user_message())
                 }
-            },
-            Err(e) => self.status = e.user_message(),
+            }
+        } else {
+            self.stealth = None;
+            Ok(raw.to_string())
         }
     }
 }

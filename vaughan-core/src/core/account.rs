@@ -116,6 +116,11 @@ impl AccountManager {
     pub fn active_signer(&self) -> Result<PrivateKeySigner, WalletError> {
         self.signer(self.active_index)
     }
+
+    /// ERC-5564 spend/view keys derived from this vault's mnemonic.
+    pub fn stealth_keys(&self) -> Result<crate::security::stealth::StealthMetaKeys, WalletError> {
+        crate::security::stealth::StealthMetaKeys::from_mnemonic(&self.mnemonic)
+    }
 }
 
 #[cfg(test)]

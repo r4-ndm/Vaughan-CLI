@@ -47,6 +47,10 @@ pub enum WalletError {
     #[error("invalid private key: {0}")]
     InvalidPrivateKey(String),
 
+    /// An ERC-5564 stealth meta-address or announcement was malformed.
+    #[error("invalid stealth address: {0}")]
+    InvalidStealth(String),
+
     /// A password fails the strength policy or is incorrect.
     #[error("invalid password")]
     InvalidPassword,
@@ -115,6 +119,9 @@ impl WalletError {
             Self::InvalidTransaction(msg) => format!("Invalid transaction: {msg}"),
             Self::InvalidMnemonic(_) => "The recovery phrase is invalid.".to_string(),
             Self::InvalidPrivateKey(_) => "The private key is invalid.".to_string(),
+            Self::InvalidStealth(_) => {
+                "The stealth address is invalid. Check the st: URI and try again.".to_string()
+            }
             Self::InvalidPassword => "Invalid password.".to_string(),
             Self::PasswordPolicy(msg) => msg.clone(),
             Self::EncryptionFailed(_) => "Could not encrypt the wallet data.".to_string(),

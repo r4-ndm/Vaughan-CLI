@@ -5235,6 +5235,7 @@ dependencies = [
  "bip39",
  "dirs",
  "hex",
+ "k256",
  "moka",
  "rand 0.8.7",
  "reqwest",

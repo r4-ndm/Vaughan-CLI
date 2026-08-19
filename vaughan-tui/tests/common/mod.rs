@@ -18,12 +18,16 @@ use secrecy::SecretString;
 use serde_json::{json, Value};
 use vaughan_core::core::WalletState;
 use vaughan_core::security::hd_wallet::validate_mnemonic;
+use vaughan_core::security::stealth::ERC5564_ANNOUNCER;
 
 /// Anvil's default dev mnemonic — the wallet restored from it is funded.
 pub const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
 /// Anvil dev account #0's private key (from the dev mnemonic, index 0).
 pub const ANVIL_KEY0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 pub const PASSWORD: &str = "BombProof123!";
+/// BIP-39 test vector — not a funded anvil account; used as a second vault.
+pub const BOB_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -217,6 +221,30 @@ pub fn funded_wallet_at(dir: &Path, rpc_url: &str) -> WalletState {
     wallet.set_active_network("pulsechain-testnet-v4").unwrap();
     wallet.set_rpc_override(rpc_url);
     wallet
+}
+
+/// Restore a vault from an arbitrary mnemonic (unfunded unless it is the anvil dev phrase).
+pub fn wallet_from_mnemonic(dir: &Path, anvil: &Anvil, mnemonic: &str) -> WalletState {
+    let path = dir.join("wallet.json");
+    let mut wallet = WalletState::load(path).unwrap();
+    let mnemonic = validate_mnemonic(mnemonic).unwrap();
+    wallet
+        .create(&SecretString::from(PASSWORD.to_string()), mnemonic)
+        .unwrap();
+    wallet.set_active_network("pulsechain-testnet-v4").unwrap();
+    wallet.set_rpc_override(anvil.url());
+    wallet
+}
+
+/// Plant the canonical ERC-5564 announcer at its CREATE2 address via `anvil_setCode`.
+pub fn plant_announcer(anvil: &Anvil) {
+    const RUNTIME: &str = include_str!("../../../scripts/erc5564/ERC5564Announcer.runtime.hex");
+    anvil
+        .rpc(
+            "anvil_setCode",
+            json!([format!("{ERC5564_ANNOUNCER:#x}"), RUNTIME.trim()]),
+        )
+        .expect("anvil_setCode announcer");
 }
 
 /// Anvil dev account `index` address (from the dev mnemonic).

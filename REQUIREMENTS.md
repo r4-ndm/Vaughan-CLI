@@ -1,7 +1,7 @@
 # Vaughan-CLI — Requirements
 
-A Rust multi-chain CLI wallet TUI. Alloy for the wallet core, kohaku-rs for
-privacy/provider, and a ratatui terminal frontend. EVM-first, PulseChain-optimized.
+A Rust multi-chain CLI wallet TUI. Alloy for the wallet core, ERC-5564 stealth
+in `vaughan-core`, and a ratatui terminal frontend. EVM-first, PulseChain-optimized.
 Architecture modeled on the `vaughan-core` layering from Vaughan-Dioxus.
 
 Requirement IDs are referenced by `TASKS.md`.
@@ -15,8 +15,8 @@ Requirement IDs are referenced by `TASKS.md`.
   Vaughan as the signing wallet.
 - Smart accounts via Ambire (ERC-4337/7702 AA) reimplemented in Rust — done
   (FR-3.3, see `docs/ambire-aa.md`).
-- Privacy via kohaku-rs (stealth / railgun) — **deferred by decision** (see
-  `docs/kohaku-go-no-go.md`).
+- Privacy: ERC-5564 stealth in `vaughan-core` (no Kohaku). RAILGUN still
+  **deferred** (see `docs/kohaku-go-no-go.md` and `docs/erc-5564-stealth.md`).
 
 ## Non-goals (deferred, not dropped)
 
@@ -66,7 +66,10 @@ Requirement IDs are referenced by `TASKS.md`.
   `ethereum/kohaku` derives RAILGUN keys with BIP-32 while the canonical RAILGUN
   engine uses a babyjubjub seed tree, producing incompatible/unrecoverable keys;
   upstream is also unaudited and pre-production. See `docs/kohaku-go-no-go.md`.
-- **FR-3.2** ERC-5564 stealth addresses via `kohaku-stealth`. — deferred with FR-3.1.
+- **FR-3.2** ERC-5564 stealth addresses — **implemented on testnet**, spec-first in
+  `vaughan-core` (scheme 1, HD `m/5564'/60'/0'/{0,1}'`). Not Kohaku.
+  See `docs/erc-5564-stealth.md`. TUI `st:` send/scan/sweep and the 943 announcer
+  are live; CREATE2-deploy on PulseChain 369 is still open.
 - **FR-3.3** Ambire smart accounts (ERC-4337/7702 AA) reimplemented in Rust via Alloy +
   Ambire ABI (borrowed from Vaughan-Dioxus). — **implemented**: `vaughan-aa` with
   differential (EVM-reference) fixtures and a live 7702 self-pay E2E; TUI batched-send
@@ -114,7 +117,10 @@ Requirement IDs are referenced by `TASKS.md`.
   Vaughan was early-stage, so the Vaughan-Dioxus pin no longer applies).
 - **C-3** TUI: ratatui + crossterm.
 - **C-4** `vaughan-core` reimplements the Vaughan-Dioxus layering (not vendored).
-- **C-5** kohaku-rs was planned as a git dependency (our own repo) in later phases;
-  consumption is **deferred by decision** pending the upstream derivation fix (see
-  `docs/kohaku-go-no-go.md`).
+- **C-5** Kohaku-rs is **not** a dependency. ERC-5564 is implemented in
+  `vaughan-core`. RAILGUN stays deferred (`docs/kohaku-go-no-go.md`).
+- **C-7** ERC-5564 v1 claim: payments are unlinkable to the recipient's
+  **public** address. Sender, amount, and token stay visible. Sender attaches a
+  PLS stipend so the recipient need not fund the stealth address from the main
+  account.
 - **C-6** PulseChain is the primary target chain.

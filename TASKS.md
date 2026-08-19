@@ -48,7 +48,12 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] Harden kohaku-rs: add stealth test vectors + `kohaku-core` tests (FR-3.1) — **deferred by decision**: upstream RAILGUN key-derivation bug (BIP-32 vs babyjubjub seed tree) makes keys incompatible/unrecoverable; see `docs/kohaku-go-no-go.md`
 - [ ] Fix kohaku-rs railgun build (git dep / submodule instead of sync script) (FR-3.1) — deferred with FR-3.1
 - [ ] Publish `kohaku-core` + `kohaku-stealth` to crates.io (FR-3.1) — deferred with FR-3.1
-- [ ] Wire ERC-5564 stealth addresses into Vaughan (FR-3.2) — deferred with FR-3.1
+- [x] ERC-5564 scheme-1 crypto in `vaughan-core` (spec-first, no Kohaku) (FR-3.2)
+- [x] CREATE2-deploy canonical announcer on PulseChain testnet 943 (FR-3.2) — live at `0x55649E01B5Df198D18D95b5cc5051630cfD45564` (tx `0x1df79490a33e146b4915a0cab2e293f2b711c07f08a966b3a3795d6ad070ce98`, block 25174175)
+- [x] Live 943 send → announce → scan → sweep E2E (`vaughan-core/tests/stealth_943.rs`, ignored by default)
+- [x] Anvil stealth tests: core send/scan/sweep, Alice→Bob isolation, dust stipend, scan after later blocks, TUI `st:` send/scan/sweep
+- [x] TUI: stealth receive URI, send `st:`, scan, sweep (FR-3.2)
+- [ ] CREATE2-deploy announcer on PulseChain 369 after 943 E2E (FR-3.2)
 - [ ] Ambire smart accounts in Rust — see `docs/ambire-aa.md` (FR-3.3)
   - [x] Create the `vaughan-aa` workspace crate and document the AGPL-3.0/GPL → MIT/Apache reimplementation boundary
   - [x] Define the smart-account ABI (`sol!`) + `scw_transaction`/`SignatureMode` types from the on-chain `AmbireAccount` contract (Vaughan-Dioxus as guide only)
@@ -232,6 +237,13 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Test: Agent correctly inspects Anvil-deployed token and executes read tools (FR-5.9)
 - [x] Test: Agent proposes transfer -> Human approves -> Tx confirms on Anvil (FR-5.9)
 - [x] Test: Degen Mode circuit breaker triggers and halts on excessive gas or high slippage (FR-5.9)
+
+### Extra local Anvil coverage (added 2026-08-19)
+- [x] `vaughan-core/tests/wallet_anvil.rs`: native send + nonce, sequential sends, fee estimate, sign-then-broadcast, HD account #1 send, planted WPLS `token_balance`/`assets`, Transfer-log discovery
+- [x] CLI: `vaughan assets` lists tPLS; `send <contract> --data` call (not create) receipts `0x1`
+- [x] Browser engine: `scan_pair_created_logs` after a planted factory emits `PairCreated`
+- [x] TUI browser: `callraw` against a planted `RETURN 0x2a` runtime
+- [x] Provider: `eth_sendTransaction` with calldata to a planted contract
 
 ## Later — non-EVM families (deferred, no FR yet)
 

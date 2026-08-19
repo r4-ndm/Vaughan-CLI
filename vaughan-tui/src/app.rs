@@ -391,7 +391,7 @@ impl App {
             }
             Screen::Send => View::Send(SendView::default()),
             Screen::AaSend => View::AaSend(AaSendView::default()),
-            Screen::Receive => View::Receive(ReceiveView),
+            Screen::Receive => View::Receive(ReceiveView::default()),
             Screen::Settings => {
                 let active_id = self.wallet.networks().active_id().to_string();
                 let selected = self

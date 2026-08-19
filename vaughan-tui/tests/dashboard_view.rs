@@ -58,7 +58,7 @@ fn dashboard_view_renders_address_network_and_balance() {
     );
     assert!(
         text.contains(
-            "s send   b batch   v receive   n networks   a assets   c browse   r refresh   l lock"
+            "s send   b batch   v receive/stealth   n networks   a assets   c browse   r refresh   l lock"
         ),
         "must render the shortcut bar:\n{text}"
     );

@@ -75,6 +75,25 @@ impl EvmNetworkConfig {
         self.default_priority_fee_wei = Some(wei);
         self
     }
+
+    /// ERC-3770 chain short name used in `st:<short>:` stealth URIs.
+    pub fn eip3770_short_name(&self) -> &'static str {
+        eip3770_short_name(self.chain_id)
+    }
+}
+
+/// ERC-3770 short name for a chain id (`pls`, `tpls`, `eth`, …).
+pub fn eip3770_short_name(chain_id: u64) -> &'static str {
+    match chain_id {
+        1 => "eth",
+        56 => "bnb",
+        137 => "matic",
+        369 => "pls",
+        8453 => "base",
+        943 => "tpls",
+        11155111 => "sep",
+        _ => "eth",
+    }
 }
 
 /// Ethereum mainnet.

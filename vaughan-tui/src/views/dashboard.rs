@@ -60,9 +60,9 @@ impl DashboardView {
         };
 
         let shortcut_line = if wallet.operating_mode().is_ai_enabled() {
-            "s send   b batch   v receive   n networks   a assets   c browse   g agent   r refresh   l lock"
+            "s send   b batch   v receive/stealth   n networks   a assets   c browse   g agent   r refresh   l lock"
         } else {
-            "s send   b batch   v receive   n networks   a assets   c browse   r refresh   l lock"
+            "s send   b batch   v receive/stealth   n networks   a assets   c browse   r refresh   l lock"
         };
 
         let text = vec![

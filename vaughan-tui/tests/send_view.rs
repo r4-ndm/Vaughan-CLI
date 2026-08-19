@@ -16,7 +16,10 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{anvil_dev_address, funded_wallet, render_frame, Anvil};
+use common::{
+    anvil_dev_address, funded_wallet, plant_announcer, render_frame, wallet_from_mnemonic, Anvil,
+    BOB_MNEMONIC,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::json;
 use tokio::runtime::Handle;
@@ -294,4 +297,124 @@ fn send_view_esc_cancels_confirm() {
     assert!(text.contains("Amount"), "back at the form:\n{text}");
     assert_eq!(anvil.wei_balance(&recipient), before);
     assert_eq!(anvil.nonce(&sender), nonce_before);
+}
+
+/// `st:` recipient: confirm shows the one-time stealth address, then pay+announce
+/// lands a funded note that `scan_stealth_notes` finds.
+#[test]
+fn send_view_stealth_uri_pay_and_announce() {
+    let anvil = Anvil::start();
+    plant_announcer(&anvil);
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let uri = wallet.stealth_uri().unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+
+    type_text(&mut view, &uri, &wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
+    type_text(&mut view, "1", &wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+
+    let text = render(&view, &wallet);
+    assert!(
+        text.contains("one-time stealth"),
+        "confirm must flag a stealth payment:\n{text}"
+    );
+
+    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(
+        text.contains("Stealth payment broadcast"),
+        "done stage must mention stealth:\n{text}"
+    );
+
+    let notes = handle
+        .block_on(wallet.scan_stealth_notes())
+        .expect("scan after stealth send");
+    assert_eq!(notes.len(), 1, "one funded stealth note after TUI send");
+}
+
+/// `st:` send without an announcer fails cleanly and does not broadcast.
+#[test]
+fn send_view_stealth_without_announcer() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let uri = wallet.stealth_uri().unwrap();
+    let sender = wallet.active_address().unwrap().to_string();
+    let nonce_before = anvil.nonce(&sender);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+    drive_send(&mut view, &uri, "1", &wallet, &handle, &events);
+
+    let text = render(&view, &wallet);
+    assert!(
+        !text.contains("Stealth payment broadcast"),
+        "missing announcer must not reach done:\n{text}"
+    );
+    assert!(
+        text.to_lowercase().contains("announcer") || text.contains("Amount"),
+        "must report the missing announcer or return to the form:\n{text}"
+    );
+    assert_eq!(
+        anvil.nonce(&sender),
+        nonce_before,
+        "nonce must be unchanged"
+    );
+}
+
+/// A malformed `st:` URI never leaves the input stage.
+#[test]
+fn send_view_invalid_stealth_uri() {
+    let anvil = Anvil::start();
+    plant_announcer(&anvil);
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+    drive_send(&mut view, "st:tpls:0x1234", "1", &wallet, &handle, &events);
+
+    let text = render(&view, &wallet);
+    assert!(
+        !text.contains("one-time stealth") && !text.contains("broadcast"),
+        "invalid st: URI must not reach confirm:\n{text}"
+    );
+    assert!(text.contains("Amount"), "must stay on the form:\n{text}");
+}
+
+/// Alice's send view pays Bob's stealth URI; Bob's scan finds the note.
+#[test]
+fn send_view_alice_pays_bob() {
+    let anvil = Anvil::start();
+    plant_announcer(&anvil);
+    let alice_dir = tempfile::tempdir().unwrap();
+    let bob_dir = tempfile::tempdir().unwrap();
+    let alice = funded_wallet(alice_dir.path(), &anvil);
+    let bob = wallet_from_mnemonic(bob_dir.path(), &anvil, BOB_MNEMONIC);
+    let bob_uri = bob.stealth_uri().unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+    drive_send(&mut view, &bob_uri, "1", &alice, &handle, &events);
+
+    let text = render(&view, &alice);
+    assert!(
+        text.contains("Stealth payment broadcast"),
+        "alice's send must complete:\n{text}"
+    );
+
+    let notes = handle.block_on(bob.scan_stealth_notes()).expect("bob scan");
+    assert_eq!(notes.len(), 1, "bob must see alice's stealth payment");
 }
