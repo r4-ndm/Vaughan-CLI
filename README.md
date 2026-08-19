@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/r4-ndm/Vaughan-CLI/main/scripts/ins
 
 ```bash
 VERSION=v0.1.0
-PLATFORM=linux-x86_64   # or linux-aarch64, macos-x86_64, macos-aarch64
+PLATFORM=linux-x86_64   # or linux-aarch64, macos-aarch64
 
 curl -fsSL -O "https://github.com/r4-ndm/Vaughan-CLI/releases/download/${VERSION}/vaughan-${PLATFORM}.tar.gz"
 curl -fsSL -O "https://github.com/r4-ndm/Vaughan-CLI/releases/download/${VERSION}/SHA256SUMS"

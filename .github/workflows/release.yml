@@ -4,9 +4,12 @@
 # Artifacts:
 #   vaughan-linux-x86_64.tar.gz
 #   vaughan-linux-aarch64.tar.gz
-#   vaughan-macos-x86_64.tar.gz
 #   vaughan-macos-aarch64.tar.gz
 #   SHA256SUMS
+#
+# Intel macOS (x86_64) is omitted — GitHub's Intel runners are deprecated and
+# queue indefinitely. Apple Silicon users get macos-aarch64; Intel Macs can run
+# that binary under Rosetta or build from source.
 
 name: Release
 
@@ -22,6 +25,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +34,6 @@ jobs:
             target: linux-x86_64
           - runner: ubuntu-24.04-arm
             target: linux-aarch64
-          - runner: macos-13
-            target: macos-x86_64
           - runner: macos-latest
             target: macos-aarch64
     steps:
