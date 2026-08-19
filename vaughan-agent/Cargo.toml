@@ -1,0 +1,24 @@
+[package]
+name = "vaughan-agent"
+version.workspace = true
+edition.workspace = true
+description = "AI agent subsystem for Vaughan: multi-mode advisor, tool calling, circuit breakers"
+
+[dependencies]
+vaughan-core = { workspace = true }
+vaughan-aa = { workspace = true }
+alloy = { workspace = true }
+alloy-dyn-abi = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

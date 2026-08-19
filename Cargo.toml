@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "vaughan-aa",
+    "vaughan-agent",
     "vaughan-cli",
     "vaughan-core",
     "vaughan-provider",
@@ -78,6 +79,12 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "def
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
+
+# Internal Crates
+vaughan-core = { path = "./vaughan-core" }
+vaughan-aa = { path = "./vaughan-aa" }
+vaughan-agent = { path = "./vaughan-agent" }
+vaughan-provider = { path = "./vaughan-provider" }
 
 [profile.release]
 opt-level = "z"
