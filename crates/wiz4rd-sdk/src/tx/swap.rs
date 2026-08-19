@@ -50,6 +50,7 @@ pub fn zero_for_one(pool: &PoolInfo, token_in: Address) -> bool {
 
 /// Build an exact-input single-hop swap: spends `amount_in` of `token_in`,
 /// accepts no less than `amount_out_minimum` of `token_out`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_swap_exact_in(
     config: &Config,
     pool: &PoolInfo,
@@ -87,6 +88,7 @@ pub fn build_swap_exact_in(
 
 /// Build an exact-output single-hop swap: receives exactly `amount_out` of
 /// `token_out`, spends no more than `amount_in_maximum` of `token_in`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_swap_exact_out(
     config: &Config,
     pool: &PoolInfo,

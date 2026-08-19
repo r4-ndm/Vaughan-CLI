@@ -5199,6 +5199,8 @@ dependencies = [
  "url",
  "vaughan-aa",
  "vaughan-core",
+ "wiz4rd-math",
+ "wiz4rd-sdk",
  "zeroize",
 ]
 
@@ -5245,6 +5247,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "wiz4rd-math",
+ "wiz4rd-sdk",
  "zeroize",
 ]
 

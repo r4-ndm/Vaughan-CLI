@@ -35,6 +35,9 @@ pub enum ContractFingerprint {
         token0: Address,
         token1: Address,
         fee: u32,
+        sqrt_price_x96: Option<U256>,
+        tick: Option<i32>,
+        liquidity: Option<u128>,
     },
     /// Wrapped Native Asset (WETH / WPLS).
     Weth,
@@ -45,6 +48,31 @@ pub enum ContractFingerprint {
         has_code: bool,
         matched_capabilities: Vec<String>,
     },
+}
+
+impl ContractFingerprint {
+    /// Calculate V2 spot price (token1 per token0) normalized for decimals.
+    pub fn v2_spot_price(&self, decimals_token0: u8, decimals_token1: u8) -> Option<f64> {
+        if let ContractFingerprint::UniswapV2Pair { reserve0, reserve1, .. } = self {
+            let r0 = reserve0.to::<u128>() as f64 / 10f64.powi(decimals_token0 as i32);
+            let r1 = reserve1.to::<u128>() as f64 / 10f64.powi(decimals_token1 as i32);
+            if r0 > 0.0 {
+                return Some(r1 / r0);
+            }
+        }
+        None
+    }
+
+    /// Calculate V3 spot price (token1 per token0) from sqrtPriceX96 normalized for decimals.
+    pub fn v3_spot_price(&self, decimals_token0: u8, decimals_token1: u8) -> Option<f64> {
+        if let ContractFingerprint::UniswapV3Pool { sqrt_price_x96: Some(sqrt), .. } = self {
+            let sqrt_val = sqrt.to::<u128>() as f64 / 2f64.powi(96);
+            let raw_p = sqrt_val * sqrt_val;
+            let dec_adj = 10f64.powi(decimals_token0 as i32 - decimals_token1 as i32);
+            return Some(raw_p * dec_adj);
+        }
+        None
+    }
 }
 
 /// Selector constants for probe checks.
@@ -59,6 +87,7 @@ mod selectors {
     pub const ALL_PAIRS_LENGTH: [u8; 4] = [0x57, 0x4f, 0x2b, 0xa3]; // allPairsLength()
     pub const SLOT0: [u8; 4] = [0x38, 0x50, 0xc7, 0xbd]; // slot0()
     pub const FEE: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43]; // fee()
+    pub const LIQUIDITY: [u8; 4] = [0x1a, 0x68, 0x65, 0x02]; // liquidity()
     pub const TRY_AGGREGATE: [u8; 4] = [0xb1, 0xa3, 0x20, 0x3d]; // tryAggregate(bool,Call[])
     pub const DEPOSIT: [u8; 4] = [0xd0, 0xe3, 0x0d, 0xb0]; // deposit()
     pub const WITHDRAW: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d]; // withdraw(uint256)
@@ -105,14 +134,17 @@ impl ContractProber {
             probe_address(provider, target, selectors::TOKEN1).await,
             probe_u32(provider, target, selectors::FEE).await,
         ) {
-            let has_slot0 = probe_call(provider, target, selectors::SLOT0)
-                .await
-                .is_some();
-            if has_slot0 {
+            let slot0_data = probe_slot0(provider, target).await;
+            if slot0_data.is_some() || probe_call(provider, target, selectors::SLOT0).await.is_some() {
+                let (sqrt_price_x96, tick) = slot0_data.unwrap_or((None, None));
+                let liquidity = probe_u128(provider, target, selectors::LIQUIDITY).await;
                 return ContractFingerprint::UniswapV3Pool {
                     token0: t0,
                     token1: t1,
                     fee,
+                    sqrt_price_x96,
+                    tick,
+                    liquidity,
                 };
             }
         }
@@ -268,6 +300,26 @@ async fn probe_v2_reserves<P: Provider>(provider: &P, target: Address) -> Option
         let r0 = U256::from_be_slice(&out[..32]);
         let r1 = U256::from_be_slice(&out[32..64]);
         Some((r0, r1))
+    } else {
+        None
+    }
+}
+
+async fn probe_u128<P: Provider>(provider: &P, target: Address, selector: [u8; 4]) -> Option<u128> {
+    let out = probe_call(provider, target, selector).await?;
+    if out.len() >= 32 {
+        Some(U256::from_be_slice(&out[..32]).to::<u128>())
+    } else {
+        None
+    }
+}
+
+async fn probe_slot0<P: Provider>(provider: &P, target: Address) -> Option<(Option<U256>, Option<i32>)> {
+    let out = probe_call(provider, target, selectors::SLOT0).await?;
+    if out.len() >= 64 {
+        let sqrt = U256::from_be_slice(&out[..32]);
+        let tick = i32::from_be_bytes(out[60..64].try_into().unwrap_or_default());
+        Some((Some(sqrt), Some(tick)))
     } else {
         None
     }

@@ -73,17 +73,17 @@ pub async fn get_pool_info<P: Provider>(
         fee: U24::try_from(key.fee).map_err(|e| SdkError::Math(e.to_string()))?,
     };
     let raw = call_view(provider, factory, get_pool.abi_encode()).await?;
-    let pool = Address::abi_decode(&raw).map_err(|e| SdkError::Decode(e))?;
+    let pool = Address::abi_decode(&raw).map_err(SdkError::Decode)?;
 
     // slot0
     let raw = call_view(provider, pool, IPancakeV3Pool::slot0Call {}.abi_encode()).await?;
     let s = IPancakeV3Pool::slot0Call::abi_decode_returns(&raw)
-        .map_err(|e| SdkError::Decode(e))?;
+        .map_err(SdkError::Decode)?;
 
     // liquidity
     let raw = call_view(provider, pool, IPancakeV3Pool::liquidityCall {}.abi_encode()).await?;
     let l = IPancakeV3Pool::liquidityCall::abi_decode_returns(&raw)
-        .map_err(|e| SdkError::Decode(e))?;
+        .map_err(SdkError::Decode)?;
 
     let _ = &s; // silence unused if slot0 decode changes
     let _ = &l;

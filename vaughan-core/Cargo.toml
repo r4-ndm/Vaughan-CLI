@@ -19,6 +19,8 @@ tracing-subscriber = { workspace = true }
 hex = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
+wiz4rd-math = { workspace = true }
+wiz4rd-sdk = { workspace = true }
 
 
 # Security (hd_wallet + encryption). Remaining workspace deps (sha2) are

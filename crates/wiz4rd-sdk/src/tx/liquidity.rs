@@ -25,6 +25,7 @@ fn tick_i24(tick: i32) -> SdkResult<I24> {
 ///
 /// The PositionManager computes the actual liquidity from the desired amounts
 /// and current price; `amount0_min`/`amount1_min` are the slippage floors.
+#[allow(clippy::too_many_arguments)]
 pub fn build_mint_tx(
     config: &Config,
     token0: Address,

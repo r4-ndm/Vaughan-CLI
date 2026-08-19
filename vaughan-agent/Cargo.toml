@@ -20,6 +20,8 @@ secrecy = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
 url = { workspace = true }
+wiz4rd-math = { workspace = true }
+wiz4rd-sdk = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

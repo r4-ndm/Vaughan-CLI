@@ -88,7 +88,7 @@ pub async fn decimals_of<P: Provider>(provider: &P, token: Address) -> SdkResult
         )
         .await?;
     let decoded = IERC20Minimal::decimalsCall::abi_decode_returns(&raw)
-        .map_err(|e| SdkError::Decode(e))?;
+        .map_err(SdkError::Decode)?;
     Ok(decoded)
 }
 
