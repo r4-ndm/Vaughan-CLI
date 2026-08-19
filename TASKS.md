@@ -188,11 +188,12 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > Full specification: `docs/AI-AGENT-ARCHITECTURE.md`.
 > Complete security sandboxing: 3-tier operating mode decided at startup, zero private key access for the advisor, isolated burner profile for degen bot, deterministic circuit breakers.
 
-### Step 1: 3-Tier Operating Mode & Profile Isolation
-- [ ] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `DegenTrader` (FR-5.1)
-- [ ] Session-level immutability: mode is selected at startup/welcome screen and locked permanently for that process (FR-5.1)
-- [ ] Profile Directory Isolation: Degen Mode runs in isolated directory `~/.vaughan/profiles/degen/` with separate keys/vault (FR-5.2)
-- [ ] Unit & integration tests: assert `HumanOnly` mode completely unloads AI modules and disallows toggling
+### Step 1: 3-Tier Operating Mode & Profile Isolation (Done)
+- [x] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `DegenTrader` (FR-5.1)
+- [x] Session-level immutability: mode is selected at startup/welcome screen and locked permanently for that process (FR-5.1)
+- [x] Profile Directory Isolation: Degen Mode runs in isolated directory `~/.vaughan/profiles/degen/` with separate keys/vault (FR-5.2)
+- [x] Dynamic dashboard badge rendering and CLI `--profile <name>` / `--mode <human|assist|degen>` flags
+- [x] Unit & integration tests in `vaughan-core` and `vaughan-tui` passing (FR-5.1, FR-5.2)
 
 ### Step 2: `vaughan-agent` Workspace Crate & Provider Adapters
 - [ ] New `vaughan-agent` crate added to workspace
