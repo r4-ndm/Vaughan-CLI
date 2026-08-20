@@ -30,7 +30,7 @@ use vaughan_provider::{
 /// Comma-separated trusted origins for the provider bridge.
 ///
 /// Example:
-/// `VAUGHAN_PROVIDER_TRUSTED_ORIGINS="https://wallet.freedom.local,https://app.freedom.local"`
+/// `VAUGHAN_PROVIDER_TRUSTED_ORIGINS="https://freedom.browser"`
 const TRUSTED_ORIGINS_ENV: &str = "VAUGHAN_PROVIDER_TRUSTED_ORIGINS";
 
 /// A signing/sending request that requires a fresh, explicit user approval.

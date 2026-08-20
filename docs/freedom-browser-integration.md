@@ -177,7 +177,14 @@ server already captures `Origin` during the WS handshake.
   general `send_transaction`.
   *Known gap: the prompt shows recipient/value/chain/data but not the fee (estimated at
   execution) — TODO in `vaughan-tui/src/provider.rs`.*
-- FR-2.4 — trusted-host gate (Origin/app token).
+- FR-2.4 ✅ — trusted-host gate (`VAUGHAN_PROVIDER_TRUSTED_ORIGINS`); Freedom uses
+  Origin `https://freedom.browser`. Bridge does **not** start without an allowlist.
+- FR-2.5 ✅ (upstream PR) — Freedom Vaughan signer backend:
+  https://github.com/solardev-xyz/freedom-browser/pull/195
+  - Automated: `npx jest --testPathPatterns='wallet/vaughan|wallet/signers.test|identity-manager.test'`
+  - Vaughan-side Origin smoke: `cargo test -p vaughan-tui --test freedom_bridge_smoke`
+  - Manual (unlocked Vaughan + Freedom): `node scripts/smoke-vaughan-bridge.js` in the
+    Freedom repo (approve prompts in the TUI)
 - Dapps launcher (user vision): TUI screen lists dApp URLs → launches Freedom Browser with
   the provider ready.
 

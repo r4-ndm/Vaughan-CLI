@@ -41,7 +41,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4). `ProviderServer::with_trusted_origins` now enforces a canonicalized `Origin` allowlist (missing/untrusted origins are rejected at connection time); `vaughan-tui` enables it from `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` (comma-separated origins).
 - [x] Trusted-host startup validation path: TUI tests now cover env-derived origin parsing and startup-time server wiring with allowlist enforcement (missing-origin clients are rejected; trusted-origin clients are served).
 - [x] Account/chain change event push to clients (`EventBus` → JSON-RPC notifications) (FR-2.2)
-- [x] Freedom Browser signer backend PR (out-of-repo) (FR-2.5) — opened upstream: https://github.com/solardev-xyz/freedom-browser/pull/195 (`feat/vaughan-signer-backend`: Vaughan WS signer + account discovery IPC; awaiting merge)
+- [x] Freedom Browser signer backend PR (out-of-repo) (FR-2.5) — opened upstream: https://github.com/solardev-xyz/freedom-browser/pull/195 (`feat/vaughan-signer-backend`: Vaughan WS signer + account discovery IPC; rebased onto `main` 2026-08-20; Jest 48 green; Vaughan `freedom_bridge_smoke` covers Origin + Freedom RPC methods)
 
 ## Phase 3 — Privacy + smart accounts
 
