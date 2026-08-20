@@ -93,7 +93,31 @@ These expand rules 2, 4, 5, and 7. Every one is binding.
    contracts and SDK), carry over only the *interface facts* required for interop
    (ABI selectors, struct shapes, digest/signature layouts) and write the
    implementation yourself — see `docs/ambire-aa.md`.
+6. **MetaMask-family EIP convenience layer may be borrowed.** For wallet UX /
+   provider convenience (EIP-1559 fee heuristics, speed presets, EIP-1193 method
+   shapes, common dApp interop quirks), battle-tested **MetaMask / ethers /
+   Alloy** algorithms and patterns are an approved reference. Reimplement in
+   Rust on the allowlisted crates; cite the algorithm family in a short comment
+   or module doc. Do **not** copy proprietary MetaMask extension UI code, and do
+   **not** treat Ambire or Kohaku as the source for fee/provider convenience —
+   Ambire is AA/batching only; Kohaku is deferred privacy (see below).
 
+### Ambire vs Kohaku (product pair ≠ code couple)
+
+Originally called for together as complementary wallet pillars: **Ambire** for
+smart-account UX (batching / EIP-7702), **Kohaku** for privacy (stealth /
+RAILGUN). That product pairing still makes sense.
+
+They are **not** the same stack, and neither implements the other:
+
+| Piece | Role in Vaughan |
+|---|---|
+| **Ambire** (`vaughan-aa`) | EIP-7702 smart accounts + atomic batched sends. On-chain `AmbireAccount` ABI/interop only. |
+| **Kohaku** | Deferred as a crate. ERC-5564 stealth shipped **spec-first** in `vaughan-core::security::stealth` instead (Kohaku's random spend/view keys didn't fit HD vault restore). RAILGUN stays NO-GO — see `docs/kohaku-go-no-go.md`. |
+
+Ambire does not unblock Kohaku/RAILGUN, and Kohaku is not required for Ambire.
+Keeping Ambire while replacing Kohaku-for-stealth with in-core ERC-5564 is
+intentional, not a contradiction of the original pair.
 ### Accepted libraries (on-disk allowlist)
 
 Versions are pinned in `Cargo.toml`; this is the set you may use. Anything not
@@ -157,9 +181,9 @@ REQUIREMENTS.md  PLAN.md  TASKS.md   # requirements / plan / task backlog
 Key external references (do not edit unless asked; these are separate repos):
 
 - `r4-ndm/Vaughan-Dioxus` — reference guide only (layering ideas, Ambire AA approach); never a code source
-- `r4-ndm/Kohaku-rs` — privacy SDK (also ours; hardened in Phase 3, consumed as a git dep)
+- `r4-ndm/Kohaku-rs` — privacy SDK reference only; **not** a Vaughan dependency (stealth is in-core; RAILGUN deferred)
 - `solardev-xyz/freedom-browser` — dApp browser we bridge to (Phase 2, out-of-repo PR)
-
+- MetaMask / ethers / Alloy — approved **algorithm** references for EIP convenience UX (fees, EIP-1193); reimplement on Alloy, do not vendor their UI
 ## Workflow
 
 1. Plan against `TASKS.md`; use a todo list for multi-step work.

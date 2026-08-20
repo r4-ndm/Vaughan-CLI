@@ -1,0 +1,32 @@
+---
+description: Allowed MetaMask-family EIP convenience references; Ambire vs Kohaku roles
+alwaysApply: true
+---
+
+# Upstream references (EIP convenience vs AA vs privacy)
+
+## MetaMask-family convenience layer — allowed
+
+For wallet UX / provider convenience (EIP-1559 fee heuristics, speed presets,
+EIP-1193 method shapes, common dApp interop quirks), battle-tested **MetaMask /
+ethers / Alloy** algorithms and patterns are approved references.
+
+- Reimplement in Rust on allowlisted crates (`alloy`, etc.).
+- Cite the algorithm family in a short comment or module doc.
+- Do not copy proprietary MetaMask extension UI code.
+- Do not treat Ambire or Kohaku as the source for fee/provider convenience.
+
+Authoritative copy lives in `CLAUDE.md` engineering rule 6.
+
+## Ambire vs Kohaku — product pair ≠ code couple
+
+Originally a complementary product pair (Ambire AA + Kohaku privacy). They remain
+orthogonal layers:
+
+| Piece | Role |
+|---|---|
+| **Ambire** (`vaughan-aa`) | EIP-7702 smart accounts + atomic batched sends. ABI/interop only. |
+| **Kohaku** | Deferred as a crate. Stealth is in-core ERC-5564; RAILGUN NO-GO. |
+
+Ambire does not unblock Kohaku/RAILGUN. See `docs/kohaku-go-no-go.md` and
+`docs/ambire-aa.md`.

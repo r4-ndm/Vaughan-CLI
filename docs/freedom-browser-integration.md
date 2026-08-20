@@ -181,10 +181,12 @@ server already captures `Origin` during the WS handshake.
   Origin `https://freedom.browser`. Bridge does **not** start without an allowlist.
 - FR-2.5 ✅ (upstream PR) — Freedom Vaughan signer backend:
   https://github.com/solardev-xyz/freedom-browser/pull/195
-  - Automated: `npx jest --testPathPatterns='wallet/vaughan|wallet/signers.test|identity-manager.test'`
+  - Automated: `npx jest --testPathPatterns='wallet/vaughan|wallet/signers.test|identity-manager.test|connect-vaughan'`
   - Vaughan-side Origin smoke: `cargo test -p vaughan-tui --test freedom_bridge_smoke`
   - Manual (unlocked Vaughan + Freedom): `node scripts/smoke-vaughan-bridge.js` in the
     Freedom repo (approve prompts in the TUI)
+  - UI: wallet selector **Connect Vaughan Wallet** → detect/list/add (mirrors Ledger flow;
+    keys stay in Vaughan; approve in the Vaughan TUI)
 - Dapps launcher (user vision): TUI screen lists dApp URLs → launches Freedom Browser with
   the provider ready.
 
