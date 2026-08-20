@@ -335,6 +335,87 @@ fn send_view_gas_speed_presets() {
     assert!(slow.contains("[Slow]"), "1 selects Slow:\n{slow}");
 }
 
+/// Selecting Ape on confirm broadcasts with the scaled maxFeePerGas (not a re-estimate).
+#[test]
+fn send_view_ape_preset_broadcasts_scaled_fee() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let recipient = anvil_dev_address(11);
+    let before = anvil.wei_balance(&recipient);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+
+    type_text(&mut view, &recipient, &wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
+    type_text(&mut view, "0.01", &wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+
+    // Capture Normal vs Ape display totals from the confirm screen fee line,
+    // then broadcast with Ape selected.
+    let normal_text = render(&view, &wallet);
+    assert!(normal_text.contains("[Normal]"), "{normal_text}");
+    view.handle_key(key(KeyCode::Char('4')), &wallet, &handle, &events);
+    let ape_text = render(&view, &wallet);
+    assert!(ape_text.contains("[Ape]"), "{ape_text}");
+    assert_ne!(
+        fee_line(&normal_text),
+        fee_line(&ape_text),
+        "Ape fee display must differ from Normal"
+    );
+
+    let expected_max = handle.block_on(async {
+        let base = wallet
+            .estimate_fee(&recipient, &(10u128.pow(16)).to_string())
+            .await
+            .expect("estimate");
+        let ape = base.with_speed(vaughan_core::chains::FeeSpeed::Ape);
+        match ape.details {
+            vaughan_core::chains::FeeDetails::Evm {
+                max_fee_per_gas: Some(max),
+                ..
+            } => max.parse::<u128>().unwrap(),
+            _ => panic!("ape max fee"),
+        }
+    });
+
+    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    let done = render(&view, &wallet);
+    assert!(
+        done.contains("Transaction broadcast"),
+        "Ape confirm must broadcast:\n{done}"
+    );
+    let tx_hash = find_tx_hash(&done).expect("tx hash on done screen");
+
+    let tx = anvil
+        .rpc("eth_getTransactionByHash", json!([tx_hash]))
+        .unwrap();
+    let on_chain = u128::from_str_radix(
+        tx["maxFeePerGas"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )
+    .unwrap();
+    assert_eq!(
+        on_chain, expected_max,
+        "on-chain maxFeePerGas must match Ape-scaled estimate"
+    );
+    assert_eq!(anvil.wei_balance(&recipient), before + 10u128.pow(16));
+}
+
+fn fee_line(screen: &str) -> String {
+    screen
+        .lines()
+        .find(|line| line.contains("Fee:"))
+        .unwrap_or("")
+        .to_string()
+}
+
 /// `st:` recipient: confirm shows the one-time stealth address, then pay+announce
 /// lands a funded note that `scan_stealth_notes` finds.
 #[test]

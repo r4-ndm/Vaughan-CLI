@@ -15,7 +15,7 @@ use alloy::primitives::{keccak256, Address};
 use secrecy::SecretString;
 use serde_json::{json, Value};
 use vaughan_core::chains::evm::tokens_for_chain;
-use vaughan_core::chains::{EvmTransaction, FeeDetails};
+use vaughan_core::chains::{EvmTransaction, Fee, FeeDetails, FeeSpeed};
 use vaughan_core::core::WalletState;
 use vaughan_core::security::hd_wallet::validate_mnemonic;
 
@@ -142,6 +142,23 @@ fn wait_receipt(url: &str, tx_hash: &str) -> Value {
             panic!("no receipt for {tx_hash}; last rpc error: {last_err}; tx={tx:?}");
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn hex_u128(value: &Value) -> u128 {
+    let s = value
+        .as_str()
+        .unwrap_or_else(|| panic!("expected hex string, got {value}"));
+    u128::from_str_radix(s.trim_start_matches("0x"), 16).expect("hex u128")
+}
+
+fn fee_max_u128(details: &FeeDetails) -> u128 {
+    match details {
+        FeeDetails::Evm {
+            max_fee_per_gas: Some(max),
+            ..
+        } => u128::from_str(max).expect("max_fee decimal"),
+        other => panic!("expected EVM fee with max_fee_per_gas, got {other:?}"),
     }
 }
 
@@ -351,6 +368,215 @@ async fn estimate_fee_then_send() {
         .await
         .expect("send after estimate");
     assert_eq!(wei_balance(&anvil.url, ACCOUNT_6), before + 10u128.pow(18));
+}
+
+/// Alloy base estimate scaled by Slow/Normal/Ape; Ape must land on-chain with
+/// the scaled maxFeePerGas (send_with_fee must not re-estimate).
+#[tokio::test]
+async fn fee_speed_presets_and_send_with_fee_on_anvil() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let amount = (10u128.pow(16)).to_string(); // 0.01 ETH
+
+    let base = wallet
+        .estimate_fee(ACCOUNT_6, &amount)
+        .await
+        .expect("estimate_fee");
+    let base_max = fee_max_u128(&base.details);
+    assert!(base_max > 0, "anvil must return a non-zero max fee");
+
+    let slow_max = fee_max_u128(&base.with_speed(FeeSpeed::Slow).details);
+    let normal_max = fee_max_u128(&base.with_speed(FeeSpeed::Normal).details);
+    let ape_max = fee_max_u128(&base.with_speed(FeeSpeed::Ape).details);
+    assert!(slow_max < normal_max, "Slow={slow_max} Normal={normal_max}");
+    assert!(normal_max < ape_max, "Normal={normal_max} Ape={ape_max}");
+    assert_eq!(normal_max, base_max);
+    assert_eq!(ape_max, base_max.saturating_mul(2)); // Ape max_fee bps = 200%
+
+    let before = wei_balance(&anvil.url, ACCOUNT_6);
+    let ape_fee = base.with_speed(FeeSpeed::Ape);
+    let hash = wallet
+        .send_with_fee(ACCOUNT_6, &amount, &ape_fee)
+        .await
+        .expect("send_with_fee Ape");
+    let receipt = wait_receipt(&anvil.url, &hash.to_string());
+    assert_eq!(receipt["status"].as_str().unwrap(), "0x1");
+    assert_eq!(wei_balance(&anvil.url, ACCOUNT_6), before + 10u128.pow(16));
+
+    let tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([hash.to_string()]),
+    )
+    .expect("getTransactionByHash");
+    let on_chain_max = hex_u128(&tx["maxFeePerGas"]);
+    assert_eq!(
+        on_chain_max, ape_max,
+        "broadcast maxFeePerGas must match the Ape-scaled confirm fee"
+    );
+    let on_chain_tip = hex_u128(&tx["maxPriorityFeePerGas"]);
+    let ape_tip = match &ape_fee.details {
+        FeeDetails::Evm {
+            max_priority_fee_per_gas: Some(tip),
+            ..
+        } => u128::from_str(tip).unwrap(),
+        _ => panic!("ape tip missing"),
+    };
+    assert_eq!(on_chain_tip, ape_tip);
+}
+
+/// Slow and Fast presets also land verbatim via `send_with_fee`.
+#[tokio::test]
+async fn send_with_fee_slow_and_fast_land_scaled_max_fee() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let amount = (10u128.pow(15)).to_string(); // 0.001 ETH
+
+    let base = wallet
+        .estimate_fee(ACCOUNT_6, &amount)
+        .await
+        .expect("estimate_fee");
+    let base_max = fee_max_u128(&base.details);
+
+    let slow = base.with_speed(FeeSpeed::Slow);
+    let slow_max = fee_max_u128(&slow.details);
+    assert_eq!(slow_max, base_max * 9_000 / 10_000);
+
+    let hash = wallet
+        .send_with_fee(ACCOUNT_6, &amount, &slow)
+        .await
+        .expect("send Slow");
+    wait_receipt(&anvil.url, &hash.to_string());
+    let tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([hash.to_string()]),
+    )
+    .unwrap();
+    assert_eq!(hex_u128(&tx["maxFeePerGas"]), slow_max);
+
+    let base2 = wallet
+        .estimate_fee(ACCOUNT_7, &amount)
+        .await
+        .expect("estimate_fee 2");
+    let fast = base2.with_speed(FeeSpeed::Fast);
+    let fast_max = fee_max_u128(&fast.details);
+    let base2_max = fee_max_u128(&base2.details);
+    assert_eq!(fast_max, base2_max * 12_500 / 10_000);
+
+    let hash = wallet
+        .send_with_fee(ACCOUNT_7, &amount, &fast)
+        .await
+        .expect("send Fast");
+    wait_receipt(&anvil.url, &hash.to_string());
+    let tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([hash.to_string()]),
+    )
+    .unwrap();
+    assert_eq!(hex_u128(&tx["maxFeePerGas"]), fast_max);
+}
+
+/// Plain `send()` re-estimates and must ignore a stale UI fee that was never applied.
+#[tokio::test]
+async fn plain_send_reestimates_and_ignores_stale_ui_fee() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let amount = (10u128.pow(15)).to_string();
+
+    // Unmistakable "UI" fee — far above anvil's default suggestion.
+    let stale = Fee {
+        total: "stale".into(),
+        currency: "ETH".into(),
+        details: FeeDetails::Evm {
+            gas_limit: 21_000,
+            max_fee_per_gas: Some("99000000000".into()), // 99 gwei
+            max_priority_fee_per_gas: Some("99000000000".into()),
+        },
+    };
+    let with_fee_hash = wallet
+        .send_with_fee(ACCOUNT_6, &amount, &stale)
+        .await
+        .expect("send_with_fee stale");
+    wait_receipt(&anvil.url, &with_fee_hash.to_string());
+    let with_fee_tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([with_fee_hash.to_string()]),
+    )
+    .unwrap();
+    assert_eq!(
+        hex_u128(&with_fee_tx["maxFeePerGas"]),
+        99_000_000_000,
+        "send_with_fee must keep the explicit fee"
+    );
+
+    let plain_hash = wallet.send(ACCOUNT_7, &amount).await.expect("plain send");
+    wait_receipt(&anvil.url, &plain_hash.to_string());
+    let plain_tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([plain_hash.to_string()]),
+    )
+    .unwrap();
+    let plain_max = hex_u128(&plain_tx["maxFeePerGas"]);
+    assert_ne!(
+        plain_max, 99_000_000_000,
+        "plain send() must re-estimate, not reuse the stale 99 gwei UI fee"
+    );
+    assert!(plain_max > 0);
+}
+
+/// When Ape scaling would make tip > max, `with_speed` clamps max up to tip
+/// and that clamped pair is what hits the chain.
+#[tokio::test]
+async fn fee_speed_clamps_max_fee_to_tip_on_anvil() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let amount = (10u128.pow(15)).to_string();
+
+    // Equal max/tip → Ape tip bps (250%) exceeds max bps (200%) → clamp.
+    let base = Fee {
+        total: "x".into(),
+        currency: "ETH".into(),
+        details: FeeDetails::Evm {
+            gas_limit: 21_000,
+            max_fee_per_gas: Some("2000000000".into()),
+            max_priority_fee_per_gas: Some("2000000000".into()),
+        },
+    };
+    let ape = base.with_speed(FeeSpeed::Ape);
+    let FeeDetails::Evm {
+        max_fee_per_gas: Some(max_s),
+        max_priority_fee_per_gas: Some(tip_s),
+        ..
+    } = &ape.details
+    else {
+        panic!("expected EVM fees");
+    };
+    let max_v = u128::from_str(max_s).unwrap();
+    let tip_v = u128::from_str(tip_s).unwrap();
+    assert_eq!(tip_v, 5_000_000_000); // 250% of 2 gwei
+    assert_eq!(max_v, tip_v, "max must be clamped up to tip");
+
+    let hash = wallet
+        .send_with_fee(ACCOUNT_6, &amount, &ape)
+        .await
+        .expect("send clamped Ape");
+    wait_receipt(&anvil.url, &hash.to_string());
+    let tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([hash.to_string()]),
+    )
+    .unwrap();
+    assert_eq!(hex_u128(&tx["maxFeePerGas"]), tip_v);
+    assert_eq!(hex_u128(&tx["maxPriorityFeePerGas"]), tip_v);
 }
 
 #[tokio::test]

@@ -675,6 +675,143 @@ async fn sign_transaction_denied_returns_4001_and_broadcasts_nothing() {
     task.abort();
 }
 
+/// dApp-supplied EIP-1559 fee fields must survive approval and land on-chain
+/// (Freedom / MetaMask-style txs often include gas + maxFeePerGas).
+#[tokio::test(flavor = "multi_thread")]
+async fn approve_send_preserves_explicit_eip1559_fees() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+    let recipient = anvil_dev_address(3);
+    let before = anvil.wei_balance(&recipient);
+    let value_wei = 10u128.pow(15); // 0.001
+    let max_fee = 77_000_000_000u128; // 77 gwei — distinctive vs anvil default
+    let tip = 3_000_000_000u128; // 3 gwei
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(rx, wallet, |_| Ok(()), seen2));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "eth_sendTransaction",
+        json!([{
+            "from": sender,
+            "to": recipient,
+            "value": format!("{value_wei:#x}"),
+            "gas": "0x5208",
+            "maxFeePerGas": format!("{max_fee:#x}"),
+            "maxPriorityFeePerGas": format!("{tip:#x}"),
+        }]),
+    )
+    .await;
+    if reply["error"].is_object() {
+        panic!("eth_sendTransaction error: {}", reply["error"]);
+    }
+    let tx_hash = reply["result"].as_str().expect("tx hash").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if anvil.wei_balance(&recipient) == before + value_wei {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(anvil.wei_balance(&recipient), before + value_wei);
+
+    let tx = anvil
+        .rpc("eth_getTransactionByHash", json!([tx_hash]))
+        .unwrap();
+    let on_max = u128::from_str_radix(
+        tx["maxFeePerGas"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )
+    .unwrap();
+    let on_tip = u128::from_str_radix(
+        tx["maxPriorityFeePerGas"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )
+    .unwrap();
+    assert_eq!(
+        on_max, max_fee,
+        "explicit maxFeePerGas must be signed as-is"
+    );
+    assert_eq!(
+        on_tip, tip,
+        "explicit maxPriorityFeePerGas must be signed as-is"
+    );
+    assert!(
+        seen.lock().unwrap().iter().any(|s| s.starts_with("send:")),
+        "approval prompt must have been shown"
+    );
+
+    consumer.abort();
+    task.abort();
+}
+
+/// Malformed fee quantities are rejected with -32602 before any approval or broadcast.
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_max_fee_rejects_without_broadcast_or_prompt() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+    let recipient = anvil_dev_address(4);
+    let before = anvil.wei_balance(&recipient);
+    let nonce_before = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
+
+    let (task, url, rx) = spawn_provider_stack().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let consumer = tokio::spawn(run_approval_consumer(rx, wallet, |_| Ok(()), seen2));
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "eth_sendTransaction",
+        json!([{
+            "from": sender,
+            "to": recipient,
+            "value": "0x1",
+            "gas": "0x5208",
+            "maxFeePerGas": "0xnothex",
+        }]),
+    )
+    .await;
+
+    assert_eq!(
+        reply["error"]["code"], -32602,
+        "malformed quantity must be InvalidParams: {}",
+        reply["error"]
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "malformed fee must never reach the approval UI: {:?}",
+        seen.lock().unwrap()
+    );
+    assert_eq!(anvil.wei_balance(&recipient), before);
+    let nonce_after = anvil
+        .rpc("eth_getTransactionCount", json!([sender, "latest"]))
+        .unwrap();
+    assert_eq!(nonce_after, nonce_before, "nonce must be untouched");
+
+    consumer.abort();
+    task.abort();
+}
+
 /// `eth_sendTransaction` with calldata to a planted contract: the call lands
 /// (receipt status `0x1`) and the `to` field is the contract.
 #[tokio::test(flavor = "multi_thread")]

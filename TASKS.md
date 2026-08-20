@@ -133,6 +133,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 - [x] `vaughan-tui` split into lib + bin so integration tests can drive the provider stack
 - [x] Test: dApp `eth_sendTransaction` → approval prompt shown → approve → tx lands on anvil (recipient balance + sender nonce increment)
+- [x] Test: dApp `eth_sendTransaction` with explicit EIP-1559 fees → on-chain maxFeePerGas/tip match; malformed `maxFeePerGas` → `-32602`, no prompt, no broadcast
 - [x] Test: deny returns EIP-1193 **4001** and nothing broadcasts (nonce untouched)
 - [x] Test: **locked wallet** — reads (`eth_accounts`) answer `[]`, `eth_sendTransaction` rejects with **4100** and never shows a prompt
 - [x] ⚠️ Behavior fix: locked wallet no longer prompts — `execute_approval` (shared by TUI + tests) rejects early with `Unauthorized`; the app loop skips the prompt entirely (previously a locked wallet showed a prompt that would fail at execution)
@@ -158,6 +159,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > Drives the real `SendView` state machine (Input → Confirm → Done) with real key events, renders it headlessly via ratatui's `TestBackend`, and verifies broadcasts on-chain. Run: `cargo test -p vaughan-tui --test send_view`.
 
 - [x] Happy path: recipient + amount → confirm screen shows fee + recipient → Enter broadcasts; rendered done-stage shows the tx hash, `eth_getTransactionByHash` matches the form input (to/value), receipt status `0x1`, funds moved, nonce advanced
+- [x] Gas speed presets: confirm lists Slow/Normal/Fast/Ape; digit keys change selection; Ape broadcast lands with scaled `maxFeePerGas` via `send_with_fee`
 - [x] Insufficient funds: fails cleanly, nothing lands, nonce untouched, view returns to the form
 - [x] Invalid amount: never leaves the input stage, nothing lands
 - [x] Esc on confirm: cancels, back to the form, nothing broadcast
@@ -247,7 +249,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Extra Anvil AI-mode suite (`ai_modes_anvil.rs`): Assist sense→propose→broadcast, propose guard (refuse / failed-sensory), `propose_swap` + `search_pairs`, Degen dry-run→live, position size, sim-revert tripwire, gas ceiling, emergency stop, multi-RPC quorum agree/diverge
 
 ### Extra local Anvil coverage (added 2026-08-19)
-- [x] `vaughan-core/tests/wallet_anvil.rs`: native send + nonce, sequential sends, fee estimate, sign-then-broadcast, HD account #1 send, planted WPLS `token_balance`/`assets`, Transfer-log discovery
+- [x] `vaughan-core/tests/wallet_anvil.rs`: native send + nonce, sequential sends, fee estimate, sign-then-broadcast, HD account #1 send, planted WPLS `token_balance`/`assets`, Transfer-log discovery, Slow/Normal/Fast/Ape `send_with_fee` on-chain maxFeePerGas, plain `send()` re-estimate vs stale UI fee, tip>max clamp
 - [x] CLI: `vaughan assets` lists tPLS; `send <contract> --data` call (not create) receipts `0x1`
 - [x] Browser engine: `scan_pair_created_logs` after a planted factory emits `PairCreated`
 - [x] TUI browser: `callraw` against a planted `RETURN 0x2a` runtime
