@@ -299,6 +299,42 @@ fn send_view_esc_cancels_confirm() {
     assert_eq!(anvil.nonce(&sender), nonce_before);
 }
 
+/// Confirm screen lists Slow/Normal/Fast/Ape; digit keys change the shown fee.
+#[test]
+fn send_view_gas_speed_presets() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let recipient = anvil_dev_address(10);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+
+    type_text(&mut view, &recipient, &wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
+    type_text(&mut view, "0.01", &wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+
+    let text = render(&view, &wallet);
+    for label in ["Slow", "Normal", "Fast", "Ape"] {
+        assert!(text.contains(label), "confirm must list {label}:\n{text}");
+    }
+    assert!(
+        text.contains("[Normal]"),
+        "default speed is Normal:\n{text}"
+    );
+
+    view.handle_key(key(KeyCode::Char('4')), &wallet, &handle, &events);
+    let ape = render(&view, &wallet);
+    assert!(ape.contains("[Ape]"), "4 selects Ape:\n{ape}");
+
+    view.handle_key(key(KeyCode::Char('1')), &wallet, &handle, &events);
+    let slow = render(&view, &wallet);
+    assert!(slow.contains("[Slow]"), "1 selects Slow:\n{slow}");
+}
+
 /// `st:` recipient: confirm shows the one-time stealth address, then pay+announce
 /// lands a funded note that `scan_stealth_notes` finds.
 #[test]

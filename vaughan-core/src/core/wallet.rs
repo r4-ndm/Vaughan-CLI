@@ -354,6 +354,34 @@ impl WalletState {
         self.send_transaction(evm_tx).await
     }
 
+    /// Native transfer using an already-approved fee (e.g. Slow/Normal/Fast/Ape).
+    ///
+    /// Does not re-estimate; `fee` is applied verbatim so the UI confirmation
+    /// matches what is signed.
+    pub async fn send_with_fee(
+        &self,
+        to: &str,
+        value_wei: &str,
+        fee: &Fee,
+    ) -> Result<TxHash, WalletError> {
+        let accounts = self.require_unlocked()?;
+        let net = self.networks.active();
+        let service = TransactionService::new();
+        let mut tx = service.build_native_transfer(
+            accounts.active_address(),
+            to,
+            value_wei,
+            net.chain_id,
+        )?;
+        service.apply_fee(&mut tx, fee)?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".to_string(),
+            ));
+        };
+        self.send_transaction(evm_tx).await
+    }
+
     /// Build, estimate, sign, and broadcast an arbitrary EVM transaction
     /// (native transfer or contract call, with optional `data`). Missing
     /// gas/fee parameters are filled from a fee estimate. The caller must have

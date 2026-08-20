@@ -3,13 +3,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
-use vaughan_core::chains::Fee;
+use vaughan_core::chains::{Fee, FeeSpeed};
 use vaughan_core::core::{parse_native_amount, WalletState};
 use vaughan_core::security::stealth::{StealthAnnouncement, StealthMetaAddress};
 use vaughan_provider::EventBus;
@@ -35,7 +35,9 @@ pub struct SendView {
     focus: Focus,
     recipient: Input,
     amount: Input,
-    fee: Option<Fee>,
+    /// Unscaled Alloy/network fee estimate.
+    base_fee: Option<Fee>,
+    speed: FeeSpeed,
     tx_hash: Option<String>,
     stealth: Option<StealthAnnouncement>,
     status: String,
@@ -48,7 +50,8 @@ impl Default for SendView {
             focus: Focus::Recipient,
             recipient: Input::new(false, "0x..."),
             amount: Input::new(false, "0.0"),
-            fee: None,
+            base_fee: None,
+            speed: FeeSpeed::Normal,
             tx_hash: None,
             stealth: None,
             status: String::new(),
@@ -57,6 +60,10 @@ impl Default for SendView {
 }
 
 impl SendView {
+    fn selected_fee(&self) -> Option<Fee> {
+        self.base_fee.as_ref().map(|fee| fee.with_speed(self.speed))
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
         let net = wallet.networks().active();
@@ -80,10 +87,10 @@ impl SendView {
                 );
             }
             Stage::Confirm => {
-                let fee = self.fee.as_ref();
-                let fee_total = fee.map(|f| f.total.clone()).unwrap_or_default();
-                // EIP-1559 breakdown: max fee per gas (gwei) + gas limit.
-                let fee_detail = fee
+                let fee = self.selected_fee();
+                let fee_ref = fee.as_ref();
+                let fee_total = fee_ref.map(|f| f.total.clone()).unwrap_or_default();
+                let fee_detail = fee_ref
                     .and_then(|f| match &f.details {
                         vaughan_core::chains::FeeDetails::Evm {
                             gas_limit,
@@ -106,6 +113,23 @@ impl SendView {
                         s.stealth_address
                     )
                 });
+
+                let speed_line = |digit: char, speed: FeeSpeed| {
+                    let selected = self.speed == speed;
+                    let marker = if selected { ">" } else { " " };
+                    let style = if selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(
+                        format!("{marker} {digit} {label}", label = speed.label()),
+                        style,
+                    ))
+                };
+
                 let text = vec![
                     Line::from(format!(
                         "Send {} {} to:",
@@ -118,11 +142,17 @@ impl SendView {
                     )),
                     Line::from(""),
                     Line::from(format!("Network: {}{testnet}", net.name)),
-                    Line::from(format!("Fee:      {fee_total}")),
+                    Line::from(format!("Fee:      {fee_total}  [{}]", self.speed.label())),
                     Line::from(format!(
                         "          {}",
                         fee_detail.as_deref().unwrap_or("—")
                     )),
+                    Line::from(""),
+                    Line::from("Gas speed (Alloy estimate × preset):"),
+                    speed_line('1', FeeSpeed::Slow),
+                    speed_line('2', FeeSpeed::Normal),
+                    speed_line('3', FeeSpeed::Fast),
+                    speed_line('4', FeeSpeed::Ape),
                     Line::from(""),
                     Line::from("Enter — broadcast   Esc — cancel"),
                 ];
@@ -211,6 +241,10 @@ impl SendView {
                     self.stage = Stage::Input;
                     KeyOutcome::Consumed
                 }
+                KeyCode::Char(c) if FeeSpeed::from_digit(c).is_some() => {
+                    self.speed = FeeSpeed::from_digit(c).unwrap();
+                    KeyOutcome::Consumed
+                }
                 KeyCode::Enter => {
                     self.send(wallet, handle);
                     KeyOutcome::Consumed
@@ -237,7 +271,8 @@ impl SendView {
                 };
                 match handle.block_on(wallet.estimate_fee(&to, &wei)) {
                     Ok(fee) => {
-                        self.fee = Some(fee);
+                        self.base_fee = Some(fee);
+                        self.speed = FeeSpeed::Normal;
                         self.status.clear();
                         self.stage = Stage::Confirm;
                     }
@@ -256,6 +291,11 @@ impl SendView {
                     handle
                         .block_on(wallet.send_stealth(announcement, &wei))
                         .map(|r| format!("{}/{}", r.pay_tx, r.announce_tx))
+                } else if let Some(fee) = self.selected_fee() {
+                    let to = self.recipient.value();
+                    handle
+                        .block_on(wallet.send_with_fee(to, &wei, &fee))
+                        .map(|h| h.to_string())
                 } else {
                     handle
                         .block_on(wallet.send(self.recipient.value(), &wei))
