@@ -6,7 +6,9 @@ pub mod agent_setup;
 pub mod approve;
 pub mod assets;
 pub mod browser;
+pub mod dapps;
 pub mod dashboard;
+pub mod keys;
 pub mod onboarding;
 pub mod receive;
 pub mod send;
@@ -19,7 +21,9 @@ pub use agent_setup::AgentSetupView;
 pub use approve::ApproveView;
 pub use assets::AssetsView;
 pub use browser::BrowserView;
+pub use dapps::DappsView;
 pub use dashboard::DashboardView;
+pub use keys::KeysView;
 pub use onboarding::OnboardingView;
 pub use receive::ReceiveView;
 pub use send::SendView;
@@ -35,29 +39,42 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::brand;
 use crate::input::Input;
 
-/// Render the full screen: title bar, active view body, and footer.
+/// Render the full screen: ASCII wordmark, title bar, active view body, footer.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let [title_bar, body, footer] = Layout::vertical([
+    let [logo, title_bar, body, footer] = Layout::vertical([
+        Constraint::Length(4),
         Constraint::Length(3),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .areas(area);
 
-    let status = if app.wallet().is_unlocked() {
-        "unlocked"
-    } else if app.wallet().is_initialized() {
-        "locked"
+    frame.render_widget(Paragraph::new(brand::logo_lines()), logo);
+
+    let status = if let Some(wallet) = app.try_wallet() {
+        if wallet.is_unlocked() {
+            "unlocked"
+        } else if wallet.is_initialized() {
+            "locked"
+        } else {
+            "new wallet"
+        }
     } else {
-        "new wallet"
+        "busy"
+    };
+    let busy = if app.try_wallet().is_none() {
+        format!(" {} ", crate::jobs::spinner_frame(app.tick()))
+    } else {
+        String::new()
     };
     frame.render_widget(
         Block::default()
             .title(format!(
-                " Vaughan CLI — {} [{status}] ",
+                " Vaughan CLI — {} [{status}]{busy}",
                 app.screen().title()
             ))
             .borders(Borders::ALL)

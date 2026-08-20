@@ -264,12 +264,32 @@ fn abi_encode_u8(v: u8) -> Vec<u8> {
     out.to_vec()
 }
 
+fn abi_encode_bool(v: bool) -> Vec<u8> {
+    let mut out = [0u8; 32];
+    if v {
+        out[31] = 1;
+    }
+    out.to_vec()
+}
+
 fn mock_erc20_runtime() -> Vec<u8> {
     assemble_dispatcher(&[
         ([0x70, 0xa0, 0x82, 0x31], abi_encode_u256(THOUSAND_TOKENS)), // balanceOf(address)
         ([0x95, 0xd8, 0x9b, 0x41], abi_encode_string("WPLS")),        // symbol()
         ([0x06, 0xfd, 0xde, 0x03], abi_encode_string("Wrapped Pulse")), // name()
         ([0x31, 0x3c, 0xe5, 0x67], abi_encode_u8(18)),                // decimals()
+        ([0xa9, 0x05, 0x9c, 0xbb], abi_encode_bool(true)),            // transfer(address,uint256)
+    ])
+}
+
+/// Same as [`mock_erc20_runtime`] but with a meme-coin symbol for import tests.
+fn mock_meme_runtime() -> Vec<u8> {
+    assemble_dispatcher(&[
+        ([0x70, 0xa0, 0x82, 0x31], abi_encode_u256(THOUSAND_TOKENS)), // balanceOf
+        ([0x95, 0xd8, 0x9b, 0x41], abi_encode_string("MEME")),        // symbol()
+        ([0x06, 0xfd, 0xde, 0x03], abi_encode_string("Meme Coin")),   // name()
+        ([0x31, 0x3c, 0xe5, 0x67], abi_encode_u8(18)),                // decimals()
+        ([0xa9, 0x05, 0x9c, 0xbb], abi_encode_bool(true)),            // transfer
     ])
 }
 
@@ -660,6 +680,108 @@ async fn planted_wpls_shows_up_in_token_balance_and_assets() {
         .expect("WPLS must appear in assets");
     assert_eq!(token.raw, THOUSAND_TOKENS.to_string());
     assert_eq!(token.token.symbol, "WPLS");
+}
+
+#[tokio::test]
+async fn import_custom_token_persists_and_lists_in_assets() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil.url);
+
+    let meme = Address::from_str("0x2222222222222222222222222222222222222222").unwrap();
+    plant_code(&anvil.url, meme, &mock_meme_runtime());
+
+    let imported = wallet
+        .import_custom_token(&format!("{meme:#x}"))
+        .await
+        .expect("import_custom_token");
+    assert_eq!(imported.symbol, "MEME");
+    assert_eq!(imported.decimals, 18);
+    assert!(
+        wallet
+            .custom_tokens_for_active_chain()
+            .iter()
+            .any(|t| t.address.eq_ignore_ascii_case(&format!("{meme:#x}"))),
+        "custom list must contain the meme"
+    );
+
+    // Reload from disk — import must survive.
+    let path = wallet.path().to_path_buf();
+    drop(wallet);
+    let mut reloaded = WalletState::load(path).expect("reload");
+    reloaded
+        .unlock(&SecretString::new(PASSWORD.into()))
+        .expect("unlock");
+    reloaded.set_rpc_override(&anvil.url);
+    assert!(
+        reloaded
+            .custom_tokens_for_active_chain()
+            .iter()
+            .any(|t| t.symbol == "MEME"),
+        "custom token must persist across unlock"
+    );
+
+    let assets = reloaded.assets().await.expect("assets");
+    let row = assets
+        .iter()
+        .find(|a| {
+            a.token
+                .contract_address
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(&format!("{meme:#x}")))
+        })
+        .expect("imported meme must appear in assets even if curated list omits it");
+    assert_eq!(row.token.symbol, "MEME");
+    assert_eq!(row.raw, THOUSAND_TOKENS.to_string());
+}
+
+#[tokio::test]
+async fn send_token_broadcasts_erc20_transfer() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let sender = wallet.active_address().unwrap().to_string();
+    let nonce_before = nonce(&anvil.url, &sender);
+
+    let token = Address::from_str("0x3333333333333333333333333333333333333333").unwrap();
+    plant_code(&anvil.url, token, &mock_meme_runtime());
+
+    let amount = (10u128.pow(18)).to_string(); // 1 MEME
+    let fee = wallet
+        .estimate_token_fee(&format!("{token:#x}"), ACCOUNT_6, &amount)
+        .await
+        .expect("estimate_token_fee");
+    match fee.details {
+        FeeDetails::Evm { gas_limit, .. } => {
+            assert!(gas_limit > 21_000, "ERC-20 transfer gas_limit={gas_limit}");
+        }
+        other => panic!("expected EVM fee, got {other:?}"),
+    }
+
+    let hash = wallet
+        .send_token_with_fee(&format!("{token:#x}"), ACCOUNT_6, &amount, &fee)
+        .await
+        .expect("send_token_with_fee");
+    let receipt = wait_receipt(&anvil.url, &hash.to_string());
+    assert_eq!(receipt["status"].as_str().unwrap(), "0x1");
+
+    let tx = rpc(
+        &anvil.url,
+        "eth_getTransactionByHash",
+        json!([hash.to_string()]),
+    )
+    .unwrap();
+    assert_eq!(
+        tx["to"].as_str().unwrap().to_lowercase(),
+        format!("{token:#x}").to_lowercase(),
+        "ERC-20 send must target the token contract"
+    );
+    let input = tx["input"].as_str().unwrap().to_lowercase();
+    assert!(
+        input.starts_with("0xa9059cbb"),
+        "calldata must be transfer(address,uint256): {input}"
+    );
+    assert_eq!(nonce(&anvil.url, &sender), nonce_before + 1);
 }
 
 #[tokio::test]

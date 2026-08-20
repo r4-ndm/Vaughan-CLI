@@ -75,15 +75,21 @@ fn assets_view_refresh_and_navigation() {
     let events = EventBus::new();
     let mut view = AssetsView::default();
 
-    // Empty until refreshed.
+    // Empty until refreshed (loading spinner / import hint).
     assert!(
-        render(&view, &wallet).contains("No non-zero balances found."),
-        "fresh assets view must show the empty state"
+        render(&view, &wallet).contains("import a token")
+            || render(&view, &wallet).contains("loading"),
+        "fresh assets view must show empty/loading state"
     );
 
-    // `r` fetches from anvil.
+    // `r` schedules an assets refresh job (app applies it on the UI thread).
     let outcome = view.handle_key(key(KeyCode::Char('r')), &mut wallet, &handle, &events);
-    assert_eq!(outcome, KeyOutcome::Consumed);
+    match outcome {
+        KeyOutcome::StartJob(vaughan_tui::jobs::UiJob::RefreshAssets) => {
+            view.apply_assets(handle.block_on(wallet.assets()));
+        }
+        other => panic!("expected RefreshAssets job, got {other:?}"),
+    }
     let expected = handle.block_on(wallet.assets()).unwrap();
     let text = render(&view, &wallet);
     assert!(
@@ -123,7 +129,7 @@ fn assets_view_error_sets_status() {
     );
     // The list stays empty — nothing to render.
     assert!(
-        text.contains("No non-zero balances found."),
+        text.contains("import a token") || text.contains("No balances"),
         "error view must not fabricate balances:\\n{text}"
     );
 }

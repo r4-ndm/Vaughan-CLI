@@ -259,13 +259,7 @@ async fn freedom_transport_methods_smoke_with_auto_approve() {
         },
         "message": { "from": "vaughan", "contents": "hello freedom" }
     });
-    let reply = rpc_call(
-        &mut ws,
-        5,
-        "eth_signTypedData_v4",
-        json!([sender, typed]),
-    )
-    .await;
+    let reply = rpc_call(&mut ws, 5, "eth_signTypedData_v4", json!([sender, typed])).await;
     assert!(
         reply["error"].is_null(),
         "eth_signTypedData_v4 error: {}",

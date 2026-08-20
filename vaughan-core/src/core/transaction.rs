@@ -51,6 +51,37 @@ impl TransactionService {
         }))
     }
 
+    /// Build an unsigned ERC-20 `transfer(to, amount)` call (value = 0).
+    ///
+    /// `amount` is in the token's base units (decimal string). Calldata is
+    /// EIP-20 `transfer(address,uint256)`.
+    pub fn build_erc20_transfer(
+        &self,
+        from: impl Into<String>,
+        token: impl Into<String>,
+        to: impl Into<String>,
+        amount: impl Into<String>,
+        chain_id: u64,
+    ) -> Result<ChainTransaction, WalletError> {
+        use crate::chains::evm::abi::IERC20Metadata;
+        use alloy::primitives::{Address, U256};
+        use alloy::sol_types::SolCall;
+        use std::str::FromStr;
+
+        let amount = amount.into();
+        let amount_u256 = U256::from_str(&amount)
+            .map_err(|_| WalletError::InvalidAmount(format!("invalid amount: {amount}")))?;
+        let to_addr = Address::from_str(to.into().trim()).map_err(|_| {
+            WalletError::InvalidTransaction("invalid ERC-20 transfer recipient".into())
+        })?;
+        let data = IERC20Metadata::transferCall {
+            to: to_addr,
+            amount: amount_u256,
+        }
+        .abi_encode();
+        self.build_contract_call(from, token, &hex::encode(data), "0", chain_id)
+    }
+
     /// Build an unsigned contract-call request (any calldata).
     ///
     /// `value` is in the chain's base unit (wei for EVM) as a decimal string;

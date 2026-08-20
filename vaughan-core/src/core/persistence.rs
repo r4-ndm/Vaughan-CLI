@@ -37,6 +37,36 @@ pub struct PersistedState {
     pub operating_mode: OperatingMode,
     #[serde(default = "default_profile_string")]
     pub profile_name: String,
+    /// User-imported ERC-20 contracts (meme coins, etc.), per chain.
+    #[serde(default)]
+    pub custom_tokens: Vec<CustomToken>,
+    /// Whitelisted dApps: open in Freedom; origins feed the provider allowlist.
+    #[serde(default)]
+    pub trusted_dapps: Vec<TrustedDapp>,
+}
+
+/// A user-imported ERC-20 (shown in Assets even at zero balance).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomToken {
+    pub chain_id: u64,
+    pub address: String,
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "default_token_decimals")]
+    pub decimals: u8,
+}
+
+fn default_token_decimals() -> u8 {
+    18
+}
+
+/// A bookmarked / allowlisted dApp URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustedDapp {
+    pub name: String,
+    pub url: String,
 }
 
 fn default_profile_string() -> String {
@@ -52,6 +82,8 @@ impl PersistedState {
             active_account_index: 0,
             operating_mode: OperatingMode::HumanOnly,
             profile_name: DEFAULT_PROFILE.to_string(),
+            custom_tokens: Vec::new(),
+            trusted_dapps: Vec::new(),
         }
     }
 
@@ -68,6 +100,8 @@ impl PersistedState {
             active_account_index: 0,
             operating_mode,
             profile_name: profile_name.into(),
+            custom_tokens: Vec::new(),
+            trusted_dapps: Vec::new(),
         }
     }
 }

@@ -55,7 +55,7 @@ impl SettingsView {
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Networks (up/down to move, Enter to switch) "),
+                .title(" Networks (up/down, Enter switch, k keys) "),
         );
         frame.render_widget(list, content);
         frame.render_widget(status_paragraph(&self.status), status_area);
@@ -71,6 +71,8 @@ impl SettingsView {
         let len = wallet.networks().networks().len();
         match key.code {
             KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Char('k') => KeyOutcome::Navigate(Screen::Keys),
+            KeyCode::Char('w') => KeyOutcome::Navigate(Screen::Dapps),
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 KeyOutcome::Consumed

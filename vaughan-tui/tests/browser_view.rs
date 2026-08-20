@@ -91,12 +91,12 @@ fn browser_view_esc_navigates_to_dashboard() {
 
     // Esc on empty input navigates to Dashboard
     let outcome = view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
-    assert_eq!(outcome, KeyOutcome::Navigate(Screen::Dashboard));
+    assert!(matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)));
 
     // Esc with text in buffer clears text, doesn't navigate
     type_text(&mut view, "browse 0x123", &mut wallet, &handle, &events);
     let outcome2 = view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
-    assert_eq!(outcome2, KeyOutcome::Consumed);
+    assert!(matches!(outcome2, KeyOutcome::Consumed));
 }
 
 #[test]

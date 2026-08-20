@@ -202,25 +202,28 @@ impl WalletHandle for ProviderHost {
 /// works without the dApp bridge.
 ///
 /// **Fail-loud (FR-2.4):** the bridge only starts when a trusted-origin
-/// allowlist is configured via [`TRUSTED_ORIGINS_ENV`]. Without it (or with an
-/// invalid one), the bridge does **not** start — there is no permissive
-/// "accept any loopback client" mode. The wallet itself is unaffected.
+/// allowlist is non-empty after merging [`TRUSTED_ORIGINS_ENV`] with
+/// `extra_origins` (persisted dApp whitelist). Without any origins, the bridge
+/// does **not** start — there is no permissive "accept any loopback client"
+/// mode. The wallet itself is unaffected.
 pub fn spawn_provider_server(
     handle: &Handle,
     requests: mpsc::UnboundedSender<HostRequest>,
     events: EventBus,
+    extra_origins: Vec<String>,
 ) {
     handle.spawn(async move {
-        let trusted_origins = match bridge_decision(env::var(TRUSTED_ORIGINS_ENV).ok().as_deref()) {
-            Some(origins) => origins,
-            None => {
-                tracing::warn!(
-                    env = TRUSTED_ORIGINS_ENV,
-                    "provider trusted-origin allowlist not configured (or invalid); dApp bridge disabled"
-                );
-                return;
-            }
-        };
+        let trusted_origins =
+            match bridge_decision(env::var(TRUSTED_ORIGINS_ENV).ok().as_deref(), &extra_origins) {
+                Some(origins) => origins,
+                None => {
+                    tracing::warn!(
+                        env = TRUSTED_ORIGINS_ENV,
+                        "provider trusted-origin allowlist not configured (or invalid); dApp bridge disabled"
+                    );
+                    return;
+                }
+            };
         let server = match ProviderServer::bind(DEFAULT_PORT).await {
             Ok(server) => server,
             Err(e) => {
@@ -250,9 +253,18 @@ pub fn spawn_provider_server(
 /// The trusted-origin decision for the provider bridge (testable, pure).
 ///
 /// `Some(origins)` = start the bridge with this allowlist. `None` = do not
-/// start (env unset, empty, or invalid — all fail loud).
-fn bridge_decision(raw_env: Option<&str>) -> Option<Vec<String>> {
-    let origins = parse_trusted_origins(raw_env);
+/// start (env + extras empty, or invalid — all fail loud).
+fn bridge_decision(raw_env: Option<&str>, extra_origins: &[String]) -> Option<Vec<String>> {
+    let mut origins = parse_trusted_origins(raw_env);
+    for o in extra_origins {
+        let o = o.trim();
+        if o.is_empty() {
+            continue;
+        }
+        if !origins.iter().any(|e| e.eq_ignore_ascii_case(o)) {
+            origins.push(o.to_string());
+        }
+    }
     if origins.is_empty() {
         return None;
     }
@@ -651,15 +663,19 @@ mod tests {
 
     #[test]
     fn bridge_decision_fails_loud_without_valid_allowlist() {
+        let none: &[String] = &[];
         // Unset / empty / whitespace-only env -> bridge does not start.
-        assert!(bridge_decision(None).is_none());
-        assert!(bridge_decision(Some("")).is_none());
-        assert!(bridge_decision(Some(" ,  ")).is_none());
+        assert!(bridge_decision(None, none).is_none());
+        assert!(bridge_decision(Some(""), none).is_none());
+        assert!(bridge_decision(Some(" ,  "), none).is_none());
         // Invalid origin (no scheme) -> bridge does not start.
-        assert!(bridge_decision(Some("not-an-origin")).is_none());
+        assert!(bridge_decision(Some("not-an-origin"), none).is_none());
         // Valid allowlist -> bridge starts with exactly those origins.
-        let origins = bridge_decision(Some("https://app.example, https://wallet.freedom.local"))
-            .expect("valid allowlist starts the bridge");
+        let origins = bridge_decision(
+            Some("https://app.example, https://wallet.freedom.local"),
+            none,
+        )
+        .expect("valid allowlist starts the bridge");
         assert_eq!(
             origins,
             vec![
@@ -667,6 +683,10 @@ mod tests {
                 "https://wallet.freedom.local".to_string()
             ]
         );
+        // Persisted dApp origins alone are enough to start the bridge.
+        let from_dapps = bridge_decision(None, &["https://app.pulsex.com".into()])
+            .expect("dApp whitelist starts the bridge");
+        assert_eq!(from_dapps, vec!["https://app.pulsex.com".to_string()]);
     }
 
     #[tokio::test]

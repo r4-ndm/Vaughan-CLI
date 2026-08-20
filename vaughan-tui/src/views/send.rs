@@ -9,13 +9,14 @@ use ratatui::{
     Frame,
 };
 use tokio::runtime::Handle;
-use vaughan_core::chains::{Fee, FeeSpeed};
+use vaughan_core::chains::{Balance, Fee, FeeSpeed};
 use vaughan_core::core::{parse_native_amount, WalletState};
 use vaughan_core::security::stealth::{StealthAnnouncement, StealthMetaAddress};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
 use crate::input::{Input, InputAction};
+use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::{body_areas, labeled_input, status_paragraph};
 
 enum Stage {
@@ -30,17 +31,35 @@ enum Focus {
     Amount,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Busy {
+    Idle,
+    Estimating,
+    Sending,
+}
+
 pub struct SendView {
     stage: Stage,
     focus: Focus,
     recipient: Input,
     amount: Input,
+    /// When set, send ERC-20 `transfer` instead of native.
+    token: Option<TokenCtx>,
     /// Unscaled Alloy/network fee estimate.
     base_fee: Option<Fee>,
     speed: FeeSpeed,
     tx_hash: Option<String>,
     stealth: Option<StealthAnnouncement>,
+    busy: Busy,
+    /// Animation tick mirrored from the app loop while busy.
+    tick: u64,
     status: String,
+}
+
+struct TokenCtx {
+    address: String,
+    symbol: String,
+    decimals: u8,
 }
 
 impl Default for SendView {
@@ -50,24 +69,95 @@ impl Default for SendView {
             focus: Focus::Recipient,
             recipient: Input::new(false, "0x..."),
             amount: Input::new(false, "0.0"),
+            token: None,
             base_fee: None,
             speed: FeeSpeed::Normal,
             tx_hash: None,
             stealth: None,
+            busy: Busy::Idle,
+            tick: 0,
             status: String::new(),
         }
     }
 }
 
 impl SendView {
+    /// Prefill a send for a selected Assets row (native or ERC-20).
+    pub fn for_asset(balance: Balance) -> Self {
+        let mut view = Self::default();
+        if let Some(addr) = balance.token.contract_address {
+            view.token = Some(TokenCtx {
+                address: addr,
+                symbol: balance.token.symbol,
+                decimals: balance.token.decimals,
+            });
+        }
+        view
+    }
+
+    fn amount_decimals(&self, wallet: &WalletState) -> u8 {
+        self.token
+            .as_ref()
+            .map(|t| t.decimals)
+            .unwrap_or_else(|| wallet.networks().active().decimals)
+    }
+
     fn selected_fee(&self) -> Option<Fee> {
         self.base_fee.as_ref().map(|fee| fee.with_speed(self.speed))
+    }
+
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
+    pub fn apply_job_result(&mut self, result: UiJobResult) {
+        match result {
+            UiJobResult::Fee(Ok(fee)) => {
+                self.base_fee = Some(fee);
+                self.speed = FeeSpeed::Normal;
+                self.status.clear();
+                self.busy = Busy::Idle;
+                self.stage = Stage::Confirm;
+            }
+            UiJobResult::Fee(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.status = e.user_message();
+            }
+            UiJobResult::Send(Ok(hash)) => {
+                self.tx_hash = Some(hash);
+                self.status.clear();
+                self.busy = Busy::Idle;
+                self.stage = Stage::Done;
+            }
+            UiJobResult::SendStealth(Ok(r)) => {
+                self.tx_hash = Some(format!("{}/{}", r.pay_tx, r.announce_tx));
+                self.status.clear();
+                self.busy = Busy::Idle;
+                self.stage = Stage::Done;
+            }
+            UiJobResult::Send(Err(e)) | UiJobResult::SendStealth(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.status = e.user_message();
+                self.stage = Stage::Input;
+            }
+            _ => {}
+        }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
         let net = wallet.networks().active();
         let testnet = if net.is_testnet { " (testnet)" } else { "" };
+        let status = if self.busy != Busy::Idle {
+            let label = match self.busy {
+                Busy::Estimating => "estimating fee",
+                Busy::Sending => "broadcasting",
+                Busy::Idle => "",
+            };
+            format!("{} {label}…", spinner_frame(self.tick))
+        } else {
+            self.status.clone()
+        };
 
         match self.stage {
             Stage::Input => {
@@ -79,7 +169,13 @@ impl SendView {
                 );
                 frame.render_widget(
                     labeled_input(
-                        &format!("Amount ({})", net.native_symbol),
+                        &format!(
+                            "Amount ({})",
+                            self.token
+                                .as_ref()
+                                .map(|t| t.symbol.as_str())
+                                .unwrap_or(net.native_symbol.as_str())
+                        ),
                         &self.amount,
                         self.focus == Focus::Amount,
                     ),
@@ -134,7 +230,10 @@ impl SendView {
                     Line::from(format!(
                         "Send {} {} to:",
                         self.amount.value(),
-                        net.native_symbol
+                        self.token
+                            .as_ref()
+                            .map(|t| t.symbol.as_str())
+                            .unwrap_or(&net.native_symbol)
                     )),
                     Line::from(Span::styled(
                         stealth_hint.as_deref().unwrap_or(self.recipient.value()),
@@ -186,16 +285,19 @@ impl SendView {
             }
         }
 
-        frame.render_widget(status_paragraph(&self.status), status_area);
+        frame.render_widget(status_paragraph(&status), status_area);
     }
 
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
         wallet: &WalletState,
-        handle: &Handle,
+        _handle: &Handle,
         _events: &EventBus,
     ) -> KeyOutcome {
+        if self.busy != Busy::Idle {
+            return KeyOutcome::Consumed;
+        }
         match self.stage {
             Stage::Input => match self.focus {
                 Focus::Recipient => {
@@ -228,10 +330,7 @@ impl SendView {
                     }
                     match self.amount.handle_key(key) {
                         InputAction::Ignored => KeyOutcome::NotHandled,
-                        InputAction::Submitted => {
-                            self.estimate(wallet, handle);
-                            KeyOutcome::Consumed
-                        }
+                        InputAction::Submitted => self.begin_estimate(wallet),
                         InputAction::Consumed => KeyOutcome::Consumed,
                     }
                 }
@@ -245,10 +344,7 @@ impl SendView {
                     self.speed = FeeSpeed::from_digit(c).unwrap();
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter => {
-                    self.send(wallet, handle);
-                    KeyOutcome::Consumed
-                }
+                KeyCode::Enter => self.begin_send(wallet),
                 _ => KeyOutcome::NotHandled,
             },
             Stage::Done => match key.code {
@@ -258,67 +354,89 @@ impl SendView {
         }
     }
 
-    fn estimate(&mut self, wallet: &WalletState, handle: &Handle) {
-        let net = wallet.networks().active();
-        match parse_native_amount(self.amount.value(), net.decimals) {
-            Ok(wei) => {
-                let to = match self.resolve_recipient(wallet) {
-                    Ok(to) => to,
-                    Err(e) => {
-                        self.status = e;
-                        return;
+    fn begin_estimate(&mut self, wallet: &WalletState) -> KeyOutcome {
+        let decimals = self.amount_decimals(wallet);
+        match parse_native_amount(self.amount.value(), decimals) {
+            Ok(amount) => match self.resolve_recipient(wallet) {
+                Ok(to) => {
+                    self.busy = Busy::Estimating;
+                    self.status.clear();
+                    if let Some(token) = &self.token {
+                        KeyOutcome::StartJob(UiJob::EstimateTokenFee {
+                            token: token.address.clone(),
+                            to,
+                            amount,
+                        })
+                    } else {
+                        KeyOutcome::StartJob(UiJob::EstimateFee {
+                            to,
+                            value_wei: amount,
+                        })
                     }
-                };
-                match handle.block_on(wallet.estimate_fee(&to, &wei)) {
-                    Ok(fee) => {
-                        self.base_fee = Some(fee);
-                        self.speed = FeeSpeed::Normal;
-                        self.status.clear();
-                        self.stage = Stage::Confirm;
-                    }
-                    Err(e) => self.status = e.user_message(),
                 }
+                Err(e) => {
+                    self.status = e;
+                    KeyOutcome::Consumed
+                }
+            },
+            Err(e) => {
+                self.status = e.user_message();
+                KeyOutcome::Consumed
             }
-            Err(e) => self.status = e.user_message(),
         }
     }
 
-    fn send(&mut self, wallet: &WalletState, handle: &Handle) {
-        let net = wallet.networks().active();
-        match parse_native_amount(self.amount.value(), net.decimals) {
-            Ok(wei) => {
-                let result = if let Some(announcement) = self.stealth.as_ref() {
-                    handle
-                        .block_on(wallet.send_stealth(announcement, &wei))
-                        .map(|r| format!("{}/{}", r.pay_tx, r.announce_tx))
+    fn begin_send(&mut self, wallet: &WalletState) -> KeyOutcome {
+        let decimals = self.amount_decimals(wallet);
+        match parse_native_amount(self.amount.value(), decimals) {
+            Ok(amount) => {
+                self.busy = Busy::Sending;
+                self.status.clear();
+                if let Some(token) = &self.token {
+                    if let Some(fee) = self.selected_fee() {
+                        KeyOutcome::StartJob(UiJob::SendTokenWithFee {
+                            token: token.address.clone(),
+                            to: self.recipient.value().to_string(),
+                            amount,
+                            fee,
+                        })
+                    } else {
+                        KeyOutcome::StartJob(UiJob::SendToken {
+                            token: token.address.clone(),
+                            to: self.recipient.value().to_string(),
+                            amount,
+                        })
+                    }
+                } else if let Some(announcement) = self.stealth.clone() {
+                    KeyOutcome::StartJob(UiJob::SendStealth {
+                        announcement,
+                        value_wei: amount,
+                    })
                 } else if let Some(fee) = self.selected_fee() {
-                    let to = self.recipient.value();
-                    handle
-                        .block_on(wallet.send_with_fee(to, &wei, &fee))
-                        .map(|h| h.to_string())
+                    KeyOutcome::StartJob(UiJob::SendWithFee {
+                        to: self.recipient.value().to_string(),
+                        value_wei: amount,
+                        fee,
+                    })
                 } else {
-                    handle
-                        .block_on(wallet.send(self.recipient.value(), &wei))
-                        .map(|h| h.to_string())
-                };
-                match result {
-                    Ok(hash) => {
-                        self.tx_hash = Some(hash);
-                        self.status.clear();
-                        self.stage = Stage::Done;
-                    }
-                    Err(e) => {
-                        self.status = e.user_message();
-                        self.stage = Stage::Input;
-                    }
+                    KeyOutcome::StartJob(UiJob::Send {
+                        to: self.recipient.value().to_string(),
+                        value_wei: amount,
+                    })
                 }
             }
-            Err(e) => self.status = e.user_message(),
+            Err(e) => {
+                self.status = e.user_message();
+                KeyOutcome::Consumed
+            }
         }
     }
 
     fn resolve_recipient(&mut self, wallet: &WalletState) -> Result<String, String> {
         let raw = self.recipient.value().trim();
+        if self.token.is_some() && StealthMetaAddress::looks_like_uri(raw) {
+            return Err("ERC-20 send does not support stealth URIs yet".into());
+        }
         if StealthMetaAddress::looks_like_uri(raw) {
             match wallet.prepare_stealth_payment(raw) {
                 Ok(announcement) => {

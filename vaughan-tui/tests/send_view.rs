@@ -4,8 +4,8 @@
 //! key events, renders it headlessly via ratatui's `TestBackend`, and verifies
 //! the broadcast on-chain (balance, nonce, tx receipt).
 //!
-//! These run on a plain thread (like the real UI thread), so the view's
-//! `handle.block_on` fee-estimation and broadcast calls are safe.
+//! Jobs that the live app runs on a worker thread are applied inline here so
+//! the tests stay single-threaded.
 //!
 //! Requires `anvil` and `cast` on PATH. Run with:
 //! ```sh
@@ -25,10 +25,70 @@ use serde_json::json;
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
 use vaughan_provider::EventBus;
+use vaughan_tui::app::KeyOutcome;
+use vaughan_tui::jobs::{UiJob, UiJobResult};
 use vaughan_tui::views::SendView;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::from(code)
+}
+
+/// Apply a background job the same way the app's worker thread would.
+fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handle) {
+    let result = match job {
+        UiJob::RefreshBalance => UiJobResult::Balance(handle.block_on(wallet.balance())),
+        UiJob::RefreshAssets => UiJobResult::Assets(handle.block_on(wallet.assets())),
+        UiJob::EstimateFee { to, value_wei } => {
+            UiJobResult::Fee(handle.block_on(wallet.estimate_fee(&to, &value_wei)))
+        }
+        UiJob::EstimateTokenFee { token, to, amount } => {
+            UiJobResult::Fee(handle.block_on(wallet.estimate_token_fee(&token, &to, &amount)))
+        }
+        UiJob::SendWithFee { to, value_wei, fee } => UiJobResult::Send(
+            handle
+                .block_on(wallet.send_with_fee(&to, &value_wei, &fee))
+                .map(|h| h.to_string()),
+        ),
+        UiJob::Send { to, value_wei } => UiJobResult::Send(
+            handle
+                .block_on(wallet.send(&to, &value_wei))
+                .map(|h| h.to_string()),
+        ),
+        UiJob::SendToken { token, to, amount } => UiJobResult::Send(
+            handle
+                .block_on(wallet.send_token(&token, &to, &amount))
+                .map(|h| h.to_string()),
+        ),
+        UiJob::SendTokenWithFee {
+            token,
+            to,
+            amount,
+            fee,
+        } => UiJobResult::Send(
+            handle
+                .block_on(wallet.send_token_with_fee(&token, &to, &amount, &fee))
+                .map(|h| h.to_string()),
+        ),
+        UiJob::SendStealth {
+            announcement,
+            value_wei,
+        } => UiJobResult::SendStealth(
+            handle.block_on(wallet.send_stealth(&announcement, &value_wei)),
+        ),
+    };
+    view.apply_job_result(result);
+}
+
+fn press(
+    view: &mut SendView,
+    code: KeyCode,
+    wallet: &WalletState,
+    handle: &Handle,
+    events: &EventBus,
+) {
+    if let KeyOutcome::StartJob(job) = view.handle_key(key(code), wallet, handle, events) {
+        run_job(view, job, wallet, handle);
+    }
 }
 
 /// Type one character into the focused field.
@@ -39,7 +99,7 @@ fn type_char(
     handle: &Handle,
     events: &EventBus,
 ) {
-    view.handle_key(key(KeyCode::Char(c)), wallet, handle, events);
+    press(view, KeyCode::Char(c), wallet, handle, events);
 }
 
 /// Type a whole string into the focused field.
@@ -85,10 +145,10 @@ fn drive_send(
     events: &EventBus,
 ) {
     type_text(view, recipient, wallet, handle, events);
-    view.handle_key(key(KeyCode::Tab), wallet, handle, events);
+    press(view, KeyCode::Tab, wallet, handle, events);
     type_text(view, amount, wallet, handle, events);
-    view.handle_key(key(KeyCode::Enter), wallet, handle, events); // amount submitted → fee estimate
-    view.handle_key(key(KeyCode::Enter), wallet, handle, events); // confirm → broadcast
+    press(view, KeyCode::Enter, wallet, handle, events); // amount submitted → fee estimate
+    press(view, KeyCode::Enter, wallet, handle, events); // confirm → broadcast
 }
 
 /// Happy path: recipient + amount → confirm screen → broadcast → receipt.
@@ -98,7 +158,7 @@ fn drive_send(
 fn send_view_broadcasts_and_shows_receipt() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(6);
     let before = anvil.wei_balance(&recipient);
@@ -112,10 +172,10 @@ fn send_view_broadcasts_and_shows_receipt() {
     let value_wei = 10u128.pow(18); // 1 tPLS
 
     // Fill the form: recipient, Tab, amount, Enter (→ confirm).
-    type_text(&mut view, &recipient, &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
-    type_text(&mut view, "1", &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    type_text(&mut view, &recipient, &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Tab, &mut wallet, &handle, &events);
+    type_text(&mut view, "1", &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
 
     // Confirm screen: fee shown, recipient shown, broadcast hint.
     let text = render(&view, &wallet);
@@ -140,7 +200,7 @@ fn send_view_broadcasts_and_shows_receipt() {
     );
 
     // Enter → broadcast → done stage with the tx hash.
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
     let text = render(&view, &wallet);
     assert!(
         text.contains("Transaction broadcast"),
@@ -197,7 +257,7 @@ fn send_view_broadcasts_and_shows_receipt() {
 fn send_view_insufficient_funds_fails_cleanly() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(7);
     let before = anvil.wei_balance(&recipient);
@@ -209,7 +269,14 @@ fn send_view_insufficient_funds_fails_cleanly() {
     let mut view = SendView::default();
 
     // 1,000,000 tPLS — anvil dev accounts only hold 10,000.
-    drive_send(&mut view, &recipient, "1000000", &wallet, &handle, &events);
+    drive_send(
+        &mut view,
+        &recipient,
+        "1000000",
+        &mut wallet,
+        &handle,
+        &events,
+    );
 
     let text = render(&view, &wallet);
     assert!(
@@ -233,7 +300,7 @@ fn send_view_insufficient_funds_fails_cleanly() {
 fn send_view_invalid_amount_stays_on_input() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(8);
     let before = anvil.wei_balance(&recipient);
@@ -244,7 +311,7 @@ fn send_view_invalid_amount_stays_on_input() {
     let events = EventBus::new();
     let mut view = SendView::default();
 
-    drive_send(&mut view, &recipient, "abc", &wallet, &handle, &events);
+    drive_send(&mut view, &recipient, "abc", &mut wallet, &handle, &events);
 
     let text = render(&view, &wallet);
     assert!(
@@ -265,7 +332,7 @@ fn send_view_invalid_amount_stays_on_input() {
 fn send_view_esc_cancels_confirm() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(9);
     let before = anvil.wei_balance(&recipient);
@@ -277,10 +344,10 @@ fn send_view_esc_cancels_confirm() {
     let mut view = SendView::default();
 
     // Reach the confirm stage.
-    type_text(&mut view, &recipient, &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
-    type_text(&mut view, "0.5", &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    type_text(&mut view, &recipient, &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Tab, &mut wallet, &handle, &events);
+    type_text(&mut view, "0.5", &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
     let text = render(&view, &wallet);
     assert!(
         text.contains("broadcast"),
@@ -288,7 +355,7 @@ fn send_view_esc_cancels_confirm() {
     );
 
     // Esc cancels: back to the form, nothing broadcast.
-    view.handle_key(key(KeyCode::Esc), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Esc, &mut wallet, &handle, &events);
     let text = render(&view, &wallet);
     assert!(
         !text.contains("broadcast"),
@@ -304,7 +371,7 @@ fn send_view_esc_cancels_confirm() {
 fn send_view_gas_speed_presets() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let recipient = anvil_dev_address(10);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -312,10 +379,10 @@ fn send_view_gas_speed_presets() {
     let events = EventBus::new();
     let mut view = SendView::default();
 
-    type_text(&mut view, &recipient, &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
-    type_text(&mut view, "0.01", &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    type_text(&mut view, &recipient, &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Tab, &mut wallet, &handle, &events);
+    type_text(&mut view, "0.01", &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
 
     let text = render(&view, &wallet);
     for label in ["Slow", "Normal", "Fast", "Ape"] {
@@ -326,11 +393,11 @@ fn send_view_gas_speed_presets() {
         "default speed is Normal:\n{text}"
     );
 
-    view.handle_key(key(KeyCode::Char('4')), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Char('4'), &mut wallet, &handle, &events);
     let ape = render(&view, &wallet);
     assert!(ape.contains("[Ape]"), "4 selects Ape:\n{ape}");
 
-    view.handle_key(key(KeyCode::Char('1')), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Char('1'), &mut wallet, &handle, &events);
     let slow = render(&view, &wallet);
     assert!(slow.contains("[Slow]"), "1 selects Slow:\n{slow}");
 }
@@ -340,7 +407,7 @@ fn send_view_gas_speed_presets() {
 fn send_view_ape_preset_broadcasts_scaled_fee() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let recipient = anvil_dev_address(11);
     let before = anvil.wei_balance(&recipient);
 
@@ -349,16 +416,16 @@ fn send_view_ape_preset_broadcasts_scaled_fee() {
     let events = EventBus::new();
     let mut view = SendView::default();
 
-    type_text(&mut view, &recipient, &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
-    type_text(&mut view, "0.01", &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    type_text(&mut view, &recipient, &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Tab, &mut wallet, &handle, &events);
+    type_text(&mut view, "0.01", &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
 
     // Capture Normal vs Ape display totals from the confirm screen fee line,
     // then broadcast with Ape selected.
     let normal_text = render(&view, &wallet);
     assert!(normal_text.contains("[Normal]"), "{normal_text}");
-    view.handle_key(key(KeyCode::Char('4')), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Char('4'), &mut wallet, &handle, &events);
     let ape_text = render(&view, &wallet);
     assert!(ape_text.contains("[Ape]"), "{ape_text}");
     assert_ne!(
@@ -382,7 +449,7 @@ fn send_view_ape_preset_broadcasts_scaled_fee() {
         }
     });
 
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
     let done = render(&view, &wallet);
     assert!(
         done.contains("Transaction broadcast"),
@@ -423,7 +490,7 @@ fn send_view_stealth_uri_pay_and_announce() {
     let anvil = Anvil::start();
     plant_announcer(&anvil);
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let uri = wallet.stealth_uri().unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -431,10 +498,10 @@ fn send_view_stealth_uri_pay_and_announce() {
     let events = EventBus::new();
     let mut view = SendView::default();
 
-    type_text(&mut view, &uri, &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Tab), &wallet, &handle, &events);
-    type_text(&mut view, "1", &wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    type_text(&mut view, &uri, &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Tab, &mut wallet, &handle, &events);
+    type_text(&mut view, "1", &mut wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
 
     let text = render(&view, &wallet);
     assert!(
@@ -442,7 +509,7 @@ fn send_view_stealth_uri_pay_and_announce() {
         "confirm must flag a stealth payment:\n{text}"
     );
 
-    view.handle_key(key(KeyCode::Enter), &wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &mut wallet, &handle, &events);
     let text = render(&view, &wallet);
     assert!(
         text.contains("Stealth payment broadcast"),
@@ -460,7 +527,7 @@ fn send_view_stealth_uri_pay_and_announce() {
 fn send_view_stealth_without_announcer() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let uri = wallet.stealth_uri().unwrap();
     let sender = wallet.active_address().unwrap().to_string();
     let nonce_before = anvil.nonce(&sender);
@@ -469,7 +536,7 @@ fn send_view_stealth_without_announcer() {
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    drive_send(&mut view, &uri, "1", &wallet, &handle, &events);
+    drive_send(&mut view, &uri, "1", &mut wallet, &handle, &events);
 
     let text = render(&view, &wallet);
     assert!(
@@ -493,13 +560,20 @@ fn send_view_invalid_stealth_uri() {
     let anvil = Anvil::start();
     plant_announcer(&anvil);
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    drive_send(&mut view, "st:tpls:0x1234", "1", &wallet, &handle, &events);
+    drive_send(
+        &mut view,
+        "st:tpls:0x1234",
+        "1",
+        &mut wallet,
+        &handle,
+        &events,
+    );
 
     let text = render(&view, &wallet);
     assert!(
@@ -516,7 +590,7 @@ fn send_view_alice_pays_bob() {
     plant_announcer(&anvil);
     let alice_dir = tempfile::tempdir().unwrap();
     let bob_dir = tempfile::tempdir().unwrap();
-    let alice = funded_wallet(alice_dir.path(), &anvil);
+    let mut alice = funded_wallet(alice_dir.path(), &anvil);
     let bob = wallet_from_mnemonic(bob_dir.path(), &anvil, BOB_MNEMONIC);
     let bob_uri = bob.stealth_uri().unwrap();
 
@@ -524,7 +598,7 @@ fn send_view_alice_pays_bob() {
     let handle = rt.handle().clone();
     let events = EventBus::new();
     let mut view = SendView::default();
-    drive_send(&mut view, &bob_uri, "1", &alice, &handle, &events);
+    drive_send(&mut view, &bob_uri, "1", &mut alice, &handle, &events);
 
     let text = render(&view, &alice);
     assert!(

@@ -27,6 +27,7 @@ sol! {
         function decimals() external view returns (uint8);
         function symbol() external view returns (string memory);
         function name() external view returns (string memory);
+        function transfer(address to, uint256 amount) external returns (bool);
     }
 
     /// Multicall3 `tryAggregate` (canonical contract, mds1/multicall).

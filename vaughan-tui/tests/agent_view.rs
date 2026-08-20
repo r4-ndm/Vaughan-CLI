@@ -30,11 +30,11 @@ fn agent_view_human_only_mode_blocks_agent_and_shows_cold_storage() {
 
     // Typing into HumanOnly view is consumed and ignored
     let outcome = view.handle_key(press('a'), OperatingMode::HumanOnly, &context);
-    assert_eq!(outcome, KeyOutcome::Consumed);
+    assert!(matches!(outcome, KeyOutcome::Consumed));
 
     // Esc bubbles up to navigate back to dashboard
     let outcome = view.handle_key(key(KeyCode::Esc), OperatingMode::HumanOnly, &context);
-    assert_eq!(outcome, KeyOutcome::NotHandled);
+    assert!(matches!(outcome, KeyOutcome::NotHandled));
 
     terminal
         .draw(|frame| {

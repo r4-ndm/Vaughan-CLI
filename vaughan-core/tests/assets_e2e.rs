@@ -118,7 +118,7 @@ async fn assets_detect_native_and_erc20_on_pulsechain_fork() {
 
     // ---- get_assets: native + WPLS, zero tokens excluded ----
     let assets = adapter
-        .get_assets(&me.to_string())
+        .get_assets(&me.to_string(), &[])
         .await
         .expect("get_assets");
 
@@ -231,7 +231,7 @@ async fn assets_detect_without_multicall3_sequential_fallback() {
 
     // ---- get_assets via the sequential fallback: same result set ----
     let assets = adapter
-        .get_assets(&me.to_string())
+        .get_assets(&me.to_string(), &[])
         .await
         .expect("get_assets without Multicall3");
 
@@ -336,7 +336,7 @@ async fn assets_detect_transfer_discovered_token() {
 
     // ---- get_assets must now show LINK (discovered from the Transfer log) ----
     let assets = adapter
-        .get_assets(&me.to_string())
+        .get_assets(&me.to_string(), &[])
         .await
         .expect("get_assets with discovered token");
     let link_bal = assets

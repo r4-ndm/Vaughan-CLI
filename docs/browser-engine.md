@@ -83,7 +83,6 @@ call slot0()                  # call any function on current contract (read-only
 call getReserves()            # decoded output, typed
 pairs                         # event-scan a factory: list pairs/pools (any fork)
 token 0x95B3…90ab             # metadata probes: symbol, decimals, totalSupply
-price PLSX/WPLS               # best-effort price across probed DEXes (later)
 help                          # command list
 history                       # scroll previous commands/output
 ```
@@ -138,7 +137,7 @@ exists battle-tested, use it; do not hand-roll.
 ## 9. Scope boundaries (explicitly deferred)
 
 - Write calls / swaps on other DEXes (v0.1 is read-only)
-- Cross-DEX routing / aggregation (a `price` aggregation view is optional-later)
+- Cross-DEX routing / aggregation — **out of Vaughan**; build a proper swap aggregator in `wiz4rd-swap` instead of a wallet `price` view
 - StableSwap / exotic curve math (renders as a contract; views attach only where standard interfaces match)
 - Tx replay / tracing (`cast run` equivalent needs an EVM — **revm**, battle-tested, used by Foundry; a later power feature)
 - DEX *views* (V2/V3 price) — from `wiz4rd-sdk` at workspace integration, not the engine

@@ -1,16 +1,11 @@
-//! Assets: native + curated ERC-20 balances (auto asset detection).
-//!
-//! Reads `WalletState::assets()` (one Multicall3 batch on chains that have
-//! it, sequential `balanceOf` otherwise — see `docs/optimizations.md`),
-//! renders each non-zero balance with on-chain symbol/decimals, and lets the
-//! user refresh (`r`) or return to the dashboard (`Esc`/`d`).
+//! Assets: balances, import custom ERC-20s, send native or token.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -20,26 +15,72 @@ use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
-use crate::views::{body_areas, status_paragraph};
+use crate::input::{Input, InputAction};
+use crate::jobs::{spinner_frame, UiJob};
+use crate::views::{body_areas, labeled_input, status_paragraph};
 
-#[derive(Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Stage {
+    #[default]
+    List,
+    Import,
+}
+
 pub struct AssetsView {
     assets: Vec<Balance>,
+    selected: usize,
+    loading: bool,
+    tick: u64,
+    stage: Stage,
+    import_addr: Input,
     status: String,
 }
 
+impl Default for AssetsView {
+    fn default() -> Self {
+        Self::loading()
+    }
+}
+
 impl AssetsView {
-    pub fn with_assets(result: Result<Vec<Balance>, WalletError>) -> Self {
-        match result {
-            Ok(assets) => Self {
-                assets,
-                status: String::new(),
-            },
-            Err(e) => Self {
-                assets: Vec::new(),
-                status: e.user_message(),
-            },
+    pub fn loading() -> Self {
+        Self {
+            assets: Vec::new(),
+            selected: 0,
+            loading: true,
+            tick: 0,
+            stage: Stage::List,
+            import_addr: Input::new(false, "0x… token contract"),
+            status: String::new(),
         }
+    }
+
+    pub fn with_assets(result: Result<Vec<Balance>, WalletError>) -> Self {
+        let mut v = Self::loading();
+        v.apply_assets(result);
+        v
+    }
+
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
+    pub fn apply_assets(&mut self, result: Result<Vec<Balance>, WalletError>) {
+        self.loading = false;
+        match result {
+            Ok(assets) => {
+                self.assets = assets;
+                if self.selected >= self.assets.len() {
+                    self.selected = self.assets.len().saturating_sub(1);
+                }
+                self.status.clear();
+            }
+            Err(e) => self.status = e.user_message(),
+        }
+    }
+
+    pub fn selected_balance(&self) -> Option<&Balance> {
+        self.assets.get(self.selected)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
@@ -47,28 +88,73 @@ impl AssetsView {
         let net = wallet.networks().active();
         let testnet = if net.is_testnet { " (testnet)" } else { "" };
 
-        let items: Vec<ListItem> = if self.assets.is_empty() {
-            vec![ListItem::new(Line::from("  No non-zero balances found."))]
-        } else {
-            self.assets
-                .iter()
-                .map(|b| {
-                    let label = format!("  {:<20} {}", b.token.symbol, b.formatted);
-                    let style = if b.token.contract_address.is_none() {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default()
-                    };
-                    ListItem::new(Line::from(Span::styled(label, style)))
-                })
-                .collect()
-        };
+        match self.stage {
+            Stage::Import => {
+                let [msg, field] =
+                    Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(content);
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("Import a custom ERC-20 (meme coin, etc.)"),
+                        Line::from("Paste the contract address, Enter to import, Esc cancel."),
+                    ])
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Import token "),
+                    )
+                    .wrap(Wrap { trim: false }),
+                    msg,
+                );
+                frame.render_widget(labeled_input("Token", &self.import_addr, true), field);
+            }
+            Stage::List => {
+                let items: Vec<ListItem> = if self.loading {
+                    vec![ListItem::new(Line::from(format!(
+                        "  {} loading assets…",
+                        spinner_frame(self.tick)
+                    )))]
+                } else if self.assets.is_empty() {
+                    vec![ListItem::new(Line::from(
+                        "  No balances — press i to import a token.",
+                    ))]
+                } else {
+                    self.assets
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| {
+                            let mark = if i == self.selected { ">" } else { " " };
+                            let kind = if b.token.contract_address.is_none() {
+                                "native"
+                            } else {
+                                "ERC-20"
+                            };
+                            let label = format!(
+                                "{mark} {:<12} {:>22}  ({kind})",
+                                b.token.symbol, b.formatted
+                            );
+                            let style = if i == self.selected {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD)
+                            } else if b.token.contract_address.is_none() {
+                                Style::default().fg(Color::Yellow)
+                            } else {
+                                Style::default()
+                            };
+                            ListItem::new(Line::from(Span::styled(label, style)))
+                        })
+                        .collect()
+                };
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
-            " Assets — {}{testnet} (r refresh, d back) ",
-            net.name
-        )));
-        frame.render_widget(list, content);
+                let list =
+                    List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+                    " Assets — {}{testnet} (↑↓ select, Enter send, i import, r refresh, d back) ",
+                    net.name
+                )));
+                frame.render_widget(list, content);
+            }
+        }
         frame.render_widget(status_paragraph(&self.status), status_area);
     }
 
@@ -79,23 +165,82 @@ impl AssetsView {
         handle: &Handle,
         _events: &EventBus,
     ) -> KeyOutcome {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('d') => KeyOutcome::Navigate(Screen::Dashboard),
-            KeyCode::Char('r') => {
-                self.refresh(wallet, handle);
-                KeyOutcome::Consumed
+        match self.stage {
+            Stage::Import => {
+                if key.code == KeyCode::Esc {
+                    self.stage = Stage::List;
+                    self.status.clear();
+                    return KeyOutcome::Consumed;
+                }
+                match self.import_addr.handle_key(key) {
+                    InputAction::Ignored => KeyOutcome::NotHandled,
+                    InputAction::Consumed => KeyOutcome::Consumed,
+                    InputAction::Submitted => {
+                        let addr = self.import_addr.value().to_string();
+                        match handle.block_on(wallet.import_custom_token(&addr)) {
+                            Ok(token) => {
+                                self.import_addr.set_value("");
+                                self.stage = Stage::List;
+                                self.status =
+                                    format!("Imported {} ({})", token.symbol, token.address);
+                                KeyOutcome::StartJob(UiJob::RefreshAssets)
+                            }
+                            Err(e) => {
+                                self.status = e.user_message();
+                                KeyOutcome::Consumed
+                            }
+                        }
+                    }
+                }
             }
-            _ => KeyOutcome::NotHandled,
-        }
-    }
-
-    fn refresh(&mut self, wallet: &WalletState, handle: &Handle) {
-        match handle.block_on(wallet.assets()) {
-            Ok(assets) => {
-                self.assets = assets;
-                self.status.clear();
-            }
-            Err(e) => self.status = e.user_message(),
+            Stage::List => match key.code {
+                KeyCode::Esc | KeyCode::Char('d') => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Char('r') => KeyOutcome::StartJob(UiJob::RefreshAssets),
+                KeyCode::Char('i') => {
+                    self.stage = Stage::Import;
+                    self.status.clear();
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Up => {
+                    self.selected = self.selected.saturating_sub(1);
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Down => {
+                    if !self.assets.is_empty() {
+                        self.selected = (self.selected + 1).min(self.assets.len() - 1);
+                    }
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Enter => {
+                    if let Some(bal) = self.assets.get(self.selected).cloned() {
+                        KeyOutcome::SendAsset(bal)
+                    } else {
+                        KeyOutcome::Consumed
+                    }
+                }
+                KeyCode::Char('x') => {
+                    if let Some(addr) = self
+                        .assets
+                        .get(self.selected)
+                        .and_then(|b| b.token.contract_address.clone())
+                    {
+                        match wallet.remove_custom_token(&addr) {
+                            Ok(()) => {
+                                self.status = "Removed custom token.".into();
+                                KeyOutcome::StartJob(UiJob::RefreshAssets)
+                            }
+                            Err(e) => {
+                                self.status = e.user_message();
+                                KeyOutcome::Consumed
+                            }
+                        }
+                    } else {
+                        self.status = "Only custom imports can be removed (x).".into();
+                        KeyOutcome::Consumed
+                    }
+                }
+                _ => KeyOutcome::NotHandled,
+            },
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Application state and the main event loop.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -14,10 +15,11 @@ use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
 use std::str::FromStr;
 
+use crate::jobs::{UiJob, UiJobResult};
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, AgentSetupView, AgentView, ApproveView, AssetsView, BrowserView, DashboardView,
-    OnboardingView, ReceiveView, SendView, SettingsView, UnlockView,
+    AaSendView, AgentSetupView, AgentView, ApproveView, AssetsView, BrowserView, DappsView,
+    DashboardView, KeysView, OnboardingView, ReceiveView, SendView, SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -31,6 +33,8 @@ pub enum Screen {
     AaSend,
     Receive,
     Settings,
+    Keys,
+    Dapps,
     Assets,
     Browser,
     Agent,
@@ -48,6 +52,8 @@ impl Screen {
             Self::AaSend => "Batch Send",
             Self::Receive => "Receive",
             Self::Settings => "Settings",
+            Self::Keys => "Keys",
+            Self::Dapps => "dApps",
             Self::Assets => "Assets",
             Self::Browser => "Contract Browser",
             Self::Agent => "AI Agent",
@@ -61,7 +67,6 @@ impl Screen {
 /// The app uses this to decide whether global shortcuts apply: a `Consumed`
 /// key (e.g. `'q'` or `Tab` typed into a text field) must never trigger a
 /// global action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyOutcome {
     /// The view consumed the key; the app must not apply global shortcuts.
     Consumed,
@@ -69,6 +74,22 @@ pub enum KeyOutcome {
     NotHandled,
     /// The view wants to navigate to a new screen.
     Navigate(Screen),
+    /// Spawn a background RPC job; keep the current screen responsive.
+    StartJob(crate::jobs::UiJob),
+    /// Open Send prefilled for an Assets row.
+    SendAsset(vaughan_core::chains::Balance),
+}
+
+impl std::fmt::Debug for KeyOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Consumed => write!(f, "Consumed"),
+            Self::NotHandled => write!(f, "NotHandled"),
+            Self::Navigate(s) => f.debug_tuple("Navigate").field(s).finish(),
+            Self::StartJob(_) => write!(f, "StartJob(..)"),
+            Self::SendAsset(_) => write!(f, "SendAsset(..)"),
+        }
+    }
 }
 
 /// The active view (screen + its state).
@@ -81,6 +102,8 @@ pub enum View {
     AaSend(AaSendView),
     Receive(ReceiveView),
     Settings(SettingsView),
+    Keys(KeysView),
+    Dapps(DappsView),
     Assets(AssetsView),
     Browser(BrowserView),
     Agent(AgentView),
@@ -98,6 +121,8 @@ impl View {
             Self::AaSend(_) => Screen::AaSend,
             Self::Receive(_) => Screen::Receive,
             Self::Settings(_) => Screen::Settings,
+            Self::Keys(_) => Screen::Keys,
+            Self::Dapps(_) => Screen::Dapps,
             Self::Assets(_) => Screen::Assets,
             Self::Browser(_) => Screen::Browser,
             Self::Agent(_) => Screen::Agent,
@@ -115,6 +140,8 @@ impl View {
             Self::AaSend(v) => v.render(frame, area, wallet),
             Self::Receive(v) => v.render(frame, area, wallet),
             Self::Settings(v) => v.render(frame, area, wallet),
+            Self::Keys(v) => v.render(frame, area, wallet),
+            Self::Dapps(v) => v.render(frame, area, wallet),
             Self::Assets(v) => v.render(frame, area, wallet),
             Self::Browser(v) => v.render(frame, area, wallet),
             Self::Agent(v) => v.render(frame, area, wallet.operating_mode()),
@@ -138,6 +165,8 @@ impl View {
             Self::AaSend(v) => v.handle_key(key, wallet, handle, events),
             Self::Receive(v) => v.handle_key(key, wallet, handle, events),
             Self::Settings(v) => v.handle_key(key, wallet, handle, events),
+            Self::Keys(v) => v.handle_key(key, wallet, handle, events),
+            Self::Dapps(v) => v.handle_key(key, wallet, handle, events),
             Self::Assets(v) => v.handle_key(key, wallet, handle, events),
             Self::Browser(v) => v.handle_key(key, wallet, handle, events),
             Self::Agent(v) => {
@@ -164,7 +193,7 @@ struct PendingApproval {
 
 /// Root application state.
 pub struct App {
-    wallet: WalletState,
+    wallet: Arc<Mutex<WalletState>>,
     handle: Handle,
     view: View,
     quitting: bool,
@@ -172,6 +201,11 @@ pub struct App {
     events: EventBus,
     /// Requests forwarded from the provider server; drained on the UI thread.
     host_rx: mpsc::UnboundedReceiver<HostRequest>,
+    /// Background job results (balance / fee / send).
+    job_tx: mpsc::UnboundedSender<UiJobResult>,
+    job_rx: mpsc::UnboundedReceiver<UiJobResult>,
+    /// Animation tick for spinners.
+    tick: u64,
     /// The approval currently on screen, if any.
     pending_approval: Option<PendingApproval>,
     /// Screen to return to after the pending approval resolves.
@@ -194,14 +228,19 @@ impl App {
         };
         let events = EventBus::new();
         let (host_tx, host_rx) = mpsc::unbounded_channel();
-        provider::spawn_provider_server(&handle, host_tx, events.clone());
+        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let dapp_origins = wallet.trusted_dapp_origins();
+        provider::spawn_provider_server(&handle, host_tx, events.clone(), dapp_origins);
         let mut app = Self {
-            wallet,
+            wallet: Arc::new(Mutex::new(wallet)),
             handle,
             view: View::Onboarding(OnboardingView::default()),
             quitting: false,
             events,
             host_rx,
+            job_tx,
+            job_rx,
+            tick: 0,
             pending_approval: None,
             approve_return: Screen::Dashboard,
             agent_config: ModelConfig::from_env(),
@@ -210,27 +249,56 @@ impl App {
         Ok(app)
     }
 
-    pub fn wallet(&self) -> &WalletState {
-        &self.wallet
+    pub fn wallet(&self) -> std::sync::MutexGuard<'_, WalletState> {
+        self.wallet.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn try_wallet(&self) -> Option<std::sync::MutexGuard<'_, WalletState>> {
+        self.wallet.try_lock().ok()
     }
 
     pub fn screen(&self) -> Screen {
         self.view.screen()
     }
 
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
     pub fn render_body(&self, frame: &mut Frame, area: Rect) {
-        self.view.render(frame, area, &self.wallet);
+        if let Some(wallet) = self.try_wallet() {
+            self.view.render(frame, area, &wallet);
+        } else {
+            // Job thread holds the wallet — keep painting a spinner body.
+            use ratatui::widgets::Paragraph;
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "{} working…",
+                    crate::jobs::spinner_frame(self.tick)
+                )),
+                area,
+            );
+        }
     }
 
     /// Run the terminal event loop until the user quits.
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.quitting {
-            // Service provider requests first so an incoming approval prompt
-            // is on screen before the next draw.
+            self.tick = self.tick.wrapping_add(1);
             self.poll_provider();
             self.poll_agent();
+            self.poll_jobs();
+            if let View::Send(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::Dashboard(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::Assets(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
             terminal.draw(|frame| crate::views::render(frame, self))?;
-            if event::poll(Duration::from_millis(100))? {
+            if event::poll(Duration::from_millis(80))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         self.handle_key(key);
@@ -249,11 +317,13 @@ impl App {
             return;
         }
 
-        let outcome = self
-            .view
-            .handle_key(key, &mut self.wallet, &self.handle, &self.events);
+        let outcome = {
+            let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+            self.view
+                .handle_key(key, &mut wallet, &self.handle, &self.events)
+        };
 
-        match global_action(key, outcome) {
+        match global_action(key, &outcome) {
             GlobalAction::Quit => {
                 self.quitting = true;
                 return;
@@ -264,7 +334,9 @@ impl App {
                     Screen::Send => Screen::AaSend,
                     Screen::AaSend => Screen::Receive,
                     Screen::Receive => Screen::Settings,
-                    Screen::Settings => Screen::Assets,
+                    Screen::Settings => Screen::Keys,
+                    Screen::Keys => Screen::Dapps,
+                    Screen::Dapps => Screen::Assets,
                     Screen::Assets => Screen::Browser,
                     Screen::Browser => Screen::Agent,
                     Screen::Agent => Screen::Dashboard,
@@ -278,9 +350,16 @@ impl App {
             GlobalAction::None => {}
         }
 
-        if let KeyOutcome::Navigate(screen) = outcome {
-            self.capture_session_agent_config();
-            self.navigate(screen);
+        match outcome {
+            KeyOutcome::Navigate(screen) => {
+                self.capture_session_agent_config();
+                self.navigate(screen);
+            }
+            KeyOutcome::StartJob(job) => self.spawn_job(job),
+            KeyOutcome::SendAsset(balance) => {
+                self.view = View::Send(SendView::for_asset(balance));
+            }
+            _ => {}
         }
     }
 
@@ -315,7 +394,7 @@ impl App {
                     let _ = reply.send(Ok(self.visible_accounts()));
                 }
                 HostRequest::ChainId { reply } => {
-                    let id = self.wallet.networks().active().chain_id;
+                    let id = self.wallet().networks().active().chain_id;
                     let _ = reply.send(Ok(format!("0x{id:x}")));
                 }
                 HostRequest::SwitchChain { chain_id, reply } => {
@@ -328,13 +407,13 @@ impl App {
                 } => {
                     // Locked wallet: reject without prompting (the execution
                     // path guards too, but no prompt should ever appear).
-                    if !self.wallet.is_unlocked() {
+                    if !self.wallet().is_unlocked() {
                         let _ = reply.send(Err(ProviderError::Unauthorized(
                             "wallet is locked; unlock it first".to_string(),
                         )));
                         continue;
                     }
-                    let preview = provider::describe_approval(&kind, &self.wallet, &self.handle);
+                    let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
                     let (title, details) = match preview {
                         Ok(preview) => preview,
                         Err(error) => {
@@ -363,10 +442,11 @@ impl App {
     /// The account list visible to dApps: the active account, or `[]` when the
     /// wallet is locked/uninitialized.
     fn visible_accounts(&self) -> Vec<String> {
-        if !self.wallet.is_unlocked() {
+        let wallet = self.wallet();
+        if !wallet.is_unlocked() {
             return Vec::new();
         }
-        self.wallet
+        wallet
             .active_address()
             .map(|a| vec![a.to_string()])
             .unwrap_or_default()
@@ -380,7 +460,7 @@ impl App {
             .map_err(|_| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
         let net = get_network_by_chain_id(id)
             .ok_or_else(|| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
-        self.wallet
+        self.wallet()
             .set_active_network(&net.id)
             .map_err(|e| ProviderError::Internal(e.user_message()))?;
         self.events
@@ -414,7 +494,7 @@ impl App {
         let result = if deny {
             Err(ProviderError::UserRejected)
         } else {
-            provider::execute_approval_sync(&pending.kind, &self.wallet, &self.handle)
+            provider::execute_approval_sync(&pending.kind, &self.wallet(), &self.handle)
         };
         let _ = pending.reply.send(result);
         let back = self.approve_return;
@@ -437,17 +517,14 @@ impl App {
             Screen::Onboarding => View::Onboarding(OnboardingView::default()),
             Screen::Unlock => View::Unlock(UnlockView::default()),
             Screen::AgentSetup => View::AgentSetup(AgentSetupView::new(setup_password)),
-            Screen::Dashboard => {
-                let balance = self.handle.block_on(self.wallet.balance());
-                View::Dashboard(DashboardView::with_balance(balance))
-            }
+            Screen::Dashboard => View::Dashboard(DashboardView::loading()),
             Screen::Send => View::Send(SendView::default()),
             Screen::AaSend => View::AaSend(AaSendView::default()),
             Screen::Receive => View::Receive(ReceiveView::default()),
             Screen::Settings => {
-                let active_id = self.wallet.networks().active_id().to_string();
-                let selected = self
-                    .wallet
+                let wallet = self.wallet();
+                let active_id = wallet.networks().active_id().to_string();
+                let selected = wallet
                     .networks()
                     .networks()
                     .iter()
@@ -455,16 +532,15 @@ impl App {
                     .unwrap_or(0);
                 View::Settings(SettingsView::new(selected))
             }
-            Screen::Assets => {
-                let assets = self.handle.block_on(self.wallet.assets());
-                View::Assets(AssetsView::with_assets(assets))
-            }
+            Screen::Keys => View::Keys(KeysView::default()),
+            Screen::Dapps => View::Dapps(DappsView::default()),
+            Screen::Assets => View::Assets(AssetsView::loading()),
             Screen::Browser => View::Browser(BrowserView::default()),
             Screen::Agent => {
-                let dir = vaughan_agent::profile_dir(self.wallet.path());
+                let dir = vaughan_agent::profile_dir(self.wallet().path());
                 View::Agent(AgentView::with_session(
                     self.agent_config.clone(),
-                    self.wallet.operating_mode(),
+                    self.wallet().operating_mode(),
                     Some(dir.as_path()),
                 ))
             }
@@ -478,6 +554,74 @@ impl App {
             )),
         };
         self.view = view;
+        match screen {
+            Screen::Dashboard => self.spawn_job(UiJob::RefreshBalance),
+            Screen::Assets => self.spawn_job(UiJob::RefreshAssets),
+            _ => {}
+        }
+    }
+
+    fn spawn_job(&self, job: UiJob) {
+        let tx = self.job_tx.clone();
+        let handle = self.handle.clone();
+        let wallet = self.wallet.clone();
+        std::thread::spawn(move || {
+            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+            let result = match job {
+                UiJob::RefreshBalance => UiJobResult::Balance(handle.block_on(w.balance())),
+                UiJob::RefreshAssets => UiJobResult::Assets(handle.block_on(w.assets())),
+                UiJob::EstimateFee { to, value_wei } => {
+                    UiJobResult::Fee(handle.block_on(w.estimate_fee(&to, &value_wei)))
+                }
+                UiJob::EstimateTokenFee { token, to, amount } => {
+                    UiJobResult::Fee(handle.block_on(w.estimate_token_fee(&token, &to, &amount)))
+                }
+                UiJob::SendWithFee { to, value_wei, fee } => UiJobResult::Send(
+                    handle
+                        .block_on(w.send_with_fee(&to, &value_wei, &fee))
+                        .map(|h| h.to_string()),
+                ),
+                UiJob::Send { to, value_wei } => UiJobResult::Send(
+                    handle
+                        .block_on(w.send(&to, &value_wei))
+                        .map(|h| h.to_string()),
+                ),
+                UiJob::SendToken { token, to, amount } => UiJobResult::Send(
+                    handle
+                        .block_on(w.send_token(&token, &to, &amount))
+                        .map(|h| h.to_string()),
+                ),
+                UiJob::SendTokenWithFee {
+                    token,
+                    to,
+                    amount,
+                    fee,
+                } => UiJobResult::Send(
+                    handle
+                        .block_on(w.send_token_with_fee(&token, &to, &amount, &fee))
+                        .map(|h| h.to_string()),
+                ),
+                UiJob::SendStealth {
+                    announcement,
+                    value_wei,
+                } => UiJobResult::SendStealth(
+                    handle.block_on(w.send_stealth(&announcement, &value_wei)),
+                ),
+            };
+            drop(w);
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_jobs(&mut self) {
+        while let Ok(result) = self.job_rx.try_recv() {
+            match (&mut self.view, result) {
+                (View::Dashboard(v), UiJobResult::Balance(r)) => v.apply_balance(r),
+                (View::Assets(v), UiJobResult::Assets(r)) => v.apply_assets(r),
+                (View::Send(v), r) => v.apply_job_result(r),
+                _ => {}
+            }
+        }
     }
 }
 
@@ -496,7 +640,7 @@ enum GlobalAction {
 ///
 /// Pure and unit-tested: this is where the "typing 'q' must not quit" and
 /// "Tab inside a form must not switch screens" rules live.
-fn global_action(key: KeyEvent, outcome: KeyOutcome) -> GlobalAction {
+fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     // Ctrl+C / Ctrl+Q always quit, even mid-typing.
@@ -537,11 +681,11 @@ mod tests {
     fn typing_q_never_quits() {
         // The exact audit 2.2 regression: 'q' typed into a text field.
         assert_eq!(
-            global_action(press('q'), KeyOutcome::Consumed),
+            global_action(press('q'), &KeyOutcome::Consumed),
             GlobalAction::None
         );
         assert_eq!(
-            global_action(press('q'), KeyOutcome::Navigate(Screen::Dashboard)),
+            global_action(press('q'), &KeyOutcome::Navigate(Screen::Dashboard)),
             GlobalAction::None
         );
     }
@@ -549,7 +693,7 @@ mod tests {
     #[test]
     fn q_quits_only_when_unhandled() {
         assert_eq!(
-            global_action(press('q'), KeyOutcome::NotHandled),
+            global_action(press('q'), &KeyOutcome::NotHandled),
             GlobalAction::Quit
         );
     }
@@ -557,15 +701,15 @@ mod tests {
     #[test]
     fn ctrl_quit_always_wins() {
         assert_eq!(
-            global_action(ctrl('c'), KeyOutcome::Consumed),
+            global_action(ctrl('c'), &KeyOutcome::Consumed),
             GlobalAction::Quit
         );
         assert_eq!(
-            global_action(ctrl('q'), KeyOutcome::Consumed),
+            global_action(ctrl('q'), &KeyOutcome::Consumed),
             GlobalAction::Quit
         );
         assert_eq!(
-            global_action(ctrl('q'), KeyOutcome::NotHandled),
+            global_action(ctrl('q'), &KeyOutcome::NotHandled),
             GlobalAction::Quit
         );
     }
@@ -573,11 +717,11 @@ mod tests {
     #[test]
     fn tab_cycles_only_when_unhandled() {
         assert_eq!(
-            global_action(tab(), KeyOutcome::Consumed),
+            global_action(tab(), &KeyOutcome::Consumed),
             GlobalAction::None
         );
         assert_eq!(
-            global_action(tab(), KeyOutcome::NotHandled),
+            global_action(tab(), &KeyOutcome::NotHandled),
             GlobalAction::CycleScreens
         );
     }
@@ -585,11 +729,11 @@ mod tests {
     #[test]
     fn other_keys_are_inert() {
         assert_eq!(
-            global_action(press('x'), KeyOutcome::NotHandled),
+            global_action(press('x'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
         assert_eq!(
-            global_action(press('q'), KeyOutcome::Navigate(Screen::Send)),
+            global_action(press('q'), &KeyOutcome::Navigate(Screen::Send)),
             GlobalAction::None
         );
     }

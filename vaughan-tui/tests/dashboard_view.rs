@@ -56,12 +56,12 @@ fn dashboard_view_renders_address_network_and_balance() {
         text.contains(&format!("{} tPLS", balance.formatted)),
         "must render the live balance:\n{text}"
     );
-    assert!(
-        text.contains(
-            "s send   b batch   v receive/stealth   n networks   a assets   c browse   r refresh   l lock"
-        ),
-        "must render the shortcut bar:\n{text}"
-    );
+    for hint in ["s send", "k keys", "w dapps", "a assets", "refresh", "lock"] {
+        assert!(
+            text.contains(hint),
+            "must render shortcut '{hint}':\n{text}"
+        );
+    }
 }
 
 /// A freshly built dashboard shows no balance; pressing `r` fetches it from
@@ -81,8 +81,14 @@ fn dashboard_view_refresh_fetches_balance() {
         "fresh dashboard must show no balance"
     );
 
-    // `r` refreshes from anvil.
-    view.handle_key(key(KeyCode::Char('r')), &mut wallet, &handle, &events);
+    // `r` schedules a balance refresh job (app applies it on the UI thread).
+    let outcome = view.handle_key(key(KeyCode::Char('r')), &mut wallet, &handle, &events);
+    match outcome {
+        KeyOutcome::StartJob(vaughan_tui::jobs::UiJob::RefreshBalance) => {
+            view.apply_balance(handle.block_on(wallet.balance()));
+        }
+        other => panic!("expected RefreshBalance job, got {other:?}"),
+    }
     let expected = handle.block_on(wallet.balance()).unwrap();
     let text = render(&view, &wallet);
     assert!(
@@ -123,7 +129,7 @@ fn dashboard_view_lock_shortcut_locks_and_publishes_event() {
     );
 }
 
-/// `s` / `b` / `v` / `n` / `a` / `c` navigate to send, batch send, receive, settings, assets, and browser.
+/// `s` / `b` / `v` / `n` / `k` / `a` / `c` navigate to send, batch, receive, settings, keys, assets, browser.
 #[test]
 fn dashboard_view_shortcuts_navigate() {
     let anvil = Anvil::start();
@@ -152,6 +158,10 @@ fn dashboard_view_shortcuts_navigate() {
     assert!(matches!(
         view.handle_key(key(KeyCode::Char('a')), &mut wallet, &handle, &events),
         KeyOutcome::Navigate(Screen::Assets)
+    ));
+    assert!(matches!(
+        view.handle_key(key(KeyCode::Char('k')), &mut wallet, &handle, &events),
+        KeyOutcome::Navigate(Screen::Keys)
     ));
     assert!(matches!(
         view.handle_key(key(KeyCode::Char('c')), &mut wallet, &handle, &events),

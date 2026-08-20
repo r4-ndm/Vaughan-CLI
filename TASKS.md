@@ -93,8 +93,13 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ### DEX views — from wiz4rd-sdk (integrated into workspace)
 - [x] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
-- [ ] Optional `dex price` aggregation view across probed DEXes
 - [ ] Deferred: write calls on other DEXes, cross-DEX routing
+
+### Custom tokens + dApp whitelist (added 2026-08-20)
+- [x] Import custom ERC-20s (meme coins) into Assets (`i`); persist in vault JSON; show even at zero balance
+- [x] ERC-20 send from Assets (↑↓ select, Enter → Send with token transfer)
+- [x] Trusted dApp whitelist TUI (`w` / Settings): add/remove URLs, Enter opens Freedom (or system browser); origins merge into provider allowlist on launch
+- [ ] Freedom auto-connect on launch (later)
 
 ### Known facts (verified 2026-08-18)
 - PulseX Router `0x165C…552d9` → Factory `0x29eA…C523`, PLSX `0x95B3…90ab`, 186,244 pairs
@@ -254,6 +259,11 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Browser engine: `scan_pair_created_logs` after a planted factory emits `PairCreated`
 - [x] TUI browser: `callraw` against a planted `RETURN 0x2a` runtime
 - [x] Provider: `eth_sendTransaction` with calldata to a planted contract
+
+### TUI keys + async chrome (added 2026-08-20)
+- [x] Key import/export UI (`Keys` screen): export recovery phrase / active private key / import hex key — password re-check, reveal cleared on leave, vault JSON stores optional imports (`VaultSecrets`)
+- [x] Async TUI jobs: balance / assets / fee estimate / send no longer `block_on` on the UI thread (`jobs` module + worker thread); pending braille spinners on dashboard/assets/send
+- [x] Chrome polish: ASCII Vaughan wordmark in the title area (pure ratatui, no new graphics crates)
 
 ## Later — non-EVM families (deferred, no FR yet)
 

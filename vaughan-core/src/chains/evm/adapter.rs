@@ -369,26 +369,27 @@ impl EvmAdapter {
     }
 
     /// EVM-specific: all balances of `wallet_address` — the native asset plus
-    /// every ERC-20 the wallet holds, detected from two sources:
+    /// every ERC-20 the wallet holds, detected from:
     ///
     /// 1. the **curated per-chain registry** (see `tokens.rs`);
-    /// 2. **`Transfer`-event discovery** — any token the wallet has ever sent
-    ///    or received shows up in the EIP-20 `Transfer` logs, so it's added
-    ///    even when it's not on the curated list.
+    /// 2. **`Transfer`-event discovery**;
+    /// 3. **`extra_token_addresses`** — user-imported custom tokens (always
+    ///    listed, including zero balance).
     ///
     /// ERC-20 balances are read in **one** Multicall3 `tryAggregate` call
     /// (provenance: mds1/multicall) with `requireSuccess=false`, so a token
     /// that reverts on `balanceOf` is skipped rather than failing the batch.
     /// When Multicall3 is absent on the chain the call falls back to
     /// sequential `balanceOf` reads.
-    pub async fn get_assets(&self, wallet_address: &str) -> Result<Vec<Balance>, WalletError> {
+    pub async fn get_assets(
+        &self,
+        wallet_address: &str,
+        extra_token_addresses: &[String],
+    ) -> Result<Vec<Balance>, WalletError> {
         let wallet = parse_address(wallet_address)?;
         let mut out = vec![self.get_balance(wallet_address).await?];
 
-        // Token set: curated registry + Transfer-event discovery (deduped,
-        // case-insensitive). Metadata for discovered tokens is read from the
-        // contract at scan time with graceful fallbacks (see
-        // `get_token_metadata`), so no registry entry is required.
+        // Token set: curated registry + Transfer-event discovery + imports.
         let mut addresses: Vec<String> = tokens_for_chain(self.chain_id)
             .into_iter()
             .map(|t| t.address.to_string())
@@ -400,6 +401,25 @@ impl EvmAdapter {
                 .any(|existing| existing.eq_ignore_ascii_case(&a))
             {
                 addresses.push(a);
+            }
+        }
+        let mut always_include: Vec<String> = Vec::new();
+        for raw in extra_token_addresses {
+            let a = raw.trim().to_string();
+            if a.is_empty() {
+                continue;
+            }
+            if !addresses
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&a))
+            {
+                addresses.push(a.clone());
+            }
+            if !always_include
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&a))
+            {
+                always_include.push(a);
             }
         }
 
@@ -424,7 +444,7 @@ impl EvmAdapter {
 
         if !multicall3_present {
             return self
-                .get_assets_sequential(wallet_address, addresses, out)
+                .get_assets_sequential(wallet_address, addresses, &always_include, out)
                 .await;
         }
 
@@ -468,7 +488,14 @@ impl EvmAdapter {
                         continue; // reverting token — skip, don't fail the batch
                     }
                     match IERC20Metadata::balanceOfCall::abi_decode_returns(&result.returnData) {
-                        Ok(raw_balance) if !raw_balance.is_zero() => {
+                        Ok(raw_balance) => {
+                            let keep = !raw_balance.is_zero()
+                                || always_include
+                                    .iter()
+                                    .any(|a| a.eq_ignore_ascii_case(address));
+                            if !keep {
+                                continue;
+                            }
                             let (symbol, name, decimals) = self.get_token_metadata(address).await?;
                             out.push(Balance {
                                 token: TokenInfo {
@@ -503,11 +530,17 @@ impl EvmAdapter {
         &self,
         wallet_address: &str,
         addresses: Vec<String>,
+        always_include: &[String],
         mut out: Vec<Balance>,
     ) -> Result<Vec<Balance>, WalletError> {
         for address in &addresses {
             let bal = self.get_token_balance(address, wallet_address).await?;
-            if !bal.raw.is_empty() && U256::from_str(&bal.raw).unwrap_or_default() != U256::ZERO {
+            let raw = U256::from_str(&bal.raw).unwrap_or_default();
+            let keep = raw != U256::ZERO
+                || always_include
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(address));
+            if keep {
                 out.push(bal);
             }
         }

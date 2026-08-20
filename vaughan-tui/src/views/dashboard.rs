@@ -20,20 +20,50 @@ use crate::views::{body_areas, status_paragraph};
 #[derive(Default)]
 pub struct DashboardView {
     balance: Option<Balance>,
+    loading: bool,
+    tick: u64,
     status: String,
 }
 
 impl DashboardView {
+    pub fn loading() -> Self {
+        Self {
+            balance: None,
+            loading: true,
+            tick: 0,
+            status: String::new(),
+        }
+    }
+
     pub fn with_balance(result: Result<Balance, WalletError>) -> Self {
         match result {
             Ok(balance) => Self {
                 balance: Some(balance),
+                loading: false,
+                tick: 0,
                 status: String::new(),
             },
             Err(e) => Self {
                 balance: None,
+                loading: false,
+                tick: 0,
                 status: e.user_message(),
             },
+        }
+    }
+
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
+    pub fn apply_balance(&mut self, result: Result<Balance, WalletError>) {
+        self.loading = false;
+        match result {
+            Ok(balance) => {
+                self.balance = Some(balance);
+                self.status.clear();
+            }
+            Err(e) => self.status = e.user_message(),
         }
     }
 
@@ -42,9 +72,13 @@ impl DashboardView {
         let net = wallet.networks().active();
 
         let address = wallet.active_address().unwrap_or("(locked)");
-        let balance_line = match &self.balance {
-            Some(balance) => format!("{} {}", balance.formatted, balance.token.symbol),
-            None => "—".to_string(),
+        let balance_line = if self.loading {
+            format!("{} loading…", crate::jobs::spinner_frame(self.tick))
+        } else {
+            match &self.balance {
+                Some(balance) => format!("{} {}", balance.formatted, balance.token.symbol),
+                None => "—".to_string(),
+            }
         };
         let mode_color = match wallet.operating_mode() {
             vaughan_core::core::OperatingMode::HumanOnly => Color::Cyan,
@@ -60,9 +94,9 @@ impl DashboardView {
         };
 
         let shortcut_line = if wallet.operating_mode().is_ai_enabled() {
-            "s send   b batch   v receive/stealth   n networks   a assets   c browse   g agent   r refresh   l lock"
+            "s send   b batch   v receive/stealth   n networks   k keys   w dapps   a assets   c browse   g agent   r refresh   l lock"
         } else {
-            "s send   b batch   v receive/stealth   n networks   a assets   c browse   r refresh   l lock"
+            "s send   b batch   v receive/stealth   n networks   k keys   w dapps   a assets   c browse   r refresh   l lock"
         };
 
         let text = vec![
@@ -91,14 +125,11 @@ impl DashboardView {
         &mut self,
         key: KeyEvent,
         wallet: &mut WalletState,
-        handle: &Handle,
+        _handle: &Handle,
         events: &EventBus,
     ) -> KeyOutcome {
         match key.code {
-            KeyCode::Char('r') => {
-                self.refresh(wallet, handle);
-                KeyOutcome::Consumed
-            }
+            KeyCode::Char('r') => KeyOutcome::StartJob(crate::jobs::UiJob::RefreshBalance),
             KeyCode::Char('l') => {
                 wallet.lock();
                 // Connected dApps must learn the account list went empty.
@@ -109,20 +140,12 @@ impl DashboardView {
             KeyCode::Char('b') => KeyOutcome::Navigate(Screen::AaSend),
             KeyCode::Char('v') => KeyOutcome::Navigate(Screen::Receive),
             KeyCode::Char('n') => KeyOutcome::Navigate(Screen::Settings),
+            KeyCode::Char('k') => KeyOutcome::Navigate(Screen::Keys),
+            KeyCode::Char('w') => KeyOutcome::Navigate(Screen::Dapps),
             KeyCode::Char('a') => KeyOutcome::Navigate(Screen::Assets),
             KeyCode::Char('c') => KeyOutcome::Navigate(Screen::Browser),
             KeyCode::Char('g') => KeyOutcome::Navigate(Screen::Agent),
             _ => KeyOutcome::NotHandled,
-        }
-    }
-
-    fn refresh(&mut self, wallet: &WalletState, handle: &Handle) {
-        match handle.block_on(wallet.balance()) {
-            Ok(balance) => {
-                self.balance = Some(balance);
-                self.status.clear();
-            }
-            Err(e) => self.status = e.user_message(),
         }
     }
 }

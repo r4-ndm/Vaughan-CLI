@@ -27,9 +27,12 @@ use crate::chains::evm::EvmAdapter;
 use crate::chains::{Balance, ChainAdapter, ChainTransaction, EvmTransaction, Fee, TxHash};
 use crate::core::account::AccountManager;
 use crate::core::network::NetworkService;
-use crate::core::persistence::{PersistedState, StateManager, DEFAULT_PROFILE};
+use crate::core::persistence::{
+    CustomToken, PersistedState, StateManager, TrustedDapp, DEFAULT_PROFILE,
+};
 use crate::core::profile::OperatingMode;
 use crate::core::transaction::TransactionService;
+use crate::core::vault_secrets::VaultSecrets;
 use crate::error::WalletError;
 use crate::security::encryption::{decrypt, encrypt};
 use crate::security::hd_wallet::validate_mnemonic;
@@ -188,10 +191,11 @@ impl WalletState {
                 "a wallet already exists at this path".to_string(),
             ));
         }
-        // Encrypt the phrase; the transient String is zeroized immediately after.
-        let mut phrase = mnemonic.to_string();
-        let vault = encrypt(phrase.as_bytes(), password)?;
-        phrase.zeroize();
+        let mut secrets = VaultSecrets::from_mnemonic_phrase(mnemonic.to_string());
+        let mut encoded = secrets.encode()?;
+        let vault = encrypt(encoded.as_bytes(), password)?;
+        encoded.zeroize();
+        secrets.zeroize();
 
         let persisted = PersistedState::with_mode_and_profile(
             vault,
@@ -224,12 +228,80 @@ impl WalletState {
         let phrase = std::str::from_utf8(&plaintext).map_err(|_| {
             WalletError::DecryptionFailed("vault did not contain a valid mnemonic".to_string())
         })?;
-        let mut accounts =
-            AccountManager::from_phrase(phrase, AccountManager::DEFAULT_ACCOUNT_COUNT)?;
-        accounts.set_active(persisted.active_account_index)?;
+        let mut secrets = VaultSecrets::decode(phrase)?;
         plaintext.zeroize();
+        let mut accounts =
+            AccountManager::from_secrets(&secrets, AccountManager::DEFAULT_ACCOUNT_COUNT)?;
+        secrets.zeroize();
+        if accounts.set_active(persisted.active_account_index).is_err() {
+            // Imported-only edge / stale index: fall back to first account.
+            if let Some(first) = accounts.accounts().first().map(|a| a.index) {
+                accounts.set_active(first)?;
+            }
+        }
         self.accounts = Some(accounts);
         Ok(())
+    }
+
+    /// Re-encrypt the current unlocked secrets under `password` (must match vault).
+    fn persist_unlocked_secrets(&mut self, password: &SecretString) -> Result<(), WalletError> {
+        let accounts = self.accounts.as_ref().ok_or(WalletError::WalletLocked)?;
+        let mut secrets = accounts.to_secrets();
+        let mut encoded = secrets.encode()?;
+        let vault = encrypt(encoded.as_bytes(), password)?;
+        encoded.zeroize();
+        secrets.zeroize();
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted.vault = vault;
+        self.state.save(persisted)?;
+        Ok(())
+    }
+
+    /// Confirm `password` against the vault (wrong password → [`WalletError::DecryptionFailed`]).
+    pub fn verify_password(&self, password: &SecretString) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_ref().ok_or(WalletError::NotInitialized)?;
+        let mut plaintext = decrypt(&persisted.vault, password)?;
+        plaintext.zeroize();
+        Ok(())
+    }
+
+    /// Export the BIP-39 recovery phrase after password confirmation.
+    pub fn export_mnemonic(&self, password: &SecretString) -> Result<SecretString, WalletError> {
+        self.require_unlocked()?;
+        self.verify_password(password)?;
+        Ok(self.require_unlocked()?.mnemonic_phrase())
+    }
+
+    /// Export the active account's private key (hex) after password confirmation.
+    pub fn export_active_private_key(
+        &self,
+        password: &SecretString,
+    ) -> Result<SecretString, WalletError> {
+        let accounts = self.require_unlocked()?;
+        self.verify_password(password)?;
+        accounts.export_private_key(accounts.active_index())
+    }
+
+    /// Import a hex private key into the vault (password-gated rewrite).
+    pub fn import_private_key(
+        &mut self,
+        password: &SecretString,
+        label: &str,
+        private_key: &SecretString,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        self.verify_password(password)?;
+        let account = self
+            .accounts
+            .as_mut()
+            .ok_or(WalletError::WalletLocked)?
+            .import_private_key(label, private_key)?;
+        self.persist_unlocked_secrets(password)?;
+        if let Some(persisted) = self.persisted.as_mut() {
+            persisted.active_account_index = account.index;
+            self.state.save(persisted)?;
+        }
+        Ok(account)
     }
 
     /// Lock: drop the in-memory mnemonic (zeroized on drop).
@@ -288,15 +360,20 @@ impl WalletState {
     }
 
     /// All detected balances of the active account: the native asset plus
-    /// every curated per-chain ERC-20 (auto asset detection).
+    /// curated / discovered / user-imported ERC-20s.
     ///
     /// ERC-20s are read in one Multicall3 `tryAggregate` batch (EIP-20 +
     /// mds1/multicall; see `docs/optimizations.md` for provenance), with a
     /// sequential fallback when Multicall3 is absent. Zero balances are
-    /// excluded; symbol/decimals come from the contract (cached), falling
-    /// back to the curated registry.
+    /// excluded except for user-imported custom tokens; symbol/decimals come
+    /// from the contract (cached), falling back to the curated registry.
     pub async fn assets(&self) -> Result<Vec<Balance>, WalletError> {
         let (net, address) = self.active_context()?;
+        let extras: Vec<String> = self
+            .custom_tokens_for_active_chain()
+            .into_iter()
+            .map(|t| t.address)
+            .collect();
         let adapter = EvmAdapter::new(
             &self.effective_rpc(),
             net.chain_id,
@@ -304,7 +381,7 @@ impl WalletState {
             &net.fallback_rpc_urls,
         )
         .await?;
-        adapter.get_assets(address).await
+        adapter.get_assets(address, &extras).await
     }
 
     /// Balance of a single ERC-20 (`token_address`) for the active account.
@@ -318,6 +395,220 @@ impl WalletState {
         )
         .await?;
         adapter.get_token_balance(token_address, address).await
+    }
+
+    /// Import an ERC-20 by contract address (reads on-chain metadata, persists).
+    pub async fn import_custom_token(
+        &mut self,
+        token_address: &str,
+    ) -> Result<CustomToken, WalletError> {
+        let (net, _) = self.active_context()?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        // Validate address + that the contract responds to balanceOf/metadata.
+        let _ = adapter
+            .get_token_balance(token_address, self.active_address()?)
+            .await?;
+        let (symbol, name, decimals) = adapter.get_token_metadata(token_address).await?;
+        let token = CustomToken {
+            chain_id: net.chain_id,
+            address: {
+                // Checksum via alloy parse round-trip.
+                use alloy::primitives::Address;
+                use std::str::FromStr;
+                Address::from_str(token_address.trim())
+                    .map(|a| format!("{a:#x}"))
+                    .map_err(|_| WalletError::InvalidTransaction("invalid token address".into()))?
+            },
+            symbol,
+            name,
+            decimals,
+        };
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        if persisted
+            .custom_tokens
+            .iter()
+            .any(|t| t.chain_id == token.chain_id && t.address.eq_ignore_ascii_case(&token.address))
+        {
+            return Ok(token);
+        }
+        persisted.custom_tokens.push(token.clone());
+        self.state.save(persisted)?;
+        Ok(token)
+    }
+
+    /// Custom tokens stored for the active chain.
+    pub fn custom_tokens_for_active_chain(&self) -> Vec<CustomToken> {
+        let chain_id = self.networks().active().chain_id;
+        self.persisted
+            .as_ref()
+            .map(|p| {
+                p.custom_tokens
+                    .iter()
+                    .filter(|t| t.chain_id == chain_id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Remove a custom token by address on the active chain.
+    pub fn remove_custom_token(&mut self, token_address: &str) -> Result<(), WalletError> {
+        let chain_id = self.networks().active().chain_id;
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let before = persisted.custom_tokens.len();
+        persisted.custom_tokens.retain(|t| {
+            !(t.chain_id == chain_id && t.address.eq_ignore_ascii_case(token_address.trim()))
+        });
+        if persisted.custom_tokens.len() == before {
+            return Err(WalletError::Other(
+                "token is not in your custom list".into(),
+            ));
+        }
+        self.state.save(persisted)?;
+        Ok(())
+    }
+
+    /// Whitelisted dApps (launcher + provider origins).
+    pub fn trusted_dapps(&self) -> Vec<TrustedDapp> {
+        self.persisted
+            .as_ref()
+            .map(|p| p.trusted_dapps.clone())
+            .unwrap_or_default()
+    }
+
+    /// Add a dApp to the whitelist (name + https URL).
+    pub fn add_trusted_dapp(&mut self, name: &str, url: &str) -> Result<TrustedDapp, WalletError> {
+        let url = url.trim();
+        let parsed = url::Url::parse(url).map_err(|_| {
+            WalletError::InvalidTransaction("dApp URL must be a valid http(s) URL".into())
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(WalletError::InvalidTransaction(
+                "dApp URL must be http or https".into(),
+            ));
+        }
+        let dapp = TrustedDapp {
+            name: if name.trim().is_empty() {
+                parsed.host_str().unwrap_or("dApp").to_string()
+            } else {
+                name.trim().to_string()
+            },
+            url: url.to_string(),
+        };
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        if persisted
+            .trusted_dapps
+            .iter()
+            .any(|d| d.url.eq_ignore_ascii_case(&dapp.url))
+        {
+            return Ok(dapp);
+        }
+        persisted.trusted_dapps.push(dapp.clone());
+        self.state.save(persisted)?;
+        Ok(dapp)
+    }
+
+    /// Remove a whitelisted dApp by URL.
+    pub fn remove_trusted_dapp(&mut self, url: &str) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let before = persisted.trusted_dapps.len();
+        persisted
+            .trusted_dapps
+            .retain(|d| !d.url.eq_ignore_ascii_case(url.trim()));
+        if persisted.trusted_dapps.len() == before {
+            return Err(WalletError::Other("dApp is not in the whitelist".into()));
+        }
+        self.state.save(persisted)?;
+        Ok(())
+    }
+
+    /// Origins derived from trusted dApps (for the provider allowlist).
+    pub fn trusted_dapp_origins(&self) -> Vec<String> {
+        self.trusted_dapps()
+            .iter()
+            .filter_map(|d| {
+                let u = url::Url::parse(&d.url).ok()?;
+                let origin = u.origin().ascii_serialization();
+                if origin == "null" {
+                    None
+                } else {
+                    Some(origin)
+                }
+            })
+            .collect()
+    }
+
+    /// Estimate fee for an ERC-20 `transfer`.
+    pub async fn estimate_token_fee(
+        &self,
+        token: &str,
+        to: &str,
+        amount: &str,
+    ) -> Result<Fee, WalletError> {
+        let (net, address) = self.active_context()?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        let service = TransactionService::new();
+        let tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
+        service.estimate_fee(&adapter, &tx).await
+    }
+
+    /// Broadcast an ERC-20 transfer (caller must have shown fee + gotten approval).
+    pub async fn send_token(
+        &self,
+        token: &str,
+        to: &str,
+        amount: &str,
+    ) -> Result<TxHash, WalletError> {
+        let (net, address) = self.active_context()?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        let service = TransactionService::new();
+        let mut tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
+        let fee = service.estimate_fee(&adapter, &tx).await?;
+        service.apply_fee(&mut tx, &fee)?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".into(),
+            ));
+        };
+        self.send_transaction(evm_tx).await
+    }
+
+    /// ERC-20 transfer using an already-approved fee.
+    pub async fn send_token_with_fee(
+        &self,
+        token: &str,
+        to: &str,
+        amount: &str,
+        fee: &Fee,
+    ) -> Result<TxHash, WalletError> {
+        let (net, address) = self.active_context()?;
+        let service = TransactionService::new();
+        let mut tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
+        service.apply_fee(&mut tx, fee)?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".into(),
+            ));
+        };
+        self.send_transaction(evm_tx).await
     }
 
     /// Estimate the fee to send `value_wei` (base units) to `to`.
