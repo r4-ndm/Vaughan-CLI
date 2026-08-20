@@ -41,7 +41,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4). `ProviderServer::with_trusted_origins` now enforces a canonicalized `Origin` allowlist (missing/untrusted origins are rejected at connection time); `vaughan-tui` enables it from `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` (comma-separated origins).
 - [x] Trusted-host startup validation path: TUI tests now cover env-derived origin parsing and startup-time server wiring with allowlist enforcement (missing-origin clients are rejected; trusted-origin clients are served).
 - [x] Account/chain change event push to clients (`EventBus` → JSON-RPC notifications) (FR-2.2)
-- [ ] Freedom Browser signer backend PR (out-of-repo) (FR-2.5)
+- [x] Freedom Browser signer backend PR (out-of-repo) (FR-2.5) — opened upstream: https://github.com/solardev-xyz/freedom-browser/pull/195 (`feat/vaughan-signer-backend`: Vaughan WS signer + account discovery IPC; awaiting merge)
 
 ## Phase 3 — Privacy + smart accounts
 
@@ -53,7 +53,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Live 943 send → announce → scan → sweep E2E (`vaughan-core/tests/stealth_943.rs`, ignored by default)
 - [x] Anvil stealth tests: core send/scan/sweep, Alice→Bob isolation, dust stipend, scan after later blocks, TUI `st:` send/scan/sweep
 - [x] TUI: stealth receive URI, send `st:`, scan, sweep (FR-3.2)
-- [ ] CREATE2-deploy announcer on PulseChain 369 after 943 E2E (FR-3.2)
+- [ ] CREATE2-deploy announcer on PulseChain 369 after 943 E2E (FR-3.2) — codesize still `0` on `https://rpc.pulsechain.com`; ready via `RPC_URL=https://rpc.pulsechain.com PRIVATE_KEY=0x… ./scripts/deploy-erc5564-announcer.sh` (needs funded PLS key; not run from this session)
 - [ ] Ambire smart accounts in Rust — see `docs/ambire-aa.md` (FR-3.3)
   - [x] Create the `vaughan-aa` workspace crate and document the AGPL-3.0/GPL → MIT/Apache reimplementation boundary
   - [x] Define the smart-account ABI (`sol!`) + `scw_transaction`/`SignatureMode` types from the on-chain `AmbireAccount` contract (Vaughan-Dioxus as guide only)
@@ -230,13 +230,21 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### Step 6: TUI Agent View & CLI Non-Interactive Execution (Done)
 - [x] `vaughan-tui/src/views/agent.rs`: Interactive chat REPL with tool status, cold-storage human-only barrier, and confirmation cards (FR-5.8)
 - [x] Welcome screen 3-way mode selector UI & dashboard operating badges (FR-5.1)
+- [x] Welcome AI provider + API key setup after Assist/Degen selection (Ollama / Gemini / OpenAI-compatible; key encrypted with vault password into `agent.key.json`)
+- [x] Agent skills folder (`vaughan-agent/skills/`): mandatory rules + mode guides injected into the system prompt; user overrides via `<profile>/skills/*/SKILL.md`
 - [x] `vaughan agent "<prompt>"` non-interactive CLI subcommand with sensory & proposal tool invocation (FR-5.8)
+- [x] Token streaming: OpenAI/Ollama SSE via `LlmClient::stream`, Gemini falls back to `complete`; Assist chat turns (`run_assist_turn`) + TUI live deltas + Esc cancel; CLI free-form streams to stdout (FR-5.8)
+- [x] Unlock → AI setup screen when Assist/Degen lacks `agent.toml` or cloud API key
+- [x] Agent status chrome: `provider/model · skills: N must`
+- [x] Degen dry-run: `VAUGHAN_DEGEN_DRY_RUN` / `DegenTrader::with_dry_run` (validate + simulate, no broadcast)
+- [x] Assist guard: refuse `propose_*` unless a sensory tool already succeeded in the same turn
 
 ### Step 7: Bomb-Proofing & Anvil Integration Tests (Done)
 - [x] `vaughan-agent/tests/agent_anvil.rs`: End-to-end tests driving the agent against local Anvil node (FR-5.9)
 - [x] Test: Agent correctly inspects Anvil-deployed token and executes read tools (FR-5.9)
 - [x] Test: Agent proposes transfer -> Human approves -> Tx confirms on Anvil (FR-5.9)
 - [x] Test: Degen Mode circuit breaker triggers and halts on excessive gas or high slippage (FR-5.9)
+- [x] Extra Anvil AI-mode suite (`ai_modes_anvil.rs`): Assist sense→propose→broadcast, propose guard (refuse / failed-sensory), `propose_swap` + `search_pairs`, Degen dry-run→live, position size, sim-revert tripwire, gas ceiling, emergency stop, multi-RPC quorum agree/diverge
 
 ### Extra local Anvil coverage (added 2026-08-19)
 - [x] `vaughan-core/tests/wallet_anvil.rs`: native send + nonce, sequential sends, fee estimate, sign-then-broadcast, HD account #1 send, planted WPLS `token_balance`/`assets`, Transfer-log discovery

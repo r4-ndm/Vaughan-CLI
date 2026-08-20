@@ -16,8 +16,8 @@ use alloy::primitives::{aliases::I24, aliases::U160, I256, U256};
 use serde::Deserialize;
 
 use crate::{
-    FullMath, SqrtPriceMath, add_delta, compute_swap_step, get_amount_0_delta,
-    get_amount_1_delta, get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio,
+    add_delta, compute_swap_step, get_amount_0_delta, get_amount_1_delta, get_sqrt_ratio_at_tick,
+    get_tick_at_sqrt_ratio, FullMath, SqrtPriceMath,
 };
 
 const VECTORS: &str = include_str!("../../../test-vectors/vectors.json");
@@ -161,14 +161,20 @@ fn parity_tick_to_sqrt_price() {
 fn parity_sqrt_price_to_tick() {
     for v in &vectors().sqrt_price_to_tick {
         let got = get_tick_at_sqrt_ratio(u160(&v.sqrt_price_x96)).unwrap();
-        assert_eq!(got.to_string(), v.tick.to_string(), "sqrt {}", v.sqrt_price_x96);
+        assert_eq!(
+            got.to_string(),
+            v.tick.to_string(),
+            "sqrt {}",
+            v.sqrt_price_x96
+        );
     }
 }
 
 #[test]
 fn parity_mul_div_rounding_up() {
     for v in &vectors().mul_div_rounding_up {
-        let got = FullMath::mul_div_rounding_up(u256(&v.a), u256(&v.b), u256(&v.denominator)).unwrap();
+        let got =
+            FullMath::mul_div_rounding_up(u256(&v.a), u256(&v.b), u256(&v.denominator)).unwrap();
         assert_eq!(got.to_string(), v.result, "{v:?}");
     }
 }
@@ -204,7 +210,13 @@ fn parity_next_sqrt_price_from_output() {
 #[test]
 fn parity_amount0_delta() {
     for v in &vectors().amount0_delta {
-        let got = get_amount_0_delta(u160(&v.sqrt_a), u160(&v.sqrt_b), u128v(&v.liquidity), v.round_up).unwrap();
+        let got = get_amount_0_delta(
+            u160(&v.sqrt_a),
+            u160(&v.sqrt_b),
+            u128v(&v.liquidity),
+            v.round_up,
+        )
+        .unwrap();
         assert_eq!(got.to_string(), v.result, "{v:?}");
     }
 }
@@ -212,7 +224,13 @@ fn parity_amount0_delta() {
 #[test]
 fn parity_amount1_delta() {
     for v in &vectors().amount1_delta {
-        let got = get_amount_1_delta(u160(&v.sqrt_a), u160(&v.sqrt_b), u128v(&v.liquidity), v.round_up).unwrap();
+        let got = get_amount_1_delta(
+            u160(&v.sqrt_a),
+            u160(&v.sqrt_b),
+            u128v(&v.liquidity),
+            v.round_up,
+        )
+        .unwrap();
         assert_eq!(got.to_string(), v.result, "{v:?}");
     }
 }
@@ -250,8 +268,16 @@ fn parity_position_amounts() {
     for v in &vectors().position_amounts {
         let sqrt = u160(&v.sqrt_ratio_x96);
         let liq = u128v(&v.liquidity);
-        let lower = u160(&get_sqrt_ratio_at_tick(i24(v.tick_lower)).unwrap().to_string());
-        let upper = u160(&get_sqrt_ratio_at_tick(i24(v.tick_upper)).unwrap().to_string());
+        let lower = u160(
+            &get_sqrt_ratio_at_tick(i24(v.tick_lower))
+                .unwrap()
+                .to_string(),
+        );
+        let upper = u160(
+            &get_sqrt_ratio_at_tick(i24(v.tick_upper))
+                .unwrap()
+                .to_string(),
+        );
 
         let amount0 = if v.tick_current < v.tick_lower {
             get_amount_0_delta(lower, upper, liq, false).unwrap()

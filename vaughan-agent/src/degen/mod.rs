@@ -6,4 +6,4 @@ pub mod trader;
 
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use quorum::{QuorumReserves, QuorumValidator};
-pub use trader::DegenTrader;
+pub use trader::{dry_run_from_env, DegenTrader, SwapExecution};

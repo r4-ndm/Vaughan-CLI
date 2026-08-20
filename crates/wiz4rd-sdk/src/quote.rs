@@ -43,13 +43,16 @@ pub fn quote_exact_in(pool: &PoolInfo, amount_in: U256, zero_for_one: bool) -> S
         return Err(SdkError::Math("pool has no liquidity".into()));
     }
     if amount_in.is_zero() {
-        return Ok(Quote { amount_in: U256::ZERO, amount_out: U256::ZERO });
+        return Ok(Quote {
+            amount_in: U256::ZERO,
+            amount_out: U256::ZERO,
+        });
     }
 
     let sqrt_price_x96 = u160(pool.sqrt_price_x96);
 
-    let amount_in_after_fee = amount_in * (U256::from(1_000_000u64) - fee_fraction(pool.fee))
-        / U256::from(1_000_000u64);
+    let amount_in_after_fee =
+        amount_in * (U256::from(1_000_000u64) - fee_fraction(pool.fee)) / U256::from(1_000_000u64);
 
     let next = wiz4rd_math::sqrt_price_math::get_next_sqrt_price_from_input(
         sqrt_price_x96,
@@ -76,7 +79,10 @@ pub fn quote_exact_in(pool: &PoolInfo, amount_in: U256, zero_for_one: bool) -> S
     }
     .map_err(|e| SdkError::Math(e.to_string()))?;
 
-    Ok(Quote { amount_in, amount_out })
+    Ok(Quote {
+        amount_in,
+        amount_out,
+    })
 }
 
 /// Price impact as a percent: how far the execution price (quote) is from the
@@ -114,7 +120,10 @@ pub fn quote_exact_out(pool: &PoolInfo, amount_out: U256, zero_for_one: bool) ->
         return Err(SdkError::Math("pool has no liquidity".into()));
     }
     if amount_out.is_zero() {
-        return Ok(Quote { amount_in: U256::ZERO, amount_out: U256::ZERO });
+        return Ok(Quote {
+            amount_in: U256::ZERO,
+            amount_out: U256::ZERO,
+        });
     }
 
     let sqrt_price_x96 = u160(pool.sqrt_price_x96);
@@ -132,23 +141,16 @@ pub fn quote_exact_out(pool: &PoolInfo, amount_out: U256, zero_for_one: bool) ->
     .map_err(|e| SdkError::Math(e.to_string()))?;
 
     let amount_in = if zero_for_one {
-        wiz4rd_math::sqrt_price_math::get_amount_0_delta(
-            sqrt_price_x96,
-            next,
-            pool.liquidity,
-            true,
-        )
+        wiz4rd_math::sqrt_price_math::get_amount_0_delta(sqrt_price_x96, next, pool.liquidity, true)
     } else {
-        wiz4rd_math::sqrt_price_math::get_amount_1_delta(
-            sqrt_price_x96,
-            next,
-            pool.liquidity,
-            true,
-        )
+        wiz4rd_math::sqrt_price_math::get_amount_1_delta(sqrt_price_x96, next, pool.liquidity, true)
     }
     .map_err(|e| SdkError::Math(e.to_string()))?;
 
-    Ok(Quote { amount_in, amount_out })
+    Ok(Quote {
+        amount_in,
+        amount_out,
+    })
 }
 
 #[cfg(test)]

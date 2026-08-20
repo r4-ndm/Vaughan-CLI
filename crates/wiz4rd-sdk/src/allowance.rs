@@ -21,7 +21,11 @@ pub async fn get_allowance<P: Provider>(
 ) -> SdkResult<U256> {
     let call = IERC20Minimal::allowanceCall { owner, spender };
     let raw = provider
-        .call(TransactionRequest::default().to(token).input(call.abi_encode().into()))
+        .call(
+            TransactionRequest::default()
+                .to(token)
+                .input(call.abi_encode().into()),
+        )
         .await?;
     let decoded = IERC20Minimal::allowanceCall::abi_decode_returns(&raw)?;
     Ok(decoded)
@@ -30,7 +34,9 @@ pub async fn get_allowance<P: Provider>(
 /// Build an `approve(spender, amount)` transaction.
 pub fn build_approve_tx(token: Address, spender: Address, amount: U256) -> TransactionRequest {
     let call = IERC20Minimal::approveCall { spender, amount };
-    TransactionRequest::default().to(token).input(call.abi_encode().into())
+    TransactionRequest::default()
+        .to(token)
+        .input(call.abi_encode().into())
 }
 
 /// Build the approval transaction(s) needed to make `spender` able to move

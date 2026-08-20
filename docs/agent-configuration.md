@@ -23,9 +23,27 @@ If you run Ollama locally on your machine, Vaughan connects out-of-the-box with 
 
 ---
 
-### B. Cloud LLM Providers (API Key Setup)
+### B. Welcome-screen setup (recommended)
 
-You can provide your API key via standard environment variables:
+When you pick **AI Assisted** or **Degen** on the Vaughan welcome screen, Vaughan
+asks which provider to use:
+
+1. **Ollama (local)** — no API key; optional model name (default `llama3.2`)
+2. **Google Gemini** — paste API key (masked) → optional model
+3. **OpenAI / compatible** — paste API key → optional model (OpenRouter, DeepSeek, …)
+
+The key is encrypted with your vault password (`agent.key.json`) and never written
+in plaintext. Non-secret settings land in `agent.toml` beside the wallet.
+
+Press **`s`** to skip and keep using environment variables / Ollama defaults.
+
+If you unlock in Assist/Degen and there is still no `agent.toml` (or a cloud
+provider without a key), Vaughan opens the same AI setup screen before the
+dashboard so you can finish configuration without restarting.
+
+### C. Environment variables (automation / CI)
+
+You can still provide your API key via standard environment variables:
 
 #### Google Gemini
 ```bash
@@ -76,10 +94,27 @@ temperature = 0.2
 
 ---
 
-## 3. How to Use the AI Agent
+## 4. Agent skills (rules + guides)
+
+Vaughan injects markdown **skills** into the LLM system prompt for Assist / Degen:
+
+- Bundled: `vaughan-agent/skills/*/SKILL.md` (compiled into the binary)
+- User overrides: `<profile>/skills/*/SKILL.md` (same `name` replaces bundled)
+
+`kind: must` skills are mandatory safety/signing rules. `kind: guide` skills are
+workflow tips (contract inspection, PulseChain context). See
+`vaughan-agent/skills/README.md`.
+
+---
+
+## 5. How to Use the AI Agent
 
 ### Interactive TUI Chat REPL
 Inside `vaughan-tui`, press **`g`** on the dashboard to open the AI Agent screen.
+
+Free-form questions stream token-by-token from the configured LLM (Ollama by default;
+OpenAI/Gemini via env keys). **Esc** cancels an in-flight turn. Slash-style commands
+still work for deterministic tooling:
 
 * **Inspect a Smart Contract**:
   ```
@@ -97,6 +132,11 @@ Inside `vaughan-tui`, press **`g`** on the dashboard to open the AI Agent screen
   transfer 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 1000000000000000000
   ```
   *The agent simulates the call via `eth_call` pre-flight check, builds a typed `TxProposal` card showing the exact raw calldata, value, and fee, and waits for you to press `[a] Approve` or `[d] Deny`.*
+
+CLI free-form prompts stream the same way:
+```bash
+vaughan --mode assist agent "What does this PulseX router do?"
+```
 
 ---
 
@@ -116,7 +156,7 @@ vaughan agent "transfer 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 1000000000000
 
 ---
 
-## 4. Security Boundaries & Protection Guarantees
+## 6. Security Boundaries & Protection Guarantees
 
 | Operating Mode | AI Capability | Private Key Access | Confirmation Gate |
 |---|---|---|---|
@@ -127,3 +167,5 @@ vaughan agent "transfer 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 1000000000000
 1. **No Key Exposure**: The `vaughan-agent` crate has zero imports of the vault decryption module. Even if an LLM is prompt-injected, it cannot extract keys.
 2. **Ground-Truth UI**: All confirmation dialogs independently decode bytecode directly from the Ethereum RPC without relying on LLM-generated explanations.
 3. **Secret Zeroization**: All API keys and vault secrets use `secrecy::SecretString` with automatic memory zeroization upon drop.
+4. **Propose-after-sense**: Assist mode refuses `propose_*` tools unless a sensory tool already succeeded in the same turn.
+5. **Degen dry-run**: set `VAUGHAN_DEGEN_DRY_RUN=1` (or call `DegenTrader::with_dry_run(true)`) to run circuit breakers + simulation without broadcasting.

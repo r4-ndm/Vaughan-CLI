@@ -119,6 +119,45 @@ impl ModelConfig {
         }
     }
 
+    /// Resolve provider settings from environment variables.
+    ///
+    /// Priority: `OPENAI_API_KEY` → `GEMINI_API_KEY` → local Ollama.
+    /// Optional overrides: `OPENAI_BASE_URL`, `OPENAI_MODEL`, `GEMINI_MODEL`,
+    /// `OLLAMA_HOST`, `OLLAMA_MODEL`.
+    pub fn from_env() -> Self {
+        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+            if !key.trim().is_empty() {
+                let endpoint = std::env::var("OPENAI_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com".to_string());
+                // Strip a trailing `/v1` — OpenAiClient appends `/v1/chat/completions`.
+                let endpoint = endpoint.trim_end_matches('/').trim_end_matches("/v1");
+                let model =
+                    std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                return Self::openai(endpoint, SecretString::from(key), model);
+            }
+        }
+        if let Ok(key) = std::env::var("GEMINI_API_KEY") {
+            if !key.trim().is_empty() {
+                let model = std::env::var("GEMINI_MODEL")
+                    .unwrap_or_else(|_| "gemini-1.5-flash".to_string());
+                return Self::gemini(SecretString::from(key), model);
+            }
+        }
+
+        let mut cfg = Self::default_local_ollama();
+        if let Ok(host) = std::env::var("OLLAMA_HOST") {
+            if !host.trim().is_empty() {
+                cfg.endpoint_url = host;
+            }
+        }
+        if let Ok(model) = std::env::var("OLLAMA_MODEL") {
+            if !model.trim().is_empty() {
+                cfg.model_name = model;
+            }
+        }
+        cfg
+    }
+
     /// Google Gemini Cloud configuration.
     pub fn gemini(api_key: SecretString, model_name: impl Into<String>) -> Self {
         Self {

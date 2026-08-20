@@ -178,7 +178,9 @@ protocol_fee = 0
         assert_eq!(cfg.chain_id, 943);
         assert_eq!(
             cfg.swap_router.unwrap(),
-            "0x1111111111111111111111111111111111111111".parse::<Address>().unwrap()
+            "0x1111111111111111111111111111111111111111"
+                .parse::<Address>()
+                .unwrap()
         );
         std::fs::remove_dir_all(&dir).ok();
     }

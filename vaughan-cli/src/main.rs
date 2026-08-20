@@ -504,7 +504,60 @@ async fn run_cli(
                     println!("{}", serde_json::to_string_pretty(&res)?);
                 }
                 _ => {
-                    println!("[Agent Response]: Processed prompt: \"{prompt}\"");
+                    use std::io::Write;
+                    use tokio::sync::{mpsc, watch};
+                    use vaughan_agent::{
+                        build_system_prompt, create_llm_client, profile_dir, run_assist_turn,
+                        ChatUiEvent, ModelConfig,
+                    };
+
+                    let client = create_llm_client(ModelConfig::from_env())
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+                    let (_cancel_tx, cancel_rx) = watch::channel(false);
+                    let dir = profile_dir(wallet.path());
+                    let mut history = vec![build_system_prompt(mode, Some(dir.as_path()))];
+
+                    let turn = run_assist_turn(
+                        &mut history,
+                        client,
+                        &registry,
+                        &context,
+                        prompt.as_str(),
+                        ui_tx,
+                        cancel_rx,
+                    );
+                    let pump = async {
+                        while let Some(ev) = ui_rx.recv().await {
+                            match ev {
+                                ChatUiEvent::Delta(d) => {
+                                    print!("{d}");
+                                    let _ = std::io::stdout().flush();
+                                }
+                                ChatUiEvent::ToolCall { name, args } => {
+                                    println!("\n[tool] {name} {args}");
+                                }
+                                ChatUiEvent::ToolResult { name, result } => {
+                                    println!("[result:{name}] {result}");
+                                }
+                                ChatUiEvent::Status(s) if !s.is_empty() => {
+                                    eprintln!("[{s}]");
+                                }
+                                ChatUiEvent::Error { message, .. } => {
+                                    eprintln!("error: {message}");
+                                }
+                                ChatUiEvent::Cancelled { .. } => {
+                                    eprintln!("cancelled");
+                                }
+                                ChatUiEvent::Finished { .. }
+                                | ChatUiEvent::Proposal(_)
+                                | ChatUiEvent::Status(_) => {}
+                            }
+                        }
+                    };
+                    let (turn_res, _) = tokio::join!(turn, pump);
+                    println!();
+                    turn_res.map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
             }
         }

@@ -9,7 +9,7 @@ use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, TransactionRequest};
 use alloy::sol_types::{SolCall, SolValue};
 
-use crate::abi::{INonfungiblePositionManager, IERC721Minimal};
+use crate::abi::{IERC721Minimal, INonfungiblePositionManager};
 use crate::config::Config;
 use crate::error::{SdkError, SdkResult};
 
@@ -49,7 +49,11 @@ pub async fn get_position<P: Provider>(
 
     let call = INonfungiblePositionManager::positionsCall { tokenId: token_id };
     let raw = provider
-        .call(TransactionRequest::default().to(npm).input(call.abi_encode().into()))
+        .call(
+            TransactionRequest::default()
+                .to(npm)
+                .input(call.abi_encode().into()),
+        )
         .await?;
     let r = INonfungiblePositionManager::positionsCall::abi_decode_returns(&raw)?;
 
@@ -84,7 +88,11 @@ pub async fn position_owner<P: Provider>(
         .ok_or(SdkError::MissingAddress("position_manager"))?;
     let call = IERC721Minimal::ownerOfCall { tokenId: token_id };
     let raw = provider
-        .call(TransactionRequest::default().to(npm).input(call.abi_encode().into()))
+        .call(
+            TransactionRequest::default()
+                .to(npm)
+                .input(call.abi_encode().into()),
+        )
         .await?;
     Address::abi_decode(&raw).map_err(SdkError::Decode)
 }
@@ -183,6 +191,10 @@ mod tests {
             B256::from(token_id.to_be_bytes()),
         ];
         assert_eq!(topics[2], to.into_word(), "`to` is topic index 2");
-        assert_eq!(topics[3], B256::from(token_id.to_be_bytes()), "tokenId is topic index 3");
+        assert_eq!(
+            topics[3],
+            B256::from(token_id.to_be_bytes()),
+            "tokenId is topic index 3"
+        );
     }
 }

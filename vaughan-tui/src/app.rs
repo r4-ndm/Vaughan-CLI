@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
+use vaughan_agent::ModelConfig;
 use vaughan_core::core::{StateManager, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
@@ -15,8 +16,8 @@ use std::str::FromStr;
 
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, AgentView, ApproveView, AssetsView, BrowserView, DashboardView, OnboardingView,
-    ReceiveView, SendView, SettingsView, UnlockView,
+    AaSendView, AgentSetupView, AgentView, ApproveView, AssetsView, BrowserView, DashboardView,
+    OnboardingView, ReceiveView, SendView, SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -24,6 +25,7 @@ use crate::views::{
 pub enum Screen {
     Onboarding,
     Unlock,
+    AgentSetup,
     Dashboard,
     Send,
     AaSend,
@@ -40,6 +42,7 @@ impl Screen {
         match self {
             Self::Onboarding => "Onboarding",
             Self::Unlock => "Unlock",
+            Self::AgentSetup => "AI Setup",
             Self::Dashboard => "Dashboard",
             Self::Send => "Send",
             Self::AaSend => "Batch Send",
@@ -72,6 +75,7 @@ pub enum KeyOutcome {
 pub enum View {
     Onboarding(OnboardingView),
     Unlock(UnlockView),
+    AgentSetup(AgentSetupView),
     Dashboard(DashboardView),
     Send(SendView),
     AaSend(AaSendView),
@@ -88,6 +92,7 @@ impl View {
         match self {
             Self::Onboarding(_) => Screen::Onboarding,
             Self::Unlock(_) => Screen::Unlock,
+            Self::AgentSetup(_) => Screen::AgentSetup,
             Self::Dashboard(_) => Screen::Dashboard,
             Self::Send(_) => Screen::Send,
             Self::AaSend(_) => Screen::AaSend,
@@ -104,6 +109,7 @@ impl View {
         match self {
             Self::Onboarding(v) => v.render(frame, area, wallet),
             Self::Unlock(v) => v.render(frame, area, wallet),
+            Self::AgentSetup(v) => v.render(frame, area, wallet),
             Self::Dashboard(v) => v.render(frame, area, wallet),
             Self::Send(v) => v.render(frame, area, wallet),
             Self::AaSend(v) => v.render(frame, area, wallet),
@@ -126,6 +132,7 @@ impl View {
         match self {
             Self::Onboarding(v) => v.handle_key(key, wallet, handle, events),
             Self::Unlock(v) => v.handle_key(key, wallet, handle, events),
+            Self::AgentSetup(v) => v.handle_key(key, wallet, handle, events),
             Self::Dashboard(v) => v.handle_key(key, wallet, handle, events),
             Self::Send(v) => v.handle_key(key, wallet, handle, events),
             Self::AaSend(v) => v.handle_key(key, wallet, handle, events),
@@ -169,6 +176,8 @@ pub struct App {
     pending_approval: Option<PendingApproval>,
     /// Screen to return to after the pending approval resolves.
     approve_return: Screen,
+    /// Active LLM settings for this session (welcome setup / unlock load / env).
+    agent_config: ModelConfig,
 }
 
 impl App {
@@ -195,6 +204,7 @@ impl App {
             host_rx,
             pending_approval: None,
             approve_return: Screen::Dashboard,
+            agent_config: ModelConfig::from_env(),
         };
         app.navigate(screen);
         Ok(app)
@@ -218,6 +228,7 @@ impl App {
             // Service provider requests first so an incoming approval prompt
             // is on screen before the next draw.
             self.poll_provider();
+            self.poll_agent();
             terminal.draw(|frame| crate::views::render(frame, self))?;
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
@@ -268,7 +279,30 @@ impl App {
         }
 
         if let KeyOutcome::Navigate(screen) = outcome {
+            self.capture_session_agent_config();
             self.navigate(screen);
+        }
+    }
+
+    /// Pull agent config out of onboarding / unlock / setup before those views are dropped.
+    fn capture_session_agent_config(&mut self) {
+        match &mut self.view {
+            View::Onboarding(v) => {
+                if let Some(cfg) = v.take_session_agent_config() {
+                    self.agent_config = cfg;
+                }
+            }
+            View::Unlock(v) => {
+                if let Some(cfg) = v.take_session_agent_config() {
+                    self.agent_config = cfg;
+                }
+            }
+            View::AgentSetup(v) => {
+                if let Some(cfg) = v.take_session_agent_config() {
+                    self.agent_config = cfg;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -316,6 +350,13 @@ impl App {
                     break;
                 }
             }
+        }
+    }
+
+    /// Pump streaming agent chat events into the Agent view.
+    fn poll_agent(&mut self) {
+        if let View::Agent(view) = &mut self.view {
+            view.poll();
         }
     }
 
@@ -382,9 +423,20 @@ impl App {
 
     /// Build the default view for `screen` (refreshing balance on Dashboard).
     fn navigate(&mut self, screen: Screen) {
+        let setup_password = if screen == Screen::AgentSetup {
+            if let View::Unlock(v) = &mut self.view {
+                v.take_handoff_password()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let view = match screen {
             Screen::Onboarding => View::Onboarding(OnboardingView::default()),
             Screen::Unlock => View::Unlock(UnlockView::default()),
+            Screen::AgentSetup => View::AgentSetup(AgentSetupView::new(setup_password)),
             Screen::Dashboard => {
                 let balance = self.handle.block_on(self.wallet.balance());
                 View::Dashboard(DashboardView::with_balance(balance))
@@ -408,7 +460,14 @@ impl App {
                 View::Assets(AssetsView::with_assets(assets))
             }
             Screen::Browser => View::Browser(BrowserView::default()),
-            Screen::Agent => View::Agent(AgentView::default()),
+            Screen::Agent => {
+                let dir = vaughan_agent::profile_dir(self.wallet.path());
+                View::Agent(AgentView::with_session(
+                    self.agent_config.clone(),
+                    self.wallet.operating_mode(),
+                    Some(dir.as_path()),
+                ))
+            }
             // Approve is entered directly from `poll_provider` (it needs the
             // pending request + reply channel), never via navigation; this arm
             // is only here to keep the match exhaustive.

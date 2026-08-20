@@ -69,4 +69,6 @@ fn create_providers_from_config() {
     );
     let openai_client = create_llm_client(openai_cfg).unwrap();
     assert_eq!(openai_client.name(), "gpt-4o");
+
+    let _ = ModelConfig::from_env();
 }

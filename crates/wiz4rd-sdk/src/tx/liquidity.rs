@@ -58,7 +58,9 @@ pub fn build_mint_tx(
         deadline: U256::from(deadline),
     };
     let call = INonfungiblePositionManager::mintCall { params };
-    Ok(TransactionRequest::default().to(npm).input(call.abi_encode().into()))
+    Ok(TransactionRequest::default()
+        .to(npm)
+        .input(call.abi_encode().into()))
 }
 
 /// Build an `increaseLiquidity` transaction for an existing `token_id`.
@@ -84,7 +86,9 @@ pub fn build_increase_liquidity_tx(
         deadline: U256::from(deadline),
     };
     let call = INonfungiblePositionManager::increaseLiquidityCall { params };
-    Ok(TransactionRequest::default().to(npm).input(call.abi_encode().into()))
+    Ok(TransactionRequest::default()
+        .to(npm)
+        .input(call.abi_encode().into()))
 }
 
 /// Build a `decreaseLiquidity` transaction: remove `liquidity` from `token_id`
@@ -109,7 +113,9 @@ pub fn build_decrease_liquidity_tx(
         deadline: U256::from(deadline),
     };
     let call = INonfungiblePositionManager::decreaseLiquidityCall { params };
-    Ok(TransactionRequest::default().to(npm).input(call.abi_encode().into()))
+    Ok(TransactionRequest::default()
+        .to(npm)
+        .input(call.abi_encode().into()))
 }
 
 /// Build a `collect` transaction: withdraw owed tokens (fees + decreased
@@ -132,7 +138,9 @@ pub fn build_collect_tx(
         amount1Max: amount1_max,
     };
     let call = INonfungiblePositionManager::collectCall { params };
-    Ok(TransactionRequest::default().to(npm).input(call.abi_encode().into()))
+    Ok(TransactionRequest::default()
+        .to(npm)
+        .input(call.abi_encode().into()))
 }
 
 #[cfg(test)]
@@ -163,7 +171,10 @@ mod tests {
             1_700_000_000,
         )
         .unwrap();
-        assert_eq!(tx.to, Some(alloy::primitives::TxKind::Call(Address::repeat_byte(0xbb))));
+        assert_eq!(
+            tx.to,
+            Some(alloy::primitives::TxKind::Call(Address::repeat_byte(0xbb)))
+        );
         let data = tx.input.into_input().unwrap();
         assert_eq!(&data[..4], &INonfungiblePositionManager::mintCall::SELECTOR);
     }
@@ -179,17 +190,33 @@ mod tests {
             1_700_000_000,
         )
         .unwrap();
-        let col = build_collect_tx(&cfg(), U256::from(1u64), Address::repeat_byte(0xee), u128::MAX, u128::MAX)
-            .unwrap();
+        let col = build_collect_tx(
+            &cfg(),
+            U256::from(1u64),
+            Address::repeat_byte(0xee),
+            u128::MAX,
+            u128::MAX,
+        )
+        .unwrap();
         let d = dec.input.into_input().unwrap();
         let c = col.input.into_input().unwrap();
-        assert_eq!(&d[..4], &INonfungiblePositionManager::decreaseLiquidityCall::SELECTOR);
+        assert_eq!(
+            &d[..4],
+            &INonfungiblePositionManager::decreaseLiquidityCall::SELECTOR
+        );
         assert_eq!(&c[..4], &INonfungiblePositionManager::collectCall::SELECTOR);
     }
 
     #[test]
     fn missing_position_manager_errors() {
         let cfg = Config::default(); // no position_manager
-        assert!(build_collect_tx(&cfg, U256::from(1u64), Address::repeat_byte(0xee), u128::MAX, u128::MAX).is_err());
+        assert!(build_collect_tx(
+            &cfg,
+            U256::from(1u64),
+            Address::repeat_byte(0xee),
+            u128::MAX,
+            u128::MAX
+        )
+        .is_err());
     }
 }

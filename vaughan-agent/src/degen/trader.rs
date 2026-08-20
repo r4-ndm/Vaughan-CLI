@@ -1,6 +1,6 @@
 use alloy::eips::eip2718::Encodable2718;
 use alloy::network::{Ethereum, EthereumWallet, NetworkTransactionBuilder};
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
@@ -10,12 +10,23 @@ use crate::degen::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::degen::quorum::QuorumValidator;
 use crate::error::AgentError;
 
+/// Result of an autonomous swap attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwapExecution {
+    /// Broadcast hash, or [`B256::ZERO`] when [`Self::dry_run`] is set.
+    pub tx_hash: B256,
+    /// When true, simulation + breakers ran but nothing was broadcast.
+    pub dry_run: bool,
+}
+
 /// Autonomous trader running inside an isolated burner wallet profile.
 pub struct DegenTrader {
     signer: PrivateKeySigner,
     circuit_breaker: CircuitBreaker,
     rpc_urls: Vec<String>,
     chain_id: u64,
+    /// When true, validate + simulate but never broadcast (safe paper trading).
+    dry_run: bool,
 }
 
 impl DegenTrader {
@@ -30,7 +41,23 @@ impl DegenTrader {
             circuit_breaker: CircuitBreaker::new(breaker_config),
             rpc_urls,
             chain_id,
+            dry_run: dry_run_from_env(),
         }
+    }
+
+    /// Enable or disable dry-run (overrides env default).
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
+    /// Toggle dry-run without rebuilding the trader (habit: paper then live).
+    pub fn set_dry_run(&mut self, dry_run: bool) {
+        self.dry_run = dry_run;
+    }
+
+    pub fn is_dry_run(&self) -> bool {
+        self.dry_run
     }
 
     /// Wallet address of the dedicated burner signer.
@@ -49,6 +76,9 @@ impl DegenTrader {
     }
 
     /// Execute a DEX swap autonomously with multi-RPC quorum validation and circuit breakers.
+    ///
+    /// In dry-run mode, steps 1–4 still run; step 5 returns [`SwapExecution`] with
+    /// `dry_run: true` and a zero hash (nothing is signed or broadcast).
     pub async fn execute_swap(
         &self,
         router: Address,
@@ -57,7 +87,7 @@ impl DegenTrader {
         value_wei: U256,
         trade_amount: U256,
         slippage_bps: u32,
-    ) -> Result<alloy::primitives::TxHash, AgentError> {
+    ) -> Result<SwapExecution, AgentError> {
         if self.rpc_urls.is_empty() {
             return Err(AgentError::InvalidToolCall(
                 "No RPC endpoints configured".to_string(),
@@ -101,13 +131,24 @@ impl DegenTrader {
             )));
         }
 
+        let gas_price = provider.get_gas_price().await.unwrap_or(1_000_000_000); // 1 gwei fallback
+        let gas_estimate =
+            U256::from(300_000u128).saturating_mul(U256::from(gas_price.saturating_mul(2)));
+
+        if self.dry_run {
+            // Count estimated gas against session budget without broadcasting.
+            self.circuit_breaker.record_success(gas_estimate)?;
+            return Ok(SwapExecution {
+                tx_hash: B256::ZERO,
+                dry_run: true,
+            });
+        }
+
         // 5. Build, sign, and broadcast
         let nonce = provider
             .get_transaction_count(self.address())
             .await
             .map_err(|e| AgentError::ProviderError(format!("Failed to get nonce: {e}")))?;
-
-        let gas_price = provider.get_gas_price().await.unwrap_or(1_000_000_000); // 1 gwei fallback
 
         let mut tx = TransactionRequest::default()
             .from(self.address())
@@ -136,9 +177,22 @@ impl DegenTrader {
         let tx_hash = *pending_tx.tx_hash();
 
         // 6. Record gas expenditure
-        let gas_spent = U256::from(300_000 * gas_price * 2);
-        self.circuit_breaker.record_success(gas_spent)?;
+        self.circuit_breaker.record_success(gas_estimate)?;
 
-        Ok(tx_hash)
+        Ok(SwapExecution {
+            tx_hash,
+            dry_run: false,
+        })
+    }
+}
+
+/// `VAUGHAN_DEGEN_DRY_RUN=1|true` enables paper trading (no broadcast).
+pub fn dry_run_from_env() -> bool {
+    match std::env::var("VAUGHAN_DEGEN_DRY_RUN") {
+        Ok(v) => {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        }
+        Err(_) => false,
     }
 }

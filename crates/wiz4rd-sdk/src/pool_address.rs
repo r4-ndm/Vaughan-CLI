@@ -39,9 +39,17 @@ pub struct PoolKey {
 /// (token0 = the numerically smaller address).
 pub fn get_pool_key(token_a: Address, token_b: Address, fee: u32) -> PoolKey {
     if token_a < token_b {
-        PoolKey { token0: token_a, token1: token_b, fee }
+        PoolKey {
+            token0: token_a,
+            token1: token_b,
+            fee,
+        }
     } else {
-        PoolKey { token0: token_b, token1: token_a, fee }
+        PoolKey {
+            token0: token_b,
+            token1: token_a,
+            fee,
+        }
     }
 }
 
@@ -97,6 +105,9 @@ mod tests {
 
         // Real pool address on BSC mainnet (from factory.getPool).
         let expected = addr("0x36696169C63e42cd08ce11f5deeBbCeBae652050");
-        assert_eq!(derived, expected, "derived pool address must match on-chain pool");
+        assert_eq!(
+            derived, expected,
+            "derived pool address must match on-chain pool"
+        );
     }
 }

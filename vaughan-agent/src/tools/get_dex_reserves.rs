@@ -113,15 +113,16 @@ impl Tool for GetDexReservesTool {
             ("0".to_string(), "0".to_string(), "0".to_string())
         };
 
-        let spot_price = if let (Ok(r0_num), Ok(r1_num)) = (reserve0.parse::<f64>(), reserve1.parse::<f64>()) {
-            if r0_num > 0.0 {
-                Some(r1_num / r0_num)
+        let spot_price =
+            if let (Ok(r0_num), Ok(r1_num)) = (reserve0.parse::<f64>(), reserve1.parse::<f64>()) {
+                if r0_num > 0.0 {
+                    Some(r1_num / r0_num)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         Ok(json!({
             "pair": pair.to_string(),

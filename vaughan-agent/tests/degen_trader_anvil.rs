@@ -60,7 +60,7 @@ async fn test_degen_trader_autonomous_execution_with_anvil() {
 
     // Autonomous swap/call execution
     let target = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
-    let tx_hash = trader
+    let outcome = trader
         .execute_swap(
             target,
             None,
@@ -72,6 +72,52 @@ async fn test_degen_trader_autonomous_execution_with_anvil() {
         .await
         .unwrap();
 
-    assert!(!tx_hash.is_zero());
+    assert!(!outcome.dry_run);
+    assert!(!outcome.tx_hash.is_zero());
     assert!(!trader.circuit_breaker().is_tripped());
+}
+
+#[tokio::test]
+async fn test_degen_trader_dry_run_skips_broadcast() {
+    let anvil = AnvilGuard::spawn(8558);
+    let rpc_url = anvil.rpc_url.clone();
+
+    let burner_signer: PrivateKeySigner =
+        "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+            .parse()
+            .unwrap();
+
+    let trader = DegenTrader::new(
+        burner_signer,
+        vec![rpc_url],
+        31337,
+        CircuitBreakerConfig {
+            max_position_pct: 50,
+            max_slippage_bps: 100,
+            max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
+            max_consecutive_errors: 3,
+            required_rpc_quorum: 1,
+        },
+    )
+    .with_dry_run(true);
+
+    assert!(trader.is_dry_run());
+
+    let target = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let before = trader.circuit_breaker().is_tripped();
+    let outcome = trader
+        .execute_swap(
+            target,
+            None,
+            Bytes::new(),
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            50,
+        )
+        .await
+        .unwrap();
+
+    assert!(outcome.dry_run);
+    assert!(outcome.tx_hash.is_zero());
+    assert_eq!(before, trader.circuit_breaker().is_tripped());
 }

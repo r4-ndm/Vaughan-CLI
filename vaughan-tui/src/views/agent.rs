@@ -2,9 +2,12 @@
 //!
 //! Handles:
 //! - Human-Only mode cold-storage isolation notice.
-//! - AI Assisted chat REPL with tool execution activity.
+//! - AI Assisted chat REPL with streaming LLM replies and tool activity.
 //! - Ground-truth transaction proposal review modal with independent bytecode rendering.
 //! - Degen mode autonomous trader status and emergency stop.
+//! - Esc cancels an in-flight LLM turn.
+
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -14,8 +17,13 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use tokio::sync::{mpsc, watch};
 use vaughan_agent::proposal::TxProposal;
 use vaughan_agent::tools::{default_assist_registry, ToolContext, ToolRegistry};
+use vaughan_agent::{
+    build_system_prompt, create_llm_client, run_assist_turn, skills_for_mode, ChatMessage,
+    ChatUiEvent, LlmClient, ModelConfig, ProviderType, SkillKind,
+};
 use vaughan_core::core::profile::OperatingMode;
 
 use crate::app::KeyOutcome;
@@ -31,6 +39,19 @@ pub enum AgentMessage {
     System(String),
 }
 
+struct StreamingJob {
+    cancel_tx: watch::Sender<bool>,
+    event_rx: mpsc::UnboundedReceiver<ChatUiEvent>,
+    /// Index in `history` of the live assistant bubble being filled by deltas.
+    assistant_idx: Option<usize>,
+}
+
+impl Drop for StreamingJob {
+    fn drop(&mut self) {
+        let _ = self.cancel_tx.send(true);
+    }
+}
+
 /// Agent View state.
 pub struct AgentView {
     input: Input,
@@ -39,28 +60,65 @@ pub struct AgentView {
     status: String,
     scroll_offset: usize,
     registry: ToolRegistry,
+    llm: Arc<dyn LlmClient>,
+    llm_history: Vec<ChatMessage>,
+    job: Option<StreamingJob>,
+    operating_mode: OperatingMode,
+    profile_dir: Option<std::path::PathBuf>,
+    /// Status chrome: `ollama/llama3.2 · skills: 2 must`.
+    agent_badge: String,
 }
 
 impl Default for AgentView {
     fn default() -> Self {
-        Self::new()
+        Self::with_session(ModelConfig::from_env(), OperatingMode::AiAssisted, None)
     }
 }
 
 impl AgentView {
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build the agent view against an explicit model + mode (loads skills).
+    pub fn with_config(config: ModelConfig) -> Self {
+        Self::with_session(config, OperatingMode::AiAssisted, None)
+    }
+
+    /// Full session wiring: LLM config, operating mode, and optional profile skills dir.
+    pub fn with_session(
+        config: ModelConfig,
+        mode: OperatingMode,
+        profile_dir: Option<&std::path::Path>,
+    ) -> Self {
+        let provider = provider_short(config.provider);
+        let model = config.model_name.clone();
+        let must_count = skills_for_mode(mode, profile_dir)
+            .iter()
+            .filter(|s| s.kind == SkillKind::Must)
+            .count();
+        let agent_badge = format!("{provider}/{model} · skills: {must_count} must");
+        let llm = create_llm_client(config).expect("LLM client construction is infallible");
+        let system = build_system_prompt(mode, profile_dir);
         Self {
             input: Input::new(
                 false,
-                "Type a command (e.g. inspect 0x..., balance, transfer)...",
+                "Ask the advisor, or type a command (help / inspect / balance / transfer)…",
             ),
-            history: vec![AgentMessage::System(
-                "Vaughan Agent subsystem initialized. Enter a command or question.".to_string(),
-            )],
+            history: vec![AgentMessage::System(format!(
+                "Vaughan Agent ready ({agent_badge}, mode: {}). Esc cancels streams.",
+                mode.badge()
+            ))],
             active_proposal: None,
             status: String::new(),
             scroll_offset: 0,
             registry: default_assist_registry(),
+            llm,
+            llm_history: vec![system],
+            job: None,
+            operating_mode: mode,
+            profile_dir: profile_dir.map(|p| p.to_path_buf()),
+            agent_badge,
         }
     }
 
@@ -80,6 +138,77 @@ impl AgentView {
         self.history.push(msg);
     }
 
+    /// True while an LLM turn is running (streaming or tool loop).
+    pub fn is_busy(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Drain async chat events. Call once per UI tick.
+    pub fn poll(&mut self) {
+        let Some(job) = self.job.as_mut() else {
+            return;
+        };
+
+        let mut finished = false;
+        while let Ok(event) = job.event_rx.try_recv() {
+            match event {
+                ChatUiEvent::Status(s) => {
+                    self.status = s;
+                }
+                ChatUiEvent::Delta(delta) => {
+                    if let Some(idx) = job.assistant_idx {
+                        if let Some(AgentMessage::Assistant(buf)) = self.history.get_mut(idx) {
+                            buf.push_str(&delta);
+                        }
+                    } else {
+                        self.history.push(AgentMessage::Assistant(delta));
+                        job.assistant_idx = Some(self.history.len() - 1);
+                    }
+                }
+                ChatUiEvent::ToolCall { name, args } => {
+                    job.assistant_idx = None;
+                    self.history.push(AgentMessage::ToolCall { name, args });
+                }
+                ChatUiEvent::ToolResult { name, result } => {
+                    self.history.push(AgentMessage::ToolResult { name, result });
+                }
+                ChatUiEvent::Proposal(prop) => {
+                    self.active_proposal = Some(*prop);
+                }
+                ChatUiEvent::Finished { history } => {
+                    self.llm_history = history;
+                    self.status.clear();
+                    finished = true;
+                }
+                ChatUiEvent::Cancelled { history } => {
+                    self.llm_history = history;
+                    self.history
+                        .push(AgentMessage::System("Turn cancelled.".to_string()));
+                    self.status.clear();
+                    finished = true;
+                }
+                ChatUiEvent::Error { message, history } => {
+                    self.llm_history = history;
+                    self.history
+                        .push(AgentMessage::Assistant(format!("Error: {message}")));
+                    self.status.clear();
+                    finished = true;
+                }
+            }
+        }
+
+        if finished {
+            self.job = None;
+        }
+    }
+
+    fn cancel_stream(&mut self) {
+        if let Some(job) = &self.job {
+            let _ = job.cancel_tx.send(true);
+            self.status = "Cancelling…".to_string();
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -93,13 +222,18 @@ impl AgentView {
             return KeyOutcome::Consumed;
         }
 
+        // Esc cancels an in-flight turn instead of leaving the screen.
+        if key.code == KeyCode::Esc && self.job.is_some() {
+            self.cancel_stream();
+            return KeyOutcome::Consumed;
+        }
+
         // If there is an active proposal pending approval:
         if let Some(proposal) = &self.active_proposal {
             match key.code {
                 KeyCode::Char('a') | KeyCode::Char('A') => {
                     self.status =
                         format!("Proposal {} approved for broadcast.", proposal.proposal_id);
-                    // Leave proposal for app event loop to broadcast
                     return KeyOutcome::Consumed;
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Esc => {
@@ -111,8 +245,13 @@ impl AgentView {
             }
         }
 
+        // Ignore input while a turn is streaming (except Esc handled above).
+        if self.job.is_some() {
+            return KeyOutcome::Consumed;
+        }
+
         match key.code {
-            KeyCode::Esc => KeyOutcome::NotHandled, // Bubble to app to return to dashboard
+            KeyCode::Esc => KeyOutcome::NotHandled,
             KeyCode::Up => {
                 if self.scroll_offset > 0 {
                     self.scroll_offset -= 1;
@@ -141,7 +280,6 @@ impl AgentView {
     fn execute_prompt(&mut self, prompt: &str, context: &ToolContext) {
         self.history.push(AgentMessage::User(prompt.to_string()));
 
-        // Local sensory / proposal command parser dispatch
         let tokens: Vec<&str> = prompt.split_whitespace().collect();
         if tokens.is_empty() {
             return;
@@ -151,151 +289,188 @@ impl AgentView {
         match cmd.as_str() {
             "help" => {
                 self.history.push(AgentMessage::Assistant(
-                    "Supported commands:\n\
+                    "Commands:\n\
                      - balance [0x...]: Check balance\n\
-                     - inspect <0x...>: Fingerprint contract ABI & candidate selectors\n\
+                     - inspect <0x...>: Fingerprint contract ABI & selectors\n\
                      - transfer <0x...> <amount_wei>: Propose native transfer\n\
-                     - clear: Clear history"
+                     - clear: Clear history\n\
+                     Or type a free-form question — the advisor streams a reply (Esc cancels)."
                         .to_string(),
                 ));
             }
             "clear" => {
                 self.history.clear();
+                self.llm_history = vec![build_system_prompt(
+                    self.operating_mode,
+                    self.profile_dir.as_deref(),
+                )];
                 self.history
                     .push(AgentMessage::System("History cleared.".to_string()));
             }
-            "balance" => {
-                let account = if tokens.len() > 1 {
-                    tokens[1]
-                } else if let Some(addr) = context.active_address {
-                    &format!("{addr:#x}")
-                } else {
-                    self.history.push(AgentMessage::Assistant(
-                        "Error: No account address provided".to_string(),
-                    ));
-                    return;
-                };
+            "balance" => self.cmd_balance(tokens, context),
+            "inspect" => self.cmd_inspect(tokens, context),
+            "transfer" => self.cmd_transfer(tokens, context),
+            _ => self.start_chat_turn(prompt, context),
+        }
+    }
 
-                let reg = self.registry.clone();
-                let ctx = context.clone();
-                let acc = account.to_string();
+    fn start_chat_turn(&mut self, prompt: &str, context: &ToolContext) {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
 
-                let res = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        reg.execute(
-                            "get_balance",
-                            serde_json::json!({ "account_address": acc }),
-                            &ctx,
-                        )
-                        .await
-                    })
-                });
+        let client = Arc::clone(&self.llm);
+        let registry = self.registry.clone();
+        let ctx = context.clone();
+        let mut history = self.llm_history.clone();
+        let user_text = prompt.to_string();
 
-                match res {
-                    Ok(val) => {
-                        let bal = val["balance_wei"].as_str().unwrap_or("0");
-                        self.history.push(AgentMessage::Assistant(format!(
-                            "Account: {account}\nBalance: {bal} wei"
-                        )));
-                    }
-                    Err(e) => {
-                        self.history.push(AgentMessage::Assistant(format!(
-                            "Error querying balance: {e}"
-                        )));
-                    }
-                }
-            }
-            "inspect" => {
-                if tokens.len() < 2 {
-                    self.history.push(AgentMessage::Assistant(
-                        "Usage: inspect <0xAddress>".to_string(),
-                    ));
-                    return;
-                }
-                let target = tokens[1].to_string();
-                let reg = self.registry.clone();
-                let ctx = context.clone();
+        self.job = Some(StreamingJob {
+            cancel_tx,
+            event_rx,
+            assistant_idx: None,
+        });
+        self.status = format!("thinking ({})…", self.llm.name());
 
-                let target_addr = target.clone();
-                let res = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        reg.execute(
-                            "inspect_contract",
-                            serde_json::json!({ "address": target_addr }),
-                            &ctx,
-                        )
-                        .await
-                    })
-                });
+        tokio::spawn(async move {
+            let _ = run_assist_turn(
+                &mut history,
+                client,
+                &registry,
+                &ctx,
+                user_text,
+                event_tx,
+                cancel_rx,
+            )
+            .await;
+        });
+    }
 
-                match res {
-                    Ok(val) => {
-                        self.history.push(AgentMessage::Assistant(format!(
-                            "Contract Inspection for {target}:\n\
-                             Fingerprint: {}\n\
-                             Candidate Selectors: {}",
-                            val["fingerprint"], val["candidate_selectors"]
-                        )));
-                    }
-                    Err(e) => {
-                        self.history.push(AgentMessage::Assistant(format!(
-                            "Error inspecting contract: {e}"
-                        )));
-                    }
-                }
-            }
-            "transfer" => {
-                if tokens.len() < 3 {
-                    self.history.push(AgentMessage::Assistant(
-                        "Usage: transfer <0xRecipient> <amount_wei>".to_string(),
-                    ));
-                    return;
-                }
-                let recipient = tokens[1].to_string();
-                let amount = tokens[2].to_string();
-                let reg = self.registry.clone();
-                let ctx = context.clone();
+    fn cmd_balance(&mut self, tokens: Vec<&str>, context: &ToolContext) {
+        let account = if tokens.len() > 1 {
+            tokens[1].to_string()
+        } else if let Some(addr) = context.active_address {
+            format!("{addr:#x}")
+        } else {
+            self.history.push(AgentMessage::Assistant(
+                "Error: No account address provided".to_string(),
+            ));
+            return;
+        };
 
-                let res = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        reg.execute(
-                            "propose_transfer",
-                            serde_json::json!({
-                                "recipient": recipient,
-                                "amount": amount,
-                                "explanation": format!("User requested transfer of {amount} wei to {recipient}")
-                            }),
-                            &ctx,
-                        )
-                        .await
-                    })
-                });
+        let reg = self.registry.clone();
+        let ctx = context.clone();
+        let acc = account.clone();
 
-                match res {
-                    Ok(val) => match serde_json::from_value::<TxProposal>(val) {
-                        Ok(prop) => {
-                            self.history.push(AgentMessage::Assistant(format!(
-                                "Drafted proposal: {}\nReview details in the confirmation modal below.",
-                                prop.proposal_id
-                            )));
-                            self.active_proposal = Some(prop);
-                        }
-                        Err(e) => {
-                            self.history.push(AgentMessage::Assistant(format!(
-                                "Error decoding proposal: {e}"
-                            )));
-                        }
-                    },
-                    Err(e) => {
-                        self.history.push(AgentMessage::Assistant(format!(
-                            "Error creating proposal: {e}"
-                        )));
-                    }
-                }
-            }
-            _ => {
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                reg.execute(
+                    "get_balance",
+                    serde_json::json!({ "account_address": acc }),
+                    &ctx,
+                )
+                .await
+            })
+        });
+
+        match res {
+            Ok(val) => {
+                let bal = val["balance_wei"].as_str().unwrap_or("0");
                 self.history.push(AgentMessage::Assistant(format!(
-                    "Command not recognized: '{prompt}'. Type 'help' for available commands."
+                    "Account: {account}\nBalance: {bal} wei"
+                )));
+            }
+            Err(e) => {
+                self.history.push(AgentMessage::Assistant(format!(
+                    "Error querying balance: {e}"
+                )));
+            }
+        }
+    }
+
+    fn cmd_inspect(&mut self, tokens: Vec<&str>, context: &ToolContext) {
+        if tokens.len() < 2 {
+            self.history.push(AgentMessage::Assistant(
+                "Usage: inspect <0xAddress>".to_string(),
+            ));
+            return;
+        }
+        let target = tokens[1].to_string();
+        let reg = self.registry.clone();
+        let ctx = context.clone();
+        let target_addr = target.clone();
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                reg.execute(
+                    "inspect_contract",
+                    serde_json::json!({ "address": target_addr }),
+                    &ctx,
+                )
+                .await
+            })
+        });
+
+        match res {
+            Ok(val) => {
+                self.history.push(AgentMessage::Assistant(format!(
+                    "Contract Inspection for {target}:\n\
+                     Fingerprint: {}\n\
+                     Candidate Selectors: {}",
+                    val["fingerprint"], val["candidate_selectors"]
+                )));
+            }
+            Err(e) => {
+                self.history.push(AgentMessage::Assistant(format!(
+                    "Error inspecting contract: {e}"
+                )));
+            }
+        }
+    }
+
+    fn cmd_transfer(&mut self, tokens: Vec<&str>, context: &ToolContext) {
+        if tokens.len() < 3 {
+            self.history.push(AgentMessage::Assistant(
+                "Usage: transfer <0xRecipient> <amount_wei>".to_string(),
+            ));
+            return;
+        }
+        let recipient = tokens[1].to_string();
+        let amount = tokens[2].to_string();
+        let reg = self.registry.clone();
+        let ctx = context.clone();
+
+        let res = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                reg.execute(
+                    "propose_transfer",
+                    serde_json::json!({
+                        "recipient": recipient,
+                        "amount": amount,
+                        "explanation": format!("User requested transfer of {amount} wei to {recipient}")
+                    }),
+                    &ctx,
+                )
+                .await
+            })
+        });
+
+        match res {
+            Ok(val) => match serde_json::from_value::<TxProposal>(val) {
+                Ok(prop) => {
+                    self.history.push(AgentMessage::Assistant(format!(
+                        "Drafted proposal: {}\nReview details in the confirmation modal below.",
+                        prop.proposal_id
+                    )));
+                    self.active_proposal = Some(prop);
+                }
+                Err(e) => {
+                    self.history.push(AgentMessage::Assistant(format!(
+                        "Error decoding proposal: {e}"
+                    )));
+                }
+            },
+            Err(e) => {
+                self.history.push(AgentMessage::Assistant(format!(
+                    "Error creating proposal: {e}"
                 )));
             }
         }
@@ -307,7 +482,7 @@ impl AgentView {
         if mode == OperatingMode::HumanOnly {
             let p = Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "🔒 HUMAN PURIST MODE (Cold Storage)",
+                    "HUMAN PURIST MODE (Cold Storage)",
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
@@ -325,7 +500,6 @@ impl AgentView {
             return;
         }
 
-        // Split body into History, Proposal Review (if any), and Input Bar
         let chunks = if self.active_proposal.is_some() {
             Layout::vertical([
                 Constraint::Min(4),
@@ -337,7 +511,6 @@ impl AgentView {
             Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).split(body)
         };
 
-        // Render History List
         let items: Vec<ListItem> = self
             .history
             .iter()
@@ -349,7 +522,7 @@ impl AgentView {
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(u),
+                    Span::raw(u.clone()),
                 ])),
                 AgentMessage::Assistant(a) => ListItem::new(Line::from(vec![
                     Span::styled(
@@ -358,37 +531,37 @@ impl AgentView {
                             .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(a),
+                    Span::raw(a.clone()),
                 ])),
                 AgentMessage::ToolCall { name, args } => ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("[Tool Call: {name}]: "),
                         Style::default().fg(Color::Yellow),
                     ),
-                    Span::styled(args, Style::default().fg(Color::DarkGray)),
+                    Span::styled(args.clone(), Style::default().fg(Color::DarkGray)),
                 ])),
                 AgentMessage::ToolResult { name, result } => ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("[Tool Result: {name}]: "),
                         Style::default().fg(Color::Magenta),
                     ),
-                    Span::styled(result, Style::default().fg(Color::DarkGray)),
+                    Span::styled(result.clone(), Style::default().fg(Color::DarkGray)),
                 ])),
                 AgentMessage::System(s) => ListItem::new(Line::from(vec![
                     Span::styled("[System]: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(s, Style::default().fg(Color::DarkGray)),
+                    Span::styled(s.clone(), Style::default().fg(Color::DarkGray)),
                 ])),
             })
             .collect();
 
-        let list = List::new(items).block(
-            Block::default()
-                .title(format!(" Agent Chat ({mode:?}) "))
-                .borders(Borders::ALL),
-        );
+        let title = if self.job.is_some() {
+            format!(" Agent · {} · streaming (Esc) ", self.agent_badge)
+        } else {
+            format!(" Agent · {} ", self.agent_badge)
+        };
+        let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
         frame.render_widget(list, chunks[0]);
 
-        // Render Proposal Card if pending
         if let Some(prop) = &self.active_proposal {
             let sim_tag = if prop.simulation_success {
                 Span::styled(" [SIMULATION: SUCCESS] ", Style::default().fg(Color::Green))
@@ -457,15 +630,26 @@ impl AgentView {
             frame.render_widget(prop_block, chunks[1]);
         }
 
-        // Render Input Box
         let input_chunk = if self.active_proposal.is_some() {
             chunks[2]
         } else {
             chunks[1]
         };
-        let input_widget = labeled_input("Prompt", &self.input, self.active_proposal.is_none());
+        let input_widget = labeled_input(
+            "Prompt",
+            &self.input,
+            self.active_proposal.is_none() && self.job.is_none(),
+        );
         frame.render_widget(input_widget, input_chunk);
 
         frame.render_widget(status_paragraph(&self.status), status_rect);
+    }
+}
+
+fn provider_short(provider: ProviderType) -> &'static str {
+    match provider {
+        ProviderType::Ollama => "ollama",
+        ProviderType::Gemini => "gemini",
+        ProviderType::OpenAi => "openai",
     }
 }

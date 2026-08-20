@@ -13,7 +13,7 @@
 //! Everything else (FullMath, SqrtPriceMath, liquidity math) is reused from
 //! the crate — only the composition here is our own.
 
-use alloy::primitives::{I256, U256, Uint};
+use alloy::primitives::{Uint, I256, U256};
 use uniswap_v3_sdk::utils::{
     full_math::{mul_div, mul_div_rounding_up},
     sqrt_price_math::{
@@ -49,12 +49,23 @@ pub fn compute_swap_step<const BITS: usize, const LIMBS: usize>(
 
     if exact_in {
         let amount_remaining_abs = amount_remaining.into_raw();
-        let amount_remaining_less_fee = mul_div(amount_remaining_abs, fee_complement, U256::from(MAX_FEE))?;
+        let amount_remaining_less_fee =
+            mul_div(amount_remaining_abs, fee_complement, U256::from(MAX_FEE))?;
 
         amount_in = if zero_for_one {
-            get_amount_0_delta(sqrt_ratio_target_x96, sqrt_ratio_current_x96, liquidity, true)?
+            get_amount_0_delta(
+                sqrt_ratio_target_x96,
+                sqrt_ratio_current_x96,
+                liquidity,
+                true,
+            )?
         } else {
-            get_amount_1_delta(sqrt_ratio_current_x96, sqrt_ratio_target_x96, liquidity, true)?
+            get_amount_1_delta(
+                sqrt_ratio_current_x96,
+                sqrt_ratio_target_x96,
+                liquidity,
+                true,
+            )?
         };
 
         if amount_remaining_less_fee >= amount_in {
@@ -70,9 +81,19 @@ pub fn compute_swap_step<const BITS: usize, const LIMBS: usize>(
     } else {
         let amount_remaining_abs = (-amount_remaining).into_raw();
         amount_out = if zero_for_one {
-            get_amount_1_delta(sqrt_ratio_target_x96, sqrt_ratio_current_x96, liquidity, false)?
+            get_amount_1_delta(
+                sqrt_ratio_target_x96,
+                sqrt_ratio_current_x96,
+                liquidity,
+                false,
+            )?
         } else {
-            get_amount_0_delta(sqrt_ratio_current_x96, sqrt_ratio_target_x96, liquidity, false)?
+            get_amount_0_delta(
+                sqrt_ratio_current_x96,
+                sqrt_ratio_target_x96,
+                liquidity,
+                false,
+            )?
         };
 
         if amount_remaining_abs >= amount_out {
@@ -99,7 +120,12 @@ pub fn compute_swap_step<const BITS: usize, const LIMBS: usize>(
         amount_out = if max && !exact_in {
             amount_out
         } else {
-            get_amount_1_delta(sqrt_ratio_next_x96, sqrt_ratio_current_x96, liquidity, false)?
+            get_amount_1_delta(
+                sqrt_ratio_next_x96,
+                sqrt_ratio_current_x96,
+                liquidity,
+                false,
+            )?
         };
     } else {
         amount_in = if max && exact_in {
@@ -110,7 +136,12 @@ pub fn compute_swap_step<const BITS: usize, const LIMBS: usize>(
         amount_out = if max && !exact_in {
             amount_out
         } else {
-            get_amount_0_delta(sqrt_ratio_current_x96, sqrt_ratio_next_x96, liquidity, false)?
+            get_amount_0_delta(
+                sqrt_ratio_current_x96,
+                sqrt_ratio_next_x96,
+                liquidity,
+                false,
+            )?
         };
     }
 

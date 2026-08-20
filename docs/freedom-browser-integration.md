@@ -116,7 +116,7 @@ Ownership:
 | Layer | Owner | Status |
 |---|---|---|
 | Injected `window.ethereum` + IPC | Freedom Browser | exists |
-| Vaughan signer backend (`signers.js` dispatch) | **upstream PR** (FR-2.5) | to build |
+| Vaughan signer backend (`signers.js` dispatch) | **upstream PR** (FR-2.5) | [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) |
 | EIP-1193 WebSocket server, loopback | `vaughan-provider` (Rust) | FR-2.1 ✅ done |
 | EIP-1193 methods (7 + `vaughan_signTransaction`) | `vaughan-provider` | FR-2.2 ✅ done |
 | Approval prompts | `vaughan-tui` | FR-2.3 |

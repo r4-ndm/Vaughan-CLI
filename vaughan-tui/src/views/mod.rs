@@ -2,6 +2,7 @@
 
 pub mod aa_send;
 pub mod agent;
+pub mod agent_setup;
 pub mod approve;
 pub mod assets;
 pub mod browser;
@@ -14,6 +15,7 @@ pub mod unlock;
 
 pub use aa_send::AaSendView;
 pub use agent::AgentView;
+pub use agent_setup::AgentSetupView;
 pub use approve::ApproveView;
 pub use assets::AssetsView;
 pub use browser::BrowserView;

@@ -39,7 +39,10 @@ pub const PLS: Token = Token {
 pub const WPLS_MAINNET: Token = Token {
     symbol: "WPLS",
     name: "Wrapped Pulse",
-    address: Address::new([0xa1, 0x07, 0x7a, 0x29, 0x4d, 0xde, 0x1b, 0x09, 0xbb, 0x07, 0x88, 0x44, 0xdf, 0x40, 0x75, 0x8a, 0x5d, 0x0f, 0x9a, 0x27]),
+    address: Address::new([
+        0xa1, 0x07, 0x7a, 0x29, 0x4d, 0xde, 0x1b, 0x09, 0xbb, 0x07, 0x88, 0x44, 0xdf, 0x40, 0x75,
+        0x8a, 0x5d, 0x0f, 0x9a, 0x27,
+    ]),
     decimals: 18,
 };
 
@@ -48,7 +51,10 @@ pub const WPLS_MAINNET: Token = Token {
 pub const WPLS_TESTNET: Token = Token {
     symbol: "WPLS",
     name: "Wrapped Pulse",
-    address: Address::new([0x70, 0x49, 0x9a, 0xde, 0xbb, 0x11, 0xef, 0xd9, 0x15, 0xe3, 0xb6, 0x9e, 0x70, 0x0c, 0x33, 0x17, 0x78, 0x62, 0x87, 0x07]),
+    address: Address::new([
+        0x70, 0x49, 0x9a, 0xde, 0xbb, 0x11, 0xef, 0xd9, 0x15, 0xe3, 0xb6, 0x9e, 0x70, 0x0c, 0x33,
+        0x17, 0x78, 0x62, 0x87, 0x07,
+    ]),
     decimals: 18,
 };
 
@@ -66,7 +72,11 @@ pub fn lookup(symbol: &str, chain_id: u64) -> Option<Token> {
 /// unregistered symbols — this is where config-driven tokens plug in later.
 pub fn resolve(symbol: &str, chain_id: u64, configured: &[Token]) -> Option<Token> {
     let sym = symbol.to_ascii_uppercase();
-    configured.iter().find(|t| t.symbol == sym).copied().or_else(|| lookup(&sym, chain_id))
+    configured
+        .iter()
+        .find(|t| t.symbol == sym)
+        .copied()
+        .or_else(|| lookup(&sym, chain_id))
 }
 
 /// Fetch `decimals()` on-chain for an arbitrary ERC20.
@@ -87,8 +97,8 @@ pub async fn decimals_of<P: Provider>(provider: &P, token: Address) -> SdkResult
                 .input(data.into()),
         )
         .await?;
-    let decoded = IERC20Minimal::decimalsCall::abi_decode_returns(&raw)
-        .map_err(SdkError::Decode)?;
+    let decoded =
+        IERC20Minimal::decimalsCall::abi_decode_returns(&raw).map_err(SdkError::Decode)?;
     Ok(decoded)
 }
 

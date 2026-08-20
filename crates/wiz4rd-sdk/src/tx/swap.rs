@@ -3,7 +3,7 @@
 //! Builds `TransactionRequest`s against the SwapRouter — pure construction,
 //! no signing/sending (that is the CLI/Vaughan layer's job).
 
-use alloy::primitives::{aliases::U24, aliases::U160, Address, U256};
+use alloy::primitives::{aliases::U160, aliases::U24, Address, U256};
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
 
@@ -22,8 +22,11 @@ use crate::pool::PoolInfo;
 /// is **not** `< MAX_SQRT_RATIO` and reverts every one-for-zero swap (caught
 /// by the anvil fork E2E).
 const MIN_SQRT_RATIO_PLUS_ONE: U160 = U160::from_limbs([4_295_128_740, 0, 0]);
-const MAX_SQRT_RATIO_MINUS_ONE: U160 =
-    U160::from_limbs([6_743_328_256_752_651_557, 17_280_870_778_742_802_505, 4_294_805_859]);
+const MAX_SQRT_RATIO_MINUS_ONE: U160 = U160::from_limbs([
+    6_743_328_256_752_651_557,
+    17_280_870_778_742_802_505,
+    4_294_805_859,
+]);
 
 /// Slippage expressed in basis points (1 bp = 0.01%).
 pub type BasisPoints = u32;
@@ -64,7 +67,11 @@ pub fn build_swap_exact_in(
     let router = config
         .swap_router
         .ok_or(SdkError::MissingAddress("swap_router"))?;
-    let token_out = if token_in == pool.token0 { pool.token1 } else { pool.token0 };
+    let token_out = if token_in == pool.token0 {
+        pool.token1
+    } else {
+        pool.token0
+    };
 
     let params = ISwapRouter::ExactInputSingleParams {
         tokenIn: token_in,
@@ -83,7 +90,9 @@ pub fn build_swap_exact_in(
         }),
     };
     let call = ISwapRouter::exactInputSingleCall { params };
-    Ok(TransactionRequest::default().to(router).input(call.abi_encode().into()))
+    Ok(TransactionRequest::default()
+        .to(router)
+        .input(call.abi_encode().into()))
 }
 
 /// Build an exact-output single-hop swap: receives exactly `amount_out` of
@@ -102,7 +111,11 @@ pub fn build_swap_exact_out(
     let router = config
         .swap_router
         .ok_or(SdkError::MissingAddress("swap_router"))?;
-    let token_out = if token_in == pool.token0 { pool.token1 } else { pool.token0 };
+    let token_out = if token_in == pool.token0 {
+        pool.token1
+    } else {
+        pool.token0
+    };
 
     let params = ISwapRouter::ExactOutputSingleParams {
         tokenIn: token_in,
@@ -121,7 +134,9 @@ pub fn build_swap_exact_out(
         }),
     };
     let call = ISwapRouter::exactOutputSingleCall { params };
-    Ok(TransactionRequest::default().to(router).input(call.abi_encode().into()))
+    Ok(TransactionRequest::default()
+        .to(router)
+        .input(call.abi_encode().into()))
 }
 
 #[cfg(test)]
@@ -145,15 +160,27 @@ mod tests {
 
     #[test]
     fn slippage_rounds_down() {
-        assert_eq!(apply_slippage(U256::from(1_000_000u64), 500), U256::from(950_000u64));
-        assert_eq!(apply_slippage(U256::from(1_000_000u64), 0), U256::from(1_000_000u64));
+        assert_eq!(
+            apply_slippage(U256::from(1_000_000u64), 500),
+            U256::from(950_000u64)
+        );
+        assert_eq!(
+            apply_slippage(U256::from(1_000_000u64), 0),
+            U256::from(1_000_000u64)
+        );
     }
 
     #[test]
     fn slippage_up_rounds_up_for_exact_out_maximums() {
         // Exact-out must *raise* the max input, never lower it.
-        assert_eq!(apply_slippage_up(U256::from(1_000_000u64), 500), U256::from(1_050_000u64));
-        assert_eq!(apply_slippage_up(U256::from(1_000_000u64), 0), U256::from(1_000_000u64));
+        assert_eq!(
+            apply_slippage_up(U256::from(1_000_000u64), 500),
+            U256::from(1_050_000u64)
+        );
+        assert_eq!(
+            apply_slippage_up(U256::from(1_000_000u64), 0),
+            U256::from(1_000_000u64)
+        );
         // For a non-zero slippage, the exact-out max is strictly above the
         // exact-in min for the same quote.
         let q = U256::from(1_000_000u64);
@@ -171,7 +198,10 @@ mod tests {
         // highest. Regression: `2^160 - 1` was used before, which is not
         // `< MAX_SQRT_RATIO` and reverted every one-for-zero swap.
         use wiz4rd_math::utils::tick_math::{MAX_SQRT_RATIO, MIN_SQRT_RATIO};
-        assert!(MIN_SQRT_RATIO_PLUS_ONE > MIN_SQRT_RATIO, "zero-for-one default above MIN");
+        assert!(
+            MIN_SQRT_RATIO_PLUS_ONE > MIN_SQRT_RATIO,
+            "zero-for-one default above MIN"
+        );
         assert!(
             MAX_SQRT_RATIO_MINUS_ONE < MAX_SQRT_RATIO,
             "one-for-zero default below MAX"
@@ -183,7 +213,10 @@ mod tests {
     fn exact_in_builds_router_call() {
         let a = Address::repeat_byte(0x11);
         let b = Address::repeat_byte(0x22);
-        let cfg = Config { swap_router: Some(Address::repeat_byte(0xaa)), ..Config::default() };
+        let cfg = Config {
+            swap_router: Some(Address::repeat_byte(0xaa)),
+            ..Config::default()
+        };
         let tx = build_swap_exact_in(
             &cfg,
             &pool(a, b),
@@ -195,7 +228,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(tx.to, Some(alloy::primitives::TxKind::Call(Address::repeat_byte(0xaa))));
+        assert_eq!(
+            tx.to,
+            Some(alloy::primitives::TxKind::Call(Address::repeat_byte(0xaa)))
+        );
         // Calldata starts with the exactInputSingle selector.
         let data = tx.input.into_input().unwrap();
         assert_eq!(&data[..4], &ISwapRouter::exactInputSingleCall::SELECTOR);
@@ -205,7 +241,10 @@ mod tests {
     fn exact_out_builds_router_call() {
         let a = Address::repeat_byte(0x11);
         let b = Address::repeat_byte(0x22);
-        let cfg = Config { swap_router: Some(Address::repeat_byte(0xaa)), ..Config::default() };
+        let cfg = Config {
+            swap_router: Some(Address::repeat_byte(0xaa)),
+            ..Config::default()
+        };
         let tx = build_swap_exact_out(
             &cfg,
             &pool(a, b),

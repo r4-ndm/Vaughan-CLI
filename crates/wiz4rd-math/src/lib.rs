@@ -93,7 +93,10 @@ mod tests {
             U256::from(5u128.pow(40)),
         )
         .unwrap();
-        assert_eq!(r, U256::from_str_radix("100060375637836737551707627", 10).unwrap());
+        assert_eq!(
+            r,
+            U256::from_str_radix("100060375637836737551707627", 10).unwrap()
+        );
     }
 
     #[test]
