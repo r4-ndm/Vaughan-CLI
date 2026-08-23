@@ -4,7 +4,7 @@
     <a href="https://github.com/r4-ndm/Vaughan-CLI"><img width="450" alt="Vaughan CLI Logo" src="branding/vaughan-logo-small.png" /></a><br />
 </p>
 
-<p align="center">A multi-chain wallet for the terminal. 🦊⚡</p>
+<p align="center">A multi-chain wallet for the terminal. 🐸⚡</p>
 
 <p align="center">
   <a href="https://github.com/r4-ndm/Vaughan-CLI/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/r4-ndm/Vaughan-CLI/actions/workflows/ci.yml/badge.svg" /></a>
@@ -132,4 +132,4 @@ Licensed under **MIT OR Apache-2.0** at your option. See [LICENSE-MIT](LICENSE-M
 
 ---
 
-**Built with ❤️ and 🦊⚡**
+**Built with ❤️ and 🐸⚡**
