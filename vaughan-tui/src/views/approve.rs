@@ -11,7 +11,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -19,6 +19,7 @@ use vaughan_core::core::WalletState;
 use vaughan_provider::EventBus;
 
 use crate::app::KeyOutcome;
+use crate::brand;
 
 pub struct ApproveView {
     title: String,
@@ -51,16 +52,9 @@ impl ApproveView {
         text.push(Line::from(""));
         text.push(Line::from("y / Enter — approve     n / Esc — deny"));
 
-        frame.render_widget(
-            Paragraph::new(text)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Approve request "),
-                )
-                .wrap(Wrap { trim: false }),
-            area,
-        );
+        let inner =
+            brand::render_faded_box(frame, area, Some(brand::fade_line(" Approve request ")));
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
     }
 
     pub fn handle_key(

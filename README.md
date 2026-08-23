@@ -6,17 +6,25 @@
 
 <p align="center">A multi-chain wallet for the terminal. 🦊⚡</p>
 
+<p align="center">
+  <a href="https://github.com/r4-ndm/Vaughan-CLI/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/r4-ndm/Vaughan-CLI/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="LICENSE-MIT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" /></a>
+</p>
+
 **Vaughan-CLI** is a Rust CLI wallet TUI:
 
 - **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
 - **ratatui** for the terminal interface
-- **kohaku-rs** for privacy/provider (stealth addresses, later railgun)
+- **In-core ERC-5564 stealth** (Kohaku / RAILGUN deferred — see [docs/kohaku-go-no-go.md](docs/kohaku-go-no-go.md))
 - **Freedom Browser** integration — use Vaughan as the native signing provider for dApps
 
 EVM-first and PulseChain-optimized, architected after the `vaughan-core` layering from
 [Vaughan-Dioxus](https://github.com/r4-ndm/Vaughan-Dioxus).
 
-> Status: active development. Phase 1–5 core features implemented; install via release tarball or `cargo build`.
+> **Status:** public **prototype** on `main` — expect rough edges and breaking
+> changes. Phase 1–5 core features are implemented; DEX / aggregator / agent
+> paths are still evolving. Prefer testnet. Review [SECURITY.md](SECURITY.md)
+> before trusting any build with real funds.
 
 ## Install
 
@@ -76,16 +84,20 @@ cargo run -p vaughan-cli -- balance
 cargo run -p vaughan-tui           # TUI-only crate (dev convenience)
 ```
 
-- 🔒 **Sovereign Self-Custody**: Password-encrypted vault (Argon2id + AES-256-GCM) with zero plain-text storage.
-- 🧾 **BIP-39 & HD Wallet**: Mnemonic creation/recovery with standard `m/44'/60'/0'/0/{index}` derivation.
-- ⛓️ **Multi-Chain**: PulseChain (mainnet 369 / testnet 943), Ethereum, Sepolia, Polygon, BSC, Base.
-- ⚡ **Ambire EIP-7702 Smart Accounts**: Atomic batched transfers without ERC-4337 bundler overhead.
-- 🖥️ **EIP-1193 Provider Bridge**: Native local WebSocket JSON-RPC provider with trusted-host allowlisting for Freedom Browser and dApps.
-- 🔍 **Contract Browser REPL (`wiz4rd-engine`)**: Real-time bytecode inspection, ERC-20/Uniswap capability probing, and dynamic ABI calls.
-- 🤖 **Sandboxed AI Agent Subsystem (`vaughan-agent`)**:
-  - **Human Purist Mode**: 100% cold-storage isolation with zero AI code execution.
-  - **AI Assisted Mode**: Propose-only AI Advisor with sensory tools and ground-truth calldata confirmation cards.
-  - **Degen Mode**: Autonomous trader running on an isolated burner wallet profile with multi-RPC quorum validation and hard circuit breakers.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.
+
+## Features
+
+- 🔒 **Sovereign self-custody**: password-encrypted vault (Argon2id + AES-256-GCM) with zero plain-text storage
+- 🧾 **BIP-39 & HD wallet**: mnemonic create/recover with standard `m/44'/60'/0'/0/{index}` derivation
+- ⛓️ **Multi-chain**: PulseChain (mainnet 369 / testnet 943), Ethereum, Sepolia, Polygon, BSC, Base
+- ⚡ **Ambire EIP-7702 smart accounts**: atomic batched transfers without ERC-4337 bundler overhead
+- 🖥️ **EIP-1193 provider bridge**: local WebSocket JSON-RPC provider with trusted-host allowlisting for Freedom Browser and dApps
+- 🔍 **Contract browser REPL (`wiz4rd-engine`)**: bytecode inspection, ERC-20/Uniswap capability probing, dynamic ABI calls
+- 🤖 **Sandboxed AI agent subsystem (`vaughan-agent`)**:
+  - **Human Purist mode**: cold-storage isolation with zero AI code execution
+  - **AI Assisted mode**: propose-only advisor with sensory tools and ground-truth calldata confirmation cards
+  - **Degen mode**: autonomous trader on an isolated burner profile with multi-RPC quorum validation and circuit breakers
 
 ## Architecture
 
@@ -94,18 +106,29 @@ vaughan-cli/
 ├─ vaughan-core/      # Vault encryption, HD wallets, EVM adapters, contract browser engine
 ├─ vaughan-aa/        # Ambire EIP-7702 batching, delegation, and signature serialization
 ├─ vaughan-provider/  # Local EIP-1193 WebSocket JSON-RPC server and allowlist security
-├─ vaughan-agent/     # Multi-provider LLM engine (Ollama, Gemini, OpenAI), sensory & proposal tools, circuit breakers
+├─ vaughan-agent/     # Multi-provider LLM engine, sensory & proposal tools, circuit breakers
 ├─ vaughan-tui/       # Ratatui terminal frontend (views, dashboard, batch send, agent chat REPL)
 └─ vaughan-cli/       # Unified `vaughan` binary: TUI by default, CLI subcommands
 ```
 
-- [docs/agent-configuration.md](docs/agent-configuration.md) — Complete guide on configuring Ollama, Gemini, OpenAI, and agent profiles
-- [docs/AI-AGENT-ARCHITECTURE.md](docs/AI-AGENT-ARCHITECTURE.md) — AI Agent architecture and multi-tier sandboxing specification
-- [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md) — EIP-1193 provider bridge architecture
-- [docs/ambire-aa.md](docs/ambire-aa.md) — Ambire EIP-7702 batch transactions and delegation
-- [docs/browser-engine.md](docs/browser-engine.md) — Smart contract browser engine and selector probes
+## Documentation
+
+- [docs/agent-configuration.md](docs/agent-configuration.md) — Ollama, Gemini, OpenAI, and agent profiles
+- [docs/AI-AGENT-ARCHITECTURE.md](docs/AI-AGENT-ARCHITECTURE.md) — AI agent architecture and sandboxing
+- [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md) — EIP-1193 provider bridge
+- [docs/ambire-aa.md](docs/ambire-aa.md) — Ambire EIP-7702 batch transactions
+- [docs/browser-engine.md](docs/browser-engine.md) — Smart contract browser engine
+- [docs/piteas.md](docs/piteas.md) — PulseChain Piteas swap / quote integration notes
+- [docs/aggregator.md](docs/aggregator.md) — Multi-DEX aggregator surface
 - [REQUIREMENTS.md](REQUIREMENTS.md) — Functional and non-functional requirements
-- [TASKS.md](TASKS.md) — Implementation task breakdown and test verification matrix
+- [TASKS.md](TASKS.md) — Implementation backlog and test matrix
+- [SECURITY.md](SECURITY.md) — Vulnerability reporting ([@VaughanWallet](https://x.com/VaughanWallet))
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Dev setup and PR checklist
+
+## License
+
+Licensed under **MIT OR Apache-2.0** at your option. See [LICENSE-MIT](LICENSE-MIT) and
+[LICENSE-APACHE](LICENSE-APACHE).
 
 ---
 

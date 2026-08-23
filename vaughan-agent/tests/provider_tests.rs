@@ -18,6 +18,7 @@ fn chat_message_constructors() {
         id: "call_1".to_string(),
         name: "inspect_contract".to_string(),
         arguments: json!({ "address": "0x123" }),
+        thought_signature: None,
     };
     let assistant = ChatMessage::assistant_with_tools("Calling inspect", vec![tool_call]);
     assert_eq!(assistant.role, Role::Assistant);
@@ -53,14 +54,21 @@ fn tool_definition_serialization() {
 fn create_providers_from_config() {
     let ollama_cfg = ModelConfig::default_local_ollama();
     let client = create_llm_client(ollama_cfg).unwrap();
-    assert_eq!(client.name(), "llama3.2");
+    assert_eq!(client.name(), "ollama/llama3.2");
 
     let gemini_cfg = ModelConfig::gemini(
         SecretString::from("fake_key".to_string()),
-        "gemini-2.5-flash",
+        "gemini-3.5-flash",
     );
     let gemini_client = create_llm_client(gemini_cfg).unwrap();
-    assert_eq!(gemini_client.name(), "gemini-2.5-flash");
+    assert_eq!(gemini_client.name(), "gemini/gemini-3.5-flash");
+
+    // Retired ids are remapped at config construction time.
+    let remapped = ModelConfig::gemini(
+        SecretString::from("fake_key".to_string()),
+        "gemini-2.5-flash",
+    );
+    assert_eq!(remapped.model_name, "gemini-3.5-flash");
 
     let openai_cfg = ModelConfig::openai(
         "https://api.openai.com",
@@ -68,7 +76,7 @@ fn create_providers_from_config() {
         "gpt-4o",
     );
     let openai_client = create_llm_client(openai_cfg).unwrap();
-    assert_eq!(openai_client.name(), "gpt-4o");
+    assert_eq!(openai_client.name(), "openai/gpt-4o");
 
     let _ = ModelConfig::from_env();
 }

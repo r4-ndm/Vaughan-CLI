@@ -19,6 +19,9 @@ Thumbs.db
 vaughan-backup-*.json
 *backup*
 
+# Private strategy / planning (local only — never commit)
+/private/
+
 # AA fixture capture workspace (throwaway forge project; only the resulting
 # fixture JSON in vaughan-aa/tests/fixtures/ is committed)
 .fixtures-capture/

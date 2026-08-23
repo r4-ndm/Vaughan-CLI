@@ -292,13 +292,18 @@ fn onboarding_ai_mode_gemini_prompts_for_api_key() {
         &events,
     );
     view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
-    assert!(render(&view, &wallet).contains("Model name"));
-    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(
+        text.contains("Gemini 3.5 Flash") && text.contains("Gemini 3.5 Pro"),
+        "{text}"
+    );
+    view.handle_key(key(KeyCode::Char('1')), &mut wallet, &handle, &events);
 
     let text = render(&view, &wallet);
-    assert!(text.contains("Agent: gemini-1.5-flash"), "{text}");
+    assert!(text.contains("Agent: gemini-3.5-flash"), "{text}");
     let cfg = view
         .take_session_agent_config()
         .expect("gemini session config");
     assert_eq!(cfg.provider, vaughan_agent::ProviderType::Gemini);
+    assert_eq!(cfg.model_name, "gemini-3.5-flash");
 }

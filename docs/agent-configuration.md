@@ -6,7 +6,7 @@ This guide explains how to configure and use the AI Agent subsystem (`vaughan-ag
 
 ## 1. Quick Start: Choosing an AI Provider
 
-Vaughan supports both **100% private local models** (zero API key) and **cloud LLM providers** (Gemini, OpenAI, OpenRouter, DeepSeek).
+Vaughan supports both **100% private local models** (zero API key) and **cloud LLM providers** (Gemini, OpenAI, OpenRouter, DeepSeek). Chat I/O is handled by the Rust [`genai`](https://crates.io/crates/genai) multi-provider client so new OpenAI-compatible endpoints plug in via `agent.toml` without custom HTTP code.
 
 ### A. Local Models with Ollama (Default & Zero-API-Key)
 If you run Ollama locally on your machine, Vaughan connects out-of-the-box with **zero configuration and zero API keys**:
@@ -29,11 +29,29 @@ When you pick **AI Assisted** or **Degen** on the Vaughan welcome screen, Vaugha
 asks which provider to use:
 
 1. **Ollama (local)** — no API key; optional model name (default `llama3.2`)
-2. **Google Gemini** — paste API key (masked) → optional model
+2. **Google Gemini** — paste API key → choose model:
+   - **Gemini 3.5 Flash** (`gemini-3.5-flash`)
+   - **Gemini 3.5 Pro** (`gemini-3.5-pro`)
+
+   OpenAI’s `gpt-oss-120b` is **not** available with a Gemini API key — that model
+   lives on Vertex AI MaaS (`gpt-oss-120b-maas`) only. Vaughan remaps any leftover
+   `gpt-oss-*` ids in `agent.toml` to Flash.
 3. **OpenAI / compatible** — paste API key → optional model (OpenRouter, DeepSeek, …)
+4. **Cursor gateway** — paste Cursor API key (`crsr_…`) → **OpenAI-compatible chat
+   gateway base URL** (required) → optional model (default `composer-2`)
+
+   Cursor’s official `api.cursor.com` host is Cloud Agents / Admin / SDK only — it
+   does **not** implement `POST /v1/chat/completions`, so Vaughan cannot talk to it
+   directly for Assist chat. Point `endpoint_url` / `CURSOR_BASE_URL` at a gateway
+   that speaks OpenAI chat completions (for example a local proxy on
+   `http://127.0.0.1:8765`). For a simple cloud chat path, use Gemini or OpenAI
+   instead.
 
 The key is encrypted with your vault password (`agent.key.json`) and never written
 in plaintext. Non-secret settings land in `agent.toml` beside the wallet.
+
+Env overrides for Cursor: `CURSOR_API_KEY`, **required** `CURSOR_BASE_URL` (chat
+gateway), optional `CURSOR_MODEL`.
 
 Press **`s`** to skip and keep using environment variables / Ollama defaults.
 
@@ -48,7 +66,7 @@ You can still provide your API key via standard environment variables:
 #### Google Gemini
 ```bash
 export GEMINI_API_KEY="AIzaSy..."
-export GEMINI_MODEL="gemini-1.5-pro" # optional, defaults to gemini-1.5-flash
+export GEMINI_MODEL="gemini-3.5-flash" # optional, defaults to gemini-3.5-flash
 ```
 
 #### OpenAI / OpenRouter / DeepSeek / LocalAI
@@ -58,14 +76,19 @@ Vaughan supports any OpenAI-compatible endpoint:
 export OPENAI_API_KEY="sk-proj-..."
 export OPENAI_MODEL="gpt-4o"
 
-# OpenRouter
+# OpenRouter (keys start with sk-or-v1-…)
 export OPENAI_API_KEY="sk-or-v1-..."
-export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
-export OPENAI_MODEL="anthropic/claude-3.5-sonnet"
+export OPENAI_BASE_URL="https://openrouter.ai/api"   # optional — auto-detected from sk-or- keys
+export OPENAI_MODEL="openrouter/free"
+```
 
+If you paste an OpenRouter key during AI setup, Vaughan stores `endpoint_url` as
+`https://openrouter.ai/api` automatically so the key is not sent to api.openai.com.
+
+```bash
 # DeepSeek
 export OPENAI_API_KEY="sk-..."
-export OPENAI_BASE_URL="https://api.deepseek.com/v1"
+export OPENAI_BASE_URL="https://api.deepseek.com"
 export OPENAI_MODEL="deepseek-chat"
 ```
 
@@ -80,7 +103,7 @@ To persist model configurations across sessions without setting environment vari
 provider = "gemini"
 
 # Model identifier
-model = "gemini-1.5-pro"
+model = "gemini-3.5-flash"
 
 # Environment variable name holding the API key (keeps keys out of plaintext config)
 api_key_env = "GEMINI_API_KEY"
@@ -113,8 +136,25 @@ workflow tips (contract inspection, PulseChain context). See
 Inside `vaughan-tui`, press **`g`** on the dashboard to open the AI Agent screen.
 
 Free-form questions stream token-by-token from the configured LLM (Ollama by default;
-OpenAI/Gemini via env keys). **Esc** cancels an in-flight turn. Slash-style commands
-still work for deterministic tooling:
+OpenAI/Gemini via env keys). **Esc** cancels an in-flight turn.
+
+### Switch models in chat (OpenCode-style)
+
+Type **`/model`** (or **`/models`**) in the prompt bar to open a picker for the
+current provider — ↑/↓ to move, type to filter, Enter to select, Esc to cancel.
+You can also set a model directly:
+
+```
+/model gemini-3.5-pro
+/model ollama/llama3.2
+```
+
+Same-provider switches apply immediately and update `agent.toml`. Switching to a
+different provider (needs a new API key / endpoint) uses **`/provider`**.
+
+### Tooling commands
+
+Slash-style commands still work for deterministic tooling:
 
 * **Inspect a Smart Contract**:
   ```

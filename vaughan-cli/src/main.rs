@@ -447,7 +447,30 @@ async fn run_cli(
                     .and_then(|a| alloy::primitives::Address::from_str(a).ok()),
             };
 
-            let registry = vaughan_agent::tools::default_assist_registry();
+            let registry = if mode == OperatingMode::DegenTrader {
+                match wallet.active_signer() {
+                    Ok(signer) => {
+                        use std::sync::Arc;
+                        use vaughan_agent::{CircuitBreakerConfig, DegenTrader};
+                        let quorum = 1;
+                        let trader = Arc::new(DegenTrader::new(
+                            signer,
+                            vec![context.rpc_url.clone()],
+                            context.chain_id,
+                            CircuitBreakerConfig {
+                                required_rpc_quorum: quorum,
+                                ..CircuitBreakerConfig::default()
+                            },
+                        ));
+                        vaughan_agent::tools::default_degen_registry(trader)
+                    }
+                    Err(e) => {
+                        anyhow::bail!("Degen mode needs an unlocked vault signer: {e}");
+                    }
+                }
+            } else {
+                vaughan_agent::tools::default_assist_registry()
+            };
             let tokens: Vec<&str> = prompt.split_whitespace().collect();
             if tokens.is_empty() {
                 anyhow::bail!("empty prompt");
@@ -508,7 +531,7 @@ async fn run_cli(
                     use tokio::sync::{mpsc, watch};
                     use vaughan_agent::{
                         build_system_prompt, create_llm_client, profile_dir, run_assist_turn,
-                        ChatUiEvent, ModelConfig,
+                        AgentSessionContext, ChatUiEvent, ModelConfig,
                     };
 
                     let client = create_llm_client(ModelConfig::from_env())
@@ -516,7 +539,30 @@ async fn run_cli(
                     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
                     let (_cancel_tx, cancel_rx) = watch::channel(false);
                     let dir = profile_dir(wallet.path());
-                    let mut history = vec![build_system_prompt(mode, Some(dir.as_path()))];
+                    let net = wallet.networks().active();
+                    let session = AgentSessionContext {
+                        active_address: context.active_address.map(|a| format!("{a:#x}")),
+                        chain_id: context.chain_id,
+                        network_id: net.id.clone(),
+                        network_name: net.name.clone(),
+                        native_symbol: net.native_symbol.clone(),
+                        is_testnet: net.is_testnet,
+                        max_position_pct: if mode == OperatingMode::DegenTrader {
+                            Some(100)
+                        } else {
+                            None
+                        },
+                        max_slippage_bps: if mode == OperatingMode::DegenTrader {
+                            Some(100)
+                        } else {
+                            None
+                        },
+                    };
+                    let mut history = vec![build_system_prompt(
+                        mode,
+                        Some(dir.as_path()),
+                        Some(&session),
+                    )];
 
                     let turn = run_assist_turn(
                         &mut history,

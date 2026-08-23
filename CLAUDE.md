@@ -147,6 +147,7 @@ listed here requires approval before it is added.
 | Terminal events | `crossterm` |
 | Provider WebSocket server (Phase 2) | `tokio-tungstenite` |
 | Stream/sink utilities for WS | `futures-util` |
+| Multi-provider LLM chat client | `genai` |
 | secp256k1 arithmetic (ERC-5564) | `k256` |
 | Privacy / stealth (Phase 3) | `vaughan-core::security::stealth` (not Kohaku) |
 | Test temp dirs (dev only) | `tempfile` |

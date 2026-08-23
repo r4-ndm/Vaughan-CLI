@@ -156,7 +156,7 @@ async fn test_agent_proposal_to_human_approval_to_broadcast_flow() {
 }
 
 #[tokio::test]
-async fn test_degen_mode_circuit_breaker_halts_on_risk_violation() {
+async fn test_degen_mode_circuit_breaker_soft_rejects_slippage() {
     let anvil = AnvilGuard::spawn(8560);
     let rpc_url = anvil.rpc_url.clone();
 
@@ -178,7 +178,7 @@ async fn test_degen_mode_circuit_breaker_halts_on_risk_violation() {
         },
     );
 
-    // Trade 1: Slippage violation (2% > 1%) -> Immediately trips breaker and halts
+    // Slippage 2% > 1% → soft reject; session stays open
     let target = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
     let err = trader
         .execute_swap(
@@ -187,28 +187,17 @@ async fn test_degen_mode_circuit_breaker_halts_on_risk_violation() {
             Bytes::new(),
             U256::from(100),
             U256::from(100),
-            200, // 200 bps = 2.0% slippage -> Violation!
+            200, // 200 bps = 2.0%
         )
         .await
         .unwrap_err();
 
-    assert!(err.to_string().contains("maximum allowable slippage"));
-    assert!(trader.circuit_breaker().is_tripped());
-
-    // Subsequent trades are strictly blocked while circuit breaker is tripped
-    let err2 = trader
-        .execute_swap(
-            target,
-            None,
-            Bytes::new(),
-            U256::from(10),
-            U256::from(10),
-            10,
-        )
-        .await
-        .unwrap_err();
-
-    assert!(err2.to_string().contains("Trading halted"));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Slippage") || msg.contains("exceeds max"),
+        "unexpected err: {msg}"
+    );
+    assert!(!trader.circuit_breaker().is_tripped());
 }
 
 #[tokio::test]

@@ -23,7 +23,7 @@ pub const IMPORTED_INDEX_BASE: u32 = 1_000_000;
 pub struct Account {
     pub index: u32,
     pub address: String,
-    /// Display label (`Account 0` or a user-chosen import name).
+    /// Display label (`wallet 0` or `W1-HD 1` for imports).
     pub label: String,
     pub is_imported: bool,
 }
@@ -33,6 +33,8 @@ struct ImportedKey {
     /// Hex private key; zeroized on drop via [`SecretString`].
     private_key: SecretString,
     address: String,
+    /// HD `wallet N` this key was attached under (for `Wn-HD k` naming).
+    parent_wallet: u32,
 }
 
 /// Accounts derived from an unlocked mnemonic, plus optional imported EOAs.
@@ -44,6 +46,18 @@ pub struct AccountManager {
     accounts: Vec<Account>,
     imported: Vec<ImportedKey>,
     active_index: u32,
+}
+
+/// Default label for a seed-derived HD account.
+pub fn hd_wallet_label(index: u32) -> String {
+    format!("wallet {index}")
+}
+
+/// Default label for a private-key-only import under HD `wallet {parent}`.
+///
+/// `slot` is 1-based among imports attached to that parent (`W1-HD 1`, …).
+pub fn imported_hd_label(parent_wallet: u32, slot: u32) -> String {
+    format!("W{parent_wallet}-HD {slot}")
 }
 
 impl AccountManager {
@@ -69,13 +83,10 @@ impl AccountManager {
             .map(|rec| {
                 let signer = parse_private_key(&rec.private_key)?;
                 Ok(ImportedKey {
-                    label: if rec.label.trim().is_empty() {
-                        "Imported".into()
-                    } else {
-                        rec.label.clone()
-                    },
+                    label: rec.label.clone(),
                     private_key: SecretString::new(rec.private_key.clone()),
                     address: signer.address().to_string(),
+                    parent_wallet: rec.parent_wallet,
                 })
             })
             .collect::<Result<Vec<_>, WalletError>>()?;
@@ -96,7 +107,7 @@ impl AccountManager {
             accounts.push(Account {
                 index,
                 address: signer.address().to_string(),
-                label: format!("Account {index}"),
+                label: hd_wallet_label(index),
                 is_imported: false,
             });
         }
@@ -104,7 +115,7 @@ impl AccountManager {
             accounts.push(Account {
                 index: IMPORTED_INDEX_BASE + i as u32,
                 address: key.address.clone(),
-                label: key.label.clone(),
+                label: Self::display_imported_label(key, &imported),
                 is_imported: true,
             });
         }
@@ -116,6 +127,20 @@ impl AccountManager {
         };
         am.set_active(active_index)?;
         Ok(am)
+    }
+
+    /// Resolve import display: keep custom labels; empty → `Wn-HD k`.
+    fn display_imported_label(key: &ImportedKey, all: &[ImportedKey]) -> String {
+        if !key.label.trim().is_empty() {
+            return key.label.clone();
+        }
+        let slot = all
+            .iter()
+            .filter(|k| k.parent_wallet == key.parent_wallet)
+            .position(|k| k.address.eq_ignore_ascii_case(&key.address))
+            .map(|i| i as u32 + 1)
+            .unwrap_or(1);
+        imported_hd_label(key.parent_wallet, slot)
     }
 
     fn rebuild_account_list(&mut self) -> Result<(), WalletError> {
@@ -132,7 +157,7 @@ impl AccountManager {
             accounts.push(Account {
                 index,
                 address: signer.address().to_string(),
-                label: format!("Account {index}"),
+                label: hd_wallet_label(index),
                 is_imported: false,
             });
         }
@@ -140,7 +165,7 @@ impl AccountManager {
             accounts.push(Account {
                 index: IMPORTED_INDEX_BASE + i as u32,
                 address: key.address.clone(),
-                label: key.label.clone(),
+                label: Self::display_imported_label(key, &self.imported),
                 is_imported: true,
             });
         }
@@ -161,12 +186,29 @@ impl AccountManager {
                 .map(|k| ImportedKeyRecord {
                     label: k.label.clone(),
                     private_key: k.private_key.expose_secret().clone(),
+                    parent_wallet: k.parent_wallet,
                 })
                 .collect(),
         }
     }
 
+    /// Active HD wallet index (`wallet N`), or the import's parent when on an import.
+    pub fn active_parent_wallet(&self) -> u32 {
+        let active = self.active_account();
+        if active.is_imported {
+            self.imported
+                .iter()
+                .find(|k| k.address.eq_ignore_ascii_case(&active.address))
+                .map(|k| k.parent_wallet)
+                .unwrap_or(0)
+        } else {
+            active.index
+        }
+    }
+
     /// Import a raw private key (hex). Re-persists via the caller's vault rewrite.
+    ///
+    /// Empty `label` → `W{parent}-HD k` under the current HD wallet.
     pub fn import_private_key(
         &mut self,
         label: impl Into<String>,
@@ -183,18 +225,13 @@ impl AccountManager {
                 "that address is already in this wallet".to_string(),
             ));
         }
-        let label = {
-            let l = label.into();
-            if l.trim().is_empty() {
-                "Imported".into()
-            } else {
-                l
-            }
-        };
+        let parent_wallet = self.active_parent_wallet();
+        let label = label.into();
         self.imported.push(ImportedKey {
             label,
             private_key: SecretString::new(private_key.expose_secret().clone()),
             address: address.clone(),
+            parent_wallet,
         });
         self.rebuild_account_list()?;
         let account = self
@@ -221,6 +258,14 @@ impl AccountManager {
     /// All accounts (HD then imported).
     pub fn accounts(&self) -> &[Account] {
         &self.accounts
+    }
+
+    /// Label for account `index`, if present.
+    pub fn label_for(&self, index: u32) -> Option<&str> {
+        self.accounts
+            .iter()
+            .find(|a| a.index == index)
+            .map(|a| a.label.as_str())
     }
 
     /// The active account.
@@ -305,6 +350,8 @@ mod tests {
         assert_eq!(am.accounts().len(), 3);
         assert_eq!(am.active_index(), 0);
         assert_eq!(am.active_address().to_lowercase(), TEST_ADDRESS_0);
+        assert_eq!(am.active_account().label, "wallet 0");
+        assert_eq!(am.accounts()[2].label, "wallet 2");
     }
 
     #[test]
@@ -345,5 +392,15 @@ mod tests {
         );
         let exported = am.export_private_key(account.index).unwrap();
         assert!(exported.expose_secret().eq_ignore_ascii_case(ANVIL_KEY0));
+    }
+
+    #[test]
+    fn empty_import_label_uses_parent_wallet_hd_name() {
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 3).unwrap();
+        am.set_active(1).unwrap();
+        let a = am
+            .import_private_key("", &SecretString::new(ANVIL_KEY0.into()))
+            .unwrap();
+        assert_eq!(a.label, "W1-HD 1");
     }
 }

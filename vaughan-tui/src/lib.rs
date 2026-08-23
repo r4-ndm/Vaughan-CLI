@@ -22,7 +22,8 @@ use app::App;
 /// Used by the `vaughan-tui` binary and by the unified `vaughan` entry point
 /// when no CLI subcommand is given.
 pub fn run_interactive() -> io::Result<()> {
-    vaughan_core::logging::init_logging();
+    vaughan_core::logging::init_tui_logging();
+    brand::load_persisted_theme();
 
     let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let mut terminal = ratatui::init();

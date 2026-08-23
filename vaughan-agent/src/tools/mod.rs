@@ -1,5 +1,6 @@
 //! Structured Sensory and Proposal Tool Engine.
 
+pub mod execute_degen_swap;
 pub mod get_balance;
 pub mod get_dex_reserves;
 pub mod inspect_contract;
@@ -8,6 +9,7 @@ pub mod registry;
 pub mod search_pairs;
 pub mod simulate_call;
 
+pub use execute_degen_swap::ExecuteDegenSwapTool;
 pub use get_balance::GetBalanceTool;
 pub use get_dex_reserves::GetDexReservesTool;
 pub use inspect_contract::InspectContractTool;
@@ -23,6 +25,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 
+use crate::degen::DegenTrader;
 use crate::error::AgentError;
 use crate::types::ToolDefinition;
 
@@ -52,6 +55,13 @@ pub fn default_assist_registry() -> ToolRegistry {
     registry.register(Arc::new(ProposeSwapTool::new()));
     registry.register(Arc::new(ProposeBatch7702Tool::new()));
     registry.register(Arc::new(ProposeContractCallTool::new()));
+    registry
+}
+
+/// Degen Bot registry: sensory tools + autonomous `execute_degen_swap` (no propose-only path).
+pub fn default_degen_registry(trader: Arc<DegenTrader>) -> ToolRegistry {
+    let mut registry = default_sensory_registry();
+    registry.register(Arc::new(ExecuteDegenSwapTool::new(trader)));
     registry
 }
 

@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -22,6 +22,7 @@ use vaughan_core::core::WalletState;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::views::{body_areas, status_paragraph};
 use alloy::primitives::Address;
@@ -182,11 +183,9 @@ impl BrowserView {
             ),
             Span::styled(fingerprint_str, Style::default().fg(Color::Green)),
         ])];
-        frame.render_widget(
-            Paragraph::new(header_text)
-                .block(Block::default().borders(Borders::ALL).title(" Context ")),
-            chunks[0],
-        );
+        let ctx_inner =
+            brand::render_faded_box(frame, chunks[0], Some(brand::fade_line(" Context ")));
+        frame.render_widget(Paragraph::new(header_text), ctx_inner);
 
         // 2. Output Logs Pane
         let visible_height = chunks[1].height.saturating_sub(2) as usize;
@@ -198,27 +197,21 @@ impl BrowserView {
         };
 
         let slice = self.logs.iter().skip(skip).cloned().collect::<Vec<_>>();
-        frame.render_widget(
-            Paragraph::new(slice)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" REPL Console (PgUp/PgDn to scroll) "),
-                )
-                .wrap(Wrap { trim: false }),
+        let logs_inner = brand::render_faded_box(
+            frame,
             chunks[1],
+            Some(brand::fade_line(" REPL Console (PgUp/PgDn to scroll) ")),
         );
+        frame.render_widget(Paragraph::new(slice).wrap(Wrap { trim: false }), logs_inner);
 
         // 3. Input Prompt Line
         let prompt_line = self.input.line();
-        frame.render_widget(
-            Paragraph::new(prompt_line).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Command (Esc to exit) "),
-            ),
+        let cmd_inner = brand::render_faded_box(
+            frame,
             chunks[2],
+            Some(brand::fade_line(" Command (Esc to exit) ")),
         );
+        frame.render_widget(Paragraph::new(prompt_line), cmd_inner);
 
         frame.render_widget(status_paragraph(&self.status), status_area);
     }

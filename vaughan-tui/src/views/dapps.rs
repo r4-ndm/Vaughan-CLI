@@ -1,11 +1,14 @@
-//! Whitelisted dApps: add URLs, open in Freedom (auto-connect later).
+//! Whitelisted dApps: add URLs, open in Freedom (Vaughan EIP-1193 bridge).
+//!
+//! Enter launches Freedom only — no system-browser fallback. If Freedom is not
+//! installed, the status line prompts the user to install it.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    text::Line,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -13,9 +16,10 @@ use vaughan_core::core::{TrustedDapp, WalletState};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::freedom;
 use crate::input::{Input, InputAction};
-use crate::views::{body_areas, labeled_input, status_paragraph};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Stage {
@@ -53,36 +57,21 @@ impl DappsView {
 
         match self.stage {
             Stage::List => {
-                let items: Vec<ListItem> = if dapps.is_empty() {
-                    vec![ListItem::new(Line::from(
-                        "  No dApps yet — press a to add one.",
-                    ))]
+                let inner = brand::render_faded_box(
+                    frame,
+                    content,
+                    Some(brand::fade_line(
+                        " Trusted dApps (↑↓ · Enter → Freedom · a add · d delete · Esc) ",
+                    )),
+                );
+                if dapps.is_empty() {
+                    frame.render_widget(
+                        Paragraph::new("  No dApps yet — press a to add one."),
+                        inner,
+                    );
                 } else {
-                    dapps
-                        .iter()
-                        .enumerate()
-                        .map(|(i, d)| {
-                            let mark = if i == self.selected { ">" } else { " " };
-                            let style = if i == self.selected {
-                                Style::default()
-                                    .fg(Color::Black)
-                                    .bg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD)
-                            } else {
-                                Style::default()
-                            };
-                            ListItem::new(Line::from(Span::styled(
-                                format!("{mark} {}  {}", d.name, d.url),
-                                style,
-                            )))
-                        })
-                        .collect()
-                };
-                let list =
-                    List::new(items).block(Block::default().borders(Borders::ALL).title(
-                        " Trusted dApps (↑↓, Enter open Freedom, a add, x remove, Esc back) ",
-                    ));
-                frame.render_widget(list, content);
+                    self.render_dapp_list(frame, inner, &dapps);
+                }
             }
             Stage::Add => {
                 let [msg, name_a, url_a] = Layout::vertical([
@@ -91,23 +80,63 @@ impl DappsView {
                     Constraint::Length(3),
                 ])
                 .areas(content);
+                let msg_inner =
+                    brand::render_faded_box(frame, msg, Some(brand::fade_line(" Add dApp ")));
                 frame.render_widget(
                     Paragraph::new(vec![
                         Line::from("Add a whitelisted dApp"),
                         Line::from("Tab switches fields · Enter saves · Esc cancels"),
                         Line::from(
-                            "Also add the origin to VAUGHAN_PROVIDER_TRUSTED_ORIGINS (or restart after save — origins merge on next launch).",
+                            "Origins feed the provider allowlist on next Vaughan launch. Open requires Freedom Browser.",
                         ),
                     ])
-                    .block(Block::default().borders(Borders::ALL).title(" Add dApp "))
                     .wrap(Wrap { trim: false }),
-                    msg,
+                    msg_inner,
                 );
-                frame.render_widget(labeled_input("Name", &self.name, self.focus == 0), name_a);
-                frame.render_widget(labeled_input("URL", &self.url, self.focus == 1), url_a);
+                render_labeled_input(frame, name_a, "Name", &self.name, self.focus == 0);
+                render_labeled_input(frame, url_a, "URL", &self.url, self.focus == 1);
             }
         }
         frame.render_widget(status_paragraph(&self.status), status_area);
+    }
+
+    fn render_dapp_list(&self, frame: &mut Frame, area: Rect, dapps: &[TrustedDapp]) {
+        let buf = frame.buffer_mut();
+        for (i, d) in dapps.iter().enumerate() {
+            let y = area.y.saturating_add(i as u16);
+            if y >= area.y.saturating_add(area.height) {
+                break;
+            }
+            let selected = i == self.selected;
+            let mark = if selected { ">" } else { " " };
+            let row_style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let url_style = if selected {
+                row_style.add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED)
+            };
+
+            let prefix = format!("{mark} {}  ", d.name);
+            let prefix_w = Line::from(prefix.as_str()).width() as u16;
+            buf.set_stringn(area.x, y, &prefix, area.width as usize, row_style);
+
+            if prefix_w < area.width {
+                let url_x = area.x.saturating_add(prefix_w);
+                let url_w = area.width.saturating_sub(prefix_w) as usize;
+                // Defanged so terminal click ≠ system browser; Enter uses real URL.
+                let shown = freedom::display_url(&d.url);
+                buf.set_stringn(url_x, y, &shown, url_w, url_style);
+            }
+        }
     }
 
     pub fn handle_key(
@@ -147,7 +176,7 @@ impl DappsView {
                     }
                     KeyOutcome::Consumed
                 }
-                KeyCode::Char('x') => {
+                KeyCode::Char('d') => {
                     let dapps = wallet.trusted_dapps();
                     if let Some(TrustedDapp { url, .. }) = dapps.get(self.selected).cloned() {
                         match wallet.remove_trusted_dapp(&url) {

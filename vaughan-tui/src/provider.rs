@@ -217,7 +217,7 @@ pub fn spawn_provider_server(
             match bridge_decision(env::var(TRUSTED_ORIGINS_ENV).ok().as_deref(), &extra_origins) {
                 Some(origins) => origins,
                 None => {
-                    tracing::warn!(
+                    tracing::debug!(
                         env = TRUSTED_ORIGINS_ENV,
                         "provider trusted-origin allowlist not configured (or invalid); dApp bridge disabled"
                     );

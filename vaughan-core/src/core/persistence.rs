@@ -43,6 +43,9 @@ pub struct PersistedState {
     /// Whitelisted dApps: open in Freedom; origins feed the provider allowlist.
     #[serde(default)]
     pub trusted_dapps: Vec<TrustedDapp>,
+    /// User-defined EVM networks (merged after built-ins).
+    #[serde(default)]
+    pub custom_networks: Vec<CustomNetwork>,
 }
 
 /// A user-imported ERC-20 (shown in Assets even at zero balance).
@@ -62,11 +65,97 @@ fn default_token_decimals() -> u8 {
     18
 }
 
+/// A user-defined EVM network (persisted; not a built-in).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomNetwork {
+    /// Stable id (e.g. `custom-1337`).
+    pub id: String,
+    pub name: String,
+    pub chain_id: u64,
+    pub rpc_url: String,
+    #[serde(default = "default_native_symbol")]
+    pub native_symbol: String,
+    #[serde(default)]
+    pub is_testnet: bool,
+}
+
+fn default_native_symbol() -> String {
+    "ETH".into()
+}
+
+impl CustomNetwork {
+    /// Convert to the runtime network config used by adapters.
+    pub fn to_evm_config(&self) -> crate::chains::evm::networks::EvmNetworkConfig {
+        let mut cfg = crate::chains::evm::networks::EvmNetworkConfig::new(
+            self.id.clone(),
+            self.name.clone(),
+            self.chain_id,
+            self.rpc_url.clone(),
+            self.native_symbol.clone(),
+            self.native_symbol.clone(),
+            self.is_testnet,
+        );
+        cfg.decimals = 18;
+        cfg
+    }
+}
+
 /// A bookmarked / allowlisted dApp URL.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrustedDapp {
     pub name: String,
     pub url: String,
+}
+
+/// Built-in PulseChain dApps seeded into every vault (provider origins + launcher).
+pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
+    vec![
+        TrustedDapp {
+            name: "SquirrelSwap".into(),
+            url: "https://app.squirrelswap.pro/#/".into(),
+        },
+        TrustedDapp {
+            name: "LibertySwap".into(),
+            url: "https://libertyswap.finance/".into(),
+        },
+        TrustedDapp {
+            name: "PulseX".into(),
+            url: "https://app.pulsex.com/".into(),
+        },
+        TrustedDapp {
+            name: "9inch".into(),
+            url: "https://app.9inch.io/swap?chain=pulse".into(),
+        },
+    ]
+}
+
+fn dapp_origin(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    let origin = u.origin().ascii_serialization();
+    if origin == "null" {
+        None
+    } else {
+        Some(origin)
+    }
+}
+
+/// Append any missing [`default_trusted_dapps`] entries (matched by origin).
+/// Returns `true` when the list changed.
+pub fn merge_default_trusted_dapps(list: &mut Vec<TrustedDapp>) -> bool {
+    let mut changed = false;
+    for dapp in default_trusted_dapps() {
+        let Some(want) = dapp_origin(&dapp.url) else {
+            continue;
+        };
+        let already = list
+            .iter()
+            .any(|e| dapp_origin(&e.url).as_deref() == Some(want.as_str()));
+        if !already {
+            list.push(dapp);
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn default_profile_string() -> String {
@@ -83,7 +172,8 @@ impl PersistedState {
             operating_mode: OperatingMode::HumanOnly,
             profile_name: DEFAULT_PROFILE.to_string(),
             custom_tokens: Vec::new(),
-            trusted_dapps: Vec::new(),
+            trusted_dapps: default_trusted_dapps(),
+            custom_networks: Vec::new(),
         }
     }
 
@@ -101,7 +191,8 @@ impl PersistedState {
             operating_mode,
             profile_name: profile_name.into(),
             custom_tokens: Vec::new(),
-            trusted_dapps: Vec::new(),
+            trusted_dapps: default_trusted_dapps(),
+            custom_networks: Vec::new(),
         }
     }
 }
@@ -249,6 +340,20 @@ mod tests {
         assert_eq!(loaded.active_account_index, 0);
         assert_eq!(loaded.vault.ciphertext, "cc");
         assert_eq!(loaded.version, CURRENT_VERSION);
+        assert_eq!(loaded.trusted_dapps.len(), default_trusted_dapps().len());
+    }
+
+    #[test]
+    fn merge_default_dapps_is_idempotent() {
+        let mut list = default_trusted_dapps();
+        assert!(!merge_default_trusted_dapps(&mut list));
+        assert_eq!(list.len(), 4);
+        list.clear();
+        assert!(merge_default_trusted_dapps(&mut list));
+        assert!(list.iter().any(|d| d.url.contains("squirrelswap")));
+        assert!(list.iter().any(|d| d.url.contains("libertyswap")));
+        assert!(list.iter().any(|d| d.url.contains("pulsex")));
+        assert!(list.iter().any(|d| d.url.contains("9inch")));
     }
 
     #[test]

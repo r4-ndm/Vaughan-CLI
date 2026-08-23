@@ -29,6 +29,44 @@ impl GetBalanceTool {
     }
 }
 
+/// Resolve the account to query: prefer explicit arg, else session `active_address`.
+/// Never silently query the zero address when a connected wallet exists.
+fn resolve_account(args: &Value, context: &ToolContext) -> Result<(Address, bool), AgentError> {
+    let raw = args
+        .get("account_address")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let parsed =
+        match raw {
+            Some(s) => Some(Address::from_str(s).map_err(|e| {
+                AgentError::InvalidToolCall(format!("Invalid account address: {e}"))
+            })?),
+            None => None,
+        };
+
+    match parsed {
+        Some(addr) if !addr.is_zero() => Ok((addr, false)),
+        Some(_) | None => {
+            let Some(active) = context.active_address else {
+                return Err(AgentError::InvalidToolCall(
+                    "No account_address given and no connected wallet in session — \
+                     unlock the vault or pass account_address"
+                        .into(),
+                ));
+            };
+            if active.is_zero() {
+                return Err(AgentError::InvalidToolCall(
+                    "Connected wallet address is zero — cannot query balance".into(),
+                ));
+            }
+            // LLM passed 0x0 or omitted; substitute the real session account.
+            Ok((active, parsed.is_some()))
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for GetBalanceTool {
     fn name(&self) -> &str {
@@ -36,7 +74,9 @@ impl Tool for GetBalanceTool {
     }
 
     fn description(&self) -> &str {
-        "Query the native coin balance or ERC-20 token balance for an address."
+        "Query the native coin balance or ERC-20 token balance. \
+         Omit account_address (or pass the SESSION CONTEXT wallet) to use the connected account. \
+         Do not pass the zero address."
     }
 
     fn parameters(&self) -> Value {
@@ -45,25 +85,19 @@ impl Tool for GetBalanceTool {
             "properties": {
                 "account_address": {
                     "type": "string",
-                    "description": "Account address to query balance for"
+                    "description": "Optional. Defaults to the connected wallet from SESSION CONTEXT."
                 },
                 "token_address": {
                     "type": "string",
                     "description": "Optional ERC-20 token contract address (omit for native coin balance)"
                 }
             },
-            "required": ["account_address"]
+            "required": []
         })
     }
 
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value, AgentError> {
-        let account_str = args
-            .get("account_address")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::InvalidToolCall("Missing 'account_address'".to_string()))?;
-
-        let account = Address::from_str(account_str)
-            .map_err(|e| AgentError::InvalidToolCall(format!("Invalid account address: {e}")))?;
+        let (account, substituted_zero) = resolve_account(&args, context)?;
 
         let rpc_url = Url::parse(&context.rpc_url)
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}")))?;
@@ -90,20 +124,34 @@ impl Tool for GetBalanceTool {
                 "0".to_string()
             };
 
-            Ok(json!({
-                "account": account.to_string(),
-                "token": token_addr.to_string(),
+            let mut out = json!({
+                "account": format!("{account:#x}"),
+                "token": format!("{token_addr:#x}"),
                 "balance_raw": balance,
-            }))
+            });
+            if substituted_zero {
+                out.as_object_mut().unwrap().insert(
+                    "note".into(),
+                    json!("substituted zero address with connected session wallet"),
+                );
+            }
+            Ok(out)
         } else {
             let native_balance = provider.get_balance(account).await.map_err(|e| {
                 AgentError::ProviderError(format!("Failed to query native balance: {e}"))
             })?;
 
-            Ok(json!({
-                "account": account.to_string(),
+            let mut out = json!({
+                "account": format!("{account:#x}"),
                 "balance_wei": native_balance.to_string(),
-            }))
+            });
+            if substituted_zero {
+                out.as_object_mut().unwrap().insert(
+                    "note".into(),
+                    json!("substituted zero address with connected session wallet"),
+                );
+            }
+            Ok(out)
         }
     }
 }

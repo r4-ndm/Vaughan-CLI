@@ -17,17 +17,18 @@ fn test_circuit_breaker_position_sizing() {
         .validate_trade(U256::from(15_000), total_balance, 50)
         .is_ok());
 
-    // 25% trade is blocked and trips breaker
+    // 25% trade is blocked but does not permanently trip
     let err = breaker
         .validate_trade(U256::from(25_000), total_balance, 50)
         .unwrap_err();
-    assert!(err.to_string().contains("exceeds maximum position size"));
-    assert!(breaker.is_tripped());
+    assert!(err.to_string().contains("exceeds max position size"));
+    assert!(err.to_string().contains("max allowed"));
+    assert!(!breaker.is_tripped());
 
-    // Subsequent valid trade is also blocked because breaker is tripped
+    // Subsequent valid trade still works
     assert!(breaker
         .validate_trade(U256::from(1_000), total_balance, 50)
-        .is_err());
+        .is_ok());
 }
 
 #[test]
@@ -44,12 +45,12 @@ fn test_circuit_breaker_slippage_ceiling() {
         .validate_trade(U256::from(10_000), total_balance, 100)
         .is_ok());
 
-    // 150 bps (1.5%) exceeds hard 1.0% limit
+    // 150 bps (1.5%) exceeds hard 1.0% limit — soft reject
     let err = breaker
         .validate_trade(U256::from(10_000), total_balance, 150)
         .unwrap_err();
-    assert!(err.to_string().contains("maximum allowable slippage"));
-    assert!(breaker.is_tripped());
+    assert!(err.to_string().contains("exceeds max"));
+    assert!(!breaker.is_tripped());
 }
 
 #[test]

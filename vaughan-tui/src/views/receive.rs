@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -13,6 +13,7 @@ use vaughan_core::core::{StealthNote, WalletState};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -45,12 +46,8 @@ impl ReceiveView {
             Stage::Address => self.address_lines(wallet, net.name.as_str()),
             Stage::Notes => self.notes_lines(net.native_symbol.as_str()),
         };
-        frame.render_widget(
-            Paragraph::new(text)
-                .block(Block::default().borders(Borders::ALL).title(" Receive "))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
+        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(" Receive ")));
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
     }
 
     fn address_lines(&self, wallet: &WalletState, net_name: &str) -> Vec<Line<'static>> {
@@ -64,7 +61,7 @@ impl ReceiveView {
             Line::from(format!("Network: {net_name}")),
             Line::from(""),
             Line::from("Public address:"),
-            Line::from(Span::styled(address, Style::default().fg(Color::Yellow))),
+            Line::from(brand::colored_address_spans(&address)),
             Line::from(""),
             Line::from("Stealth URI (one-time payments; does not hide sender/amount):"),
         ];

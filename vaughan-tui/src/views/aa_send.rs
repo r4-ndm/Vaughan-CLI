@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -30,8 +30,9 @@ use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::input::{Input, InputAction};
-use crate::views::{body_areas, labeled_input, status_paragraph};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 enum Stage {
     Edit,
@@ -163,39 +164,33 @@ impl AaSendView {
                     // Row number gutter + recipient/amount inputs.
                     let [num, rest] =
                         Layout::horizontal([Constraint::Length(4), Constraint::Min(0)]).areas(area);
-                    let border_style = if selected {
-                        Style::default().fg(Color::Yellow)
+                    let num_title = if selected {
+                        brand::focus_title(&format!(" {} ", i + 1))
                     } else {
-                        Style::default()
+                        brand::fade_line(&format!(" {} ", i + 1))
                     };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(format!("{}", i + 1))).block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_style(border_style),
-                        ),
-                        num,
-                    );
+                    let num_inner = brand::render_faded_box(frame, num, Some(num_title));
+                    frame
+                        .render_widget(Paragraph::new(Line::from(format!("{}", i + 1))), num_inner);
                     let [rec, amt] = Layout::horizontal([
                         Constraint::Percentage(60),
                         Constraint::Percentage(40),
                     ])
                     .areas(rest);
-                    frame.render_widget(
-                        labeled_input(
-                            "Recipient",
-                            &row.recipient,
-                            selected && self.focus == Focus::Recipient,
-                        ),
+                    render_labeled_input(
+                        frame,
                         rec,
+                        "Recipient",
+                        &row.recipient,
+                        selected && self.focus == Focus::Recipient,
                     );
-                    frame.render_widget(
-                        labeled_input(
-                            &format!("Amount ({})", net.native_symbol),
-                            &row.amount,
-                            selected && self.focus == Focus::Amount,
-                        ),
+                    let amount_label = format!("Amount ({})", net.native_symbol);
+                    render_labeled_input(
+                        frame,
                         amt,
+                        &amount_label,
+                        &row.amount,
+                        selected && self.focus == Focus::Amount,
                     );
                 }
             }
@@ -226,12 +221,8 @@ impl AaSendView {
                 }
                 text.push(Line::from(""));
                 text.push(Line::from("Enter — broadcast   Esc — cancel"));
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL))
-                        .wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::Done => {
                 let hash = self.tx_hash.as_deref().unwrap_or("");
@@ -249,12 +240,8 @@ impl AaSendView {
                     text.push(Line::from(""));
                 }
                 text.push(Line::from("Enter — back to dashboard"));
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL))
-                        .wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
         }
 

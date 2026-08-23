@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{List, ListItem, Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -15,9 +15,10 @@ use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob};
-use crate::views::{body_areas, labeled_input, status_paragraph};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Stage {
@@ -92,20 +93,17 @@ impl AssetsView {
             Stage::Import => {
                 let [msg, field] =
                     Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(content);
+                let msg_inner =
+                    brand::render_faded_box(frame, msg, Some(brand::fade_line(" Import token ")));
                 frame.render_widget(
                     Paragraph::new(vec![
                         Line::from("Import a custom ERC-20 (meme coin, etc.)"),
                         Line::from("Paste the contract address, Enter to import, Esc cancel."),
                     ])
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" Import token "),
-                    )
                     .wrap(Wrap { trim: false }),
-                    msg,
+                    msg_inner,
                 );
-                frame.render_widget(labeled_input("Token", &self.import_addr, true), field);
+                render_labeled_input(frame, field, "Token", &self.import_addr, true);
             }
             Stage::List => {
                 let items: Vec<ListItem> = if self.loading {
@@ -147,12 +145,12 @@ impl AssetsView {
                         .collect()
                 };
 
-                let list =
-                    List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+                let title = format!(
                     " Assets — {}{testnet} (↑↓ select, Enter send, i import, r refresh, d back) ",
                     net.name
-                )));
-                frame.render_widget(list, content);
+                );
+                let inner = brand::render_faded_box(frame, content, Some(brand::fade_line(&title)));
+                frame.render_widget(List::new(items), inner);
             }
         }
         frame.render_widget(status_paragraph(&self.status), status_area);

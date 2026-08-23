@@ -61,6 +61,14 @@ impl Tool for SearchPairsTool {
         let factory = Address::from_str(factory_str)
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid factory address: {e}")))?;
 
+        if factory.is_zero() {
+            return Err(AgentError::InvalidToolCall(
+                "factory_address must not be the zero address — use PulseX factory from \
+                 pulsechain-context (e.g. testnet V2 0x29eA7545DEf87022BAdc76323F373EA1e707C523)"
+                    .into(),
+            ));
+        }
+
         let start_index = args
             .get("start_index")
             .and_then(|v| v.as_u64())

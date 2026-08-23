@@ -11,6 +11,9 @@ use vaughan_core::browser::BrowserEngine;
 use crate::error::AgentError;
 use crate::tools::{Tool, ToolContext};
 
+/// Max bytecode selectors returned to the LLM (full count is still reported).
+const MAX_SELECTORS_IN_RESULT: usize = 24;
+
 pub struct InspectContractTool {
     engine: BrowserEngine,
 }
@@ -36,7 +39,7 @@ impl Tool for InspectContractTool {
     }
 
     fn description(&self) -> &str {
-        "Inspect a smart contract to detect its standard (ERC-20, Uniswap V2/V3, WETH, Multicall3), verified functions, or candidate bytecode selectors."
+        "Inspect a smart contract to detect its standard (ERC-20, Uniswap V2/V3, WETH, Multicall3), verified functions, or candidate bytecode selectors. Returns a compact summary (selector list is capped)."
     }
 
     fn parameters(&self) -> Value {
@@ -77,10 +80,15 @@ impl Tool for InspectContractTool {
             _ => Vec::new(),
         };
 
-        let candidate_selectors: Vec<String> = inspection
+        let all_selectors: Vec<String> = inspection
             .candidate_selectors
             .iter()
             .map(|s| format!("0x{}", hex::encode(s)))
+            .collect();
+        let selector_count = all_selectors.len();
+        let candidate_selectors: Vec<String> = all_selectors
+            .into_iter()
+            .take(MAX_SELECTORS_IN_RESULT)
             .collect();
 
         let fingerprint_json = serde_json::to_value(&inspection.fingerprint).unwrap_or(json!({}));
@@ -90,7 +98,9 @@ impl Tool for InspectContractTool {
             "chain_id": inspection.chain_id,
             "fingerprint": fingerprint_json,
             "verified_functions": verified_functions,
+            "candidate_selector_count": selector_count,
             "candidate_selectors": candidate_selectors,
+            "candidate_selectors_truncated": selector_count > MAX_SELECTORS_IN_RESULT,
         }))
     }
 }

@@ -121,6 +121,7 @@ async fn assist_turn_runs_tool_then_final_reply() {
                 id: "1".into(),
                 name: "missing_tool".into(),
                 arguments: serde_json::json!({}),
+                thought_signature: None,
             }],
         ),
         ChatMessage::assistant("Tool failed as expected"),
@@ -211,6 +212,7 @@ async fn assist_turn_refuses_propose_without_prior_sensory_tool() {
                     "to": "0x0000000000000000000000000000000000000001",
                     "value_wei": "1"
                 }),
+                thought_signature: None,
             }],
         ),
         ChatMessage::assistant("I will inspect first next time."),

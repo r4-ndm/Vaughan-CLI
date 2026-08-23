@@ -11,6 +11,62 @@ use vaughan_core::core::OperatingMode;
 
 use crate::types::ChatMessage;
 
+/// Live wallet/network facts injected into every system prompt.
+///
+/// The LLM must use these instead of inventing addresses (especially `0x0…0`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSessionContext {
+    /// Checksummed or hex active account (burner in Degen, selected account in Assist).
+    pub active_address: Option<String>,
+    pub chain_id: u64,
+    pub network_id: String,
+    pub network_name: String,
+    pub native_symbol: String,
+    pub is_testnet: bool,
+    /// Degen breaker: max % of native balance per trade (None in Assist).
+    pub max_position_pct: Option<u8>,
+    /// Degen breaker: max slippage in bps (None in Assist).
+    pub max_slippage_bps: Option<u32>,
+}
+
+impl AgentSessionContext {
+    fn render(&self) -> String {
+        let mut out = String::from("# SESSION CONTEXT (authoritative — do not invent)\n\n");
+        out.push_str(&format!(
+            "- Network: {} (`{}`), chain_id {}, native {}\n",
+            self.network_name, self.network_id, self.chain_id, self.native_symbol
+        ));
+        if self.is_testnet {
+            out.push_str(
+                "- This is a **testnet**. Prefer small sizes; funds are not mainnet value.\n",
+            );
+        }
+        match &self.active_address {
+            Some(addr) => {
+                out.push_str(&format!(
+                    "- **Connected wallet address: `{addr}`**\n\
+                     - For `get_balance`, omit `account_address` or pass this exact address.\n\
+                     - **Never** use `0x0000000000000000000000000000000000000000` as the user wallet.\n"
+                ));
+            }
+            None => {
+                out.push_str(
+                    "- No connected wallet address is available in this session (vault locked or unset).\n",
+                );
+            }
+        }
+        if let (Some(pct), Some(bps)) = (self.max_position_pct, self.max_slippage_bps) {
+            out.push_str(&format!(
+                "- **Degen breakers:** max {pct}% of native balance per trade; max {bps} bps slippage.\n\
+                 - Honour the user’s spend cap (e.g. “max 5 tPLS”) with \
+                 `amount_in = min(user_cap, balance, {pct}% of balance)` — do **not** invent a smaller size.\n"
+            ));
+        }
+        out.push('\n');
+        out
+    }
+}
+
 /// Whether a skill is hard policy or soft guidance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillKind {
@@ -175,10 +231,11 @@ pub fn skills_for_mode(operating_mode: OperatingMode, profile_dir: Option<&Path>
     skills
 }
 
-/// Build the system prompt: short identity + mandatory skills + guides.
+/// Build the system prompt: session facts + identity + mandatory skills + guides.
 pub fn build_system_prompt(
     operating_mode: OperatingMode,
     profile_dir: Option<&Path>,
+    session: Option<&AgentSessionContext>,
 ) -> ChatMessage {
     let skills = skills_for_mode(operating_mode, profile_dir);
     let mode_label = match operating_mode {
@@ -188,6 +245,9 @@ pub fn build_system_prompt(
     };
 
     let mut out = String::new();
+    if let Some(ctx) = session {
+        out.push_str(&ctx.render());
+    }
     out.push_str("You are the Vaughan wallet AI agent running inside a terminal UI.\n");
     out.push_str(&format!("Active operating mode: {mode_label}.\n"));
     out.push_str(
@@ -232,12 +292,12 @@ pub fn build_system_prompt(
 
 /// Back-compat helper: Assist-mode system prompt with bundled skills only.
 pub fn assist_system_prompt() -> ChatMessage {
-    build_system_prompt(OperatingMode::AiAssisted, None)
+    build_system_prompt(OperatingMode::AiAssisted, None, None)
 }
 
 /// Degen-mode system prompt with bundled skills only.
 pub fn degen_system_prompt() -> ChatMessage {
-    build_system_prompt(OperatingMode::DegenTrader, None)
+    build_system_prompt(OperatingMode::DegenTrader, None, None)
 }
 
 #[cfg(test)]
@@ -258,7 +318,7 @@ mod tests {
 
     #[test]
     fn assist_prompt_includes_mandatory_and_excludes_degen_only() {
-        let prompt = build_system_prompt(OperatingMode::AiAssisted, None);
+        let prompt = build_system_prompt(OperatingMode::AiAssisted, None, None);
         assert!(prompt.content.contains("MANDATORY"));
         assert!(prompt.content.contains("core-rules"));
         assert!(prompt.content.contains("assist-advisor"));
@@ -267,8 +327,9 @@ mod tests {
 
     #[test]
     fn degen_prompt_includes_degen_skill() {
-        let prompt = build_system_prompt(OperatingMode::DegenTrader, None);
+        let prompt = build_system_prompt(OperatingMode::DegenTrader, None, None);
         assert!(prompt.content.contains("degen-trader"));
+        assert!(prompt.content.contains("execute_degen_swap"));
         assert!(!prompt.content.contains("assist-advisor"));
     }
 
@@ -286,5 +347,30 @@ mod tests {
         let core = skills.iter().find(|s| s.name == "core-rules").unwrap();
         assert!(core.user_override);
         assert!(core.body.contains("Overridden core"));
+    }
+
+    #[test]
+    fn session_context_includes_wallet_address() {
+        let ctx = AgentSessionContext {
+            active_address: Some("0x9274c57e08d9cdabca11d7b9c1db04466789574f".into()),
+            chain_id: 943,
+            network_id: "pulsechain-testnet-v4".into(),
+            network_name: "PulseChain Testnet v4".into(),
+            native_symbol: "tPLS".into(),
+            is_testnet: true,
+            max_position_pct: Some(100),
+            max_slippage_bps: Some(100),
+        };
+        let prompt = build_system_prompt(OperatingMode::DegenTrader, None, Some(&ctx));
+        assert!(prompt
+            .content
+            .contains("0x9274c57e08d9cdabca11d7b9c1db04466789574f"));
+        assert!(prompt.content.contains("SESSION CONTEXT"));
+        assert!(prompt.content.contains("943"));
+        assert!(prompt.content.contains("100%"));
+        assert!(
+            prompt.content.contains("Honour the user’s spend cap")
+                || prompt.content.contains("spend cap")
+        );
     }
 }

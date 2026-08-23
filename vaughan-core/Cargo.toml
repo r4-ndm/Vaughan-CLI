@@ -2,6 +2,7 @@
 name = "vaughan-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Shared wallet core: chains, core logic, security, persistence"
 
 [dependencies]

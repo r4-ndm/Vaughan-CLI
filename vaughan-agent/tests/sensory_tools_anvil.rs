@@ -66,8 +66,8 @@ async fn test_tool_registry_and_sensory_tools_with_anvil() {
         .unwrap();
 
     assert_eq!(
-        bal_res["account"],
-        "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+        bal_res["account"].as_str().unwrap().to_ascii_lowercase(),
+        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
     );
     assert!(bal_res["balance_wei"]
         .as_str()

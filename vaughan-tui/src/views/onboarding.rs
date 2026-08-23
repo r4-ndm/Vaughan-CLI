@@ -9,12 +9,16 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
-use vaughan_agent::{profile_dir, AgentFileConfig, ModelConfig, PendingAgentSetup, ProviderType};
+use vaughan_agent::{
+    looks_like_openrouter_key, normalize_openai_base_url, profile_dir,
+    validate_cursor_chat_endpoint, AgentFileConfig, ModelConfig, PendingAgentSetup, ProviderType,
+    DEFAULT_GEMINI_MODEL, GEMINI_PRO_MODEL,
+};
 use vaughan_core::core::{OperatingMode, WalletState};
 use vaughan_core::security::encryption::validate_password_policy;
 use vaughan_core::security::hd_wallet::{generate_mnemonic, validate_mnemonic};
@@ -23,8 +27,9 @@ use vaughan_provider::EventBus;
 use zeroize::Zeroize;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::input::{Input, InputAction};
-use crate::views::{body_areas, labeled_input, status_paragraph};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 /// Which step of onboarding the user is on.
 enum Stage {
@@ -34,6 +39,10 @@ enum Stage {
     ConfigureProvider,
     /// Enter a cloud API key (masked).
     EnterApiKey,
+    /// OpenAI-compatible gateway base URL (required for Cursor).
+    EnterEndpoint,
+    /// Pick Gemini Flash vs Pro.
+    ChooseGeminiModel,
     /// Optional model id override.
     EnterModel,
     /// Choose create vs restore.
@@ -104,6 +113,11 @@ impl OnboardingView {
                 ProviderType::OpenAi => {
                     AgentFileConfig::openai(&self.pending_model, self.pending_endpoint.clone())
                 }
+                ProviderType::Cursor => {
+                    let mut cfg = AgentFileConfig::cursor(&self.pending_model);
+                    cfg.endpoint_url = self.pending_endpoint.clone();
+                    cfg
+                }
             };
             let pending = PendingAgentSetup {
                 file,
@@ -131,14 +145,14 @@ impl OnboardingView {
     fn default_model_for(provider: ProviderType) -> &'static str {
         match provider {
             ProviderType::Ollama => "llama3.2",
-            ProviderType::Gemini => "gemini-1.5-flash",
+            ProviderType::Gemini => "gemini-3.5-flash",
             ProviderType::OpenAi => "gpt-4o-mini",
+            ProviderType::Cursor => "composer-2",
         }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
-        let block = Block::default().borders(Borders::ALL);
 
         match self.stage {
             Stage::SelectMode => {
@@ -156,21 +170,17 @@ impl OnboardingView {
                         Span::raw("AI advisor with manual human confirmation"),
                     ]),
                     Line::from(vec![
-                        Span::styled(
-                            "3 — Degen Bot Mode:    ",
-                            Style::default().fg(Color::Magenta),
-                        ),
-                        Span::raw("Autonomous trading in isolated burner wallet"),
+                        Span::styled("3 — Degen Bot Mode: ", Style::default().fg(Color::Magenta)),
+                        Span::styled("⚠ WARNING: ", Style::default().fg(Color::Yellow)),
+                        Span::raw("Use an isolated wallet with only a fraction of your funds."),
                     ]),
                     Line::from(""),
                     Line::from("Or press:"),
                     Line::from("c — create a new wallet (generates a 12-word recovery phrase)"),
                     Line::from("r — restore a wallet from an existing phrase"),
                 ];
-                frame.render_widget(
-                    Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::ConfigureProvider => {
                 let mode = wallet.operating_mode().display_label();
@@ -194,16 +204,20 @@ impl OnboardingView {
                         ),
                         Span::raw("OpenAI, OpenRouter, DeepSeek, …"),
                     ]),
+                    Line::from(vec![
+                        Span::styled("4 — Cursor gateway   ", Style::default().fg(Color::Magenta)),
+                        Span::raw("Key + OpenAI-compatible chat URL (not api.cursor.com)"),
+                    ]),
                     Line::from(""),
                     Line::from("s — skip (use environment variables / Ollama defaults)"),
                     Line::from("Esc — back to mode select"),
                 ];
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(block.title(" AI Provider "))
-                        .wrap(Wrap { trim: false }),
+                let inner = brand::render_faded_box(
+                    frame,
                     content,
+                    Some(brand::fade_line(" AI Provider ")),
                 );
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::EnterApiKey => {
                 let provider = self
@@ -211,7 +225,30 @@ impl OnboardingView {
                     .map(provider_label)
                     .unwrap_or("provider");
                 let label = format!("Paste your {provider} API key (masked, never logged)");
-                frame.render_widget(labeled_input(&label, &self.input, true), content);
+                render_labeled_input(frame, content, &label, &self.input, true);
+            }
+            Stage::EnterEndpoint => {
+                let label = "Chat gateway base URL (OpenAI-compatible; Enter keeps current)";
+                render_labeled_input(frame, content, label, &self.input, true);
+            }
+            Stage::ChooseGeminiModel => {
+                let text = vec![
+                    Line::from("Choose a Gemini API model:"),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("1 — Gemini 3.5 Flash", Style::default().fg(Color::Cyan)),
+                        Span::raw(format!("  ({DEFAULT_GEMINI_MODEL})")),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("2 — Gemini 3.5 Pro", Style::default().fg(Color::Yellow)),
+                        Span::raw(format!("  ({GEMINI_PRO_MODEL})")),
+                    ]),
+                    Line::from(""),
+                    Line::from("Esc — back to API key"),
+                ];
+                let inner =
+                    brand::render_faded_box(frame, content, Some(brand::fade_line(" AI Model ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::EnterModel => {
                 let placeholder = self
@@ -219,7 +256,7 @@ impl OnboardingView {
                     .map(Self::default_model_for)
                     .unwrap_or("model");
                 let label = format!("Model name (Enter for default: {placeholder})");
-                frame.render_widget(labeled_input(&label, &self.input, true), content);
+                render_labeled_input(frame, content, &label, &self.input, true);
             }
             Stage::Choose => {
                 let mode_badge = wallet.operating_mode().display_label();
@@ -235,10 +272,8 @@ impl OnboardingView {
                     Line::from("c — create a new wallet (generates a 12-word recovery phrase)"),
                     Line::from("r — restore a wallet from an existing phrase"),
                 ];
-                frame.render_widget(
-                    Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::ShowMnemonic => {
                 let phrase = self
@@ -253,32 +288,29 @@ impl OnboardingView {
                     Line::from(""),
                     Line::from("Press Enter to continue."),
                 ];
-                frame.render_widget(
-                    Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::EnterMnemonic => {
-                frame.render_widget(
-                    labeled_input("Enter your 12-word recovery phrase", &self.input, true),
+                render_labeled_input(
+                    frame,
                     content,
+                    "Enter your 12-word recovery phrase",
+                    &self.input,
+                    true,
                 );
             }
             Stage::SetPassword => {
-                frame.render_widget(
-                    labeled_input(
-                        "Choose a password (>= 12 chars: upper, lower, digit, symbol)",
-                        &self.input,
-                        true,
-                    ),
+                render_labeled_input(
+                    frame,
                     content,
+                    "Choose a password (>= 12 chars: upper, lower, digit, symbol)",
+                    &self.input,
+                    true,
                 );
             }
             Stage::ConfirmPassword => {
-                frame.render_widget(
-                    labeled_input("Confirm password", &self.input, true),
-                    content,
-                );
+                render_labeled_input(frame, content, "Confirm password", &self.input, true);
             }
         }
 
@@ -357,6 +389,20 @@ impl OnboardingView {
                     self.status.clear();
                     self.stage = Stage::EnterApiKey;
                 }
+                KeyCode::Char('4') => {
+                    self.pending_provider = Some(ProviderType::Cursor);
+                    self.pending_endpoint = std::env::var("CURSOR_BASE_URL").ok().and_then(|u| {
+                        let trimmed = normalize_openai_base_url(&u);
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    });
+                    self.input = Input::new(true, "crsr_…");
+                    self.status.clear();
+                    self.stage = Stage::EnterApiKey;
+                }
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     self.pending_provider = None;
                     self.session_agent_config = Some(ModelConfig::from_env());
@@ -386,20 +432,120 @@ impl OnboardingView {
                     } else {
                         self.pending_api_key = Some(key_secret);
                         let provider = self.pending_provider.unwrap_or(ProviderType::OpenAi);
-                        let default = Self::default_model_for(provider);
-                        self.input = Input::new(false, default);
-                        self.input.set_value(default);
-                        self.status.clear();
-                        self.stage = Stage::EnterModel;
+                        if provider == ProviderType::Cursor {
+                            let default = self
+                                .pending_endpoint
+                                .clone()
+                                .unwrap_or_else(|| "http://127.0.0.1:8765".into());
+                            self.input = Input::new(false, "http://127.0.0.1:8765");
+                            self.input.set_value(&default);
+                            self.status =
+                                "Cursor needs a chat gateway URL — not api.cursor.com.".into();
+                            self.stage = Stage::EnterEndpoint;
+                        } else if provider == ProviderType::Gemini {
+                            self.status.clear();
+                            self.stage = Stage::ChooseGeminiModel;
+                        } else {
+                            // OpenAI-compatible: OpenRouter keys auto-route to openrouter.ai.
+                            if let Some(ref key) = self.pending_api_key {
+                                if looks_like_openrouter_key(key.expose_secret()) {
+                                    self.pending_endpoint =
+                                        Some(vaughan_agent::OPENROUTER_BASE_URL.to_string());
+                                    self.status =
+                                        "Detected OpenRouter key — using openrouter.ai/api.".into();
+                                }
+                            }
+                            let default = if self
+                                .pending_endpoint
+                                .as_deref()
+                                .is_some_and(|u| u.contains("openrouter"))
+                            {
+                                "openrouter/free"
+                            } else {
+                                Self::default_model_for(provider)
+                            };
+                            self.input = Input::new(false, default);
+                            self.input.set_value(default);
+                            if self.status.is_empty() {
+                                self.status.clear();
+                            }
+                            self.stage = Stage::EnterModel;
+                        }
                     }
                 }
                 InputAction::Consumed => {}
+            },
+            Stage::EnterEndpoint => match self.input.handle_key(key) {
+                InputAction::Ignored => {
+                    if key.code == KeyCode::Esc {
+                        self.status.clear();
+                        self.input = Input::new(true, "crsr_…");
+                        self.stage = Stage::EnterApiKey;
+                        return KeyOutcome::Consumed;
+                    }
+                    return KeyOutcome::NotHandled;
+                }
+                InputAction::Submitted => {
+                    let mut raw = self.input.take_string();
+                    let candidate = {
+                        let trimmed = raw.trim();
+                        let chosen = if trimmed.is_empty() {
+                            self.pending_endpoint
+                                .clone()
+                                .unwrap_or_else(|| "http://127.0.0.1:8765".into())
+                        } else {
+                            trimmed.to_string()
+                        };
+                        raw.zeroize();
+                        chosen
+                    };
+                    match validate_cursor_chat_endpoint(&candidate) {
+                        Ok(url) => {
+                            self.pending_endpoint.replace(url);
+                            let default = Self::default_model_for(ProviderType::Cursor);
+                            self.input = Input::new(false, default);
+                            self.input.set_value(default);
+                            self.status.clear();
+                            self.stage = Stage::EnterModel;
+                        }
+                        Err(e) => {
+                            self.status = e.to_string();
+                            self.input = Input::new(false, "http://127.0.0.1:8765");
+                            self.input.set_value(&candidate);
+                        }
+                    }
+                }
+                InputAction::Consumed => {}
+            },
+            Stage::ChooseGeminiModel => match key.code {
+                KeyCode::Char('1') => {
+                    self.pending_model = DEFAULT_GEMINI_MODEL.to_string();
+                    self.finish_agent_setup();
+                }
+                KeyCode::Char('2') => {
+                    self.pending_model = GEMINI_PRO_MODEL.to_string();
+                    self.finish_agent_setup();
+                }
+                KeyCode::Esc => {
+                    self.status.clear();
+                    self.input = Input::new(true, "AIza…");
+                    self.stage = Stage::EnterApiKey;
+                }
+                _ => return KeyOutcome::NotHandled,
             },
             Stage::EnterModel => match self.input.handle_key(key) {
                 InputAction::Ignored => {
                     if key.code == KeyCode::Esc {
                         self.status.clear();
-                        if matches!(
+                        if self.pending_provider == Some(ProviderType::Cursor) {
+                            let default = self
+                                .pending_endpoint
+                                .clone()
+                                .unwrap_or_else(|| "http://127.0.0.1:8765".into());
+                            self.input = Input::new(false, "http://127.0.0.1:8765");
+                            self.input.set_value(&default);
+                            self.stage = Stage::EnterEndpoint;
+                        } else if matches!(
                             self.pending_provider,
                             Some(ProviderType::Gemini | ProviderType::OpenAi)
                         ) {
@@ -543,6 +689,11 @@ impl OnboardingView {
             ProviderType::OpenAi => {
                 AgentFileConfig::openai(&self.pending_model, self.pending_endpoint.clone())
             }
+            ProviderType::Cursor => {
+                let mut cfg = AgentFileConfig::cursor(&self.pending_model);
+                cfg.endpoint_url = self.pending_endpoint.clone();
+                cfg
+            }
         };
         let pending = PendingAgentSetup {
             file,
@@ -563,5 +714,6 @@ fn provider_label(provider: ProviderType) -> &'static str {
         ProviderType::Ollama => "Ollama",
         ProviderType::Gemini => "Gemini",
         ProviderType::OpenAi => "OpenAI",
+        ProviderType::Cursor => "Cursor",
     }
 }

@@ -198,6 +198,32 @@ impl EvmAdapter {
         self.chain_id
     }
 
+    /// Suggested max fee / legacy gas price formatted as gwei for wallet status chrome.
+    pub async fn gas_price_gwei_display(&self) -> Result<String, WalletError> {
+        let wei = self
+            .with_provider(|provider| async move {
+                match provider.estimate_eip1559_fees().await {
+                    Ok(est) => Ok(U256::from(est.max_fee_per_gas)),
+                    Err(_) => {
+                        let gas_price = provider
+                            .get_gas_price()
+                            .await
+                            .map_err(|e| WalletError::RpcError(e.to_string()))?;
+                        Ok(U256::from(gas_price))
+                    }
+                }
+            })
+            .await?;
+        // 1 gwei = 1e9 wei; show up to 4 decimal places when sub-gwei.
+        let gwei = format_units(wei, 9).unwrap_or_else(|_| "0".into());
+        let trimmed = gwei.trim_end_matches('0').trim_end_matches('.');
+        Ok(if trimmed.is_empty() {
+            "0".into()
+        } else {
+            trimmed.to_string()
+        })
+    }
+
     /// Native asset metadata for the configured chain (symbol, name, decimals).
     fn native_asset(&self) -> (String, String, u8) {
         if let Some(net) = get_network_by_chain_id(self.chain_id) {

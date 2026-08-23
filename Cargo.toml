@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Vaughan Team"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/r4-ndm/vaughan-cli"
+repository = "https://github.com/r4-ndm/Vaughan-CLI"
 
 [workspace.dependencies]
 # Chain / Ethereum. Single Alloy version for the whole workspace.
@@ -78,6 +78,8 @@ dirs = "5"
 sha2 = "0.10"
 tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls", "stream"] }
+# Multi-provider LLM chat (OpenAI, Gemini, Ollama, OpenRouter, …) — OpenCode-style plug.
+genai = "0.6"
 uniswap-v3-sdk = { version = "=7.0.0", default-features = false }
 
 # TUI

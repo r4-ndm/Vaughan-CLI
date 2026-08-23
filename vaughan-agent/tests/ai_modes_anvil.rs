@@ -241,6 +241,7 @@ async fn assist_turn_sense_then_propose_emits_proposal_on_anvil() {
                     arguments: json!({
                         "account_address": format!("{:#x}", signer.address())
                     }),
+                    thought_signature: None,
                 },
                 ToolCall {
                     id: "2".into(),
@@ -250,6 +251,7 @@ async fn assist_turn_sense_then_propose_emits_proposal_on_anvil() {
                         "amount": "1000000000000000000",
                         "explanation": "Move 1 ETH after checking balance"
                     }),
+                    thought_signature: None,
                 },
             ],
         ),
@@ -326,6 +328,7 @@ async fn assist_turn_sense_propose_then_human_broadcast_on_anvil() {
                         "data": "0x",
                         "value": amount.to_string()
                     }),
+                    thought_signature: None,
                 },
                 ToolCall {
                     id: "2".into(),
@@ -335,6 +338,7 @@ async fn assist_turn_sense_propose_then_human_broadcast_on_anvil() {
                         "amount": amount.to_string(),
                         "explanation": "Simulated then propose"
                     }),
+                    thought_signature: None,
                 },
             ],
         ),
@@ -411,6 +415,7 @@ async fn assist_turn_refuses_propose_without_sense_on_live_registry() {
                     "amount": "1",
                     "explanation": "no look first"
                 }),
+                thought_signature: None,
             }],
         ),
         ChatMessage::assistant("Understood."),
@@ -467,6 +472,7 @@ async fn assist_turn_failed_sensory_does_not_unlock_propose() {
                     id: "1".into(),
                     name: "get_balance".into(),
                     arguments: json!({ "account_address": "not-an-address" }),
+                    thought_signature: None,
                 },
                 ToolCall {
                     id: "2".into(),
@@ -476,6 +482,7 @@ async fn assist_turn_failed_sensory_does_not_unlock_propose() {
                         "amount": "1",
                         "explanation": "should still refuse"
                     }),
+                    thought_signature: None,
                 },
             ],
         ),
@@ -655,7 +662,7 @@ async fn degen_dry_run_then_live_broadcast_on_anvil() {
 }
 
 #[tokio::test]
-async fn degen_position_size_violation_halts_on_anvil() {
+async fn degen_position_size_violation_rejects_without_halt_on_anvil() {
     let anvil = AnvilGuard::spawn(8607);
     let trader = DegenTrader::new(
         anvil_account1(),
@@ -684,8 +691,26 @@ async fn degen_position_size_violation_halts_on_anvil() {
         .await
         .unwrap_err();
 
-    assert!(err.to_string().contains("position size"));
-    assert!(trader.circuit_breaker().is_tripped());
+    assert!(err.to_string().contains("position size") || err.to_string().contains("max allowed"));
+    assert!(
+        !trader.circuit_breaker().is_tripped(),
+        "oversized trade must soft-reject without halting the session"
+    );
+
+    // Smaller trade under the cap must still be allowed to proceed past validation
+    // (may fail later on simulation with empty calldata — that's fine).
+    let small = U256::from(1) * U256::from(10).pow(U256::from(18));
+    let _ = trader
+        .execute_swap(
+            address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+            None,
+            Bytes::new(),
+            small,
+            small,
+            50,
+        )
+        .await;
+    assert!(!trader.circuit_breaker().is_tripped());
 }
 
 #[tokio::test]

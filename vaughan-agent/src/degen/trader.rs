@@ -116,7 +116,7 @@ impl DegenTrader {
             }
         }
 
-        // 4. Pre-flight simulation
+        // 4. Pre-flight simulation (eth_call ignores gas budget)
         let tx_req = TransactionRequest::default()
             .from(self.address())
             .to(router)
@@ -131,20 +131,30 @@ impl DegenTrader {
             )));
         }
 
-        let gas_price = provider.get_gas_price().await.unwrap_or(1_000_000_000); // 1 gwei fallback
-        let gas_estimate =
-            U256::from(300_000u128).saturating_mul(U256::from(gas_price.saturating_mul(2)));
+        // 5. Fees — PulseChain RPCs often report inflated eth_gasPrice; cap tips.
+        let (max_fee_per_gas, max_priority_fee_per_gas, gas_limit) =
+            self.suggest_fees(&provider).await;
+        let gas_budget = U256::from(gas_limit).saturating_mul(U256::from(max_fee_per_gas));
+
+        // Native swaps: value + max gas must fit in balance (eth_call won't catch this).
+        if value_wei.saturating_add(gas_budget) > balance {
+            let max_value = balance.saturating_sub(gas_budget);
+            return Err(AgentError::InvalidToolCall(format!(
+                "insufficient funds for swap value + gas: balance={balance} wei, value={value_wei} wei, \
+                 gas_budget={gas_budget} wei. Reduce amount_in to ≤ {max_value} wei and retry \
+                 (leave headroom for gas; session still open)"
+            )));
+        }
 
         if self.dry_run {
-            // Count estimated gas against session budget without broadcasting.
-            self.circuit_breaker.record_success(gas_estimate)?;
+            self.circuit_breaker.record_success(gas_budget)?;
             return Ok(SwapExecution {
                 tx_hash: B256::ZERO,
                 dry_run: true,
             });
         }
 
-        // 5. Build, sign, and broadcast
+        // 6. Build, sign, and broadcast
         let nonce = provider
             .get_transaction_count(self.address())
             .await
@@ -157,9 +167,9 @@ impl DegenTrader {
             .value(value_wei);
 
         tx.nonce = Some(nonce);
-        tx.gas = Some(300_000);
-        tx.max_fee_per_gas = Some(gas_price as u128 * 2);
-        tx.max_priority_fee_per_gas = Some(gas_price as u128);
+        tx.gas = Some(gas_limit);
+        tx.max_fee_per_gas = Some(max_fee_per_gas);
+        tx.max_priority_fee_per_gas = Some(max_priority_fee_per_gas);
         tx.chain_id = Some(self.chain_id);
 
         let wallet = EthereumWallet::from(self.signer.clone());
@@ -176,13 +186,34 @@ impl DegenTrader {
 
         let tx_hash = *pending_tx.tx_hash();
 
-        // 6. Record gas expenditure
-        self.circuit_breaker.record_success(gas_estimate)?;
+        self.circuit_breaker.record_success(gas_budget)?;
 
         Ok(SwapExecution {
             tx_hash,
             dry_run: false,
         })
+    }
+
+    /// EIP-1559 fee suggestion with PulseChain-safe caps (avoid eth_gasPrice blow-ups).
+    async fn suggest_fees(&self, provider: &RootProvider<Ethereum>) -> (u128, u128, u64) {
+        const GAS_LIMIT: u64 = 350_000;
+        // PulseChain mainnet/testnet tips are ~0.01 gwei; RPCs sometimes return absurd gasPrice.
+        const PLS_TIP: u128 = 10_000_000; // 0.01 gwei
+        const PLS_MAX_FEE_CAP: u128 = 100_000_000; // 0.1 gwei ceiling
+        const DEFAULT_MAX_FEE: u128 = 2_000_000_000; // 2 gwei elsewhere
+
+        let raw = provider.get_gas_price().await.unwrap_or(1_000_000_000);
+
+        if matches!(self.chain_id, 369 | 943) {
+            let max_fee = (raw as u128)
+                .saturating_mul(2)
+                .clamp(PLS_TIP, PLS_MAX_FEE_CAP);
+            (max_fee, PLS_TIP.min(max_fee), GAS_LIMIT)
+        } else {
+            let max_fee = (raw as u128).saturating_mul(2).max(DEFAULT_MAX_FEE);
+            let tip = (raw as u128).min(max_fee);
+            (max_fee, tip, GAS_LIMIT)
+        }
     }
 }
 

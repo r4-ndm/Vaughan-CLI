@@ -8,7 +8,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use secrecy::{ExposeSecret, SecretString};
@@ -18,8 +18,9 @@ use vaughan_provider::EventBus;
 use zeroize::Zeroize;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::input::{Input, InputAction};
-use crate::views::{body_areas, labeled_input, status_paragraph};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuItem {
@@ -58,7 +59,7 @@ impl Default for KeysView {
             menu: MenuItem::ExportPhrase,
             password: Input::new(true, "vault password"),
             verified_password: None,
-            label: Input::new(false, "label (optional)"),
+            label: Input::new(false, "optional — blank → Wn-HD k"),
             private_key: Input::new(true, "0x… private key"),
             import_focus: 0,
             revealed: None,
@@ -132,13 +133,10 @@ impl KeysView {
                 let [msg, pw] =
                     ratatui::layout::Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
                         .areas(content);
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL).title(" Keys "))
-                        .wrap(Wrap { trim: false }),
-                    msg,
-                );
-                frame.render_widget(labeled_input("Password", &self.password, true), pw);
+                let msg_inner =
+                    brand::render_faded_box(frame, msg, Some(brand::fade_line(" Keys ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), msg_inner);
+                render_labeled_input(frame, pw, "Password", &self.password, true);
             }
             Stage::ImportForm => {
                 let [msg, label_a, key_a] = ratatui::layout::Layout::vertical([
@@ -147,28 +145,22 @@ impl KeysView {
                     Constraint::Length(3),
                 ])
                 .areas(content);
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL).title(" Import key "))
-                        .wrap(Wrap { trim: false }),
-                    msg,
-                );
-                frame.render_widget(
-                    labeled_input("Label", &self.label, self.import_focus == 0),
-                    label_a,
-                );
-                frame.render_widget(
-                    labeled_input("Private key", &self.private_key, self.import_focus == 1),
+                let msg_inner =
+                    brand::render_faded_box(frame, msg, Some(brand::fade_line(" Import key ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), msg_inner);
+                render_labeled_input(frame, label_a, "Label", &self.label, self.import_focus == 0);
+                render_labeled_input(
+                    frame,
                     key_a,
+                    "Private key",
+                    &self.private_key,
+                    self.import_focus == 1,
                 );
             }
             _ => {
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL).title(" Keys "))
-                        .wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner =
+                    brand::render_faded_box(frame, content, Some(brand::fade_line(" Keys ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
         }
         frame.render_widget(status_paragraph(&self.status), status_area);

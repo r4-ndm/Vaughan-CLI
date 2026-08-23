@@ -26,6 +26,9 @@ pub struct ImportedKeyRecord {
     pub label: String,
     /// Hex private key (`0x`-optional). Zeroized when the parent payload is.
     pub private_key: String,
+    /// HD `wallet N` index this import was attached to (for `Wn-HD k` labels).
+    #[serde(default)]
+    pub parent_wallet: u32,
 }
 
 impl VaultSecrets {
@@ -125,6 +128,7 @@ mod tests {
             label: "hot".into(),
             private_key: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
                 .into(),
+            parent_wallet: 0,
         });
         let encoded = secrets.encode().unwrap();
         assert!(encoded.starts_with('{'));

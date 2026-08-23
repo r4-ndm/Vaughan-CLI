@@ -1,11 +1,17 @@
 //! Send: recipient + amount -> fee estimate -> confirm -> broadcast -> tx hash.
+//!
+//! Powers **Home** (`h`) via [`SendView::home`] inside the dashboard view.
+//! Integration tests exercise this type directly (non-home `Default`); the live
+//! app never mounts a separate Send screen.
+//!
+//! Network / coin / from-account come from the F1 / F2 / F3 chrome boxes.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -15,9 +21,10 @@ use vaughan_core::security::stealth::{StealthAnnouncement, StealthMetaAddress};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
+use crate::brand;
 use crate::input::{Input, InputAction};
-use crate::jobs::{spinner_frame, UiJob, UiJobResult};
-use crate::views::{body_areas, labeled_input, status_paragraph};
+use crate::jobs::{spinner_frame, ChromeSnapshot, UiJob, UiJobResult};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 enum Stage {
     Input,
@@ -27,6 +34,8 @@ enum Stage {
 
 #[derive(PartialEq, Eq)]
 enum Focus {
+    /// Home only: form idle so footer shortcuts (h/d/…) still work.
+    Idle,
     Recipient,
     Amount,
 }
@@ -53,7 +62,9 @@ pub struct SendView {
     busy: Busy,
     /// Animation tick mirrored from the app loop while busy.
     tick: u64,
-    status: String,
+    pub(crate) status: String,
+    /// Home (`h`) mode: "Send to" label; coin follows F2 chrome.
+    home_mode: bool,
 }
 
 struct TokenCtx {
@@ -67,7 +78,7 @@ impl Default for SendView {
         Self {
             stage: Stage::Input,
             focus: Focus::Recipient,
-            recipient: Input::new(false, "0x..."),
+            recipient: Input::new(false, "0x… or st:…"),
             amount: Input::new(false, "0.0"),
             token: None,
             base_fee: None,
@@ -77,22 +88,52 @@ impl Default for SendView {
             busy: Busy::Idle,
             tick: 0,
             status: String::new(),
+            home_mode: false,
         }
     }
 }
 
 impl SendView {
+    /// Home screen send form (F1 net · F2 coin · F3 from).
+    pub fn home() -> Self {
+        Self {
+            home_mode: true,
+            focus: Focus::Idle,
+            status: "F1 network · F2 coin · F3 from · Enter edit · Tab fields · Enter review"
+                .into(),
+            ..Self::default()
+        }
+    }
+
     /// Prefill a send for a selected Assets row (native or ERC-20).
     pub fn for_asset(balance: Balance) -> Self {
-        let mut view = Self::default();
-        if let Some(addr) = balance.token.contract_address {
-            view.token = Some(TokenCtx {
+        let mut view = Self::home();
+        view.apply_balance_coin(&balance);
+        view
+    }
+
+    /// Sync the send coin from F2 chrome (or native when empty).
+    pub fn sync_from_chrome(&mut self, chrome: &ChromeSnapshot) {
+        if !self.home_mode || !matches!(self.stage, Stage::Input) {
+            return;
+        }
+        if let Some(b) = chrome.assets.get(chrome.asset_idx) {
+            self.apply_balance_coin(b);
+        } else {
+            self.token = None;
+        }
+    }
+
+    fn apply_balance_coin(&mut self, balance: &Balance) {
+        if let Some(addr) = balance.token.contract_address.clone() {
+            self.token = Some(TokenCtx {
                 address: addr,
-                symbol: balance.token.symbol,
+                symbol: balance.token.symbol.clone(),
                 decimals: balance.token.decimals,
             });
+        } else {
+            self.token = None;
         }
-        view
     }
 
     fn amount_decimals(&self, wallet: &WalletState) -> u8 {
@@ -104,6 +145,14 @@ impl SendView {
 
     fn selected_fee(&self) -> Option<Fee> {
         self.base_fee.as_ref().map(|fee| fee.with_speed(self.speed))
+    }
+
+    fn recipient_label(&self) -> &'static str {
+        if self.home_mode {
+            "Send to"
+        } else {
+            "Recipient"
+        }
     }
 
     pub fn set_tick(&mut self, tick: u64) {
@@ -148,6 +197,7 @@ impl SendView {
         let [content, status_area] = body_areas(area);
         let net = wallet.networks().active();
         let testnet = if net.is_testnet { " (testnet)" } else { "" };
+        let from_label = wallet.active_account_label().unwrap_or("—");
         let status = if self.busy != Busy::Idle {
             let label = match self.busy {
                 Busy::Estimating => "estimating fee",
@@ -161,26 +211,67 @@ impl SendView {
 
         match self.stage {
             Stage::Input => {
-                let [recipient_area, amount_area] =
-                    Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(content);
-                frame.render_widget(
-                    labeled_input("Recipient", &self.recipient, self.focus == Focus::Recipient),
-                    recipient_area,
+                let chunks = Layout::vertical([
+                    Constraint::Length(if self.home_mode { 1 } else { 0 }),
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Length(if self.home_mode { 1 } else { 0 }),
+                    Constraint::Min(0),
+                ])
+                .areas::<5>(content);
+
+                if self.home_mode {
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            " Home — send ",
+                            Style::default()
+                                .fg(brand::accent_color())
+                                .add_modifier(Modifier::BOLD),
+                        ))),
+                        chunks[0],
+                    );
+                }
+
+                render_labeled_input(
+                    frame,
+                    chunks[1],
+                    self.recipient_label(),
+                    &self.recipient,
+                    self.focus == Focus::Recipient,
                 );
-                frame.render_widget(
-                    labeled_input(
-                        &format!(
-                            "Amount ({})",
-                            self.token
-                                .as_ref()
-                                .map(|t| t.symbol.as_str())
-                                .unwrap_or(net.native_symbol.as_str())
-                        ),
-                        &self.amount,
-                        self.focus == Focus::Amount,
-                    ),
-                    amount_area,
+                let amount_label = format!(
+                    "Amount ({})",
+                    self.token
+                        .as_ref()
+                        .map(|t| t.symbol.as_str())
+                        .unwrap_or(net.native_symbol.as_str())
                 );
+                render_labeled_input(
+                    frame,
+                    chunks[2],
+                    &amount_label,
+                    &self.amount,
+                    self.focus == Focus::Amount,
+                );
+
+                if self.home_mode {
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            format!(
+                                "F1 {}{} · F2 {} · F3 {}",
+                                net.name,
+                                testnet,
+                                self.token
+                                    .as_ref()
+                                    .map(|t| t.symbol.as_str())
+                                    .unwrap_or(net.native_symbol.as_str()),
+                                from_label
+                            ),
+                            Style::default().fg(brand::body_color()),
+                        ))),
+                        chunks[3],
+                    );
+                }
             }
             Stage::Confirm => {
                 let fee = self.selected_fee();
@@ -235,12 +326,17 @@ impl SendView {
                             .map(|t| t.symbol.as_str())
                             .unwrap_or(&net.native_symbol)
                     )),
-                    Line::from(Span::styled(
-                        stealth_hint.as_deref().unwrap_or(self.recipient.value()),
-                        Style::default().fg(Color::Yellow),
-                    )),
+                    if let Some(hint) = &stealth_hint {
+                        Line::from(Span::styled(
+                            hint.clone(),
+                            Style::default().fg(Color::Yellow),
+                        ))
+                    } else {
+                        Line::from(brand::colored_address_spans(self.recipient.value()))
+                    },
                     Line::from(""),
-                    Line::from(format!("Network: {}{testnet}", net.name)),
+                    Line::from(format!("From:     {from_label}")),
+                    Line::from(format!("Network:  {}{testnet}", net.name)),
                     Line::from(format!("Fee:      {fee_total}  [{}]", self.speed.label())),
                     Line::from(format!(
                         "          {}",
@@ -255,12 +351,8 @@ impl SendView {
                     Line::from(""),
                     Line::from("Enter — broadcast   Esc — cancel"),
                 ];
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL))
-                        .wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::Done => {
                 let hash = self.tx_hash.as_deref().unwrap_or("");
@@ -269,19 +361,20 @@ impl SendView {
                 } else {
                     "Transaction broadcast"
                 };
+                let back = if self.home_mode {
+                    "Enter — new send"
+                } else {
+                    "Enter — back to home"
+                };
                 let text = vec![
                     Line::from(label),
                     Line::from(""),
                     Line::from(Span::styled(hash, Style::default().fg(Color::Green))),
                     Line::from(""),
-                    Line::from("Enter — back to dashboard"),
+                    Line::from(back),
                 ];
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL))
-                        .wrap(Wrap { trim: false }),
-                    content,
-                );
+                let inner = brand::render_faded_box(frame, content, None);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
         }
 
@@ -300,12 +393,22 @@ impl SendView {
         }
         match self.stage {
             Stage::Input => match self.focus {
+                Focus::Idle => match key.code {
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        self.focus = Focus::Recipient;
+                        KeyOutcome::Consumed
+                    }
+                    _ => KeyOutcome::NotHandled,
+                },
                 Focus::Recipient => {
                     if key.code == KeyCode::Esc {
-                        return KeyOutcome::Navigate(Screen::Dashboard);
+                        return if self.home_mode {
+                            self.focus = Focus::Idle;
+                            KeyOutcome::Consumed
+                        } else {
+                            KeyOutcome::Navigate(Screen::Dashboard)
+                        };
                     }
-                    // Tab moves between fields; the view consumes it so the
-                    // app-level Tab screen-cycle never fires mid-form.
                     if key.code == KeyCode::Tab {
                         self.focus = Focus::Amount;
                         return KeyOutcome::Consumed;
@@ -321,7 +424,11 @@ impl SendView {
                 }
                 Focus::Amount => {
                     if key.code == KeyCode::Esc {
-                        self.focus = Focus::Recipient;
+                        self.focus = if self.home_mode {
+                            Focus::Idle
+                        } else {
+                            Focus::Recipient
+                        };
                         return KeyOutcome::Consumed;
                     }
                     if key.code == KeyCode::Tab {
@@ -338,6 +445,9 @@ impl SendView {
             Stage::Confirm => match key.code {
                 KeyCode::Esc => {
                     self.stage = Stage::Input;
+                    if self.home_mode {
+                        self.focus = Focus::Idle;
+                    }
                     KeyOutcome::Consumed
                 }
                 KeyCode::Char(c) if FeeSpeed::from_digit(c).is_some() => {
@@ -348,7 +458,14 @@ impl SendView {
                 _ => KeyOutcome::NotHandled,
             },
             Stage::Done => match key.code {
-                KeyCode::Enter | KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Enter | KeyCode::Esc => {
+                    if self.home_mode {
+                        *self = Self::home();
+                        KeyOutcome::Consumed
+                    } else {
+                        KeyOutcome::Navigate(Screen::Dashboard)
+                    }
+                }
                 _ => KeyOutcome::NotHandled,
             },
         }

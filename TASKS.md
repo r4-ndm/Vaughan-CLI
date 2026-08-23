@@ -94,6 +94,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### DEX views — from wiz4rd-sdk (integrated into workspace)
 - [x] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
 - [ ] Deferred: write calls on other DEXes, cross-DEX routing
+- [x] Piteas aggregator client scaffold (`vaughan-core::core::piteas`): quote API, encrypted partner key vault, `docs/piteas.md` — TUI/agent wire when API key lands
+- [x] Ag screen (`g`): SquirrelSwap Brain primary (no key); also PulseSwap + Piteas; catalog of other aggs (`docs/aggregator.md`)
 
 ### Custom tokens + dApp whitelist (added 2026-08-20)
 - [x] Import custom ERC-20s (meme coins) into Assets (`i`); persist in vault JSON; show even at zero balance
@@ -243,6 +245,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Token streaming: OpenAI/Ollama SSE via `LlmClient::stream`, Gemini falls back to `complete`; Assist chat turns (`run_assist_turn`) + TUI live deltas + Esc cancel; CLI free-form streams to stdout (FR-5.8)
 - [x] Unlock → AI setup screen when Assist/Degen lacks `agent.toml` or cloud API key
 - [x] Agent status chrome: `provider/model · skills: N must`
+- [x] In-chat `/model` picker (OpenCode-style UX) + `/provider` from Agent REPL; persists model to `agent.toml`
+- [x] LLM I/O via `genai` multi-provider client (plug Ollama / Gemini / OpenAI-compatible)
 - [x] Degen dry-run: `VAUGHAN_DEGEN_DRY_RUN` / `DegenTrader::with_dry_run` (validate + simulate, no broadcast)
 - [x] Assist guard: refuse `propose_*` unless a sensory tool already succeeded in the same turn
 
@@ -264,6 +268,17 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Key import/export UI (`Keys` screen): export recovery phrase / active private key / import hex key — password re-check, reveal cleared on leave, vault JSON stores optional imports (`VaultSecrets`)
 - [x] Async TUI jobs: balance / assets / fee estimate / send no longer `block_on` on the UI thread (`jobs` module + worker thread); pending braille spinners on dashboard/assets/send
 - [x] Chrome polish: ASCII Vaughan wordmark in the title area (pure ratatui, no new graphics crates)
+
+## Later — DeFi AI king / Coinbase compete (deferred)
+
+> Narrative + phased roadmap: local notes under `private/` (gitignored).
+> Do **not** start until Pulse quote/swap is demo-stable or we explicitly want MCP.
+
+- [ ] P0: `AgentSessionPolicy` + wire Degen breakers + `vaughan policy` / Agent `/policy`
+- [ ] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Degen under policy)
+- [ ] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real)
+- [ ] P3: x402 client (opportunistic — only with real counterparties)
+- [ ] P4: gas tank, optional hardware signer, local deny lists (never hosted TEE / KYT telemetry)
 
 ## Later — non-EVM families (deferred, no FR yet)
 

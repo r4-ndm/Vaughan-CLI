@@ -17,5 +17,7 @@ kind: guide
 ## Reading results
 
 - Treat tool JSON as ground truth.
-- Quote short fields (name, symbol, reserves) instead of dumping huge blobs.
+- Quote short fields (name, symbol, type, `candidate_selector_count`) — never paste the full selector array into chat.
+- `candidate_selectors` is capped; use the count + fingerprint, then call more specific tools if needed.
+- After one successful `inspect_contract`, give the user a short answer unless they ask for more probes.
 - If inspection fails (bad RPC, empty code), say so and suggest a network/RPC check.

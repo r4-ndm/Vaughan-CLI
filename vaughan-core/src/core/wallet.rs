@@ -37,6 +37,65 @@ use crate::error::WalletError;
 use crate::security::encryption::{decrypt, encrypt};
 use crate::security::hd_wallet::validate_mnemonic;
 
+/// Brief RPC + account context for status-chrome fetches without holding [`WalletState`].
+#[derive(Debug, Clone)]
+pub struct ChromeRpcSnapshot {
+    pub rpc_url: String,
+    pub fallback_rpc_urls: Vec<String>,
+    pub chain_id: u64,
+    pub network_name: String,
+    pub address: String,
+}
+
+impl ChromeRpcSnapshot {
+    const CHROME_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+    async fn adapter(&self) -> Result<EvmAdapter, WalletError> {
+        EvmAdapter::new(
+            &self.rpc_url,
+            self.chain_id,
+            &self.network_name,
+            &self.fallback_rpc_urls,
+        )
+        .await
+    }
+
+    /// Native balance for the snapshotted account.
+    pub async fn balance(&self) -> Result<Balance, WalletError> {
+        let adapter = self.adapter().await?;
+        match tokio::time::timeout(Self::CHROME_RPC_TIMEOUT, adapter.get_balance(&self.address))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(WalletError::NetworkError(
+                "balance RPC timed out — check RPC / network".into(),
+            )),
+        }
+    }
+
+    /// Gas hint in gwei (soft timeout).
+    pub async fn gas_price_gwei_display(&self) -> Result<String, WalletError> {
+        let adapter = self.adapter().await?;
+        match tokio::time::timeout(Self::CHROME_RPC_TIMEOUT, adapter.gas_price_gwei_display()).await
+        {
+            Ok(r) => r,
+            Err(_) => Err(WalletError::NetworkError(
+                "gas price RPC timed out — check RPC / network".into(),
+            )),
+        }
+    }
+
+    /// Balance + gas for the TUI chrome strip. Gas failure is soft (`"—"`); balance failure is hard.
+    pub async fn fetch_chrome(&self) -> Result<(Balance, String), WalletError> {
+        let bal = self.balance().await?;
+        let gas = match self.gas_price_gwei_display().await {
+            Ok(g) => g,
+            Err(_) => "—".into(),
+        };
+        Ok((bal, gas))
+    }
+}
+
 /// Top-level wallet state.
 pub struct WalletState {
     state: StateManager,
@@ -66,7 +125,7 @@ impl WalletState {
     ) -> Result<Self, WalletError> {
         let profile_str = profile.into();
         let state = StateManager::new(path);
-        let persisted = match state.load() {
+        let mut persisted = match state.load() {
             Ok(persisted) => persisted,
             Err(WalletError::NotInitialized) => {
                 return Ok(Self {
@@ -81,7 +140,15 @@ impl WalletState {
             }
             Err(e) => return Err(e),
         };
-        let networks = NetworkService::new(&persisted.active_network_id)?;
+        if crate::core::persistence::merge_default_trusted_dapps(&mut persisted.trusted_dapps) {
+            let _ = state.save(&persisted);
+        }
+        let networks =
+            NetworkService::with_custom(&persisted.active_network_id, &persisted.custom_networks)?;
+        if networks.active_id() != persisted.active_network_id {
+            persisted.active_network_id = networks.active_id().to_string();
+            let _ = state.save(&persisted);
+        }
         let effective_mode = if mode != OperatingMode::HumanOnly {
             mode
         } else {
@@ -114,7 +181,10 @@ impl WalletState {
         self.session_mode
     }
 
-    /// Set operating mode (used at welcome screen before session lock).
+    /// Set the operating mode for this process session (welcome / unlock picker).
+    ///
+    /// Also updates the persisted preference so CLI defaults stay in sync; the
+    /// TUI always re-prompts at unlock (FR-5.1).
     pub fn set_operating_mode(&mut self, mode: OperatingMode) {
         self.session_mode = mode;
         if let Some(ref mut p) = self.persisted {
@@ -163,6 +233,34 @@ impl WalletState {
     /// The active account address (requires an unlocked wallet).
     pub fn active_address(&self) -> Result<&str, WalletError> {
         Ok(self.require_unlocked()?.active_address())
+    }
+
+    /// Active account index (HD or imported).
+    pub fn active_account_index(&self) -> Result<u32, WalletError> {
+        Ok(self.require_unlocked()?.active_index())
+    }
+
+    /// Display label for the active account (e.g. `wallet 0` or `W1-HD 1`).
+    pub fn active_account_label(&self) -> Result<&str, WalletError> {
+        Ok(self.require_unlocked()?.active_account().label.as_str())
+    }
+
+    /// Display label for account `index` (F3 chrome preview).
+    pub fn account_label(&self, index: u32) -> Result<String, WalletError> {
+        self.require_unlocked()?
+            .label_for(index)
+            .map(str::to_string)
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))
+    }
+
+    /// All accounts as `(index, label)` for F3 cycling.
+    pub fn account_choices(&self) -> Result<Vec<(u32, String)>, WalletError> {
+        Ok(self
+            .require_unlocked()?
+            .accounts()
+            .iter()
+            .map(|a| (a.index, a.label.clone()))
+            .collect())
     }
 
     /// The active account's signing key (requires an unlocked wallet).
@@ -321,6 +419,111 @@ impl WalletState {
         Ok(())
     }
 
+    /// User-defined networks stored in the vault metadata.
+    pub fn custom_networks(&self) -> &[crate::core::persistence::CustomNetwork] {
+        self.persisted
+            .as_ref()
+            .map(|p| p.custom_networks.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Add a custom EVM network and select it.
+    pub fn add_custom_network(
+        &mut self,
+        name: &str,
+        chain_id: u64,
+        rpc_url: &str,
+        native_symbol: &str,
+        is_testnet: bool,
+    ) -> Result<crate::core::persistence::CustomNetwork, WalletError> {
+        let name = name.trim();
+        let rpc_url = rpc_url.trim();
+        let symbol = {
+            let s = native_symbol.trim();
+            if s.is_empty() {
+                "ETH"
+            } else {
+                s
+            }
+        };
+        if name.is_empty() {
+            return Err(WalletError::InvalidTransaction(
+                "network name is required".into(),
+            ));
+        }
+        let parsed = url::Url::parse(rpc_url).map_err(|_| {
+            WalletError::InvalidTransaction("RPC URL must be a valid http(s) URL".into())
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(WalletError::InvalidTransaction(
+                "RPC URL must be http or https".into(),
+            ));
+        }
+        if chain_id == 0 {
+            return Err(WalletError::InvalidTransaction(
+                "chain id must be non-zero".into(),
+            ));
+        }
+        // Collision with built-in or existing custom.
+        if self
+            .networks
+            .networks()
+            .iter()
+            .any(|n| n.chain_id == chain_id)
+        {
+            return Err(WalletError::Other(format!(
+                "a network with chain id {chain_id} already exists"
+            )));
+        }
+        let id = format!("custom-{chain_id}");
+        if self.networks.get(&id).is_some() {
+            return Err(WalletError::Other(format!(
+                "custom network id `{id}` already exists"
+            )));
+        }
+        let custom = crate::core::persistence::CustomNetwork {
+            id: id.clone(),
+            name: name.to_string(),
+            chain_id,
+            rpc_url: rpc_url.to_string(),
+            native_symbol: symbol.to_string(),
+            is_testnet,
+        };
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted.custom_networks.push(custom.clone());
+        persisted.active_network_id = id;
+        self.state.save(persisted)?;
+        self.networks
+            .reload_custom(&persisted.custom_networks.clone())?;
+        Ok(custom)
+    }
+
+    /// Remove a custom network by id. Built-ins cannot be removed.
+    pub fn remove_custom_network(&mut self, id: &str) -> Result<(), WalletError> {
+        if !self.networks.is_custom(id) {
+            return Err(WalletError::Other(
+                "built-in networks cannot be removed".into(),
+            ));
+        }
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let before = persisted.custom_networks.len();
+        persisted
+            .custom_networks
+            .retain(|n| !n.id.eq_ignore_ascii_case(id.trim()));
+        if persisted.custom_networks.len() == before {
+            return Err(WalletError::NetworkNotFound(id.to_string()));
+        }
+        let was_active = persisted.active_network_id.eq_ignore_ascii_case(id.trim());
+        if was_active {
+            persisted.active_network_id = crate::core::network::DEFAULT_NETWORK_ID.to_string();
+        }
+        let customs = persisted.custom_networks.clone();
+        let active = persisted.active_network_id.clone();
+        self.state.save(persisted)?;
+        self.networks = NetworkService::with_custom(active, &customs)?;
+        Ok(())
+    }
+
     /// Switch the active account and persist the selection.
     pub fn set_active_account(&mut self, index: u32) -> Result<(), WalletError> {
         let accounts = self.accounts.as_mut().ok_or(WalletError::WalletLocked)?;
@@ -357,6 +560,29 @@ impl WalletState {
         )
         .await?;
         adapter.get_balance(address).await
+    }
+
+    /// Snapshot RPC + account facts so the TUI can drop the wallet mutex before network I/O.
+    ///
+    /// Holding [`WalletState`] across `eth_getBalance` / gas RPCs freezes the UI on
+    /// `[busy]` — chrome refresh must use this snapshot pattern instead.
+    pub fn chrome_rpc_snapshot(&self) -> Result<ChromeRpcSnapshot, WalletError> {
+        let (net, address) = self.active_context()?;
+        Ok(ChromeRpcSnapshot {
+            rpc_url: self.effective_rpc(),
+            fallback_rpc_urls: net.fallback_rpc_urls.clone(),
+            chain_id: net.chain_id,
+            network_name: net.name.clone(),
+            address: address.to_string(),
+        })
+    }
+
+    /// Suggested max fee / legacy gas price as a gwei display string for wallet chrome.
+    ///
+    /// Prefers Alloy EIP-1559 feeHistory estimates; falls back to `eth_gasPrice`.
+    pub async fn gas_price_gwei_display(&self) -> Result<String, WalletError> {
+        let snap = self.chrome_rpc_snapshot()?;
+        snap.gas_price_gwei_display().await
     }
 
     /// All detected balances of the active account: the native asset plus

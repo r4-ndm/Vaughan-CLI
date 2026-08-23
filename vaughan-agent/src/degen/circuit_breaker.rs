@@ -25,7 +25,10 @@ pub struct CircuitBreakerConfig {
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
-            max_position_pct: 20,
+            // Burner wallet is already isolated — allow up to the full balance in one
+            // trade so a user “max N” request is not silently shrunk (still cannot
+            // exceed native balance). Slippage / gas / Esc remain hard walls.
+            max_position_pct: 100,
             max_slippage_bps: 100,                                      // 1%
             max_session_gas_wei: U256::from(50_000_000_000_000_000u64), // 0.05 ETH / 50 PLS
             max_consecutive_errors: 3,
@@ -81,6 +84,10 @@ impl CircuitBreaker {
     }
 
     /// Validate a proposed trade against position sizing and slippage rules.
+    ///
+    /// Oversized or over-slippage requests are **rejected without** permanently
+    /// tripping the session (the model can shrink and retry). Permanent trips
+    /// remain for emergency stop, gas ceiling, and consecutive failures.
     pub fn validate_trade(
         &self,
         trade_amount: U256,
@@ -94,34 +101,35 @@ impl CircuitBreaker {
             )));
         }
 
-        // 1. Slippage check
+        // 1. Slippage check (soft reject — do not halt session)
         if slippage_bps > self.config.max_slippage_bps {
-            self.trip(format!(
-                "Slippage violation: requested {slippage_bps} bps exceeds max {} bps",
+            return Err(AgentError::InvalidToolCall(format!(
+                "Slippage {slippage_bps} bps exceeds max {} bps — lower slippage_bps and retry \
+                 (session still open)",
                 self.config.max_slippage_bps
-            ));
-            return Err(AgentError::CircuitBreakerTripped(
-                "Trade exceeded maximum allowable slippage (1.0%)".to_string(),
-            ));
+            )));
         }
 
-        // 2. Position size check
+        // 2. Position size check (soft reject — do not halt session)
         if total_balance > U256::ZERO {
             let max_allowed =
                 (total_balance * U256::from(self.config.max_position_pct)) / U256::from(100);
             if trade_amount > max_allowed {
-                self.trip(format!(
-                    "Position size violation: trade {trade_amount} exceeds {}% of balance ({max_allowed})",
-                    self.config.max_position_pct
-                ));
-                return Err(AgentError::CircuitBreakerTripped(format!(
-                    "Trade exceeds maximum position size ({}%)",
+                return Err(AgentError::InvalidToolCall(format!(
+                    "Trade amount {trade_amount} wei exceeds max position size {}% of balance \
+                     (max allowed {max_allowed} wei / balance {total_balance} wei). \
+                     Reduce amount_in to ≤ {max_allowed} and retry (session still open)",
                     self.config.max_position_pct
                 )));
             }
         }
 
         Ok(())
+    }
+
+    /// Expose config for session prompts / tooling.
+    pub fn config(&self) -> &CircuitBreakerConfig {
+        &self.config
     }
 
     /// Record a successful transaction and gas expenditure.
