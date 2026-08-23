@@ -70,6 +70,11 @@ impl DegenTrader {
         &self.circuit_breaker
     }
 
+    /// Hot-reload breaker limits from a session policy (does not clear Esc trip).
+    pub fn apply_breaker_config(&self, config: CircuitBreakerConfig) {
+        self.circuit_breaker.replace_config(config);
+    }
+
     /// Trigger immediate emergency stop.
     pub fn emergency_stop(&self, reason: impl Into<String>) {
         self.circuit_breaker.trip(reason);
@@ -94,6 +99,13 @@ impl DegenTrader {
             ));
         }
 
+        if !vaughan_core::core::is_allowed_dex_router(self.chain_id, router) {
+            return Err(AgentError::InvalidToolCall(format!(
+                "router {router:#x} is not on the Pulse DEX allowlist for chain {} — refusing swap",
+                self.chain_id
+            )));
+        }
+
         let primary_url = Url::parse(&self.rpc_urls[0])
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid primary RPC URL: {e}")))?;
 
@@ -109,10 +121,11 @@ impl DegenTrader {
         self.circuit_breaker
             .validate_trade(trade_amount, balance, slippage_bps)?;
 
-        // 3. Multi-RPC quorum validation if pair address provided and multiple RPCs available
+        // 3. Multi-RPC quorum validation if pair address provided
         if let Some(pair_addr) = pair {
-            if self.rpc_urls.len() >= 2 {
-                QuorumValidator::validate_pair_reserves(&self.rpc_urls, pair_addr, 2).await?;
+            let need = self.circuit_breaker.config().required_rpc_quorum.max(1);
+            if self.rpc_urls.len() >= need && need >= 2 {
+                QuorumValidator::validate_pair_reserves(&self.rpc_urls, pair_addr, need).await?;
             }
         }
 

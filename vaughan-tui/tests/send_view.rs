@@ -75,12 +75,11 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         } => UiJobResult::SendStealth(
             handle.block_on(wallet.send_stealth(&announcement, &value_wei)),
         ),
-        UiJob::RefreshChrome => {
-            return; // chrome refresh is handled by App, not SendView
-        }
-        UiJob::SendEvm { .. } | UiJob::AggQuote { .. } => {
-            return; // DEX / aggregator — not used by SendView tests
-        }
+        // Chrome / DEX / Ag / Bridge jobs are not used by SendView tests.
+        UiJob::RefreshChrome
+        | UiJob::SendEvm { .. }
+        | UiJob::AggQuote { .. }
+        | UiJob::BridgeQuote { .. } => return,
     };
     view.apply_job_result(result);
 }

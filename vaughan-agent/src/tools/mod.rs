@@ -5,6 +5,7 @@ pub mod get_balance;
 pub mod get_dex_reserves;
 pub mod inspect_contract;
 pub mod proposals;
+pub mod propose_policy;
 pub mod registry;
 pub mod search_pairs;
 pub mod simulate_call;
@@ -16,6 +17,7 @@ pub use inspect_contract::InspectContractTool;
 pub use proposals::{
     ProposeBatch7702Tool, ProposeContractCallTool, ProposeSwapTool, ProposeTransferTool,
 };
+pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use registry::ToolRegistry;
 pub use search_pairs::SearchPairsTool;
 pub use simulate_call::SimulateCallTool;
@@ -23,6 +25,7 @@ pub use simulate_call::SimulateCallTool;
 use alloy::primitives::Address;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::degen::DegenTrader;
@@ -58,10 +61,11 @@ pub fn default_assist_registry() -> ToolRegistry {
     registry
 }
 
-/// Degen Bot registry: sensory tools + autonomous `execute_degen_swap` (no propose-only path).
-pub fn default_degen_registry(trader: Arc<DegenTrader>) -> ToolRegistry {
+/// Degen Bot registry: sensory + `execute_degen_swap` + `propose_policy` (human-approved).
+pub fn default_degen_registry(trader: Arc<DegenTrader>, profile_dir: &Path) -> ToolRegistry {
     let mut registry = default_sensory_registry();
     registry.register(Arc::new(ExecuteDegenSwapTool::new(trader)));
+    registry.register(Arc::new(ProposePolicyTool::new(profile_dir.to_path_buf())));
     registry
 }
 

@@ -137,6 +137,31 @@ enum Command {
         #[arg(long)]
         rpc_url: Option<String>,
     },
+    /// Degen session policy (guardrails in `degen-policy.toml`).
+    ///
+    /// Prefer `--profile degen`. Does not require unlock for show/set (file only);
+    /// live breaker reload happens next Agent session / `/policy reload` in TUI.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCmd {
+    /// Print current policy (defaults if file missing).
+    Show,
+    /// Reload/validate file and print summary.
+    Reload,
+    /// Allow `enforcement disabled` (writes acknowledge_unsafe = true).
+    ConfirmUnsafe,
+    /// Set one key (enforcement, max_slippage_bps, …).
+    Set {
+        /// Policy field name.
+        key: String,
+        /// New value.
+        value: String,
+    },
 }
 
 fn main() {
@@ -149,6 +174,10 @@ fn main() {
     let result = match command {
         None | Some(Command::Tui) => {
             vaughan_tui::run_interactive().map_err(|e| anyhow::anyhow!("{}", e))
+        }
+        Some(Command::Policy { action }) => {
+            let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            runtime.block_on(run_policy_cli(vault, profile, action))
         }
         Some(command) => {
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -451,18 +480,17 @@ async fn run_cli(
                 match wallet.active_signer() {
                     Ok(signer) => {
                         use std::sync::Arc;
-                        use vaughan_agent::{CircuitBreakerConfig, DegenTrader};
-                        let quorum = 1;
+                        use vaughan_agent::DegenTrader;
+                        let dir = vaughan_agent::profile_dir(wallet.path());
+                        let cfg = vaughan_agent::breaker_config_for_session(Some(dir.as_path()), 1)
+                            .map_err(|e| anyhow::anyhow!("degen policy: {e}"))?;
                         let trader = Arc::new(DegenTrader::new(
                             signer,
                             vec![context.rpc_url.clone()],
                             context.chain_id,
-                            CircuitBreakerConfig {
-                                required_rpc_quorum: quorum,
-                                ..CircuitBreakerConfig::default()
-                            },
+                            cfg,
                         ));
-                        vaughan_agent::tools::default_degen_registry(trader)
+                        vaughan_agent::tools::default_degen_registry(trader, dir.as_path())
                     }
                     Err(e) => {
                         anyhow::bail!("Degen mode needs an unlocked vault signer: {e}");
@@ -540,6 +568,14 @@ async fn run_cli(
                     let (_cancel_tx, cancel_rx) = watch::channel(false);
                     let dir = profile_dir(wallet.path());
                     let net = wallet.networks().active();
+                    let (max_position_pct, max_slippage_bps) = if mode == OperatingMode::DegenTrader
+                    {
+                        let cfg = vaughan_agent::breaker_config_for_session(Some(dir.as_path()), 1)
+                            .map_err(|e| anyhow::anyhow!("degen policy: {e}"))?;
+                        (Some(cfg.max_position_pct), Some(cfg.max_slippage_bps))
+                    } else {
+                        (None, None)
+                    };
                     let session = AgentSessionContext {
                         active_address: context.active_address.map(|a| format!("{a:#x}")),
                         chain_id: context.chain_id,
@@ -547,16 +583,8 @@ async fn run_cli(
                         network_name: net.name.clone(),
                         native_symbol: net.native_symbol.clone(),
                         is_testnet: net.is_testnet,
-                        max_position_pct: if mode == OperatingMode::DegenTrader {
-                            Some(100)
-                        } else {
-                            None
-                        },
-                        max_slippage_bps: if mode == OperatingMode::DegenTrader {
-                            Some(100)
-                        } else {
-                            None
-                        },
+                        max_position_pct,
+                        max_slippage_bps,
                     };
                     let mut history = vec![build_system_prompt(
                         mode,
@@ -597,6 +625,7 @@ async fn run_cli(
                                 }
                                 ChatUiEvent::Finished { .. }
                                 | ChatUiEvent::Proposal(_)
+                                | ChatUiEvent::PolicyProposal(_)
                                 | ChatUiEvent::Status(_) => {}
                             }
                         }
@@ -605,6 +634,57 @@ async fn run_cli(
                     println!();
                     turn_res.map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
+            }
+        }
+        Command::Policy { .. } => unreachable!("policy handled in main"),
+    }
+    Ok(())
+}
+
+/// Policy file ops need a profile directory only (no valid vault required).
+async fn run_policy_cli(
+    vault: Option<PathBuf>,
+    profile: String,
+    action: PolicyCmd,
+) -> anyhow::Result<()> {
+    use vaughan_agent::{load_policy, save_policy, AgentSessionPolicy, DEGEN_POLICY_TOML};
+
+    let dir = if let Some(custom) = vault {
+        vaughan_agent::profile_dir(&custom)
+    } else {
+        let wallet_path = StateManager::profile_path(&profile)
+            .map_err(|e| anyhow::anyhow!("could not resolve profile path for `{profile}`: {e}"))?;
+        vaughan_agent::profile_dir(&wallet_path)
+    };
+
+    match action {
+        PolicyCmd::Show | PolicyCmd::Reload => {
+            let policy = load_policy(&dir).unwrap_or_default();
+            println!("{} ({})", DEGEN_POLICY_TOML, dir.display());
+            for line in policy.summary_lines() {
+                println!("{line}");
+            }
+        }
+        PolicyCmd::ConfirmUnsafe => {
+            let mut policy = load_policy(&dir).unwrap_or_default();
+            policy.acknowledge_unsafe = true;
+            save_policy(&dir, &policy).map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!(
+                "acknowledge_unsafe = true written to {}/{}",
+                dir.display(),
+                DEGEN_POLICY_TOML
+            );
+            println!("You may now: vaughan --profile degen policy set enforcement disabled");
+        }
+        PolicyCmd::Set { key, value } => {
+            let mut policy = load_policy(&dir).unwrap_or_else(|_| AgentSessionPolicy::default());
+            policy
+                .set_field(&key, &value)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            save_policy(&dir, &policy).map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("updated {key} = {value}");
+            for line in policy.summary_lines() {
+                println!("{line}");
             }
         }
     }

@@ -14,12 +14,22 @@ In this mode you may call `execute_degen_swap` to sign and broadcast through Rus
 
 ## Hard limits (enforced in Rust)
 
-- **Respect the user’s spend cap** (e.g. “max 5 tPLS”) — use up to that amount, not a smaller “safety” fraction, as long as it fits in the wallet balance.
-- **Max position:** cannot spend more than the configured % of native balance (default **100%** = full burner balance). Still never spend more than `get_balance`.
-- **Max slippage: 100 bps (1%).** Never request higher.
-- Oversized / overslippage calls are **rejected without ending the session** — adjust using the error’s `max allowed` and retry **once**.
-- Gas ceiling, consecutive simulation failures, and Esc **do** halt the session — then stop and explain; do not keep calling tools.
+Limits come from the user’s **session policy** (`degen-policy.toml` / `/policy`), not from this skill’s numbers alone.
+
+- **Respect the user’s spend cap** (e.g. “max 5 tPLS”) — use up to that amount, not a smaller “safety” fraction, as long as it fits in the wallet balance and policy.
+- **Max position / slippage / gas / errors / quorum** — read SESSION CONTEXT and any `/policy` summary the human pastes. Defaults are typically **100%** balance and **100 bps** slippage when enforced.
+- Oversized / overslippage calls are **rejected without ending the session** when enforcement is `enforced` — adjust using the error’s `max allowed` and retry **once**.
+- Gas ceiling, consecutive simulation failures, and Esc **do** halt the session under `enforced` — then stop and explain; do not keep calling tools.
+- `enforcement: warn-only` or `disabled` is a **human testing choice** via `/policy` (disabled needs `/policy confirm-unsafe` first). Esc still emergency-stops. Do not enable these yourself — tell the user the `/policy` commands.
 - `VAUGHAN_DEGEN_DRY_RUN=1` paper-trades (simulation only); still report `dry_run: true` honestly.
+
+## Helping configure policy
+
+If the user asks to loosen or turn off breakers for a test:
+1. Prefer calling `propose_policy` with a `changes` map so they get an **[a]/[d] approval card**.
+2. Or tell them exact commands: `/policy`, `/policy set …`, `/policy confirm-unsafe`, or CLI `vaughan --profile degen policy …`.
+3. Never claim the policy changed until they approved the card or ran `/policy` / CLI themselves.
+4. Remind them: burner profile only; re-enable with enforcement `enforced` when done.
 
 ## Behavior
 

@@ -94,14 +94,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### DEX views — from wiz4rd-sdk (integrated into workspace)
 - [x] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
 - [ ] Deferred: write calls on other DEXes, cross-DEX routing
-- [x] Piteas aggregator client scaffold (`vaughan-core::core::piteas`): quote API, encrypted partner key vault, `docs/piteas.md` — TUI/agent wire when API key lands
+- [x] Piteas aggregator client scaffold (`vaughan-core::core::piteas`): quote API, optional encrypted partner key vault, `docs/piteas.md` — Ag uses public beta (no key)
 - [x] Ag screen (`g`): SquirrelSwap Brain primary (no key); also PulseSwap + Piteas; catalog of other aggs (`docs/aggregator.md`)
 
 ### Custom tokens + dApp whitelist (added 2026-08-20)
 - [x] Import custom ERC-20s (meme coins) into Assets (`i`); persist in vault JSON; show even at zero balance
 - [x] ERC-20 send from Assets (↑↓ select, Enter → Send with token transfer)
 - [x] Trusted dApp whitelist TUI (`w` / Settings): add/remove URLs, Enter opens Freedom (or system browser); origins merge into provider allowlist on launch
-- [ ] Freedom auto-connect on launch (later)
+- [ ] Freedom auto-connect on launch (later) — optional side door; primary product push is **Browserless Pulse** (below)
 
 ### Known facts (verified 2026-08-18)
 - PulseX Router `0x165C…552d9` → Factory `0x29eA…C523`, PLSX `0x95B3…90ab`, 186,244 pairs
@@ -269,12 +269,80 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Async TUI jobs: balance / assets / fee estimate / send no longer `block_on` on the UI thread (`jobs` module + worker thread); pending braille spinners on dashboard/assets/send
 - [x] Chrome polish: ASCII Vaughan wordmark in the title area (pure ratatui, no new graphics crates)
 
+## Browserless Pulse (active product thesis)
+
+> **Pitch:** “The wallet that doesn’t need Chrome.” Approve calldata, not websites.
+> Primary path = Dashboard → Ag / Dex / Contract browser / Agent. Freedom
+> ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)) stays an
+> *optional* side door for odd dApps — not the default story.
+>
+> Exit demo (no browser window): unlock → Ag swap → contract probe → agent
+> explain → stealth receive.
+>
+> Related: `docs/aggregator.md`, `docs/piteas.md`, `docs/browser-engine.md`,
+> Phase 4 Dex/Ag scaffolds, Phase 5 agent tools.
+
+### Degen session policy (guardrails the user owns)
+
+> Burner/`degen` profile only. Agent may **explain** `/policy` commands; only the
+> human writes `degen-policy.toml`. Esc emergency-stop always works.
+
+- [x] `AgentSessionPolicy` + `degen-policy.toml` load/save (`vaughan-agent::degen::policy`)
+- [x] Enforcement modes: `enforced` | `warn-only` | `disabled` (disabled needs `acknowledge_unsafe` / `/policy confirm-unsafe`)
+- [x] Wire policy into `CircuitBreakerConfig` + session `DegenTrader` construction
+- [x] Agent `/policy` show · reload · set · confirm-unsafe (hot-reload live breaker)
+- [x] Skills: core-rules + degen-trader updated (assist config; never silent disable)
+- [x] Approval card: `propose_policy` tool → `[a]` apply / `[d]` deny (Degen Agent)
+- [x] CLI: `vaughan [--profile degen] policy show|set|confirm-unsafe|reload`
+
+### P0 — Finish in-TUI trade (kills PulseX-in-Chrome)
+- [x] Ag Anvil: SquirrelSwap `/swap` fixture → mock router → native + approve/swap broadcast (`vaughan-tui/tests/ag_view.rs`)
+- [x] Ag end-to-end polish: SquirrelSwap quote → route preview → ERC-20 approve (if needed) → swap confirm → broadcast (explicit approval only)
+- [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/piteas.md`)
+- [ ] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
+- [ ] Token discovery without a site: paste `0x` / PulseScan URL / agent “what is 0x…” → import to Assets
+
+### P1 — Agent is the URL bar
+- [ ] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; **no partner key** — port from public SDK ABIs; see `docs/aggregator.md` no-permission matrix)
+- [ ] Agent tools: `quote_*` / `route_*` / `swap_prep` with ground-truth calldata confirmation cards (Assist never auto-broadcasts)
+- [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
+- [ ] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — feeds later MCP work under “DeFi AI king”
+
+### P2 — Replace explorer & settings tabs people open constantly
+- [ ] Activity / History screen (replace `SoonHistory` placeholder): native + ERC-20 transfers, tx status, link-out optional only
+- [x] Anvil: ERC-20 approve → revoke (`approve(spender,0)`) clears allowance (`browserless_anvil.rs` + `build_revoke_tx`)
+- [ ] Approvals manager: list ERC-20 allowances for active account; one-shot revoke via approval card
+- [x] Anvil: WPLS wrap (`deposit`) / unwrap (`withdraw`) against MockWeth (`browserless_anvil.rs` + `build_wrap_tx` / `build_unwrap_tx`)
+- [x] Bridge (`f`): LibertySwap USDC cross-chain quote → approve → source broadcast (`docs/bridge.md`; not official Omnibridge)
+- [ ] Official Pulse Omnibridge / PulseRamp client (lock-and-mint ETH ↔ Pulse) — separate from LibertySwap
+- [ ] Wrap / unwrap WPLS as a first-class tiny flow (no bridge dApp)
+- [ ] Contract browser gated writes: `send` / `write` from REPL → same Approve view as Send (read path already shipped)
+
+### P3 — Earn / advanced (only when real)
+- [ ] LP positions (V2 balance + remove liquidity); V3 only if demand is proven
+- [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
+- [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain”
+- [ ] Local EIP-712: paste/load typed-data JSON → Approve view (for protocols that insist on `eth_signTypedData_v4` without a webview)
+- [ ] Watch mode: prices / wallet delta / breaker status; agent interrupts on thresholds only (degen-safe)
+
+### Positioning (UX + docs)
+- [ ] Demote Dapps screen: rename/relabel to “Optional web (Freedom)” or nest under Advanced; default chrome emphasizes Ag / Dex / Browser / Agent
+- [ ] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom optional
+- [ ] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame)
+
+### Explicitly out of scope for this thesis
+- Building a general-purpose dApp browser inside Vaughan
+- WalletConnect-as-default identity (keeps users married to websites)
+- 1:1 clones of every Pulse website — prefer verbs: swap, inspect, revoke, send, stealth
+
 ## Later — DeFi AI king / Coinbase compete (deferred)
 
 > Narrative + phased roadmap: local notes under `private/` (gitignored).
 > Do **not** start until Pulse quote/swap is demo-stable or we explicitly want MCP.
+>
+> Session policy foundation shipped under **Browserless Pulse → Degen session policy**.
 
-- [ ] P0: `AgentSessionPolicy` + wire Degen breakers + `vaughan policy` / Agent `/policy`
+- [x] P0: `AgentSessionPolicy` + wire Degen breakers + Agent `/policy` (see Browserless Pulse)
 - [ ] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Degen under policy)
 - [ ] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real)
 - [ ] P3: x402 client (opportunistic — only with real counterparties)

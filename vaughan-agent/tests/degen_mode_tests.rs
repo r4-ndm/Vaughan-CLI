@@ -100,3 +100,20 @@ fn test_circuit_breaker_emergency_stop() {
         "Emergency stop pressed by user (Esc)"
     );
 }
+
+#[test]
+fn test_enforcement_disabled_skips_limits_esc_still_trips() {
+    use vaughan_agent::EnforcementMode;
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+        max_position_pct: 1,
+        max_slippage_bps: 1,
+        enforcement: EnforcementMode::Disabled,
+        ..Default::default()
+    });
+    let bal = U256::from(100_000);
+    assert!(breaker
+        .validate_trade(U256::from(50_000), bal, 9_999)
+        .is_ok());
+    breaker.trip("Esc");
+    assert!(breaker.validate_trade(U256::from(1), bal, 1).is_err());
+}

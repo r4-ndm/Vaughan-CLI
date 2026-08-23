@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
 use crate::client::{LlmClient, StreamEvent};
+use crate::degen::policy::PolicyProposal;
 use crate::error::AgentError;
 use crate::proposal::TxProposal;
 use crate::tools::{ToolContext, ToolRegistry};
@@ -27,6 +28,8 @@ pub enum ChatUiEvent {
     ToolResult { name: String, result: String },
     /// Propose-only write tool produced a human-approval card.
     Proposal(Box<TxProposal>),
+    /// Degen policy change awaiting human `[a]` / `[d]`.
+    PolicyProposal(Box<PolicyProposal>),
     /// Turn completed; `history` is the full conversation to persist.
     Finished { history: Vec<ChatMessage> },
     /// Turn aborted by Esc / kill switch.
@@ -173,7 +176,10 @@ pub async fn run_assist_turn(
                 args: args_preview,
             });
 
-            if (is_propose_tool(&call.name) || is_degen_execute_tool(&call.name)) && !saw_sensory {
+            if (is_propose_tool(&call.name) || is_degen_execute_tool(&call.name))
+                && call.name != "propose_policy"
+                && !saw_sensory
+            {
                 let err_text = format!(
                     "refused: call a sensory tool (inspect_contract, get_balance, \
                      get_dex_reserves, search_pairs, or simulate_call) before {}",
@@ -244,6 +250,10 @@ pub async fn run_assist_turn(
 fn maybe_emit_proposal(value: &Value, ui_tx: &mpsc::UnboundedSender<ChatUiEvent>) {
     if let Ok(prop) = serde_json::from_value::<TxProposal>(value.clone()) {
         let _ = ui_tx.send(ChatUiEvent::Proposal(Box::new(prop)));
+        return;
+    }
+    if let Ok(prop) = serde_json::from_value::<PolicyProposal>(value.clone()) {
+        let _ = ui_tx.send(ChatUiEvent::PolicyProposal(Box::new(prop)));
     }
 }
 

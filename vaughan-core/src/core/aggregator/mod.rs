@@ -5,12 +5,14 @@
 
 mod catalog;
 mod pulseswap;
+mod routers;
 mod squirrelswap;
 mod types;
 
 pub use catalog::{AggAccess, AggVenue, AGG_VENUES};
 pub use pulseswap::{PulseSwapClient, PULSESWAP_QUOTE_URL};
-pub use squirrelswap::{SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
+pub use routers::{assert_agg_exec_targets, is_allowed_agg_router, OFFICIAL_AGG_ROUTERS};
+pub use squirrelswap::{SquirrelPreview, SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
 pub use types::{AggExecTx, AggQuote, AggQuoteRequest, NativeSentinel};
 
 use secrecy::SecretString;
@@ -33,11 +35,7 @@ pub async fn quote_aggregator(
     match venue.access() {
         AggAccess::LiveNoKey => match venue {
             AggVenue::SquirrelSwap => SquirrelSwapClient::public()?.prepare_swap(req).await,
-            AggVenue::PulseSwap | AggVenue::AggreGate => {
-                let mut q = PulseSwapClient::public()?.quote(req).await?;
-                q.venue = venue;
-                Ok(q)
-            }
+            AggVenue::PulseSwap => PulseSwapClient::public()?.quote(req).await,
             AggVenue::Piteas => quote_piteas(req, piteas_dir, vault_password).await,
             _ => Err(WalletError::Other(format!(
                 "{} marked live but has no client",

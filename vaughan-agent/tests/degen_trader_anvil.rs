@@ -53,13 +53,14 @@ async fn test_degen_trader_autonomous_execution_with_anvil() {
             max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
             max_consecutive_errors: 3,
             required_rpc_quorum: 1,
+            ..Default::default()
         },
     );
 
     assert_eq!(trader.address(), burner_addr);
 
     // Autonomous swap/call execution
-    let target = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let target = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     let outcome = trader
         .execute_swap(
             target,
@@ -97,13 +98,14 @@ async fn test_degen_trader_dry_run_skips_broadcast() {
             max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
             max_consecutive_errors: 3,
             required_rpc_quorum: 1,
+            ..Default::default()
         },
     )
     .with_dry_run(true);
 
     assert!(trader.is_dry_run());
 
-    let target = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let target = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     let before = trader.circuit_breaker().is_tripped();
     let outcome = trader
         .execute_swap(

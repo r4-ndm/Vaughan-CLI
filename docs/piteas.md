@@ -10,14 +10,14 @@ explicit TUI approval. No auto-sign.
 | Piece | State |
 |---|---|
 | Quote HTTP client (`vaughan-core::core::piteas`) | Done |
-| Encrypted partner API key (`piteas.key.json`) | Done |
+| Encrypted partner API key (`piteas.key.json`) | Done (optional — for higher limits once issued) |
 | `piteas.toml` (base URL + auth style) | Done |
-| TUI Ag / DEX “Piteas” venue | Not yet — wire when key lands |
+| TUI Ag “Piteas” venue | Done — `LiveNoKey` via public `sdk.piteas.io` (no key required) |
 | Agent `quote_piteas` tool | Not yet |
 
 Public SDK beta works **without** a key today (`https://sdk.piteas.io/quote`,
 ~10 req/min). Partner keys are for higher limits / dedicated access once Piteas
-issues them.
+issues them — not a blocker for Ag.
 
 ## Contracts (mainnet 369)
 

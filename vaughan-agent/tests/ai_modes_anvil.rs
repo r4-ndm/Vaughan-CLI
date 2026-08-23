@@ -129,6 +129,7 @@ fn default_breaker() -> CircuitBreakerConfig {
         max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
         max_consecutive_errors: 3,
         required_rpc_quorum: 1,
+        ..Default::default()
     }
 }
 
@@ -628,7 +629,7 @@ async fn degen_dry_run_then_live_broadcast_on_anvil() {
     let anvil = AnvilGuard::spawn(8606);
     let p = provider(&anvil.rpc_url);
     // Account #2 — must not be the burner (account #1), or balance delta is gas-only.
-    let recipient = address!("3C44CdDdB6a900fa2b585dd299e03d12FA4293BC");
+    let recipient = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     let amount = U256::from(1_000_000_000_000_000_000u64);
 
     let mut trader = DegenTrader::new(
@@ -674,6 +675,7 @@ async fn degen_position_size_violation_rejects_without_halt_on_anvil() {
             max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
             max_consecutive_errors: 3,
             required_rpc_quorum: 1,
+            ..Default::default()
         },
     );
 
@@ -681,7 +683,7 @@ async fn degen_position_size_violation_rejects_without_halt_on_anvil() {
     let trade = U256::from(200) * U256::from(10).pow(U256::from(18));
     let err = trader
         .execute_swap(
-            address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+            address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9"),
             None,
             Bytes::new(),
             trade,
@@ -702,7 +704,7 @@ async fn degen_position_size_violation_rejects_without_halt_on_anvil() {
     let small = U256::from(1) * U256::from(10).pow(U256::from(18));
     let _ = trader
         .execute_swap(
-            address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+            address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9"),
             None,
             Bytes::new(),
             small,
@@ -716,7 +718,7 @@ async fn degen_position_size_violation_rejects_without_halt_on_anvil() {
 #[tokio::test]
 async fn degen_simulation_revert_records_failure_then_trips() {
     let anvil = AnvilGuard::spawn(8608);
-    let revert_target = address!("1111111111111111111111111111111111111111");
+    let revert_target = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     // Always revert
     set_code(
         &anvil.rpc_url,
@@ -735,6 +737,7 @@ async fn degen_simulation_revert_records_failure_then_trips() {
             max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
             max_consecutive_errors: 2,
             required_rpc_quorum: 1,
+            ..Default::default()
         },
     );
 
@@ -758,7 +761,7 @@ async fn degen_simulation_revert_records_failure_then_trips() {
 async fn degen_dry_run_gas_ceiling_trips_without_broadcast() {
     let anvil = AnvilGuard::spawn(8609);
     let p = provider(&anvil.rpc_url);
-    let recipient = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let recipient = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     let before = p.get_balance(recipient).await.unwrap();
 
     let trader = DegenTrader::new(
@@ -771,6 +774,7 @@ async fn degen_dry_run_gas_ceiling_trips_without_broadcast() {
             max_session_gas_wei: U256::from(1u64), // tiny ceiling
             max_consecutive_errors: 3,
             required_rpc_quorum: 1,
+            ..Default::default()
         },
     )
     .with_dry_run(true);
@@ -799,7 +803,7 @@ async fn degen_emergency_stop_blocks_swap_on_anvil() {
 
     let err = trader
         .execute_swap(
-            address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+            address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9"),
             None,
             Bytes::new(),
             U256::from(1),
@@ -876,7 +880,7 @@ async fn degen_execute_swap_with_pair_quorum_on_two_rpcs() {
     let a = AnvilGuard::spawn(8615);
     let b = AnvilGuard::spawn(8616);
     let pair = address!("2222222222222222222222222222222222222222");
-    let recipient = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let recipient = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     let code = assemble_dispatcher(&[(
         [0x09, 0x02, 0xf1, 0xac],
         reserves_abi(
@@ -898,6 +902,7 @@ async fn degen_execute_swap_with_pair_quorum_on_two_rpcs() {
             max_session_gas_wei: U256::from(10_000_000_000_000_000u64),
             max_consecutive_errors: 3,
             required_rpc_quorum: 2,
+            ..Default::default()
         },
     );
 

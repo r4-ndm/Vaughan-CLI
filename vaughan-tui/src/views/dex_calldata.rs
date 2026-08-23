@@ -61,6 +61,17 @@ sol! {
     interface IERC20Approve {
         function approve(address spender, uint256 amount) external returns (bool);
     }
+
+    interface IERC20Allowance {
+        function allowance(address owner, address spender) external view returns (uint256);
+    }
+
+    /// WETH9-shaped wrap (Pulse WPLS uses the same selectors).
+    interface IWETH9 {
+        function deposit() external payable;
+        function withdraw(uint256 wad) external;
+        function balanceOf(address account) external view returns (uint256);
+    }
 }
 
 /// V2 vs Uniswap-V3-style SwapRouter periphery.
@@ -159,6 +170,67 @@ pub fn build_approve_tx(
         nonce: None,
         chain_id,
     }
+}
+
+/// ERC-20 revoke = `approve(spender, 0)`.
+pub fn build_revoke_tx(
+    token: Address,
+    spender: Address,
+    from: &str,
+    chain_id: u64,
+) -> EvmTransaction {
+    build_approve_tx(token, spender, U256::ZERO, from, chain_id)
+}
+
+/// Wrap native PLS/ETH: `deposit()` payable on a WETH9-shaped contract.
+pub fn build_wrap_tx(wpls: Address, amount_wei: U256, from: &str, chain_id: u64) -> EvmTransaction {
+    let data = Bytes::from(IWETH9::depositCall {}.abi_encode());
+    EvmTransaction {
+        from: from.to_string(),
+        to: format!("{wpls:#x}"),
+        value: amount_wei.to_string(),
+        data: Some(format!("0x{}", hex::encode(data.as_ref()))),
+        gas_limit: None,
+        gas_price: None,
+        max_fee_per_gas: None,
+        max_priority_fee_per_gas: None,
+        nonce: None,
+        chain_id,
+    }
+}
+
+/// Unwrap WPLS: `withdraw(wad)`.
+pub fn build_unwrap_tx(
+    wpls: Address,
+    amount_wei: U256,
+    from: &str,
+    chain_id: u64,
+) -> EvmTransaction {
+    let data = Bytes::from(IWETH9::withdrawCall { wad: amount_wei }.abi_encode());
+    EvmTransaction {
+        from: from.to_string(),
+        to: format!("{wpls:#x}"),
+        value: "0".into(),
+        data: Some(format!("0x{}", hex::encode(data.as_ref()))),
+        gas_limit: None,
+        gas_price: None,
+        max_fee_per_gas: None,
+        max_priority_fee_per_gas: None,
+        nonce: None,
+        chain_id,
+    }
+}
+
+/// ABI calldata for `allowance(owner, spender)` (eth_call).
+pub fn encode_allowance_call(owner: Address, spender: Address) -> String {
+    let data = Bytes::from(IERC20Allowance::allowanceCall { owner, spender }.abi_encode());
+    format!("0x{}", hex::encode(data.as_ref()))
+}
+
+/// ABI calldata for `balanceOf(account)` (eth_call).
+pub fn encode_balance_of_call(account: Address) -> String {
+    let data = Bytes::from(IWETH9::balanceOfCall { account }.abi_encode());
+    format!("0x{}", hex::encode(data.as_ref()))
 }
 
 /// Build a V2 or V3 swap transaction (no signing).
@@ -283,6 +355,14 @@ pub fn v3_exact_input_selector() -> [u8; 4] {
 
 pub fn erc20_approve_selector() -> [u8; 4] {
     IERC20Approve::approveCall::SELECTOR
+}
+
+pub fn weth_deposit_selector() -> [u8; 4] {
+    IWETH9::depositCall::SELECTOR
+}
+
+pub fn weth_withdraw_selector() -> [u8; 4] {
+    IWETH9::withdrawCall::SELECTOR
 }
 
 #[cfg(test)]

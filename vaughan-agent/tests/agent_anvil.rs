@@ -175,11 +175,12 @@ async fn test_degen_mode_circuit_breaker_soft_rejects_slippage() {
             max_session_gas_wei: U256::from(1_000_000_000_000_000u64),
             max_consecutive_errors: 2,
             required_rpc_quorum: 1,
+            ..Default::default()
         },
     );
 
     // Slippage 2% > 1% → soft reject; session stays open
-    let target = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    let target = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
     let err = trader
         .execute_swap(
             target,

@@ -17,8 +17,6 @@ pub enum AggVenue {
     /// Primary no-key focus: SquirrelSwap Brain (`api.squirrelswap.pro`).
     SquirrelSwap,
     PulseSwap,
-    /// PulseSwap meta-aggregator branding (same public quote API).
-    AggreGate,
     Piteas,
     SwitchWin,
     Empseal,
@@ -34,7 +32,6 @@ pub const AGG_VENUES: &[AggVenue] = &[
     AggVenue::SquirrelSwap,
     AggVenue::PulseSwap,
     AggVenue::Piteas,
-    AggVenue::AggreGate,
     AggVenue::SwitchWin,
     AggVenue::Empseal,
     AggVenue::NineMm9x,
@@ -49,12 +46,11 @@ impl AggVenue {
         match self {
             Self::SquirrelSwap => "Squirrel",
             Self::PulseSwap => "PulseSwap",
-            Self::AggreGate => "AggreGate",
             Self::Piteas => "Piteas",
             Self::SwitchWin => "Switch.win",
             Self::Empseal => "Empseal",
             Self::NineMm9x => "9mm 9X",
-            Self::Curv => "CURV",
+            Self::Curv => "Jolt/CURV",
             Self::InternetMoney => "Int.Money",
             Self::LibertyX => "LibertyX",
             Self::PortalX => "PortalX",
@@ -65,28 +61,28 @@ impl AggVenue {
         match self {
             Self::SquirrelSwap => "Brain agg · public API, no key (api.squirrelswap.pro)",
             Self::PulseSwap => "PulseChain swap aggregator · public quotes",
-            Self::AggreGate => "aggregator-of-aggregators · PulseSwap API",
             Self::Piteas => "Pathfinder DEX aggregator · public SDK beta",
             Self::SwitchWin => "aggregator + limit orders · needs x-api-key",
-            Self::Empseal => "EmpX on-chain aggregator · no HTTP quote API",
-            Self::NineMm9x => "9mm multi-chain aggregator · no public quote API yet",
-            Self::Curv => "OTC + aggregator · not wired",
+            Self::Empseal => "EmpX · on-chain SDK; Alloy port = no partner key",
+            Self::NineMm9x => "9mm multi-chain aggregator · no public developer quote API",
+            Self::Curv => "Jolt / CURV · Switch routing (needs Switch API key)",
             Self::InternetMoney => "multi-chain wallet aggregator · not wired",
-            Self::LibertyX => "cross-chain aggregator · not wired",
+            Self::LibertyX => "use Bridge (f) — LibertySwap cross-chain",
             Self::PortalX => "cross-chain portal · not wired",
         }
     }
 
     pub fn access(self) -> AggAccess {
         match self {
-            Self::SquirrelSwap | Self::PulseSwap | Self::AggreGate | Self::Piteas => {
-                AggAccess::LiveNoKey
-            }
+            Self::SquirrelSwap | Self::PulseSwap | Self::Piteas => AggAccess::LiveNoKey,
             Self::SwitchWin => AggAccess::NeedsApiKey("requires Switch x-api-key"),
-            Self::Empseal => AggAccess::ListedOnly("on-chain EmpX SDK only"),
-            Self::NineMm9x => AggAccess::ListedOnly("no published quote API"),
-            Self::Curv => AggAccess::ListedOnly("OTC desk"),
-            Self::InternetMoney | Self::LibertyX | Self::PortalX => {
+            Self::Empseal => {
+                AggAccess::ListedOnly("on-chain EmpX SDK — Alloy port, no partner key")
+            }
+            Self::NineMm9x => AggAccess::ListedOnly("no public developer quote API"),
+            Self::Curv => AggAccess::NeedsApiKey("Switch routing — same x-api-key as Switch.win"),
+            Self::LibertyX => AggAccess::ListedOnly("Bridge screen · LibertySwap"),
+            Self::InternetMoney | Self::PortalX => {
                 AggAccess::ListedOnly("cross-chain / wallet product")
             }
         }
@@ -116,6 +112,12 @@ mod tests {
         assert!(AggVenue::SquirrelSwap.is_live());
         assert_eq!(AGG_VENUES[0], AggVenue::SquirrelSwap);
         assert!(!AggVenue::SwitchWin.is_live());
+        assert!(!AggVenue::Curv.is_live());
+        assert!(matches!(AggVenue::Curv.access(), AggAccess::NeedsApiKey(_)));
+        assert!(matches!(
+            AggVenue::Empseal.access(),
+            AggAccess::ListedOnly(_)
+        ));
     }
 
     #[test]

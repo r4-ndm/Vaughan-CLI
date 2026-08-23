@@ -59,6 +59,15 @@ pub enum UiJob {
         native_out: bool,
         account: Option<String>,
     },
+    /// LibertySwap cross-chain quote (no signing).
+    BridgeQuote {
+        src_token: String,
+        dst_token: String,
+        amount: String,
+        src_chain: u64,
+        dst_chain: u64,
+        recipient: String,
+    },
 }
 
 /// Cached need-to-know strip shared across every unlocked screen.
@@ -105,6 +114,7 @@ pub enum UiJobResult {
     Send(Result<String, WalletError>),
     SendStealth(Result<StealthSendResult, WalletError>),
     AggQuote(Result<vaughan_core::core::AggQuote, WalletError>),
+    BridgeQuote(Box<Result<vaughan_core::core::BridgeQuote, WalletError>>),
 }
 
 /// Frames for a braille spinner (no extra deps).

@@ -9,14 +9,15 @@
 //! - Degen mode autonomous trader status and emergency stop.
 //! - Esc cancels an in-flight LLM turn.
 
+use std::path::Path;
 use std::sync::Arc;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -26,45 +27,27 @@ use vaughan_agent::tools::{
     default_assist_registry, default_degen_registry, ToolContext, ToolRegistry,
 };
 use vaughan_agent::{
-    build_system_prompt, create_llm_client, load_file_config, models_for_provider,
-    normalize_gemini_model, parse_model_ref, provider_id, run_assist_turn, save_file_config,
-    skills_for_mode, AgentFileConfig, AgentSessionContext, ChatMessage, ChatUiEvent, DegenTrader,
-    LlmClient, ModelConfig, ProviderType, SkillKind,
+    build_system_prompt, create_llm_client, provider_id, run_assist_turn, skills_for_mode,
+    AgentSessionContext, ChatMessage, ChatUiEvent, DegenTrader, EnforcementMode, LlmClient,
+    ModelConfig, PolicyProposal, SkillKind,
 };
-use vaughan_core::chains::Balance;
 use vaughan_core::core::profile::OperatingMode;
-use vaughan_core::error::WalletError;
 
 use crate::app::{KeyOutcome, Screen};
 use crate::brand;
 use crate::input::Input;
-use crate::jobs::{spinner_frame, UiJob};
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
-/// OpenCode-inspired `/model` overlay: filter + ↑/↓ list for the active provider.
-struct ModelPicker {
-    filter: String,
-    selected: usize,
-}
+mod chat_render;
+mod keys;
+mod model;
+mod policy;
+mod portfolio;
 
-/// In-session portfolio panel (native + imported ERC-20 balances).
-struct PortfolioOverlay {
-    assets: Vec<Balance>,
-    selected: usize,
-    loading: bool,
-    error: Option<String>,
-}
-
-impl PortfolioOverlay {
-    fn loading() -> Self {
-        Self {
-            assets: Vec::new(),
-            selected: 0,
-            loading: true,
-            error: None,
-        }
-    }
-}
+use chat_render::build_chat_lines;
+use keys::{is_chrome_hotkey, is_ctrl_chrome_hotkey, is_ctrl_only};
+use model::ModelPicker;
+use portfolio::PortfolioOverlay;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentMessage {
@@ -93,6 +76,8 @@ pub struct AgentView {
     input: Input,
     history: Vec<AgentMessage>,
     active_proposal: Option<TxProposal>,
+    /// Degen policy change awaiting `[a]` / `[d]`.
+    active_policy_proposal: Option<PolicyProposal>,
     status: String,
     scroll_offset: usize,
     /// When true (default), the chat view sticks to the latest lines.
@@ -187,7 +172,7 @@ impl AgentView {
 
         let registry = match (mode, degen.as_ref()) {
             (OperatingMode::DegenTrader, Some(trader)) => {
-                default_degen_registry(Arc::clone(trader))
+                default_degen_registry(Arc::clone(trader), profile_dir.unwrap_or(Path::new(".")))
             }
             _ => default_assist_registry(),
         };
@@ -209,11 +194,14 @@ impl AgentView {
             ));
             if let Some(ref t) = degen {
                 let dry = if t.is_dry_run() { " · dry-run" } else { "" };
+                let cfg = t.circuit_breaker().config();
+                let enf = cfg.enforcement.as_str();
                 history.push(AgentMessage::System(format!(
-                    "Degen Bot: execute_degen_swap on {:#x}{dry} (max {}% balance / {} bps slippage).",
+                    "Degen Bot: execute_degen_swap on {:#x}{dry} · policy {enf} \
+                     (max {}% balance / {} bps). Type /policy to view or change guardrails.",
                     t.address(),
-                    t.circuit_breaker().config().max_position_pct,
-                    t.circuit_breaker().config().max_slippage_bps,
+                    cfg.max_position_pct,
+                    cfg.max_slippage_bps,
                 )));
             } else {
                 history.push(AgentMessage::System(
@@ -232,6 +220,7 @@ impl AgentView {
             input: Input::new(false, input_placeholder),
             history,
             active_proposal: None,
+            active_policy_proposal: None,
             status: String::new(),
             scroll_offset: 0,
             follow_tail: true,
@@ -254,32 +243,6 @@ impl AgentView {
     /// Drive the portfolio loading spinner.
     pub fn set_tick(&mut self, tick: u64) {
         self.tick = tick;
-    }
-
-    /// Apply a background [`UiJob::RefreshAssets`] result to the open portfolio.
-    pub fn apply_portfolio(&mut self, result: Result<Vec<Balance>, WalletError>) {
-        let Some(panel) = self.portfolio.as_mut() else {
-            return;
-        };
-        panel.loading = false;
-        match result {
-            Ok(assets) => {
-                panel.assets = assets;
-                if panel.selected >= panel.assets.len() {
-                    panel.selected = panel.assets.len().saturating_sub(1);
-                }
-                panel.error = None;
-            }
-            Err(e) => {
-                panel.error = Some(e.user_message());
-            }
-        }
-    }
-
-    fn open_portfolio(&mut self) -> KeyOutcome {
-        self.portfolio = Some(PortfolioOverlay::loading());
-        self.status.clear();
-        KeyOutcome::StartJob(UiJob::RefreshAssets)
     }
 
     /// Status line: live job status, or overlay hints; empty when idle.
@@ -315,128 +278,6 @@ impl AgentView {
             provider_id(self.config.provider),
             self.config.model_name
         );
-    }
-
-    fn open_model_picker(&mut self) {
-        let selected = models_for_provider(self.config.provider)
-            .iter()
-            .position(|m| m.id == self.config.model_name)
-            .unwrap_or(0);
-        self.model_picker = Some(ModelPicker {
-            filter: String::new(),
-            selected,
-        });
-        self.status =
-            "Select model (↑/↓, type to filter, Enter) — Esc cancels. Custom ids allowed.".into();
-    }
-
-    /// Visible picker rows: `(model_id, label)`.
-    fn picker_rows(&self) -> Vec<(String, String)> {
-        let Some(picker) = &self.model_picker else {
-            return Vec::new();
-        };
-        let filter = picker.filter.trim().to_ascii_lowercase();
-        let mut rows: Vec<(String, String)> = models_for_provider(self.config.provider)
-            .iter()
-            .filter(|m| {
-                if filter.is_empty() {
-                    return true;
-                }
-                m.id.to_ascii_lowercase().contains(&filter)
-                    || m.label.to_ascii_lowercase().contains(&filter)
-            })
-            .map(|m| (m.id.to_string(), m.label.to_string()))
-            .collect();
-
-        let raw = picker.filter.trim();
-        if !raw.is_empty() && !rows.iter().any(|(id, _)| id.eq_ignore_ascii_case(raw)) {
-            rows.insert(0, (raw.to_string(), "custom".into()));
-        }
-        if rows.is_empty() && !raw.is_empty() {
-            rows.push((raw.to_string(), "custom".into()));
-        }
-        rows
-    }
-
-    fn apply_model(&mut self, model_id: &str) {
-        let model = if self.config.provider == ProviderType::Gemini {
-            normalize_gemini_model(model_id)
-        } else {
-            model_id.trim().to_string()
-        };
-        if model.is_empty() {
-            self.history
-                .push(AgentMessage::System("Model id cannot be empty.".into()));
-            return;
-        }
-        self.config.model_name = model;
-        self.llm =
-            create_llm_client(self.config.clone()).expect("LLM client construction is infallible");
-        self.refresh_badge();
-        self.persist_model();
-        self.model_picker = None;
-        self.status.clear();
-        self.history.push(AgentMessage::System(format!(
-            "Model set to {}/{}. Conversation history kept.",
-            provider_id(self.config.provider),
-            self.config.model_name
-        )));
-    }
-
-    fn persist_model(&self) {
-        let Some(dir) = &self.profile_dir else {
-            return;
-        };
-        let file = match load_file_config(dir) {
-            Ok(Some(mut existing)) => {
-                existing.model = self.config.model_name.clone();
-                existing
-            }
-            _ => match self.config.provider {
-                ProviderType::Ollama => AgentFileConfig::ollama(&self.config.model_name),
-                ProviderType::Gemini => AgentFileConfig::gemini(&self.config.model_name),
-                ProviderType::OpenAi => AgentFileConfig::openai(
-                    &self.config.model_name,
-                    Some(self.config.endpoint_url.clone()),
-                ),
-                ProviderType::Cursor => {
-                    let mut cfg = AgentFileConfig::cursor(&self.config.model_name);
-                    cfg.endpoint_url = Some(self.config.endpoint_url.clone());
-                    cfg
-                }
-            },
-        };
-        if let Err(e) = save_file_config(dir, &file) {
-            // Non-fatal — session switch still applies.
-            tracing::warn!("failed to persist model to agent.toml: {e}");
-        }
-    }
-
-    fn handle_model_command(&mut self, rest: &str) -> KeyOutcome {
-        let rest = rest.trim();
-        if rest.is_empty() {
-            self.open_model_picker();
-            return KeyOutcome::Consumed;
-        }
-        let Some((provider_override, model_id)) = parse_model_ref(rest) else {
-            self.history.push(AgentMessage::System(
-                "Usage: /model  |  /model <id>  |  /model provider/id".into(),
-            ));
-            return KeyOutcome::Consumed;
-        };
-        if let Some(requested) = provider_override {
-            if requested != self.config.provider {
-                self.history.push(AgentMessage::System(format!(
-                    "Provider switch to `{}` needs API key / endpoint setup — type /provider. \
-                     Same-provider: /model <id> (current: {}).",
-                    provider_id(requested),
-                    provider_id(self.config.provider)
-                )));
-                return KeyOutcome::Consumed;
-            }
-        }
-        self.apply_model(&model_id);
-        KeyOutcome::Consumed
     }
 
     pub fn active_proposal(&self) -> Option<&TxProposal> {
@@ -487,6 +328,11 @@ impl AgentView {
                 }
                 ChatUiEvent::Proposal(prop) => {
                     self.active_proposal = Some(*prop);
+                    self.active_policy_proposal = None;
+                }
+                ChatUiEvent::PolicyProposal(prop) => {
+                    self.active_policy_proposal = Some(*prop);
+                    self.active_proposal = None;
                 }
                 ChatUiEvent::Finished { history } => {
                     self.llm_history = history;
@@ -562,6 +408,26 @@ impl AgentView {
             }
         }
 
+        if self.active_policy_proposal.is_some() {
+            match key.code {
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    self.accept_policy_proposal();
+                    return KeyOutcome::Consumed;
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Esc => {
+                    if let Some(p) = self.active_policy_proposal.take() {
+                        self.status = format!("Policy proposal {} denied.", p.proposal_id);
+                        self.history.push(AgentMessage::System(format!(
+                            "Denied policy proposal {} — no change written.",
+                            p.proposal_id
+                        )));
+                    }
+                    return KeyOutcome::Consumed;
+                }
+                _ => return KeyOutcome::Consumed,
+            }
+        }
+
         // Ignore input while a turn is streaming (except Esc handled above).
         if self.job.is_some() {
             return KeyOutcome::Consumed;
@@ -619,100 +485,6 @@ impl AgentView {
         }
     }
 
-    fn handle_portfolio_key(&mut self, key: KeyEvent) -> KeyOutcome {
-        match key.code {
-            KeyCode::Esc => {
-                self.portfolio = None;
-                self.status.clear();
-                KeyOutcome::Consumed
-            }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                if let Some(panel) = self.portfolio.as_mut() {
-                    panel.loading = true;
-                    panel.error = None;
-                }
-                KeyOutcome::StartJob(UiJob::RefreshAssets)
-            }
-            KeyCode::Up => {
-                if let Some(panel) = self.portfolio.as_mut() {
-                    if panel.selected > 0 {
-                        panel.selected -= 1;
-                    }
-                }
-                KeyOutcome::Consumed
-            }
-            KeyCode::Down => {
-                if let Some(panel) = self.portfolio.as_mut() {
-                    if !panel.assets.is_empty() && panel.selected + 1 < panel.assets.len() {
-                        panel.selected += 1;
-                    }
-                }
-                KeyOutcome::Consumed
-            }
-            _ => KeyOutcome::Consumed,
-        }
-    }
-
-    fn handle_model_picker_key(&mut self, key: KeyEvent) -> KeyOutcome {
-        let rows = self.picker_rows();
-        let row_count = rows.len();
-
-        match key.code {
-            KeyCode::Esc => {
-                self.model_picker = None;
-                self.status.clear();
-                KeyOutcome::Consumed
-            }
-            KeyCode::Up => {
-                if let Some(p) = self.model_picker.as_mut() {
-                    if p.selected > 0 {
-                        p.selected -= 1;
-                    }
-                }
-                KeyOutcome::Consumed
-            }
-            KeyCode::Down => {
-                if let Some(p) = self.model_picker.as_mut() {
-                    if row_count > 0 && p.selected + 1 < row_count {
-                        p.selected += 1;
-                    }
-                }
-                KeyOutcome::Consumed
-            }
-            KeyCode::Enter => {
-                if row_count == 0 {
-                    self.history.push(AgentMessage::System(
-                        "No models match — type a custom id or Esc to cancel.".into(),
-                    ));
-                    return KeyOutcome::Consumed;
-                }
-                let selected = self
-                    .model_picker
-                    .as_ref()
-                    .map(|p| p.selected.min(row_count - 1))
-                    .unwrap_or(0);
-                let model_id = rows[selected].0.clone();
-                self.apply_model(&model_id);
-                KeyOutcome::Consumed
-            }
-            KeyCode::Backspace => {
-                if let Some(p) = self.model_picker.as_mut() {
-                    p.filter.pop();
-                    p.selected = 0;
-                }
-                KeyOutcome::Consumed
-            }
-            KeyCode::Char(c) if !c.is_control() => {
-                if let Some(p) = self.model_picker.as_mut() {
-                    p.filter.push(c);
-                    p.selected = 0;
-                }
-                KeyOutcome::Consumed
-            }
-            _ => KeyOutcome::Consumed,
-        }
-    }
-
     fn execute_prompt(
         &mut self,
         prompt: &str,
@@ -736,6 +508,7 @@ impl AgentView {
                     "Commands:\n\
                      - p / /portfolio: Session portfolio (native + imported tokens)\n\
                      - /model [id]: Open model picker or set model (OpenCode-style)\n\
+                     - /policy: Degen guardrails (view / set / reload degen-policy.toml)\n\
                      - /provider: Reconfigure LLM provider / API key\n\
                      - balance [0x...]: Check balance\n\
                      - inspect <0x...>: Fingerprint contract ABI & selectors\n\
@@ -768,6 +541,14 @@ impl AgentView {
                     .collect::<Vec<_>>()
                     .join(" ");
                 self.handle_model_command(&rest)
+            }
+            "policy" => {
+                let rest = prompt
+                    .split_whitespace()
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.handle_policy_command(&rest)
             }
             "provider" | "connect" => {
                 self.history
@@ -973,7 +754,7 @@ impl AgentView {
             return;
         }
 
-        let chunks = if self.active_proposal.is_some() {
+        let chunks = if self.active_proposal.is_some() || self.active_policy_proposal.is_some() {
             Layout::vertical([
                 Constraint::Min(4),
                 Constraint::Length(10),
@@ -1071,9 +852,54 @@ impl AgentView {
                 brand::render_faded_box(frame, chunks[1], Some(brand::focus_title(&prop_title)));
             let prop_block = Paragraph::new(prop_lines).wrap(Wrap { trim: true });
             frame.render_widget(prop_block, prop_inner);
+        } else if let Some(prop) = &self.active_policy_proposal {
+            let mut prop_lines: Vec<Line> = vec![
+                Line::from(Span::styled(
+                    format!("Policy proposal {}", prop.proposal_id),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    prop.llm_explanation.clone(),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            for c in &prop.changes {
+                prop_lines.push(Line::from(format!("  • {c}")));
+            }
+            if prop.after.enforcement == EnforcementMode::Disabled {
+                prop_lines.push(Line::from(Span::styled(
+                    "⚠ Would DISABLE breakers (Esc still stops)",
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+            prop_lines.push(Line::from(vec![
+                Span::styled(
+                    " [a] Apply policy ",
+                    Style::default()
+                        .bg(Color::Green)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    " [d] Deny ",
+                    Style::default()
+                        .bg(Color::Red)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            let prop_title = format!(" Degen Policy Review — {} ", prop.proposal_id);
+            let prop_inner =
+                brand::render_faded_box(frame, chunks[1], Some(brand::focus_title(&prop_title)));
+            frame.render_widget(
+                Paragraph::new(prop_lines).wrap(Wrap { trim: true }),
+                prop_inner,
+            );
         }
 
         let input_chunk = if self.active_proposal.is_some()
+            || self.active_policy_proposal.is_some()
             || self.model_picker.is_some()
             || self.portfolio.is_some()
         {
@@ -1095,359 +921,12 @@ impl AgentView {
             "Prompt",
             &self.input,
             self.active_proposal.is_none()
+                && self.active_policy_proposal.is_none()
                 && self.job.is_none()
                 && self.model_picker.is_none()
                 && self.portfolio.is_none(),
         );
 
         frame.render_widget(status_paragraph(&self.footer_text()), status_rect);
-    }
-
-    fn render_portfolio(&self, frame: &mut Frame, area: Rect, panel: &PortfolioOverlay) {
-        let net = &self.session.network_name;
-        let testnet = if self.session.is_testnet {
-            " (testnet)"
-        } else {
-            ""
-        };
-        let title = format!(" Portfolio — {net}{testnet} · Esc close · r refresh ");
-
-        let items: Vec<ListItem> = if panel.loading {
-            vec![ListItem::new(Line::from(format!(
-                "  {} loading balances…",
-                spinner_frame(self.tick)
-            )))]
-        } else if let Some(err) = &panel.error {
-            vec![ListItem::new(Line::from(Span::styled(
-                format!("  {err}"),
-                Style::default().fg(Color::Red),
-            )))]
-        } else if panel.assets.is_empty() {
-            vec![ListItem::new(Line::from(
-                "  No balances — import tokens from Assets (dashboard), then r to refresh.",
-            ))]
-        } else {
-            panel
-                .assets
-                .iter()
-                .enumerate()
-                .map(|(i, b)| {
-                    let mark = if i == panel.selected { ">" } else { " " };
-                    let kind = if b.token.contract_address.is_none() {
-                        "native"
-                    } else {
-                        "ERC-20"
-                    };
-                    let label = format!(
-                        "{mark} {:<12} {:>22}  ({kind})",
-                        b.token.symbol, b.formatted
-                    );
-                    let style = if i == panel.selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else if b.token.contract_address.is_none() {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default()
-                    };
-                    ListItem::new(Line::from(Span::styled(label, style)))
-                })
-                .collect()
-        };
-
-        frame.render_widget(Clear, area);
-        let list = List::new(items);
-        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(&title)));
-        frame.render_widget(list, inner);
-    }
-
-    fn render_model_picker(&self, frame: &mut Frame, area: Rect, picker: &ModelPicker) {
-        let rows = self.picker_rows();
-        let selected = if rows.is_empty() {
-            0
-        } else {
-            picker.selected.min(rows.len() - 1)
-        };
-        let filter_hint = if picker.filter.is_empty() {
-            "(type to filter)".to_string()
-        } else {
-            format!("filter: {}", picker.filter)
-        };
-        let title = format!(
-            " Select model · {} · {filter_hint} ",
-            provider_id(self.config.provider)
-        );
-
-        let items: Vec<ListItem> = if rows.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "No matches — keep typing a custom model id",
-                Style::default().fg(Color::DarkGray),
-            )))]
-        } else {
-            rows.iter()
-                .enumerate()
-                .map(|(i, (id, label))| {
-                    let current = id == &self.config.model_name;
-                    let marker = if current { "★ " } else { "  " };
-                    let line = format!("{marker}{id}  —  {label}");
-                    let style = if i == selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else if current {
-                        Style::default().fg(Color::Green)
-                    } else {
-                        Style::default()
-                    };
-                    ListItem::new(Line::from(Span::styled(line, style)))
-                })
-                .collect()
-        };
-
-        // Clear underlay so the list doesn't blend into chat history.
-        frame.render_widget(Clear, area);
-        let list = List::new(items);
-        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(&title)));
-        frame.render_widget(list, inner);
-    }
-}
-
-/// Prefixed chat bubbles, hard-wrapped to `width` so text never runs off-screen.
-fn build_chat_lines(history: &[AgentMessage], width: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for msg in history {
-        match msg {
-            AgentMessage::User(u) => append_wrapped(
-                &mut lines,
-                "[You]: ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-                u,
-                Style::default(),
-                width,
-            ),
-            AgentMessage::Assistant(a) => append_wrapped(
-                &mut lines,
-                "[Advisor]: ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                a,
-                Style::default(),
-                width,
-            ),
-            AgentMessage::ToolCall { name, args } => append_wrapped(
-                &mut lines,
-                &format!("[Tool Call: {name}]: "),
-                Style::default().fg(Color::Yellow),
-                &truncate_display(args, 160),
-                Style::default().fg(Color::DarkGray),
-                width,
-            ),
-            AgentMessage::ToolResult { name, result } => append_wrapped(
-                &mut lines,
-                &format!("[Tool Result: {name}]: "),
-                Style::default().fg(Color::Magenta),
-                &truncate_display(result, 320),
-                Style::default().fg(Color::DarkGray),
-                width,
-            ),
-            AgentMessage::System(s) => append_wrapped(
-                &mut lines,
-                "[System]: ",
-                Style::default().fg(Color::DarkGray),
-                s,
-                Style::default().fg(Color::DarkGray),
-                width,
-            ),
-        }
-    }
-    lines
-}
-
-fn append_wrapped(
-    out: &mut Vec<Line<'static>>,
-    prefix: &str,
-    prefix_style: Style,
-    body: &str,
-    body_style: Style,
-    width: usize,
-) {
-    let width = width.max(8);
-    let prefix_cols = prefix.chars().count();
-    let indent = " ".repeat(prefix_cols.min(width.saturating_sub(1)));
-    let body_width = width.saturating_sub(prefix_cols).max(8);
-
-    let paragraphs: Vec<&str> = if body.is_empty() {
-        vec![""]
-    } else {
-        body.split('\n').collect()
-    };
-
-    let mut first = true;
-    for para in paragraphs {
-        let chunks = wrap_words(para, body_width);
-        if chunks.is_empty() {
-            if first {
-                out.push(Line::from(Span::styled(prefix.to_string(), prefix_style)));
-                first = false;
-            } else {
-                out.push(Line::from(""));
-            }
-            continue;
-        }
-        for chunk in chunks {
-            if first {
-                out.push(Line::from(vec![
-                    Span::styled(prefix.to_string(), prefix_style),
-                    Span::styled(chunk, body_style),
-                ]));
-                first = false;
-            } else {
-                out.push(Line::from(vec![
-                    Span::raw(indent.clone()),
-                    Span::styled(chunk, body_style),
-                ]));
-            }
-        }
-    }
-}
-
-/// Cap tool call/result bodies shown in the chat pane.
-fn truncate_display(s: &str, max: usize) -> String {
-    let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= max {
-        collapsed
-    } else {
-        let trimmed: String = collapsed.chars().take(max.saturating_sub(1)).collect();
-        format!("{trimmed}…")
-    }
-}
-
-/// True when only Control is held (no Alt).
-fn is_ctrl_only(key: KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
-}
-
-/// Bare footer chrome keys — used when the agent prompt is empty.
-fn is_chrome_hotkey(key: KeyEvent) -> bool {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-    {
-        return false;
-    }
-    match key.code {
-        KeyCode::Tab => true,
-        KeyCode::Char(c) => is_chrome_char(c),
-        _ => false,
-    }
-}
-
-/// Ctrl+footer key — works mid-typing in agent chat (`Ctrl+C` / `Ctrl+Q` still request quit).
-fn is_ctrl_chrome_hotkey(key: KeyEvent) -> bool {
-    if !is_ctrl_only(key) {
-        return false;
-    }
-    match key.code {
-        // Quit is handled in `global_action` before the view outcome matters.
-        KeyCode::Char('c' | 'C' | 'q' | 'Q') => false,
-        KeyCode::Char(c) => is_chrome_char(c),
-        _ => false,
-    }
-}
-
-fn is_chrome_char(c: char) -> bool {
-    matches!(
-        c.to_ascii_lowercase(),
-        's' | 'v'
-            | 'a'
-            | 'b'
-            | 'w'
-            | 'c'
-            | 'd'
-            | 'g'
-            | 'h'
-            | 'n'
-            | 'i'
-            | 'k'
-            | 'e'
-            | 'f'
-            | 'j'
-            | 'm'
-            | 'q'
-            | 'r'
-            | 'l'
-            | 't'
-            | 'x'
-    )
-}
-
-/// Soft-wrap `text` to `width` columns, preferring breaks at whitespace.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    if text.is_empty() {
-        return Vec::new();
-    }
-
-    let mut lines = Vec::new();
-    let mut current = String::new();
-
-    for word in text.split_whitespace() {
-        let word_len = word.chars().count();
-        if word_len > width {
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-            }
-            let chars: Vec<char> = word.chars().collect();
-            for chunk in chars.chunks(width) {
-                lines.push(chunk.iter().collect());
-            }
-            continue;
-        }
-
-        let next_len = if current.is_empty() {
-            word_len
-        } else {
-            current.chars().count() + 1 + word_len
-        };
-        if next_len > width && !current.is_empty() {
-            lines.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
-#[cfg(test)]
-mod wrap_tests {
-    use super::wrap_words;
-
-    #[test]
-    fn wraps_long_sentence() {
-        let lines = wrap_words(
-            "I'd be happy to help you buy meme coins on PulseChain testnet!",
-            40,
-        );
-        assert!(lines.len() >= 2);
-        assert!(lines.iter().all(|l| l.chars().count() <= 40));
-    }
-
-    #[test]
-    fn hard_breaks_long_token() {
-        let lines = wrap_words(&"x".repeat(25), 10);
-        assert_eq!(lines.len(), 3);
-        assert!(lines.iter().all(|l| l.chars().count() <= 10));
     }
 }

@@ -1,7 +1,7 @@
 //! Aggregator (Ag) view — best-route quotes without a partner API key.
 //!
-//! Live today: PulseSwap / AggreGate / Piteas. Other venues are listed with
-//! access hints. ↑/↓ pick venue · Enter quotes · approve → swap like Dex.
+//! Live today: SquirrelSwap (default), PulseSwap, Piteas. ↑/↓ venue ·
+//! Space = native PLS in · amount as human units (e.g. `1` or `0.01`) · Enter quote.
 
 use alloy::primitives::{Address, U256};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -15,7 +15,9 @@ use ratatui::{
 use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_core::chains::EvmTransaction;
-use vaughan_core::core::{AggAccess, AggQuote, AggVenue, WalletState};
+use vaughan_core::core::{
+    format_base_units, parse_native_amount, AggAccess, AggQuote, AggVenue, WalletState,
+};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -25,12 +27,46 @@ use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::dex_calldata::build_approve_tx;
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
+/// PulseX (PLSX) on PulseChain mainnet — default Ag `Out` token.
+const PLSX_369: &str = "0x95B303987A60C71504D99Aa1b13B4DA07b0790ab";
+
 fn wpls_for_chain(chain_id: u64) -> &'static str {
     match chain_id {
         369 => "0xA1077a294dDE1B09bB078844df40758a5D0f9a27",
         943 => "0x70499adEBB11Efd915E3b69E700c331778628707",
         _ => "",
     }
+}
+
+/// Parse Ag amount: prefer human decimals (`1`, `0.01`); bare integers ≥ 1e15
+/// are treated as wei for power users / pasted Brain values. Suffix `wei` forces wei.
+fn parse_ag_amount(raw: &str) -> Result<U256, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("amount: enter e.g. 1 or 0.01 (PLS)".into());
+    }
+    let (strip, force_wei) = if let Some(s) = t.strip_suffix("wei") {
+        (s.trim(), true)
+    } else {
+        (t, false)
+    };
+    if force_wei || (strip.chars().all(|c| c.is_ascii_digit()) && strip.len() >= 15) {
+        let wei = U256::from_str(strip).map_err(|_| "amount: invalid wei integer".to_string())?;
+        if wei.is_zero() {
+            return Err("amount: need non-zero".into());
+        }
+        return Ok(wei);
+    }
+    let wei_str = parse_native_amount(strip, 18).map_err(|e| e.user_message())?;
+    let wei = U256::from_str(&wei_str).map_err(|_| "amount: parse failed".to_string())?;
+    if wei.is_zero() {
+        return Err("amount: need non-zero".into());
+    }
+    Ok(wei)
+}
+
+fn fmt_token_amount(wei: &U256) -> String {
+    format_base_units(&wei.to_string(), 18)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,11 +130,11 @@ impl Default for AgView {
     fn default() -> Self {
         Self {
             stage: Stage::Input,
-            focus: Focus::Venue,
+            focus: Focus::Amount,
             venue: AggVenue::SquirrelSwap,
-            token_in: Input::new(false, "0x token in (or Space = native)…"),
+            token_in: Input::new(false, "0x token in (Space = native PLS)…"),
             token_out: Input::new(false, "0x token out…"),
-            amount: Input::new(false, "amount in wei"),
+            amount: Input::new(false, "amount (e.g. 1 or 0.01)"),
             slippage: Input::new(false, "0.5"),
             native_in: true,
             chain_id: 0,
@@ -120,23 +156,33 @@ impl AgView {
             ..Self::default()
         };
         v.slippage.set_value("0.5");
+        v.amount.set_value("1");
         if let Some(wpls) = non_empty(wpls_for_chain(chain_id)) {
             v.token_in.set_value(wpls);
             v.native_in = true;
         }
-        v.status = match chain_id {
-            369 => "↑/↓ · default Squirrel (no key) · Space native · Enter quote".into(),
-            943 => "Aggregators are mainnet (369) — switch Net or use Dex on testnet".into(),
-            _ => "PulseChain aggregators need chain 369".into(),
-        };
+        if chain_id == 369 {
+            v.token_out.set_value(PLSX_369);
+            v.status =
+                "Squirrel · native PLS → PLSX · amount e.g. 1 · Enter quote · Space toggles native"
+                    .into();
+        } else {
+            v.status = match chain_id {
+                943 => "Aggregators are mainnet (369) — switch Net or use Dex on testnet".into(),
+                _ => "PulseChain aggregators need chain 369".into(),
+            };
+        }
         v.refresh_venue_status();
         v
     }
 
     fn refresh_venue_status(&mut self) {
+        if self.chain_id != 369 {
+            return;
+        }
         self.status = match self.venue.access() {
             AggAccess::LiveNoKey => format!(
-                "{} · {} — Enter to quote (no API key)",
+                "{} · {} — amount in PLS units · Enter to quote",
                 self.venue.label(),
                 self.venue.blurb()
             ),
@@ -166,7 +212,7 @@ impl AgView {
                 Busy::Approving => {
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
-                    self.status = format!("Approve sent ({hash}). Confirm swap.");
+                    self.status = format!("Approve sent ({hash}). Confirm swap next.");
                     self.stage = Stage::Confirm(ConfirmStep::Swap);
                     self.rebuild_confirm_lines(ConfirmStep::Swap);
                 }
@@ -288,9 +334,9 @@ impl AgView {
         );
         frame.render_widget(
             Paragraph::new(if self.native_in {
-                "native PLS in (Space toggles)"
+                "native PLS in (Space toggles) · Amt is PLS (not wei)"
             } else {
-                "ERC-20 in — approve then swap"
+                "ERC-20 in — approve then swap · Amt uses token decimals (18)"
             }),
             chunks[6],
         );
@@ -428,10 +474,10 @@ impl AgView {
                 }
             }
         };
-        let amount = match U256::from_str(self.amount.value().trim()) {
-            Ok(a) if !a.is_zero() => a,
-            _ => {
-                self.status = "amount: need non-zero wei integer".into();
+        let amount = match parse_ag_amount(self.amount.value()) {
+            Ok(a) => a,
+            Err(e) => {
+                self.status = e;
                 return KeyOutcome::Consumed;
             }
         };
@@ -465,11 +511,12 @@ impl AgView {
         } else {
             ConfirmStep::Swap
         };
+        let out_h = fmt_token_amount(&q.amount_out);
         let status = format!(
-            "{} quote · out≈{} · gas≈{:?}",
+            "{} quote · out≈{out_h} · gas≈{:?} · Enter to {}",
             q.venue.label(),
-            q.amount_out,
-            q.gas_estimate
+            q.gas_estimate,
+            step.label()
         );
         self.rebuild_confirm_lines(step);
         self.stage = Stage::Confirm(step);
@@ -481,14 +528,29 @@ impl AgView {
             self.confirm_lines.clear();
             return;
         };
+        let in_h = fmt_token_amount(&q.amount_in);
+        let out_h = fmt_token_amount(&q.amount_out);
+        let value_h = fmt_token_amount(&q.tx.value);
+        let in_label = if self.native_in { "PLS" } else { "token" };
+        let step_hint = match step {
+            ConfirmStep::Approve => "next: approve router to spend your token",
+            ConfirmStep::Swap => {
+                if self.native_in {
+                    "next: broadcast swap (native PLS)"
+                } else {
+                    "next: broadcast swap (after approve)"
+                }
+            }
+        };
         self.confirm_lines = vec![
             format!("Aggregator: {}", q.venue.label()),
-            format!("Step: {}", step.label()),
-            format!("Router: {}", q.tx.to),
-            format!("Amount in:  {}", q.amount_in),
-            format!("Amount out: {}", q.amount_out),
-            format!("Value:      {}", q.tx.value),
-            format!("Calldata:   {} bytes", q.tx.data.len()),
+            format!("Confirm: {} — {step_hint}", step.label()),
+            format!("Router:   {:#x}", q.tx.to),
+            format!("You pay:  {in_h} {in_label}  ({})", q.amount_in),
+            format!("You get:  ≈{out_h} out  ({})", q.amount_out),
+            format!("Tx value: {value_h} PLS  ({})", q.tx.value),
+            format!("Calldata: {} bytes", q.tx.data.len()),
+            "Review amounts above — Enter signs & broadcasts this step only.".into(),
         ];
     }
 
@@ -544,5 +606,29 @@ fn non_empty(s: &str) -> Option<&str> {
         None
     } else {
         Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_human_pls() {
+        assert_eq!(
+            parse_ag_amount("1").unwrap(),
+            U256::from_str("1000000000000000000").unwrap()
+        );
+        assert_eq!(
+            parse_ag_amount("0.01").unwrap(),
+            U256::from_str("10000000000000000").unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_wei_scale_and_suffix() {
+        let wei = U256::from_str("1000000000000000000").unwrap();
+        assert_eq!(parse_ag_amount("1000000000000000000").unwrap(), wei);
+        assert_eq!(parse_ag_amount("1000000000000000000wei").unwrap(), wei);
     }
 }

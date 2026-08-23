@@ -38,8 +38,9 @@ pub use config::{
     OPENROUTER_BASE_URL,
 };
 pub use degen::{
-    dry_run_from_env, CircuitBreaker, CircuitBreakerConfig, DegenTrader, QuorumReserves,
-    QuorumValidator, SwapExecution,
+    breaker_config_for_session, build_policy_proposal, dry_run_from_env, load_policy, save_policy,
+    AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, DegenTrader, EnforcementMode,
+    PolicyProposal, QuorumReserves, QuorumValidator, SwapExecution, DEGEN_POLICY_TOML,
 };
 pub use error::AgentError;
 pub use proposal::{ProposalType, TxProposal};
@@ -49,8 +50,8 @@ pub use skills::{
     skills_for_mode, AgentSessionContext, Skill, SkillKind, SkillMode,
 };
 pub use tools::{
-    default_assist_registry, default_degen_registry, default_sensory_registry, Tool, ToolContext,
-    ToolRegistry,
+    commit_policy_proposal, default_assist_registry, default_degen_registry,
+    default_sensory_registry, ProposePolicyTool, Tool, ToolContext, ToolRegistry,
 };
 pub use types::{
     normalize_gemini_model, ChatMessage, ModelConfig, ProviderType, Role, ToolCall, ToolDefinition,

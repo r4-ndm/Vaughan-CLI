@@ -110,6 +110,8 @@ impl PulseSwapClient {
             amount_in
         };
 
+        super::routers::assert_agg_exec_targets(to_addr, to_addr)?;
+
         Ok(AggQuote {
             venue: AggVenue::PulseSwap,
             amount_in,

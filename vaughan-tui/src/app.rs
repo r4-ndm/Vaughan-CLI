@@ -19,9 +19,9 @@ use std::str::FromStr;
 use crate::jobs::{ChromeFocus, ChromeSnapshot, UiJob, UiJobResult};
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, AgView, AgentSetupView, AgentView, ApproveView, AssetsView, BrowserView, DappsView,
-    DashboardView, DexView, KeysView, OnboardingView, PlaceholderView, ReceiveView, SettingsView,
-    UnlockView,
+    AaSendView, AgView, AgentSetupView, AgentView, ApproveView, AssetsView, BridgeView,
+    BrowserView, DappsView, DashboardView, DexView, KeysView, OnboardingView, PlaceholderView,
+    ReceiveView, SettingsView, UnlockView,
 };
 
 /// The active screen.
@@ -42,7 +42,7 @@ pub enum Screen {
     Dex,
     Aggregator,
     SoonNft,
-    SoonBridge,
+    Bridge,
     SoonStake,
     SoonHistory,
     Approve,
@@ -66,7 +66,7 @@ impl Screen {
             Self::Dex => "DEX",
             Self::Aggregator => "Aggregator",
             Self::SoonNft => "NFT",
-            Self::SoonBridge => "Bridge",
+            Self::Bridge => "Bridge",
             Self::SoonStake => "Stake",
             Self::SoonHistory => "History",
             Self::Approve => "Approve",
@@ -120,6 +120,7 @@ pub enum View {
     Agent(Box<AgentView>),
     Dex(DexView),
     Aggregator(AgView),
+    Bridge(BridgeView),
     Placeholder(PlaceholderView),
     Approve(ApproveView),
 }
@@ -141,6 +142,7 @@ impl View {
             Self::Agent(_) => Screen::Agent,
             Self::Dex(_) => Screen::Dex,
             Self::Aggregator(_) => Screen::Aggregator,
+            Self::Bridge(_) => Screen::Bridge,
             Self::Placeholder(v) => v.screen(),
             Self::Approve(_) => Screen::Approve,
         }
@@ -162,6 +164,7 @@ impl View {
             Self::Agent(v) => v.render(frame, area, wallet.operating_mode()),
             Self::Dex(v) => v.render(frame, area, wallet),
             Self::Aggregator(v) => v.render(frame, area, wallet),
+            Self::Bridge(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
@@ -199,6 +202,7 @@ impl View {
             }
             Self::Dex(v) => v.handle_key(key, wallet, handle, events),
             Self::Aggregator(v) => v.handle_key(key, wallet, handle, events),
+            Self::Bridge(v) => v.handle_key(key, wallet, handle, events),
             Self::Placeholder(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
@@ -334,6 +338,9 @@ impl App {
                 v.set_tick(self.tick);
             }
             if let View::Aggregator(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::Bridge(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
             if let View::Dashboard(v) = &mut self.view {
@@ -697,11 +704,10 @@ impl App {
                 "NFT",
                 "NFT gallery / transfers will land here.",
             )),
-            Screen::SoonBridge => View::Placeholder(PlaceholderView::new(
-                Screen::SoonBridge,
-                "Bridge",
-                "Cross-chain bridge UI will land here.",
-            )),
+            Screen::Bridge => {
+                let chain_id = self.wallet().networks().active().chain_id;
+                View::Bridge(BridgeView::for_wallet_chain(chain_id))
+            }
             Screen::SoonStake => View::Placeholder(PlaceholderView::new(
                 Screen::SoonStake,
                 "Stake",
@@ -1107,6 +1113,54 @@ impl App {
                         Err(e) => Err(e),
                     })
                 }
+                UiJob::BridgeQuote {
+                    src_token,
+                    dst_token,
+                    amount,
+                    src_chain,
+                    dst_chain,
+                    recipient,
+                } => {
+                    use alloy::primitives::{Address, U256};
+                    use vaughan_core::core::{BridgeAsset, BridgeQuoteRequest, LibertySwapClient};
+
+                    let parsed = (|| -> Result<BridgeQuoteRequest, WalletError> {
+                        let amount = U256::from_str(&amount)
+                            .map_err(|_| WalletError::InvalidAmount("bridge amount".into()))?;
+                        let recipient = Address::from_str(&recipient).map_err(|_| {
+                            WalletError::InvalidTransaction("bridge recipient".into())
+                        })?;
+                        let src_token = if src_token.eq_ignore_ascii_case("USDC") {
+                            BridgeAsset::Symbol("USDC")
+                        } else {
+                            BridgeAsset::Address(Address::from_str(&src_token).map_err(|_| {
+                                WalletError::InvalidTransaction("bridge src_token".into())
+                            })?)
+                        };
+                        let dst_token = if dst_token.eq_ignore_ascii_case("USDC") {
+                            BridgeAsset::Symbol("USDC")
+                        } else {
+                            BridgeAsset::Address(Address::from_str(&dst_token).map_err(|_| {
+                                WalletError::InvalidTransaction("bridge dst_token".into())
+                            })?)
+                        };
+                        Ok(BridgeQuoteRequest {
+                            src_token,
+                            dst_token,
+                            amount,
+                            src_chain,
+                            dst_chain,
+                            recipient,
+                        })
+                    })();
+                    UiJobResult::BridgeQuote(Box::new(match parsed {
+                        Ok(req) => match LibertySwapClient::public() {
+                            Ok(client) => handle.block_on(client.quote(&req)),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    }))
+                }
             };
             let _ = tx.send(result);
         });
@@ -1170,6 +1224,7 @@ impl App {
                     View::Dashboard(v) => v.apply_job_result(other),
                     View::Dex(v) => v.apply_job_result(other),
                     View::Aggregator(v) => v.apply_job_result(other),
+                    View::Bridge(v) => v.apply_job_result(other),
                     _ => {}
                 },
             }
@@ -1236,7 +1291,7 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'n' | 'i' => GlobalAction::Navigate(Screen::Settings),
             'k' => GlobalAction::Navigate(Screen::Keys),
             'e' => GlobalAction::Navigate(Screen::SoonNft),
-            'f' => GlobalAction::Navigate(Screen::SoonBridge),
+            'f' => GlobalAction::Navigate(Screen::Bridge),
             'j' => GlobalAction::Navigate(Screen::SoonStake),
             'm' => GlobalAction::Navigate(Screen::SoonHistory),
             'r' => GlobalAction::RefreshChrome,
@@ -1254,11 +1309,15 @@ fn build_session_degen_trader(wallet: &WalletState) -> Option<Arc<DegenTrader>> 
     let signer = wallet.active_signer().ok()?;
     let net = wallet.networks().active();
     let rpc_urls = vec![net.rpc_url.clone()];
-    let quorum = if rpc_urls.len() >= 2 { 2 } else { 1 };
-    let cfg = CircuitBreakerConfig {
-        required_rpc_quorum: quorum,
-        ..CircuitBreakerConfig::default()
-    };
+    let dir = vaughan_agent::profile_dir(wallet.path());
+    let cfg = vaughan_agent::breaker_config_for_session(Some(dir.as_path()), rpc_urls.len())
+        .unwrap_or_else(|e| {
+            tracing::warn!("degen policy load failed ({e}); using defaults");
+            CircuitBreakerConfig {
+                required_rpc_quorum: 1,
+                ..Default::default()
+            }
+        });
     Some(Arc::new(DegenTrader::new(
         signer,
         rpc_urls,
