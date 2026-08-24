@@ -7,9 +7,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use vaughan_core::core::mcp_control_port;
 use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
 use vaughan_core::core::proposal::TxProposal;
-use vaughan_core::core::mcp_control_port;
 
 const IPC_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -131,7 +131,9 @@ pub async fn try_get_session(token: &str) -> Result<Option<McpSessionInfo>, Stri
     if !resp.ok {
         return Ok(None);
     }
-    let data = resp.data.ok_or_else(|| "session response missing data".to_string())?;
+    let data = resp
+        .data
+        .ok_or_else(|| "session response missing data".to_string())?;
     let address = data
         .get("address")
         .and_then(|v| v.as_str())

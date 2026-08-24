@@ -37,7 +37,9 @@ pub fn config_for_context(context: &ToolContext) -> Result<Config, AgentError> {
 /// Resolve token arg: address, `WPLS`, `WZRD`, or `native`/`PLS` → (address, is_native).
 pub fn resolve_token(raw: &str, chain_id: u64) -> Result<(Address, bool), AgentError> {
     let s = raw.trim();
-    if s.eq_ignore_ascii_case("native") || s.eq_ignore_ascii_case("pls") || s.eq_ignore_ascii_case("eth")
+    if s.eq_ignore_ascii_case("native")
+        || s.eq_ignore_ascii_case("pls")
+        || s.eq_ignore_ascii_case("eth")
     {
         let wpls = wiz4rd_sdk::tokens::lookup("WPLS", chain_id)
             .map(|t| t.address)
@@ -70,10 +72,11 @@ pub async fn load_pool(
 ) -> Result<(Config, PoolInfo), AgentError> {
     let cfg = config_for_context(context)?;
     let key = get_pool_key(token_a, token_b, fee);
-    let provider = ProviderBuilder::new()
-        .connect_http(cfg.rpc_url().parse().map_err(|e| {
-            AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}"))
-        })?);
+    let provider = ProviderBuilder::new().connect_http(
+        cfg.rpc_url()
+            .parse()
+            .map_err(|e| AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}")))?,
+    );
     let info = get_pool_info(&provider, &cfg, key)
         .await
         .map_err(|e| AgentError::ProviderError(format!("get_pool_info: {e}")))?;
@@ -85,7 +88,11 @@ pub async fn load_pool(
     Ok((cfg, info))
 }
 
-pub fn quote_pool(pool: &PoolInfo, token_in: Address, amount_in: U256) -> Result<Quote, AgentError> {
+pub fn quote_pool(
+    pool: &PoolInfo,
+    token_in: Address,
+    amount_in: U256,
+) -> Result<Quote, AgentError> {
     let zfo = zero_for_one(pool, token_in);
     if token_in != pool.token0 && token_in != pool.token1 {
         return Err(AgentError::InvalidToolCall(

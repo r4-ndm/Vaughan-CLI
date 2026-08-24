@@ -70,10 +70,7 @@ impl Tool for QuoteV3SwapTool {
                 .ok_or_else(|| AgentError::InvalidToolCall("Missing amount_in".into()))?,
         )
         .map_err(|e| AgentError::InvalidToolCall(format!("Invalid amount_in: {e}")))?;
-        let fee = args
-            .get("fee")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(500) as u32;
+        let fee = args.get("fee").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
 
         let (token_in, native_in) = resolve_token(token_in_s, context.chain_id)?;
         let (token_out, _) = resolve_token(token_out_s, context.chain_id)?;

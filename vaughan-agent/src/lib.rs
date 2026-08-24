@@ -22,7 +22,8 @@ pub use paths::profile_dir;
 pub use presets::{apply_preset, presets_root, BUNDLED_PRESET_IDS};
 pub use proposal::{ProposalType, TxProposal};
 pub use tools::{
-    commit_policy_proposal, default_assist_registry, default_degen_registry,
-    default_sensory_registry, ProposePolicyTool, Tool, ToolContext, ToolRegistry,
+    commit_policy_proposal, default_assist_registry, default_assist_registry_for,
+    default_degen_registry, default_sensory_registry, ProposePolicyTool, Tool, ToolContext,
+    ToolRegistry,
 };
 pub use types::ToolDefinition;

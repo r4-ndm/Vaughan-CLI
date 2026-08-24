@@ -60,9 +60,11 @@ impl Tool for ListV3PositionsTool {
         let to_block = args.get("to_block").and_then(|v| v.as_u64());
 
         let cfg = config_for_context(context)?;
-        let provider = ProviderBuilder::new().connect_http(cfg.rpc_url().parse().map_err(|e| {
-            AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}"))
-        })?);
+        let provider = ProviderBuilder::new().connect_http(
+            cfg.rpc_url()
+                .parse()
+                .map_err(|e| AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}")))?,
+        );
 
         let positions = list_positions_from(&provider, &cfg, owner, from_block, to_block)
             .await

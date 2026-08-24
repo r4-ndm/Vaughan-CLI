@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::AgentError;
 use crate::degen::policy::DEGEN_POLICY_TOML;
+use crate::error::AgentError;
 
 /// Ids shipped under `vaughan-agent/presets/`.
 pub const BUNDLED_PRESET_IDS: &[&str] = &[
@@ -47,18 +47,15 @@ pub fn apply_preset(preset_id: &str, profile_dir: &Path) -> Result<PathBuf, Agen
     }
 
     let skill_dst_dir = profile_dir.join("skills").join(preset_id);
-    fs::create_dir_all(&skill_dst_dir).map_err(|e| {
-        AgentError::ProviderError(format!("create skills dir: {e}"))
-    })?;
+    fs::create_dir_all(&skill_dst_dir)
+        .map_err(|e| AgentError::ProviderError(format!("create skills dir: {e}")))?;
     let skill_dst = skill_dst_dir.join("SKILL.md");
-    fs::copy(&skill_src, &skill_dst).map_err(|e| {
-        AgentError::ProviderError(format!("copy SKILL.md: {e}"))
-    })?;
+    fs::copy(&skill_src, &skill_dst)
+        .map_err(|e| AgentError::ProviderError(format!("copy SKILL.md: {e}")))?;
 
     let policy_dst = profile_dir.join(DEGEN_POLICY_TOML);
-    fs::copy(&policy_src, &policy_dst).map_err(|e| {
-        AgentError::ProviderError(format!("copy policy: {e}"))
-    })?;
+    fs::copy(&policy_src, &policy_dst)
+        .map_err(|e| AgentError::ProviderError(format!("copy policy: {e}")))?;
 
     Ok(skill_dst_dir)
 }

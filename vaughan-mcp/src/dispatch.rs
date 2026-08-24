@@ -3,14 +3,16 @@
 use alloy::primitives::Address;
 use serde_json::{json, Value};
 use vaughan_agent::paths::profile_dir;
-use vaughan_agent::tools::{default_assist_registry, default_sensory_registry, ToolContext, ToolRegistry};
+use vaughan_agent::tools::{
+    default_assist_registry_for, default_sensory_registry, ToolContext, ToolRegistry,
+};
 use vaughan_agent::AgentError;
 use vaughan_core::chains::evm::adapter::EvmAdapter;
 use vaughan_core::chains::evm::networks::get_network_by_id;
-use vaughan_core::core::proposal::{
-    guard_mainnet_write, ProposalQueue, TxProposal, McpSessionToken,
-};
 use vaughan_core::core::persistence::StateManager;
+use vaughan_core::core::proposal::{
+    guard_mainnet_write, McpSessionToken, ProposalQueue, TxProposal,
+};
 
 use crate::client::{try_get_session, try_proposal_status, try_propose_live};
 
@@ -39,7 +41,7 @@ impl McpDispatcher {
         let profile_dir = profile_dir(&wallet_path);
         Ok(Self {
             sensory: default_sensory_registry(),
-            assist: default_assist_registry(),
+            assist: default_assist_registry_for(Some(&profile_dir)),
             profile_dir,
         })
     }
@@ -54,7 +56,7 @@ impl McpDispatcher {
             }));
         }
         for def in self.assist.definitions() {
-            if def.name.starts_with("propose_") {
+            if def.name.starts_with("propose_") || def.name == "import_token" {
                 tools.push(json!({
                     "name": def.name,
                     "description": def.description,
@@ -96,14 +98,23 @@ impl McpDispatcher {
         tools
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value, ctx: &McpContext) -> Result<Value, String> {
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        args: Value,
+        ctx: &McpContext,
+    ) -> Result<Value, String> {
         let ctx = self.refresh_context(ctx).await;
         match name {
             "get_proposal_status" => self.get_proposal_status(args, &ctx).await,
             "list_pending_proposals" => self.list_pending_proposals(&ctx),
+            "import_token" => self.assist_side_effect("import_token", args, &ctx).await,
             name if name.starts_with("propose_") => self.propose_tool(name, args, &ctx).await,
             name if self.sensory.definitions().iter().any(|d| d.name == name)
-                || name == "get_balance" || name == "list_assets" || name == "get_network" || name == "get_address" =>
+                || name == "get_balance"
+                || name == "list_assets"
+                || name == "get_network"
+                || name == "get_address" =>
             {
                 self.read_tool(name, args, &ctx).await
             }
@@ -153,7 +164,7 @@ impl McpDispatcher {
                 .sensory
                 .execute(name, args, &tool_ctx)
                 .await
-                .map_err(agent_err)
+                .map_err(agent_err),
         }
     }
 
@@ -185,9 +196,14 @@ impl McpDispatcher {
         })?;
         let net = get_network_by_id(&ctx.network_id)
             .ok_or_else(|| format!("unknown network: {}", ctx.network_id))?;
-        let adapter = EvmAdapter::new(&ctx.rpc_url, ctx.chain_id, &net.name, &net.fallback_rpc_urls)
-            .await
-            .map_err(|e| e.to_string())?;
+        let adapter = EvmAdapter::new(
+            &ctx.rpc_url,
+            ctx.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let assets = adapter
             .get_assets(&format!("{addr:#x}"), &[])
             .await
@@ -208,7 +224,12 @@ impl McpDispatcher {
         }))
     }
 
-    async fn propose_tool(&self, name: &str, args: Value, ctx: &McpContext) -> Result<Value, String> {
+    async fn propose_tool(
+        &self,
+        name: &str,
+        args: Value,
+        ctx: &McpContext,
+    ) -> Result<Value, String> {
         guard_mainnet_write(ctx.chain_id, ctx.is_testnet).map_err(|e| e.to_string())?;
 
         let tool_ctx = ToolContext {
@@ -222,9 +243,49 @@ impl McpDispatcher {
             .execute(name, args, &tool_ctx)
             .await
             .map_err(agent_err)?;
-        let proposal: TxProposal =
-            serde_json::from_value(raw).map_err(|e| format!("invalid proposal: {e}"))?;
 
+        let proposals = extract_proposals(&raw)?;
+        if proposals.is_empty() {
+            return Err("invalid proposal: empty".into());
+        }
+
+        let mut results = Vec::new();
+        for proposal in proposals {
+            results.push(self.commit_proposal(proposal, ctx).await?);
+        }
+        if results.len() == 1 {
+            Ok(results.remove(0))
+        } else {
+            Ok(json!({
+                "status": "multi",
+                "results": results,
+                "message": "Multiple proposals committed — approve/exec each in order",
+            }))
+        }
+    }
+
+    async fn assist_side_effect(
+        &self,
+        name: &str,
+        args: Value,
+        ctx: &McpContext,
+    ) -> Result<Value, String> {
+        let tool_ctx = ToolContext {
+            rpc_url: ctx.rpc_url.clone(),
+            chain_id: ctx.chain_id,
+            active_address: ctx.active_address,
+        };
+        self.assist
+            .execute(name, args, &tool_ctx)
+            .await
+            .map_err(agent_err)
+    }
+
+    async fn commit_proposal(
+        &self,
+        proposal: TxProposal,
+        ctx: &McpContext,
+    ) -> Result<Value, String> {
         let session = McpSessionToken::read(&self.profile_dir)
             .map_err(|e| e.user_message())?
             .unwrap_or_default();
@@ -283,9 +344,7 @@ impl McpDispatcher {
 
     fn list_pending_proposals(&self, _ctx: &McpContext) -> Result<Value, String> {
         let queue = ProposalQueue::new(&self.profile_dir);
-        let pending = queue
-            .list_pending()
-            .map_err(|e| e.to_string())?;
+        let pending = queue.list_pending().map_err(|e| e.to_string())?;
         let ids: Vec<_> = pending
             .iter()
             .map(|q| {
@@ -305,4 +364,25 @@ fn agent_err(e: AgentError) -> String {
         AgentError::InvalidToolCall(msg) => format!("invalid_tool_call: {msg}"),
         other => other.to_string(),
     }
+}
+
+/// Single `TxProposal` JSON, or multi envelopes like stealth (`pay_proposal` + `announce_proposal`).
+fn extract_proposals(raw: &Value) -> Result<Vec<TxProposal>, String> {
+    if let Ok(one) = serde_json::from_value::<TxProposal>(raw.clone()) {
+        return Ok(vec![one]);
+    }
+    let mut out = Vec::new();
+    for key in ["pay_proposal", "announce_proposal", "proposal"] {
+        if let Some(v) = raw.get(key) {
+            let p: TxProposal = serde_json::from_value(v.clone())
+                .map_err(|e| format!("invalid proposal.{key}: {e}"))?;
+            out.push(p);
+        }
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "invalid proposal: expected TxProposal or multi envelope ({raw})"
+        ));
+    }
+    Ok(out)
 }

@@ -115,10 +115,7 @@ impl Tool for ListAllowancesTool {
         spenders.dedup_by_key(|(a, _)| *a);
 
         let net = get_network_by_chain_id(context.chain_id);
-        let net_name = net
-            .as_ref()
-            .map(|n| n.name.as_str())
-            .unwrap_or("evm");
+        let net_name = net.as_ref().map(|n| n.name.as_str()).unwrap_or("evm");
         let adapter = EvmAdapter::new(&context.rpc_url, context.chain_id, net_name, &[])
             .await
             .map_err(|e| AgentError::ProviderError(e.to_string()))?;

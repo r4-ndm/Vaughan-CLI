@@ -55,8 +55,8 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Contract browser (`c`): probe, ABI, call | `inspect_contract`, `simulate_call` | [x] |
 | Discover pairs / pools | `search_pairs`, `get_dex_reserves` | [x] |
 | wiz4rd pool state | `get_v3_pool` | [x] |
-| Token “what is 0x…” → Assets import | — | [ ] |
-| Activity / history (`m`) | — | [ ] `list_transfers` or similar |
+| Token “what is 0x…” → Assets import | `resolve_token`, `import_token` | [x] |
+| Activity / history (`m`) | `list_transfers` | [x] |
 | Local EIP-712 paste → approve | — | [ ] `propose_typed_data` |
 
 ---
@@ -67,7 +67,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 |-------|-------|--------|
 | Native / ERC-20 send | `propose_transfer` | [x] |
 | Arbitrary write (browser `send`) | `propose_contract_call` | [x] / [~] (TUI browser write gate still open) |
-| EIP-7702 Ambire batch send | `propose_batch_7702` | [ ] deferred (FR-3.3) |
+| EIP-7702 Ambire batch send | `propose_batch_7702` | [~] draft proposal; AA exec still deferred (FR-3.3) |
 
 ---
 
@@ -81,7 +81,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Dex: curated V2/V3 write polish | — | [ ] human Dex write path still open in TASKS |
 | wiz4rd V3 quote | `quote_v3_swap` | [x] |
 | wiz4rd V3 swap | `propose_v3_swap` | [x] |
-| EmpX / EmpSeal path-find | — | [ ] |
+| EmpX / EmpSeal path-find | — | [ ] Alloy port still open (`docs/aggregator.md`) |
 | Exact-out / multi-hop V3 | — | [ ] when product needs it |
 
 ---
@@ -92,8 +92,8 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 |-------|-------|--------|
 | Open V3 position (mint NFT) | `propose_v3_mint` | [x] Phase D |
 | List my V3 positions | `list_v3_positions` | [x] |
-| Increase / decrease liquidity | `propose_v3_increase` / `_decrease` | [ ] Phase E |
-| Collect fees | `propose_v3_collect` | [ ] Phase E |
+| Increase / decrease liquidity | `propose_v3_increase` / `_decrease` | [x] Phase E |
+| Collect fees | `propose_v3_collect` | [x] Phase E |
 | V2 add / remove LP | — | [ ] only if product demand |
 | TUI positions screen | — | [ ] Phase E UI |
 
@@ -105,9 +105,9 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 |-------|-------|--------|
 | Approvals manager (`j`): list | `list_allowances` | [x] |
 | Revoke allowance | `propose_revoke` | [x] |
-| ERC-20 approve spender | via `propose_contract_call` | [~] prefer named `propose_approve` later |
+| ERC-20 approve spender | `propose_approve` | [x] |
 | Wrap / unwrap WPLS (`e`) | `propose_wrap` / `propose_unwrap` | [x] |
-| LibertySwap bridge (`f`) | — | [ ] `quote_bridge` / `propose_bridge` |
+| LibertySwap bridge (`f`) | `quote_bridge` / `propose_bridge` | [x] |
 | Official Omnibridge | — | [ ] separate track |
 
 ---
@@ -116,8 +116,9 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 
 | Human | Agent | Status |
 |-------|-------|--------|
-| Stealth receive / send / scan / sweep | — | [ ] MCP stealth tools when ready |
-| Ambire AA batched UX | `propose_batch_7702` | [ ] FR-3.3 |
+| Stealth receive / send / scan / sweep | `propose_stealth_send` | [~] send propose; scan/sweep stay TUI/core |
+| Ambire AA batched UX | `propose_batch_7702` | [~] draft; AA submit path deferred |
+| Balance watch / thresholds | `watch_balance` | [x] |
 
 ---
 
@@ -136,10 +137,10 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 0. **Sentient MCP** (`vaughan-sentient`) — done (auto-exec when TUI unlocked).  
 1. **Approvals + wrap** — **done** (`list_allowances`, `propose_revoke`, wrap/unwrap).  
 2. **Phase D mint + `list_v3_positions`** — **done**.  
-3. **Phase E** increase / decrease / collect.  
-4. **Bridge quote/propose** — mirror LibertySwap TUI.  
-5. **History + token import** — research loop without PulseScan tab.  
-6. **Ambire batch + stealth MCP** — pillars, after core DeFi verbs feel complete.
+3. **Phase E** increase / decrease / collect — **done**.  
+4. **Bridge quote/propose** — **done**.  
+5. **History + token import** — **done**.  
+6. **Ambire batch exec + EmpX Alloy + stealth scan/sweep MCP** — still open.
 
 Hard rules:
 

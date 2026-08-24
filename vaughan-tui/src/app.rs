@@ -547,9 +547,8 @@ impl App {
                 } => {
                     if !self.wallet().is_unlocked() {
                         if let Some(r) = reply {
-                            let _ = r.send(Err(ProviderError::Unauthorized(
-                                "wallet is locked".into(),
-                            )));
+                            let _ =
+                                r.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
                         }
                         continue;
                     }
@@ -586,8 +585,7 @@ impl App {
                         }
                         continue;
                     }
-                    let preview =
-                        provider::describe_approval(&kind, &self.wallet(), &self.handle);
+                    let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
                     let (title, details) = match preview {
                         Ok(preview) => preview,
                         Err(error) => {
@@ -603,10 +601,7 @@ impl App {
                         Some(format!("MCP ({source})")),
                         details,
                     ));
-                    self.pending_approval = Some(PendingApproval {
-                        kind,
-                        reply,
-                    });
+                    self.pending_approval = Some(PendingApproval { kind, reply });
                     break;
                 }
             }

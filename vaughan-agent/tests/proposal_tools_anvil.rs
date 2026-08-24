@@ -38,7 +38,12 @@ async fn test_assist_registry_and_proposals_with_anvil() {
     let registry = default_assist_registry();
     let defs = registry.definitions();
 
-    assert_eq!(defs.len(), 9);
+    // Sensory + write proposals (no profile-dir → no `import_token`).
+    assert!(
+        defs.len() >= 30,
+        "assist registry shrank unexpectedly: {}",
+        defs.len()
+    );
 
     let context = ToolContext {
         rpc_url: anvil.rpc_url.clone(),

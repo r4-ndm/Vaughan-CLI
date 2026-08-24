@@ -96,7 +96,27 @@ vaughan proposals show prop_12345 --json
 | `mainnet_blocked` | Set `VAUGHAN_MCP_ALLOW_MAINNET=1` (use testnet first) |
 | MCP broken in Cursor | Ensure nothing writes to stdout except JSON-RPC (logs go to stderr) |
 
-## v2 (deferred)
+## v2 — `vaughan serve`
 
-Long-running `vaughan serve` wallet daemon — TUI/MCP/CLI become thin clients.
-v1 IPC types become the daemon wire protocol.
+Minimal headless daemon (same MCP IPC wire as v1):
+
+```bash
+export VAUGHAN_WALLET_PASSWORD='…'   # never commit; use a secret manager
+vaughan --profile sentient serve --password-env VAUGHAN_WALLET_PASSWORD
+# or adviser (queues pending_user; no auto-sign without TUI):
+vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
+```
+
+- Unlocks the profile vault non-interactively, writes the session token, binds
+  loopback MCP control (`127.0.0.1:8746`).
+- Reads the password from `--password-env` once, then **unsets** that env var in
+  the process (still prefer a short-lived secret injection; do not leave passwords
+  in shell history or shared hosts).
+- **Sentient / degen:** auto-exec under policy (same as unlocked TUI). Treat the
+  host as a **hot wallet** — any same-user process with the session token can spend.
+- **Default:** queues `pending_user` (approve later in TUI, or use sentient).
+- Mainnet writes still require `VAUGHAN_MCP_ALLOW_MAINNET=1` (same gate as MCP stdio).
+- MCP stdio (`vaughan mcp`) remains the agent-facing process; it attaches to the
+  serve/TUI socket.
+
+Ctrl-C stops the daemon and invalidates the session token.

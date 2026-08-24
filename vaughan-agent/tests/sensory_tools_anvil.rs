@@ -39,13 +39,20 @@ async fn test_tool_registry_and_sensory_tools_with_anvil() {
     let registry = default_sensory_registry();
     let defs = registry.definitions();
 
-    assert_eq!(defs.len(), 5);
+    assert!(
+        defs.len() >= 14,
+        "sensory registry shrank unexpectedly: {}",
+        defs.len()
+    );
     let names: Vec<String> = defs.into_iter().map(|d| d.name).collect();
     assert!(names.contains(&"inspect_contract".to_string()));
     assert!(names.contains(&"get_balance".to_string()));
     assert!(names.contains(&"get_dex_reserves".to_string()));
     assert!(names.contains(&"search_pairs".to_string()));
     assert!(names.contains(&"simulate_call".to_string()));
+    assert!(names.contains(&"quote_bridge".to_string()));
+    assert!(names.contains(&"list_transfers".to_string()));
+    assert!(names.contains(&"watch_balance".to_string()));
 
     let context = ToolContext {
         rpc_url: anvil.rpc_url.clone(),

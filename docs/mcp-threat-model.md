@@ -69,6 +69,7 @@ seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 
 ## v2 note
 
-A future `vaughan serve` daemon moves the trusted boundary to a long-running
-process. v1 IPC types (`ProposalQueue`, session token, HMAC) become the daemon
-wire protocol — no throwaway work.
+A `vaughan serve` daemon moves the trusted boundary to a long-running
+unlocked process (password via `--password-env`). MCP stdio remains unprivileged.
+v1 IPC types (`ProposalQueue`, session token, HMAC) become the daemon wire
+protocol — no throwaway work.

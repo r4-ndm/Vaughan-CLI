@@ -118,7 +118,8 @@ Vaughan is a **signing wallet that agents call**, not a host for its own LLM:
 routing inside the wallet; agents bring their own model (Cursor, Claude Code, …);
 smaller attack surface (no `genai` / chat / provider setup in-process).
 
-**Deferred v2:** `vaughan serve` wallet daemon — TUI/MCP/CLI become thin clients.
+**v2 (minimal):** `vaughan serve --password-env …` — headless unlock + MCP control
+plane; stdio MCP stays the agent client.
 
 ## Security model
 
@@ -145,4 +146,5 @@ smaller attack surface (no `genai` / chat / provider setup in-process).
 - **Freedom Browser bridge** — transport requires a new signer backend + local socket.
 - **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
 - **MCP client diversity** — hand-rolled JSON-RPC subset; validate against Cursor / Claude Code as they evolve.
-- **Wallet daemon (v2)** — hybrid IPC is interim; long-lived `vaughan serve` still deferred.
+- **Wallet daemon (v2)** — minimal `vaughan serve` shipped; full thin-client TUI still optional polish.
+- **EmpX / Ambire 7702 exec** — EmpX Alloy port and AA `submit_batch` for `propose_batch_7702` still open.

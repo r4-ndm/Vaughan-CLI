@@ -40,9 +40,7 @@ async fn mcp_user_reject_lands_in_rejected_queue() {
         .expect("mark_rejected");
 
     assert!(
-        queue
-            .get_pending(&proposal.proposal_id, secret)
-            .is_err(),
+        queue.get_pending(&proposal.proposal_id, secret).is_err(),
         "rejected proposal must leave pending/"
     );
     let rejected = dir
@@ -67,11 +65,7 @@ async fn mcp_resim_blocks_insufficient_funds_before_sign() {
     wallet.set_rpc_override(&anvil.url());
 
     // Far more than the anvil-funded balance → eth_call reverts at approve.
-    let huge = U256::from_str_radix(
-        "1000000000000000000000000000000",
-        10,
-    )
-    .unwrap();
+    let huge = U256::from_str_radix("1000000000000000000000000000000", 10).unwrap();
     let recipient: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         .parse()
         .unwrap();

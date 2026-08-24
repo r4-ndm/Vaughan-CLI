@@ -23,9 +23,8 @@ pub fn gate_sentient_proposal(
 ) -> Result<(), ProviderError> {
     let dir = vaughan_agent::paths::profile_dir(wallet.path());
     let rpc_count = 1usize.saturating_add(wallet.networks().active().fallback_rpc_urls.len());
-    let config = breaker_config_for_session(Some(&dir), rpc_count).map_err(|e| {
-        ProviderError::InvalidParams(format!("sentient policy: {e}"))
-    })?;
+    let config = breaker_config_for_session(Some(&dir), rpc_count)
+        .map_err(|e| ProviderError::InvalidParams(format!("sentient policy: {e}")))?;
     let breaker = CircuitBreaker::new(config);
 
     if breaker.is_tripped() {

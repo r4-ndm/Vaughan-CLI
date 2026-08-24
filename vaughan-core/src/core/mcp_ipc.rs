@@ -9,9 +9,13 @@ use crate::core::proposal::TxProposal;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum McpIpcRequest {
-    Ping { token: String },
+    Ping {
+        token: String,
+    },
     /// Active wallet session snapshot (address + network) when the TUI is unlocked.
-    Session { token: String },
+    Session {
+        token: String,
+    },
     Propose {
         token: String,
         source: String,

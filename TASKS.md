@@ -304,19 +304,25 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
 - [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/wiz4rd-addresses.md`)
 - [x] wiz4rd MCP Phase B+C: `get_v3_pool`, `quote_v3_swap`, `propose_v3_swap` (`docs/pulse-defi-skills.md`)
-- [x] wiz4rd MCP Phase D: `propose_v3_mint` + `list_v3_positions` (increase/decrease/collect = Phase E)
-- [x] MCP wrap / unwrap / revoke / list_allowances (`propose_wrap`, `propose_unwrap`, `propose_revoke`, `list_allowances`)
-- [ ] Token discovery without a site: paste `0x` / PulseScan URL / agent “what is 0x…” → import to Assets
+- [x] wiz4rd MCP Phase D: `propose_v3_mint` + `list_v3_positions`
+- [x] wiz4rd MCP Phase E: `propose_v3_increase` / `_decrease` / `_collect`
+- [x] MCP wrap / unwrap / revoke / approve / list_allowances
+- [x] MCP bridge: `quote_bridge` / `propose_bridge` (LibertySwap)
+- [x] MCP history + token: `list_transfers`, `resolve_token`, `import_token`
+- [x] MCP stealth send propose (`propose_stealth_send`); scan/sweep remain TUI/core
+- [x] MCP `watch_balance` for sentient threshold loops
+- [x] Token discovery without a site: `resolve_token` + `import_token` (TUI paste polish still optional)
 
 ### P1 — Agent is the URL bar
 - [ ] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; **no partner key** — port from public SDK ABIs; see `docs/aggregator.md` no-permission matrix)
 - [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
 - [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
-- [ ] **DeFi agent parity** — check off human↔MCP verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md) (wrap/revoke/LP/bridge/…)
+- [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md) (wrap/revoke/LP/bridge/history/import/approve); EmpX + 7702 AA exec still open
 - [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
 - [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/sentient-presets.md`](docs/sentient-presets.md), `vaughan-agent/presets/`)
 - [x] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `degen-policy.toml`)
+- [x] **`vaughan serve`** — headless unlock + MCP control plane (`--password-env`); see `docs/mcp.md`
 
 ### P2 — Replace explorer & settings tabs people open constantly
 - [x] Activity / History screen (`m`): ERC-20 Transfer logs (sent/received) over recent window; reload; native-only without token log still needs explorer later
@@ -333,7 +339,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain”
 - [ ] Local EIP-712: paste/load typed-data JSON → Approve view (for protocols that insist on `eth_signTypedData_v4` without a webview)
-- [ ] Watch mode: prices / wallet delta / breaker status; agent interrupts on thresholds only (degen-safe)
+- [x] Watch mode (MCP): `watch_balance` threshold snapshot; richer price/breaker watch still optional
 
 ### Positioning (UX + docs)
 - [x] Demote Dapps screen: relabel to “Optional web / Freedom” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP

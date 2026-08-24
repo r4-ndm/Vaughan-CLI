@@ -58,10 +58,7 @@ impl Tool for GetV3PoolTool {
             .get("token_b")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::InvalidToolCall("Missing token_b".into()))?;
-        let fee = args
-            .get("fee")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(500) as u32;
+        let fee = args.get("fee").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
 
         let (a, _) = resolve_token(token_a, context.chain_id)?;
         let (b, _) = resolve_token(token_b, context.chain_id)?;

@@ -8,9 +8,9 @@ pub mod dex_routers;
 pub mod mcp_ipc;
 pub mod network;
 pub mod persistence;
-pub mod proposal;
 pub mod piteas;
 pub mod profile;
+pub mod proposal;
 pub mod stealth;
 pub mod transaction;
 pub mod vault_secrets;
@@ -31,27 +31,27 @@ pub use bridge::{
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
 };
-pub use wiz4rd::{
-    deployment_for_chain, position_manager as wiz4rd_position_manager,
-    swap_router as wiz4rd_swap_router, Wiz4rdDeployment, DEPLOYMENT_943, WIZ4RD_FEE_TIERS,
-};
+pub use mcp_ipc::{decode_line, encode_line, McpIpcError, McpIpcRequest, McpIpcResponse};
 pub use network::NetworkService;
 pub use persistence::{
-    default_trusted_dapps, merge_default_trusted_dapps, CustomNetwork, CustomToken, PersistedState,
-    StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
-    is_sentient_profile,
+    default_trusted_dapps, is_sentient_profile, merge_default_trusted_dapps, CustomNetwork,
+    CustomToken, PersistedState, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE,
+    SENTIENT_PROFILE,
 };
 pub use piteas::{
     AuthStyle, MethodParameters, NativeToken, PiteasClient, PiteasFileConfig, PiteasQuote,
     QuoteRequest, PITEAS_ROUTER_MAINNET,
 };
-pub use mcp_ipc::{decode_line, encode_line, McpIpcError, McpIpcRequest, McpIpcResponse};
 pub use profile::OperatingMode;
 pub use proposal::{
-    apply_proposal, guard_mainnet_write, mcp_mainnet_writes_allowed, McpSessionToken,
-    ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal, TxProposal,
-    MCP_CONTROL_PORT, mcp_control_port, MAX_PENDING_PROPOSALS, PROPOSAL_TTL_SECS,
+    apply_proposal, guard_mainnet_write, mcp_control_port, mcp_mainnet_writes_allowed,
+    McpSessionToken, ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal,
+    TxProposal, MAX_PENDING_PROPOSALS, MCP_CONTROL_PORT, PROPOSAL_TTL_SECS,
 };
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use transaction::{format_base_units, parse_native_amount, TransactionService};
 pub use wallet::{ChromeRpcSnapshot, WalletState};
+pub use wiz4rd::{
+    deployment_for_chain, position_manager as wiz4rd_position_manager,
+    swap_router as wiz4rd_swap_router, Wiz4rdDeployment, DEPLOYMENT_943, WIZ4RD_FEE_TIERS,
+};

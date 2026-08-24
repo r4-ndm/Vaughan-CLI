@@ -6,6 +6,7 @@
 //! — via `--password-env NAME` for automation, or an interactive prompt.
 
 mod json_out;
+mod serve;
 
 use std::path::PathBuf;
 
@@ -149,6 +150,12 @@ enum Command {
         #[arg(long, default_value = "cursor")]
         source: String,
     },
+    /// Headless wallet daemon (v2): unlock profile and serve MCP control plane.
+    Serve {
+        /// Env var holding the vault password (required).
+        #[arg(long)]
+        password_env: Option<String>,
+    },
     /// Install a sentient skill+policy preset into the active profile.
     Preset {
         #[command(subcommand)]
@@ -204,8 +211,24 @@ fn main() {
         }
         Some(Command::Mcp { source }) => {
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-            runtime.block_on(vaughan_mcp::run_stdio_server(profile, source))
+            runtime
+                .block_on(vaughan_mcp::run_stdio_server(profile, source))
                 .map_err(|e| anyhow::anyhow!("{e}"))
+        }
+        Some(Command::Serve { password_env }) => {
+            match serve::password_from_env(password_env.as_deref()) {
+                Err(e) => Err(e),
+                Ok(password) => {
+                    if let Some(var) = password_env.as_deref() {
+                        std::env::remove_var(var);
+                    }
+                    let runtime =
+                        tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+                    runtime
+                        .block_on(serve::run_serve(profile, password))
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                }
+            }
         }
         Some(Command::Preset { action }) => run_preset(profile, json, action),
         Some(command) => {
@@ -492,9 +515,15 @@ async fn run_cli(
                                     });
                                     json_out::print_json_value(json_mode, &data, || {
                                         if res.decoded_values.is_empty() {
-                                            println!("Result:      0x{}", hex::encode(&res.raw_output));
+                                            println!(
+                                                "Result:      0x{}",
+                                                hex::encode(&res.raw_output)
+                                            );
                                         } else {
-                                            println!("Result:      {}", res.decoded_values.join(", "));
+                                            println!(
+                                                "Result:      {}",
+                                                res.decoded_values.join(", ")
+                                            );
                                         }
                                     });
                                 } else {
@@ -551,6 +580,7 @@ async fn run_cli(
                 .await?;
         }
         Command::Mcp { .. } => unreachable!("mcp handled in main"),
+        Command::Serve { .. } => unreachable!("serve handled in main"),
         Command::Preset { .. } => unreachable!("preset handled in main"),
         Command::Propose { action } => {
             unlock(&mut wallet, None)?;
@@ -585,8 +615,8 @@ async fn run_cli(
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     let proposal: TxProposal = serde_json::from_value(raw)?;
                     let prof = profile_dir(wallet.path());
-                    let secret = vaughan_core::core::McpSessionToken::read(&prof)?
-                        .unwrap_or_default();
+                    let secret =
+                        vaughan_core::core::McpSessionToken::read(&prof)?.unwrap_or_default();
                     let queue = ProposalQueue::new(&prof);
                     let queued = queue
                         .enqueue(proposal.clone(), "cli", secret.as_bytes())
@@ -605,8 +635,7 @@ async fn run_cli(
         }
         Command::Proposals { action } => {
             let prof = profile_dir(wallet.path());
-            let secret = vaughan_core::core::McpSessionToken::read(&prof)?
-                .unwrap_or_default();
+            let secret = vaughan_core::core::McpSessionToken::read(&prof)?.unwrap_or_default();
             let queue = ProposalQueue::new(&prof);
             match action {
                 ProposalsCmd::List => {
@@ -675,8 +704,8 @@ fn run_preset(profile: String, json_mode: bool, action: PresetCmd) -> anyhow::Re
             let path = StateManager::profile_path(&profile).map_err(|e| anyhow::anyhow!("{e}"))?;
             let prof = profile_dir(&path);
             std::fs::create_dir_all(&prof)?;
-            let skill_dir = vaughan_agent::apply_preset(&id, &prof)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let skill_dir =
+                vaughan_agent::apply_preset(&id, &prof).map_err(|e| anyhow::anyhow!("{e}"))?;
             let data = json!({
                 "preset": id,
                 "profile": profile,

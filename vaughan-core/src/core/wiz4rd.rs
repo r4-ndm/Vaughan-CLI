@@ -91,7 +91,10 @@ mod tests {
         assert!(parse_addr(d.swap_router).is_some());
         assert!(parse_addr(d.position_manager).is_some());
         assert!(parse_addr(d.factory).is_some());
-        assert_eq!(swap_router(943).unwrap().to_string().to_lowercase(), SWAP_ROUTER_943.to_lowercase());
+        assert_eq!(
+            swap_router(943).unwrap().to_string().to_lowercase(),
+            SWAP_ROUTER_943.to_lowercase()
+        );
     }
 
     #[test]

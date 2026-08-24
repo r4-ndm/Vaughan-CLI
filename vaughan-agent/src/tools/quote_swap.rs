@@ -140,7 +140,9 @@ impl Tool for QuoteSwapTool {
 
 fn parse_token_arg(raw: &str) -> Result<(Address, bool), AgentError> {
     let s = raw.trim();
-    if s.eq_ignore_ascii_case("native") || s.eq_ignore_ascii_case("pls") || s.eq_ignore_ascii_case("eth")
+    if s.eq_ignore_ascii_case("native")
+        || s.eq_ignore_ascii_case("pls")
+        || s.eq_ignore_ascii_case("eth")
     {
         return Ok((Address::ZERO, true));
     }

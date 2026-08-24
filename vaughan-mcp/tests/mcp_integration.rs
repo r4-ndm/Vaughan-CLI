@@ -73,7 +73,10 @@ async fn mcp_propose_transfer_queues_and_roundtrips() {
         .get_pending(&queued.proposal.proposal_id, secret)
         .expect("load pending");
     assert_eq!(loaded.proposal.explanation, "MCP test transfer");
-    assert_eq!(loaded.proposal.value_wei, U256::from(1_000_000_000_000_000_000u64));
+    assert_eq!(
+        loaded.proposal.value_wei,
+        U256::from(1_000_000_000_000_000_000u64)
+    );
 }
 
 #[test]

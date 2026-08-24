@@ -7,8 +7,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
 use vaughan_core::core::mcp_control_port;
+use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
 use vaughan_tui::mcp::{McpService, McpSessionSnapshot};
 
 fn free_port() -> u16 {
@@ -27,10 +27,7 @@ async fn ipc_roundtrip(req: McpIpcRequest) -> McpIpcResponse {
         .expect("connect failed");
     let line = encode_line(&req).expect("encode");
     let (reader, mut writer) = stream.into_split();
-    writer
-        .write_all(line.as_bytes())
-        .await
-        .expect("write");
+    writer.write_all(line.as_bytes()).await.expect("write");
     writer.flush().await.expect("flush");
     let mut buf = BufReader::new(reader);
     let mut response_line = String::new();

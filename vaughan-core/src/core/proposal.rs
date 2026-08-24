@@ -186,7 +186,10 @@ impl fmt::Display for ProposalError {
         match self {
             Self::WalletLocked => write!(f, "wallet is locked"),
             Self::NetworkMismatch { expected, actual } => {
-                write!(f, "network mismatch: proposal chain {expected}, active {actual}")
+                write!(
+                    f,
+                    "network mismatch: proposal chain {expected}, active {actual}"
+                )
             }
             Self::ProposalExpired => write!(f, "proposal expired"),
             Self::SimulationReverted => write!(f, "simulation reverted at approve time"),
@@ -298,8 +301,8 @@ impl ProposalQueue {
         let path = self
             .pending_dir()
             .join(format!("{}.json", queued.proposal.proposal_id));
-        let json = serde_json::to_string_pretty(&queued)
-            .map_err(|e| ProposalError::Io(e.to_string()))?;
+        let json =
+            serde_json::to_string_pretty(&queued).map_err(|e| ProposalError::Io(e.to_string()))?;
         write_atomic(&path, json.as_bytes())?;
         Ok(queued)
     }
@@ -356,8 +359,8 @@ impl ProposalQueue {
             "status": { "status": "approved", "tx_hash": tx_hash },
         });
         let approved_path = self.approved_dir().join(format!("{proposal_id}.json"));
-        let json = serde_json::to_string_pretty(&record)
-            .map_err(|e| ProposalError::Io(e.to_string()))?;
+        let json =
+            serde_json::to_string_pretty(&record).map_err(|e| ProposalError::Io(e.to_string()))?;
         write_atomic(&approved_path, json.as_bytes())?;
         append_history(&self.root, &record)?;
         Ok(())
@@ -378,8 +381,8 @@ impl ProposalQueue {
             "status": { "status": "rejected", "reason": reason },
         });
         let rejected_path = self.rejected_dir().join(format!("{proposal_id}.json"));
-        let json = serde_json::to_string_pretty(&record)
-            .map_err(|e| ProposalError::Io(e.to_string()))?;
+        let json =
+            serde_json::to_string_pretty(&record).map_err(|e| ProposalError::Io(e.to_string()))?;
         write_atomic(&rejected_path, json.as_bytes())?;
         append_history(&self.root, &record)?;
         Ok(())
@@ -530,7 +533,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// HMAC-SHA256 using only the `sha2` crate (allowlist-compliant).
@@ -557,10 +563,10 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::hd_wallet::validate_mnemonic;
     use alloy::primitives::address;
     use secrecy::SecretString;
     use tempfile::TempDir;
-    use crate::security::hd_wallet::validate_mnemonic;
 
     #[test]
     fn apply_proposal_native_transfer() {
@@ -654,7 +660,8 @@ mod tests {
         queue.enqueue(proposal, "cli", secret).unwrap();
 
         let path = queue.pending_dir().join("prop_tamper.json");
-        let mut doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         doc["hmac"] = serde_json::json!("00");
         fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
 

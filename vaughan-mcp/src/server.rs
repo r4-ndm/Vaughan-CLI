@@ -75,7 +75,11 @@ pub async fn run_stdio_server(profile: String, source: String) -> io::Result<()>
     Ok(())
 }
 
-async fn handle_request(dispatcher: &McpDispatcher, ctx: &McpContext, req: RpcRequest) -> RpcResponse {
+async fn handle_request(
+    dispatcher: &McpDispatcher,
+    ctx: &McpContext,
+    req: RpcRequest,
+) -> RpcResponse {
     let id = req.id.unwrap_or(Value::Null);
     match req.method.as_str() {
         "initialize" => RpcResponse {
@@ -162,9 +166,7 @@ async fn handle_request(dispatcher: &McpDispatcher, ctx: &McpContext, req: RpcRe
 fn build_context(profile: &str, source: &str) -> Result<McpContext, String> {
     let sm = StateManager::for_profile(profile).map_err(|e| e.user_message())?;
     let net_id = if sm.exists() {
-        sm.load()
-            .map_err(|e| e.user_message())?
-            .active_network_id
+        sm.load().map_err(|e| e.user_message())?.active_network_id
     } else {
         "pulsechain-testnet-v4".to_string()
     };

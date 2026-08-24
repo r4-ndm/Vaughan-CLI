@@ -927,11 +927,12 @@ mod tests {
 
     #[test]
     fn venue_cycle_starts_pulsex_ends_custom() {
+        assert_eq!(DexVenue::Wiz4rd.next(), DexVenue::PulseX);
         assert_eq!(DexVenue::PulseX.next(), DexVenue::PulseXV1);
         assert_eq!(DexVenue::NineMm.next(), DexVenue::NineInch);
         assert_eq!(DexVenue::Curv.next(), DexVenue::Custom);
-        assert_eq!(DexVenue::Custom.next(), DexVenue::PulseX);
-        assert_eq!(VENUES.len(), 15);
+        assert_eq!(DexVenue::Custom.next(), DexVenue::Wiz4rd);
+        assert_eq!(VENUES.len(), 16);
     }
 
     #[test]

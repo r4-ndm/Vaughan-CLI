@@ -141,9 +141,8 @@ impl Tool for ProposeV3MintTool {
             ));
         };
 
-        let spacing = tick_spacing(fee).ok_or_else(|| {
-            AgentError::InvalidToolCall(format!("unsupported fee tier {fee}"))
-        })?;
+        let spacing = tick_spacing(fee)
+            .ok_or_else(|| AgentError::InvalidToolCall(format!("unsupported fee tier {fee}")))?;
 
         let (tick_lower, tick_upper) = match (
             args.get("tick_lower").and_then(|v| v.as_i64()),

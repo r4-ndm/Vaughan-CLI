@@ -41,7 +41,7 @@ inspect_contract / get_v3_pool / list_allowances / list_v3_positions
 3. Agent: `get_v3_pool` → `quote_v3_swap` → `propose_v3_swap` → approve (or sentient auto).
 
 LP: *"Mint a wide LP on WZRD/WPLS fee 500 with small amounts."* → `propose_v3_mint`
-(approve tokens to NPM first if needed via `propose_contract_call` / future `propose_approve`).
+(approve tokens to NPM first if needed via `propose_approve`).
 
 Smoke WZRD: `0x29bab93456c0E97EE931C1554c7C215480aa7766` — see [`wiz4rd-addresses.md`](wiz4rd-addresses.md).
 

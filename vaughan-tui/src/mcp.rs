@@ -14,9 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
-use vaughan_core::core::proposal::{
-    mcp_control_port, ProposalQueue, TxProposal, McpSessionToken,
-};
+use vaughan_core::core::proposal::{mcp_control_port, McpSessionToken, ProposalQueue, TxProposal};
 use vaughan_provider::ProviderError;
 
 /// Live session metadata exposed to MCP clients while the wallet is unlocked.
@@ -138,10 +136,7 @@ impl McpService {
             if self.surfaced.contains(&id) {
                 continue;
             }
-            if queue
-                .get_pending(&id, secret.as_bytes())
-                .is_err()
-            {
+            if queue.get_pending(&id, secret.as_bytes()).is_err() {
                 continue;
             }
             self.surfaced.insert(id.clone());
@@ -171,11 +166,8 @@ async fn run_listener(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        let accept = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            listener.accept(),
-        )
-        .await;
+        let accept =
+            tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept()).await;
         let Ok(Ok((stream, _))) = accept else {
             continue;
         };
@@ -200,9 +192,7 @@ async fn handle_connection(
     let (reader, mut writer) = stream.into_split();
     let mut buf = BufReader::new(reader);
     let mut line = String::new();
-    buf.read_line(&mut line)
-        .await
-        .map_err(|e| e.to_string())?;
+    buf.read_line(&mut line).await.map_err(|e| e.to_string())?;
     let req: McpIpcRequest = decode_line(&line).map_err(|e| e.to_string())?;
 
     let response = match req {
@@ -281,7 +271,10 @@ async fn handle_connection(
     };
 
     let out = encode_line(&response).map_err(|e| e.to_string())?;
-    writer.write_all(out.as_bytes()).await.map_err(|e| e.to_string())?;
+    writer
+        .write_all(out.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     writer.flush().await.map_err(|e| e.to_string())?;
     Ok(())
 }

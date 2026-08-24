@@ -15,7 +15,8 @@ Vaughan via MCP or `vaughan --json` CLI. Keys never leave the Vaughan process
 
 - **v1:** Hybrid IPC — TUI owns `WalletState`; MCP proposes (or, on `sentient`,
   requests auto-exec) via loopback socket / file queue.
-- **v2 (deferred):** `vaughan serve` wallet daemon; TUI/MCP/CLI become thin clients.
+- **v2 (shipped minimal):** `vaughan serve --password-env …` unlocks a profile and
+  owns the MCP control plane headlessly; MCP stdio remains a thin client.
 
 See [`mcp-threat-model.md`](mcp-threat-model.md) for security controls.
 
@@ -48,6 +49,10 @@ proposals auto re-sim → policy gate → sign (no card). Legacy profile name
 | `quote_v3_swap` | wiz4rd V3 exact-in quote (local math on live pool) |
 | `list_allowances` | Non-zero ERC-20 allowances vs known Dex/Ag/Bridge spenders |
 | `list_v3_positions` | wiz4rd LP NFTs for an address (943; optional block range) |
+| `list_transfers` | Recent ERC-20 Transfer logs for an address |
+| `resolve_token` | Probe ERC-20 metadata (symbol/decimals/name) |
+| `quote_bridge` | LibertySwap bridge quote (read-only) |
+| `watch_balance` | Native/ERC-20 snapshot + optional min/max threshold flags |
 
 When the vault is locked and no explicit `address` is passed, read tools return
 `wallet_locked` with guidance to unlock Vaughan or pass `account_address`.
@@ -64,10 +69,17 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_agg_swap` | Yes | Aggregator quote → proposal (allowlisted routers only) |
 | `propose_v3_swap` | Yes | wiz4rd V3 exact-in swap (allowlisted SwapRouter on 943) |
 | `propose_v3_mint` | Yes | wiz4rd V3 open LP (allowlisted PositionManager on 943) |
+| `propose_v3_increase` | Yes | wiz4rd V3 increase liquidity |
+| `propose_v3_decrease` | Yes | wiz4rd V3 decrease liquidity |
+| `propose_v3_collect` | Yes | wiz4rd V3 collect fees |
 | `propose_wrap` | Yes | Native → WPLS (`deposit`) |
 | `propose_unwrap` | Yes | WPLS → native (`withdraw`) |
+| `propose_approve` | Yes | ERC-20 `approve(spender, amount)` |
 | `propose_revoke` | Yes | ERC-20 `approve(spender, 0)` |
-| `propose_batch_7702` | Deferred | EIP-7702 batched send |
+| `propose_bridge` | Yes | LibertySwap bridge (source-chain broadcast) |
+| `propose_stealth_send` | Yes | ERC-5564 pay + announce proposals (scan/sweep still TUI) |
+| `import_token` | Yes | Persist probed token into profile assets (needs profile dir) |
+| `propose_batch_7702` | Draft only | Proposal drafts exist; exec is still EOA `send_transaction`, not Ambire `submit_batch` |
 
 On **`default`:** return `proposal_id` + `status: pending_user`; human approves.  
 On **`sentient`:** TUI unlocked on that profile auto re-sim → policy → sign;

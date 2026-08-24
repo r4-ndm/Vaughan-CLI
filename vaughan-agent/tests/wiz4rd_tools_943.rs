@@ -50,11 +50,7 @@ async fn wiz4rd_get_pool_and_quote_on_943() {
 #[test]
 fn wiz4rd_tools_registered() {
     let registry = default_assist_registry();
-    let names: Vec<String> = registry
-        .definitions()
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
+    let names: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
     assert!(names.iter().any(|n| n == "get_v3_pool"));
     assert!(names.iter().any(|n| n == "quote_v3_swap"));
     assert!(names.iter().any(|n| n == "propose_v3_swap"));

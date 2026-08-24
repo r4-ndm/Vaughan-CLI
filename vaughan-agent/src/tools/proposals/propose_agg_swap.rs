@@ -33,7 +33,9 @@ fn parse_venue(raw: &str) -> Result<AggVenue, AgentError> {
 
 fn parse_token_arg(raw: &str) -> Result<(Address, bool), AgentError> {
     let s = raw.trim();
-    if s.eq_ignore_ascii_case("native") || s.eq_ignore_ascii_case("pls") || s.eq_ignore_ascii_case("eth")
+    if s.eq_ignore_ascii_case("native")
+        || s.eq_ignore_ascii_case("pls")
+        || s.eq_ignore_ascii_case("eth")
     {
         return Ok((Address::ZERO, true));
     }
@@ -138,11 +140,7 @@ impl Tool for ProposeAggSwapTool {
         let gas_limit = quote.gas_estimate.unwrap_or(350_000).saturating_mul(12) / 10;
         let path = vec![
             if native_in { Address::ZERO } else { token_in },
-            if native_out {
-                Address::ZERO
-            } else {
-                token_out
-            },
+            if native_out { Address::ZERO } else { token_out },
         ];
 
         let proposal = TxProposal::new(

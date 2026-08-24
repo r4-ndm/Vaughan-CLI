@@ -362,9 +362,7 @@ pub fn describe_approval(
             ))
         }
         ApprovalKind::McpProposal {
-            proposal,
-            source,
-            ..
+            proposal, source, ..
         } => {
             let net = wallet.networks().active();
             let to = format!("{:#x}", proposal.to);
@@ -533,12 +531,10 @@ async fn resimulate_mcp_proposal(
     wallet: &WalletState,
     proposal: &TxProposal,
 ) -> Result<(), ProviderError> {
-    let from_str = wallet
-        .active_address()
-        .map_err(map_wallet_error)?;
-    let from: Address = from_str.parse().map_err(|_| {
-        ProviderError::Internal("active account address is invalid".into())
-    })?;
+    let from_str = wallet.active_address().map_err(map_wallet_error)?;
+    let from: Address = from_str
+        .parse()
+        .map_err(|_| ProviderError::Internal("active account address is invalid".into()))?;
     let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
     let to = proposal.to;
     let value = proposal.value_wei;

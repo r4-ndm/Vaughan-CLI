@@ -66,7 +66,9 @@ impl DappsView {
                 );
                 if dapps.is_empty() {
                     frame.render_widget(
-                        Paragraph::new("  No sites yet — press a to add one (optional Freedom path)."),
+                        Paragraph::new(
+                            "  No sites yet — press a to add one (optional Freedom path).",
+                        ),
                         inner,
                     );
                 } else {
