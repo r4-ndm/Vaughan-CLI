@@ -114,6 +114,7 @@ vaughan-cli/
 
 - [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
 - [docs/ai-tool-surface.md](docs/ai-tool-surface.md) — Public tool contract for agents
+- [docs/pulse-defi-skills.md](docs/pulse-defi-skills.md) — Pulse DeFi MCP skill pack (quote / trade)
 - [docs/mcp-threat-model.md](docs/mcp-threat-model.md) — MCP threat model
 - [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md) — EIP-1193 provider bridge
 - [docs/ambire-aa.md](docs/ambire-aa.md) — Ambire EIP-7702 batch transactions

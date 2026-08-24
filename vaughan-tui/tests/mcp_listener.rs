@@ -1,5 +1,6 @@
 //! Loopback MCP listener roundtrip (ping + session snapshot).
 
+use std::net::TcpListener;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -7,11 +8,19 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
-use vaughan_core::core::MCP_CONTROL_PORT;
+use vaughan_core::core::mcp_control_port;
 use vaughan_tui::mcp::{McpService, McpSessionSnapshot};
 
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 async fn ipc_roundtrip(req: McpIpcRequest) -> McpIpcResponse {
-    let addr = format!("127.0.0.1:{MCP_CONTROL_PORT}");
+    let addr = format!("127.0.0.1:{}", mcp_control_port());
     let stream = timeout(Duration::from_secs(2), TcpStream::connect(&addr))
         .await
         .expect("connect timeout")
@@ -34,6 +43,9 @@ async fn ipc_roundtrip(req: McpIpcRequest) -> McpIpcResponse {
 
 #[tokio::test]
 async fn mcp_loopback_ping_and_session() {
+    let port = free_port();
+    std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
+
     let dir = tempfile::tempdir().expect("tempdir");
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut svc = McpService::new(dir.path(), tx);
@@ -43,7 +55,7 @@ async fn mcp_loopback_ping_and_session() {
         network_id: Some("anvil".into()),
     });
     svc.on_unlock(&tokio::runtime::Handle::current());
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let token = svc.session_secret().expect("session token").to_string();
 

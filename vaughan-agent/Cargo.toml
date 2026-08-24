@@ -3,7 +3,7 @@ name = "vaughan-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Agent library for Vaughan: tool registry, proposals, circuit breakers (MCP future)"
+description = "Agent library for Vaughan: tool registry, proposals, circuit breakers (MCP)"
 
 [dependencies]
 vaughan-core = { workspace = true }

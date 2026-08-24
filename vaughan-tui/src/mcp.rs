@@ -14,7 +14,9 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
-use vaughan_core::core::proposal::{ProposalQueue, TxProposal, MCP_CONTROL_PORT, McpSessionToken};
+use vaughan_core::core::proposal::{
+    mcp_control_port, ProposalQueue, TxProposal, McpSessionToken,
+};
 use vaughan_provider::ProviderError;
 
 /// Live session metadata exposed to MCP clients while the wallet is unlocked.
@@ -160,7 +162,7 @@ async fn run_listener(
     profile_dir: std::path::PathBuf,
     snapshot: Arc<RwLock<McpSessionSnapshot>>,
 ) -> Result<(), String> {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, MCP_CONTROL_PORT));
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, mcp_control_port()));
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| format!("bind {addr}: {e}"))?;

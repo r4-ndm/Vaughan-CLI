@@ -63,6 +63,21 @@ impl McpDispatcher {
             }
         }
         tools.push(json!({
+            "name": "get_address",
+            "description": "Active wallet address when Vaughan TUI is unlocked (session bridge).",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        tools.push(json!({
+            "name": "get_network",
+            "description": "Active network id, chain id, and RPC for the MCP session.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        tools.push(json!({
+            "name": "list_assets",
+            "description": "Native + known ERC-20 balances for the unlocked active account.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        tools.push(json!({
             "name": "get_proposal_status",
             "description": "Get lifecycle status of a pending or completed proposal.",
             "inputSchema": {

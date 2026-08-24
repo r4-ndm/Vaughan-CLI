@@ -33,6 +33,7 @@ v1 ships **default profile only** for MCP writes.
 | `simulate_call` | `eth_call` pre-flight |
 | `get_dex_reserves` | Pair/pool reserves |
 | `search_pairs` | Factory log scan for pairs |
+| `quote_swap` | Pulse aggregator quote (Squirrel / PulseSwap / Piteas) — read-only |
 
 When the vault is locked and no explicit `address` is passed, read tools return
 `wallet_locked` with guidance to unlock Vaughan or pass `account_address`.
@@ -43,7 +44,8 @@ When the vault is locked and no explicit `address` is passed, read tools return
 |------|----|-------------|
 | `propose_transfer` | Yes | Native or ERC-20 transfer |
 | `propose_contract_call` | Yes | Arbitrary contract call |
-| `propose_swap` | Deferred | DEX swap (needs stable quote path) |
+| `propose_swap` | Yes | Direct V2/PulseX router swap (path + amounts) |
+| `propose_agg_swap` | Yes | Aggregator quote → proposal (allowlisted routers only) |
 | `propose_batch_7702` | Deferred | EIP-7702 batched send |
 
 Write tools return a `proposal_id` and `status: pending_user`. They never sign

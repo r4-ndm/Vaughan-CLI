@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
 use vaughan_core::core::proposal::TxProposal;
-use vaughan_core::core::MCP_CONTROL_PORT;
+use vaughan_core::core::mcp_control_port;
 
 const IPC_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -19,7 +19,7 @@ pub async fn try_propose_live(
     source: &str,
     proposal: &TxProposal,
 ) -> Result<Option<Value>, String> {
-    let addr = format!("127.0.0.1:{MCP_CONTROL_PORT}");
+    let addr = format!("127.0.0.1:{}", mcp_control_port());
     let stream = match timeout(Duration::from_secs(2), TcpStream::connect(&addr)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("socket connect failed: {e}")),
@@ -61,7 +61,7 @@ pub async fn try_propose_live(
 
 /// Query proposal status via live TUI socket.
 pub async fn try_proposal_status(token: &str, proposal_id: &str) -> Result<Option<Value>, String> {
-    let addr = format!("127.0.0.1:{MCP_CONTROL_PORT}");
+    let addr = format!("127.0.0.1:{}", mcp_control_port());
     let stream = match timeout(Duration::from_secs(2), TcpStream::connect(&addr)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("socket connect failed: {e}")),
@@ -101,7 +101,7 @@ pub async fn try_proposal_status(token: &str, proposal_id: &str) -> Result<Optio
 
 /// Query the live TUI session (address + network) when unlocked.
 pub async fn try_get_session(token: &str) -> Result<Option<McpSessionInfo>, String> {
-    let addr = format!("127.0.0.1:{MCP_CONTROL_PORT}");
+    let addr = format!("127.0.0.1:{}", mcp_control_port());
     let stream = match timeout(Duration::from_secs(2), TcpStream::connect(&addr)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("socket connect failed: {e}")),
@@ -164,7 +164,7 @@ pub struct McpSessionInfo {
 
 /// Ping the TUI listener to see if it is up and token matches.
 pub async fn ping(token: &str) -> bool {
-    let addr = format!("127.0.0.1:{MCP_CONTROL_PORT}");
+    let addr = format!("127.0.0.1:{}", mcp_control_port());
     let Ok(Ok(stream)) = timeout(Duration::from_secs(1), TcpStream::connect(&addr)).await else {
         return false;
     };

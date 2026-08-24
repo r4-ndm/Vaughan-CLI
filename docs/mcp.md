@@ -11,7 +11,8 @@ See also:
 
 ## Cursor configuration
 
-Add to `~/.cursor/mcp.json` (or project `.cursor/mcp.json`):
+Project config ships at [`.cursor/mcp.json`](../.cursor/mcp.json) (cargo-run for
+dev). For an installed binary, use:
 
 ```json
 {
@@ -24,7 +25,8 @@ Add to `~/.cursor/mcp.json` (or project `.cursor/mcp.json`):
 }
 ```
 
-Build/install Vaughan first (`cargo install --path vaughan-cli`).
+Build/install Vaughan first (`cargo install --path vaughan-cli`), or rely on the
+project `.cursor/mcp.json` which runs `cargo run -p vaughan-cli -- mcp`.
 
 ## Architecture (v1)
 
@@ -50,6 +52,24 @@ vaughan proposals show prop_12345 --json
 3. Agent calls read tools → `propose_transfer` → **one approval card** in TUI.
 4. Approve → `get_proposal_status` returns `tx_hash`.
 5. Confirm: no keys in the MCP process; tx matches decoded calldata.
+
+## Dogfood checklist (local)
+
+Automated coverage (CI):
+
+```bash
+cargo test -p vaughan-tui --test mcp_dogfood --test mcp_listener
+cargo test -p vaughan-mcp --test mcp_integration
+```
+
+Manual Cursor session (after unlock TUI):
+
+1. Connect Vaughan MCP (see config above; restart Cursor MCP).
+2. `get_address` / `list_assets` — should return the unlocked account.
+3. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file; `get_proposal_status` ≠ pending.
+4. `propose_transfer` → **Approve** on testnet → status shows `tx_hash`.
+5. Overspend / bad calldata → approval fails with simulation revert (no broadcast).
+6. Optional Pulse DeFi: `quote_swap` then `propose_agg_swap` (mainnet needs `VAUGHAN_MCP_ALLOW_MAINNET=1`).
 
 ## Troubleshooting
 

@@ -44,7 +44,7 @@ pub use profile::OperatingMode;
 pub use proposal::{
     apply_proposal, guard_mainnet_write, mcp_mainnet_writes_allowed, McpSessionToken,
     ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal, TxProposal,
-    MCP_CONTROL_PORT, MAX_PENDING_PROPOSALS, PROPOSAL_TTL_SECS,
+    MCP_CONTROL_PORT, mcp_control_port, MAX_PENDING_PROPOSALS, PROPOSAL_TTL_SECS,
 };
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use transaction::{format_base_units, parse_native_amount, TransactionService};

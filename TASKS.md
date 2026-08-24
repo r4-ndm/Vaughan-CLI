@@ -306,9 +306,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ### P1 — Agent is the URL bar
 - [ ] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; **no partner key** — port from public SDK ABIs; see `docs/aggregator.md` no-permission matrix)
-- [ ] Agent tools: `quote_*` / `route_*` / `swap_prep` with ground-truth calldata confirmation cards (Assist never auto-broadcasts)
+- [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
 - [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
-- [ ] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — feeds later MCP work under “DeFi AI king”
+- [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
 
 ### P2 — Replace explorer & settings tabs people open constantly
 - [x] Activity / History screen (`m`): ERC-20 Transfer logs (sent/received) over recent window; reload; native-only without token log still needs explorer later
@@ -346,7 +346,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 - [x] P0: `AgentSessionPolicy` + wire Degen breakers + Agent `/policy` (see Browserless Pulse)
 - [x] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Degen under policy) — `vaughan mcp`, hybrid IPC, `docs/mcp.md`
-- [ ] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real)
+- [x] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real) — `quote_swap`, `propose_agg_swap`, `propose_swap`
 - [ ] P3: x402 client (opportunistic — only with real counterparties)
 - [ ] P4: gas tank, optional hardware signer, local deny lists (never hosted TEE / KYT telemetry)
 

@@ -27,6 +27,17 @@ pub const MAX_PENDING_PROPOSALS: usize = 10;
 /// Loopback port for MCP control plane (TUI listener).
 pub const MCP_CONTROL_PORT: u16 = 8746;
 
+/// Resolve the MCP control port (`VAUGHAN_MCP_PORT` override, else [`MCP_CONTROL_PORT`]).
+///
+/// Tests set `VAUGHAN_MCP_PORT` to an ephemeral port so they never collide with a
+/// live Vaughan TUI on the default port.
+pub fn mcp_control_port() -> u16 {
+    std::env::var("VAUGHAN_MCP_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(MCP_CONTROL_PORT)
+}
+
 /// Type of proposed on-chain action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

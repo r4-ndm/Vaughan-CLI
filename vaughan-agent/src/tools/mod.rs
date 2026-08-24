@@ -6,6 +6,7 @@ pub mod get_dex_reserves;
 pub mod inspect_contract;
 pub mod proposals;
 pub mod propose_policy;
+pub mod quote_swap;
 pub mod registry;
 pub mod search_pairs;
 pub mod simulate_call;
@@ -15,9 +16,11 @@ pub use get_balance::GetBalanceTool;
 pub use get_dex_reserves::GetDexReservesTool;
 pub use inspect_contract::InspectContractTool;
 pub use proposals::{
-    ProposeBatch7702Tool, ProposeContractCallTool, ProposeSwapTool, ProposeTransferTool,
+    ProposeAggSwapTool, ProposeBatch7702Tool, ProposeContractCallTool, ProposeSwapTool,
+    ProposeTransferTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
+pub use quote_swap::QuoteSwapTool;
 pub use registry::ToolRegistry;
 pub use search_pairs::SearchPairsTool;
 pub use simulate_call::SimulateCallTool;
@@ -48,6 +51,7 @@ pub fn default_sensory_registry() -> ToolRegistry {
     registry.register(Arc::new(GetDexReservesTool::new()));
     registry.register(Arc::new(SearchPairsTool::new()));
     registry.register(Arc::new(SimulateCallTool::new()));
+    registry.register(Arc::new(QuoteSwapTool::new()));
     registry
 }
 
@@ -56,6 +60,7 @@ pub fn default_assist_registry() -> ToolRegistry {
     let mut registry = default_sensory_registry();
     registry.register(Arc::new(ProposeTransferTool::new()));
     registry.register(Arc::new(ProposeSwapTool::new()));
+    registry.register(Arc::new(ProposeAggSwapTool::new()));
     registry.register(Arc::new(ProposeBatch7702Tool::new()));
     registry.register(Arc::new(ProposeContractCallTool::new()));
     registry
