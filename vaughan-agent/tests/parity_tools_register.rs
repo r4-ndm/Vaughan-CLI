@@ -18,6 +18,7 @@ fn assist_registry_includes_parity_verbs() {
         "list_transfers",
         "resolve_token",
         "watch_balance",
+        "watch_quote",
         "propose_stealth_send",
         "propose_batch_7702",
     ] {

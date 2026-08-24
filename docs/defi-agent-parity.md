@@ -41,7 +41,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | See address | `get_address` | [x] |
 | See network / chain | `get_network` | [x] |
 | Native + token balances | `get_balance`, `list_assets` | [x] |
-| Switch network | *(human only in Settings)* | [ ] named `switch_network` propose — or document “human switches” |
+| Switch network | *(human only in Settings)* | [~] document: human switches; agent calls `get_network` / `get_control_plane_status` |
 | Unlock / lock vault | **never** MCP | n/a (hard ban) |
 | Export keys / mnemonic | **never** MCP | n/a (hard ban) |
 | Agent auto-trade without click | MCP `vaughan-sentient` / `--profile sentient` | [x] TUI auto-exec when unlocked |
@@ -78,7 +78,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Ag (`g`): quote aggregators | `quote_swap` | [x] |
 | Ag: approve + swap | `propose_agg_swap` (+ approve via call/path) | [x] |
 | Dex (`d`): V2 path swap | `propose_swap` | [x] |
-| Dex: curated V2/V3 write polish | — | [ ] human Dex write path still open in TASKS |
+| Dex: curated V2/V3 write polish | Dex TUI + fee confirm | [x] (fee estimate on approve/swap) |
 | wiz4rd V3 quote | `quote_v3_swap` | [x] |
 | wiz4rd V3 swap | `propose_v3_swap` | [x] |
 | EmpX / EmpSeal path-find | `quote_swap` / `propose_agg_swap` venue `empx` | [x] Alloy `findBestPath` (369) |
@@ -119,6 +119,8 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Stealth receive / send / scan / sweep | `get_stealth_uri`, `propose_stealth_send`, `scan_stealth_notes`, `sweep_stealth_note` | [x] |
 | Ambire AA batched UX | `propose_batch_7702` | [x] exec via `submit_batch` |
 | Balance watch / thresholds | `watch_balance` | [x] |
+| Quote / price watch | `watch_quote` | [x] |
+| Control plane health | `get_control_plane_status` | [x] |
 
 ---
 

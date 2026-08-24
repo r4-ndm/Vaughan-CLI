@@ -15,8 +15,8 @@ use vaughan_core::core::proposal::{
 };
 
 use crate::client::{
-    try_get_session, try_proposal_status, try_propose_live, try_stealth_scan, try_stealth_sweep,
-    try_stealth_uri,
+    ping, try_get_session, try_proposal_status, try_propose_live, try_stealth_scan,
+    try_stealth_sweep, try_stealth_uri,
 };
 
 /// MCP runtime context (no vault unlock — read tools use RPC + optional address).
@@ -99,6 +99,12 @@ impl McpDispatcher {
             "inputSchema": { "type": "object", "properties": {} }
         }));
         tools.push(json!({
+            "name": "get_control_plane_status",
+            "description": "Whether Vaughan TUI or `vaughan serve` is reachable on loopback, \
+                 and whether the wallet session is unlocked. Sentients should poll this before writes.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        tools.push(json!({
             "name": "get_stealth_uri",
             "description": "This vault's ERC-5564 stealth meta-address URI (st:…). Requires unlocked TUI or vaughan serve.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -132,6 +138,7 @@ impl McpDispatcher {
         match name {
             "get_proposal_status" => self.get_proposal_status(args, &ctx).await,
             "list_pending_proposals" => self.list_pending_proposals(&ctx),
+            "get_control_plane_status" => self.control_plane_status(&ctx).await,
             "import_token" => self.assist_side_effect("import_token", args, &ctx).await,
             "get_stealth_uri" => self.stealth_uri(&ctx).await,
             "scan_stealth_notes" => self.stealth_scan(&ctx).await,
@@ -382,6 +389,47 @@ impl McpDispatcher {
             })
             .collect();
         Ok(json!({ "pending": ids }))
+    }
+
+    async fn control_plane_status(&self, _ctx: &McpContext) -> Result<Value, String> {
+        let session = McpSessionToken::read(&self.profile_dir)
+            .map_err(|e| e.user_message())?
+            .unwrap_or_default();
+        let has_session_file = !session.is_empty();
+        let (reachable, unlocked, address) = if has_session_file {
+            let reachable = ping(&session).await;
+            match try_get_session(&session).await {
+                Ok(Some(info)) => (reachable, true, Some(info.address)),
+                Ok(None) => (false, false, None),
+                Err(_) => (reachable, false, None),
+            }
+        } else {
+            (false, false, None)
+        };
+        let profile_name = self
+            .profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("default");
+        let auto_exec = vaughan_core::core::is_sentient_profile(profile_name);
+        Ok(json!({
+            "control_plane_reachable": reachable,
+            "session_file_present": has_session_file,
+            "wallet_unlocked": unlocked,
+            "active_address": address.map(|a| format!("{a:#x}")),
+            "profile": profile_name,
+            "sentient_auto_exec": auto_exec,
+            "ready_for_writes": reachable && unlocked,
+            "hint": if !reachable {
+                "Start `vaughan --profile <name> serve --password-env …` or unlock the TUI"
+            } else if !unlocked {
+                "Control plane is up but wallet is locked — unlock or restart serve"
+            } else if auto_exec {
+                "Sentient profile: proposes auto-exec under policy"
+            } else {
+                "Adviser profile: proposes need human approval in TUI"
+            },
+        }))
     }
 
     async fn stealth_uri(&self, _ctx: &McpContext) -> Result<Value, String> {

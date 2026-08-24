@@ -18,6 +18,7 @@ pub mod resolve_token;
 pub mod search_pairs;
 pub mod simulate_call;
 pub mod watch_balance;
+pub mod watch_quote;
 pub mod wiz4rd_common;
 
 pub use execute_degen_swap::ExecuteDegenSwapTool;
@@ -43,6 +44,7 @@ pub use resolve_token::{ImportTokenTool, ResolveTokenTool};
 pub use search_pairs::SearchPairsTool;
 pub use simulate_call::SimulateCallTool;
 pub use watch_balance::WatchBalanceTool;
+pub use watch_quote::WatchQuoteTool;
 
 use alloy::primitives::Address;
 use async_trait::async_trait;
@@ -79,6 +81,7 @@ pub fn default_sensory_registry() -> ToolRegistry {
     registry.register(Arc::new(ResolveTokenTool::new()));
     registry.register(Arc::new(QuoteBridgeTool::new()));
     registry.register(Arc::new(WatchBalanceTool::new()));
+    registry.register(Arc::new(WatchQuoteTool::new()));
     registry
 }
 

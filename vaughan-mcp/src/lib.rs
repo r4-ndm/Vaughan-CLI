@@ -7,4 +7,8 @@ pub mod client;
 pub mod dispatch;
 pub mod server;
 
-pub use server::run_stdio_server;
+pub use dispatch::{McpContext, McpDispatcher};
+pub use server::{
+    build_context, handle_request, handle_stdio_line, run_stdio_server, RpcErrorObj, RpcRequest,
+    RpcResponse, MCP_PROTOCOL_VERSION,
+};

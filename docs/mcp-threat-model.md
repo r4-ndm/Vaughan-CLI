@@ -36,7 +36,7 @@ seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 | Threat | Control |
 |--------|---------|
 | Agent lies in `explanation` | Labeled **untrusted**; calldata decode is authoritative |
-| Stale simulation | Re-simulate `eth_call` at approve (default) or pre-broadcast (sentient); **except** `Batch7702` — Ambire draft uses a placeholder signature, so integrity is abi-decode `execute(txns)` + fresh `submit_batch` |
+| Stale simulation | Re-simulate `eth_call` at approve (default) or pre-broadcast (sentient); **except** `Batch7702` eth_call — Ambire draft uses a placeholder signature, so integrity is abi-decode `execute(txns)` + fee-spike via `estimate_self_pay_fee` + fresh `submit_batch` |
 | Wrong chain | `chain_id` on proposal; reject on mismatch |
 | Queue file tampering | HMAC-SHA256 over proposal bytes + session secret |
 | Local socket hijack | Loopback only (`127.0.0.1:8746`); random session token in `mcp.session` (0600) |
@@ -45,7 +45,7 @@ seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 | Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
 | Runaway sentient agent | Profile policy + circuit breakers + Esc kill-switch |
-| Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`) |
+| Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`; Batch7702 uses Ambire `estimate_self_pay_fee`) |
 | TOCTOU | Re-simulate + re-estimate fee before sign |
 | Double-spend proposal | Terminal states; duplicate `proposal_id` rejected at enqueue |
 
@@ -79,7 +79,11 @@ Run the suite:
 ```sh
 cargo test -p vaughan-core --lib proposal_
 cargo test -p vaughan-tui --test mcp_dogfood --test mcp_listener
+cargo test -p vaughan-mcp --test conformance
 ```
+
+MCP stdio wire format (initialize / tools/list / tools/call envelopes): see
+[`mcp-smoke.md`](mcp-smoke.md) and `vaughan-mcp/tests/conformance.rs`.
 
 ## Trust boundaries
 

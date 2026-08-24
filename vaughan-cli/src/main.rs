@@ -18,7 +18,9 @@ use vaughan_agent::paths::profile_dir;
 use vaughan_agent::tools::{default_assist_registry, ToolContext};
 use vaughan_core::chains::ChainTransaction;
 use vaughan_core::core::proposal::{ProposalQueue, TxProposal};
-use vaughan_core::core::{guard_mainnet_write, OperatingMode, StateManager, TransactionService, WalletState};
+use vaughan_core::core::{
+    guard_mainnet_write, OperatingMode, StateManager, TransactionService, WalletState,
+};
 
 #[derive(Debug, Parser)]
 #[command(

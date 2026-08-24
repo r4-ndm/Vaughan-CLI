@@ -1,0 +1,15 @@
+[
+  "get_address",
+  "get_network",
+  "list_assets",
+  "get_proposal_status",
+  "list_pending_proposals",
+  "get_control_plane_status",
+  "get_balance",
+  "quote_swap",
+  "watch_balance",
+  "watch_quote",
+  "propose_transfer",
+  "propose_agg_swap",
+  "propose_batch_7702"
+]

@@ -339,7 +339,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain”
 - [ ] Local EIP-712: paste/load typed-data JSON → Approve view (for protocols that insist on `eth_signTypedData_v4` without a webview)
-- [x] Watch mode (MCP): `watch_balance` threshold snapshot; richer price/breaker watch still optional
+- [x] Watch mode (MCP): `watch_balance` + `watch_quote` threshold snapshots; agent owns poll loop
+- [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/sentient-ops.md`](docs/sentient-ops.md))
+- [x] Batch7702 fee-spike: stamp via `estimate_self_pay_fee`, check at approve (same as other MCP writes)
 
 ### Positioning (UX + docs)
 - [x] Demote Dapps screen: relabel to “Optional web / Freedom” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP
@@ -350,6 +352,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - Building a general-purpose dApp browser inside Vaughan
 - WalletConnect-as-default identity (keeps users married to websites)
 - 1:1 clones of every Pulse website — prefer verbs: swap, inspect, revoke, send, stealth
+- Hosted multi-tenant / cloud fire-and-forget signing (see [`docs/sentient-ops.md`](docs/sentient-ops.md))
+- Full `rmcp` MCP rewrite until fund-safety path is boringly stable
 
 ## Later — DeFi AI king / Coinbase compete (deferred)
 

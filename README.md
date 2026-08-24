@@ -214,6 +214,8 @@ vaughan-cli/
 - [docs/wiz4rd-addresses.md](docs/wiz4rd-addresses.md) — wiz4rd V3 deploy on Pulse testnet 943
 - [docs/wiz4rd-agent-plan.md](docs/wiz4rd-agent-plan.md) — Agents + wiz4rd capability plan
 - [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
+- [docs/mcp-smoke.md](docs/mcp-smoke.md) — Cursor smoke checklist + conformance tests
+- [docs/sentient-ops.md](docs/sentient-ops.md) — Always-on serve, watch loops, multi-tenant boundaries
 - [docs/ai-tool-surface.md](docs/ai-tool-surface.md) — Public tool contract for agents
 - [docs/pulse-defi-skills.md](docs/pulse-defi-skills.md) — Pulse DeFi MCP skill pack (quote / trade)
 - [docs/mcp-threat-model.md](docs/mcp-threat-model.md) — MCP threat model

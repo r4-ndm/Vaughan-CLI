@@ -90,17 +90,17 @@ fn mcp_tool_definitions_include_banned_absence() {
             "banned tool leaked: {banned}"
         );
     }
-    assert!(names.iter().any(|n| *n == "propose_transfer"));
-    assert!(names.iter().any(|n| *n == "get_balance"));
-    assert!(names.iter().any(|n| *n == "quote_swap"));
-    assert!(names.iter().any(|n| *n == "propose_agg_swap"));
-    assert!(names.iter().any(|n| *n == "get_v3_pool"));
-    assert!(names.iter().any(|n| *n == "quote_v3_swap"));
-    assert!(names.iter().any(|n| *n == "propose_v3_swap"));
-    assert!(names.iter().any(|n| *n == "propose_v3_mint"));
-    assert!(names.iter().any(|n| *n == "propose_wrap"));
-    assert!(names.iter().any(|n| *n == "propose_unwrap"));
-    assert!(names.iter().any(|n| *n == "propose_revoke"));
-    assert!(names.iter().any(|n| *n == "list_allowances"));
-    assert!(names.iter().any(|n| *n == "list_v3_positions"));
+    assert!(names.contains(&"propose_transfer"));
+    assert!(names.contains(&"get_balance"));
+    assert!(names.contains(&"quote_swap"));
+    assert!(names.contains(&"propose_agg_swap"));
+    assert!(names.contains(&"get_v3_pool"));
+    assert!(names.contains(&"quote_v3_swap"));
+    assert!(names.contains(&"propose_v3_swap"));
+    assert!(names.contains(&"propose_v3_mint"));
+    assert!(names.contains(&"propose_wrap"));
+    assert!(names.contains(&"propose_unwrap"));
+    assert!(names.contains(&"propose_revoke"));
+    assert!(names.contains(&"list_allowances"));
+    assert!(names.contains(&"list_v3_positions"));
 }

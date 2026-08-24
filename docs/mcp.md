@@ -17,6 +17,8 @@ Signing never happens inside the MCP process. Keys stay in Vaughan.
 See also:
 
 - [`agent-roles.md`](agent-roles.md) — adviser vs sentient  
+- [`sentient-ops.md`](sentient-ops.md) — always-on serve, watch loops, isolation limits  
+- [`mcp-smoke.md`](mcp-smoke.md) — Cursor smoke checklist + conformance test how-to  
 - [`ai-tool-surface.md`](ai-tool-surface.md) — tool contract  
 - [`mcp-threat-model.md`](mcp-threat-model.md) — security controls  
 
@@ -80,12 +82,18 @@ vaughan proposals show prop_12345 --json
 
 ## Success test (testnet 943)
 
+Full tick-list (adviser + sentient): [`mcp-smoke.md`](mcp-smoke.md).
+
+Quick path:
+
 1. Unlock Vaughan TUI on PulseChain testnet v4.
 2. Connect Vaughan MCP (`.cursor/mcp.json`; restart Cursor MCP).
 3. `get_address` / `list_assets` — should return the unlocked account.
 4. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file.
 5. `propose_transfer` → **Approve** on testnet → status shows `tx_hash`.
 6. Optional Pulse DeFi: `quote_swap` then `propose_agg_swap`.
+
+Wire-format CI: `cargo test -p vaughan-mcp --test conformance`.
 
 ## Troubleshooting
 

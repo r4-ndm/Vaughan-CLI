@@ -14,7 +14,7 @@
 use std::env;
 use std::sync::Arc;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use alloy::providers::Provider;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -533,6 +533,7 @@ pub async fn execute_approval(
             if matches!(proposal.proposal_type, ProposalType::Batch7702 { .. }) {
                 // Ambire self-pay path: dummy draft signature cannot eth_call.
                 // Integrity check = abi-decode execute(txns) then submit_batch (fresh sig).
+                // Fee spike uses the same pinned-gas estimate as submit_batch.
                 let txns = vaughan_aa::decode_execute(&proposal.calldata)
                     .map_err(ProviderError::Internal)?;
                 if txns.is_empty() {
@@ -542,6 +543,33 @@ pub async fn execute_approval(
                 }
                 let signer = wallet.active_signer().map_err(map_wallet_error)?;
                 let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
+                let account = signer.address();
+                let chain_id = wallet.networks().active().chain_id;
+                let nonce = vaughan_aa::get_account_nonce(&adapter, account)
+                    .await
+                    .unwrap_or(0);
+                let scw = vaughan_aa::ScwTransaction {
+                    account,
+                    chain_id,
+                    nonce,
+                    txns: txns.clone(),
+                };
+                let placeholder = [0u8; 66];
+                if let Ok((gas_limit, max_fee, _)) =
+                    vaughan_aa::estimate_self_pay_fee(&adapter, &scw, &placeholder, None).await
+                {
+                    let fresh_wei = U256::from(gas_limit).saturating_mul(U256::from(max_fee));
+                    if vaughan_core::core::fee_spike_exceeds_threshold(
+                        proposal.estimated_fee_wei,
+                        fresh_wei,
+                    ) {
+                        return Err(ProviderError::InvalidParams(
+                            "network fee increased more than 10% since agent proposal — \
+                             deny and ask the agent to re-propose"
+                                .into(),
+                        ));
+                    }
+                }
                 let result = vaughan_aa::submit_batch(
                     &adapter,
                     &signer,

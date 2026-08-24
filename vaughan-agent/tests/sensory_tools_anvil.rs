@@ -53,6 +53,7 @@ async fn test_tool_registry_and_sensory_tools_with_anvil() {
     assert!(names.contains(&"quote_bridge".to_string()));
     assert!(names.contains(&"list_transfers".to_string()));
     assert!(names.contains(&"watch_balance".to_string()));
+    assert!(names.contains(&"watch_quote".to_string()));
 
     let context = ToolContext {
         rpc_url: anvil.rpc_url.clone(),

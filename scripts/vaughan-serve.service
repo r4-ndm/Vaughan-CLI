@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Example systemd user unit for a sentient (or adviser) always-on control plane.
+#
+# Install (user service — no root):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/vaughan-serve.service ~/.config/systemd/user/
+#   # edit EnvironmentFile path + VAUGHAN_PROFILE
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now vaughan-serve.service
+#
+# Secrets: put ONLY VAUGHAN_WALLET_PASSWORD in a 0600 env file, never in this unit.
+# See docs/sentient-ops.md.
+
+[Unit]
+Description=Vaughan MCP control plane (vaughan serve)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Change profile: default (adviser queue) or sentient (auto-exec under policy)
+Environment=VAUGHAN_PROFILE=sentient
+EnvironmentFile=-%h/.config/vaughan/serve.env
+ExecStart=/usr/bin/env vaughan --profile ${VAUGHAN_PROFILE} serve --password-env VAUGHAN_WALLET_PASSWORD
+Restart=on-failure
+RestartSec=5
+# Hardening: same-user loopback only; still treat the host as a hot wallet.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -53,6 +53,8 @@ proposals auto re-sim → policy gate → sign (no card). Legacy profile name
 | `resolve_token` | Probe ERC-20 metadata (symbol/decimals/name) |
 | `quote_bridge` | LibertySwap bridge quote (read-only) |
 | `watch_balance` | Native/ERC-20 snapshot + optional min/max threshold flags |
+| `watch_quote` | Aggregator quote snapshot + min/max out + `suggested_action` |
+| `get_control_plane_status` | TUI/`serve` reachable + unlocked (sentient readiness) |
 | `get_stealth_uri` | Stealth meta-address URI (unlocked TUI / serve) |
 | `scan_stealth_notes` | Unswept stealth notes for this vault |
 
@@ -81,7 +83,7 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_bridge` | Yes | LibertySwap bridge (source-chain broadcast) |
 | `propose_stealth_send` | Yes | ERC-5564 pay + announce proposals |
 | `import_token` | Yes | Persist probed token into profile assets (needs profile dir) |
-| `propose_batch_7702` | Yes | EIP-7702 Ambire batch via `submit_batch` (decode execute calldata; no eth_call re-sim — draft uses a placeholder signature) |
+| `propose_batch_7702` | Yes | EIP-7702 Ambire batch via `submit_batch` (decode execute; fee-spike via `estimate_self_pay_fee`; no eth_call re-sim — draft uses placeholder signature) |
 | `sweep_stealth_note` | Yes | Sweep one note (TUI approval card on adviser; sentient/`serve --profile sentient` auto). Adviser `vaughan serve` alone cannot show a card — use unlocked TUI. |
 
 On **`default`:** return `proposal_id` + `status: pending_user`; human approves.  

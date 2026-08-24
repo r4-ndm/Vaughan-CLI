@@ -20,6 +20,7 @@ pub mod sign;
 pub use abi::Transaction;
 pub use adapter::{
     bootstrap_delegation, estimate_self_pay_fee, get_account_nonce, is_delegated, submit_batch,
-    submit_self_pay, BatchSubmitResult, AMBIRE_IMPLEMENTATION,
+    submit_self_pay, BatchSubmitResult, AMBIRE_IMPLEMENTATION, DEFAULT_BATCH_GAS_LIMIT,
 };
 pub use encode::{decode_execute, encode_execute};
+pub use scw::ScwTransaction;

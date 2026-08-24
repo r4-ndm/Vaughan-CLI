@@ -910,10 +910,9 @@ impl DexView {
     }
 
     fn validate_fields(&self) -> Result<(), String> {
-        let router = Address::from_str(self.router.value().trim()).map_err(|e| format!("bad router: {e}"))?;
-        if self.venue != DexVenue::Custom
-            && !is_allowed_dex_router(self.chain_id, router)
-        {
+        let router = Address::from_str(self.router.value().trim())
+            .map_err(|e| format!("bad router: {e}"))?;
+        if self.venue != DexVenue::Custom && !is_allowed_dex_router(self.chain_id, router) {
             return Err(format!(
                 "router {router:#x} is not in Vaughan’s curated DEX catalog for {} — \
                  use Custom to paste an unlisted router",
@@ -941,7 +940,9 @@ impl DexView {
         let amount_in = U256::from_str(self.amount.value().trim()).unwrap();
         let from = wallet.active_address().map_err(|e| e.user_message())?;
         let chain_id = wallet.networks().active().chain_id;
-        Ok(build_approve_tx(token_in, router, amount_in, from, chain_id))
+        Ok(build_approve_tx(
+            token_in, router, amount_in, from, chain_id,
+        ))
     }
 
     fn build_swap_tx(&self, wallet: &WalletState) -> Result<EvmTransaction, String> {

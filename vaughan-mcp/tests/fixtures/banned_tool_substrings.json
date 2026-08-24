@@ -1,0 +1,8 @@
+[
+  "sign_transaction",
+  "export_key",
+  "unlock",
+  "broadcast_tx",
+  "get_mnemonic",
+  "private_key"
+]

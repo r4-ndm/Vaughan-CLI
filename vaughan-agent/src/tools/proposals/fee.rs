@@ -17,10 +17,7 @@ pub async fn attach_estimated_fee(mut proposal: TxProposal, context: &ToolContex
     proposal
 }
 
-async fn estimate_proposal_fee_wei(
-    proposal: &TxProposal,
-    context: &ToolContext,
-) -> Option<U256> {
+async fn estimate_proposal_fee_wei(proposal: &TxProposal, context: &ToolContext) -> Option<U256> {
     let from = context.active_address?;
     let chain_id = if proposal.chain_id > 0 {
         proposal.chain_id
