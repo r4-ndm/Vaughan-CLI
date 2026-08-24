@@ -107,9 +107,9 @@ Agents can also skip Vaughan and use cast/ethers against RPC — **that’s fine
 | Phase | Deliverable | Outcome |
 |-------|-------------|---------|
 | **A** | Pin 943 addresses + Dex “Wiz4rd” venue + docs | **Done** — humans can swap against deploy in TUI |
-| **B** | MCP read: pool / quote / positions | **Done** (pool + quote); positions still open |
+| **B** | MCP read: pool / quote / positions | **Done** (pool + quote + `list_v3_positions`) |
 | **C** | MCP `propose_v3_swap` + allowlist + Anvil/943 tests | **Done** — `propose_v3_swap`; live 943 test `#[ignore]` |
-| **D** | MCP `propose_v3_mint` (+ approve sequence) | Agents open LP |
+| **D** | MCP `propose_v3_mint` (+ approve sequence) | **Done** — mint proposal; token approve still via `propose_contract_call` |
 | **E** | Collect / decrease / UI positions screen | Full LP lifecycle |
 
 Broader “agents = humans in DeFi” checklist (wrap, revoke, bridge, …): [`defi-agent-parity.md`](defi-agent-parity.md).

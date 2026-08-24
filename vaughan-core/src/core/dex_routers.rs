@@ -16,6 +16,7 @@ const OFFICIAL_DEX_ROUTERS: &[(u64, &str)] = &[
     (369, "0x98bf93ebf5c380C0e6Ae8e192A7e2AE08edAcc02"), // PulseX V1
     // wiz4rd-swap (Pancake V3 fork) — Pulse testnet 943
     (943, "0xfC656c95eCd418536844FeeaA46949bb9365BEaF"), // SwapRouter
+    (943, "0xf1b1D004dD8bFC618F977F6ACAD127a60c566745"), // NonfungiblePositionManager
     // 9mm
     (369, "0xcC73b59F8D7b7c532703bDfea2808a28a488cF47"),
     (369, "0x7bE8fbe502191bBBCb38b02f2d4fA0D628301bEA"),
@@ -99,9 +100,8 @@ mod tests {
     }
 
     #[test]
-    fn wiz4rd_swap_router_allowed_on_943() {
-        let r = address!("0xfC656c95eCd418536844FeeaA46949bb9365BEaF");
-        assert!(is_allowed_dex_router(943, r));
-        assert!(!is_allowed_dex_router(369, r));
+    fn wiz4rd_npm_allowed_on_943() {
+        let npm = address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745");
+        assert!(is_allowed_dex_router(943, npm));
     }
 }

@@ -90,8 +90,8 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 
 | Human | Agent | Status |
 |-------|-------|--------|
-| Open V3 position (mint NFT) | `propose_v3_mint` | [ ] **Phase D** |
-| List my V3 positions | `list_v3_positions` | [ ] |
+| Open V3 position (mint NFT) | `propose_v3_mint` | [x] Phase D |
+| List my V3 positions | `list_v3_positions` | [x] |
 | Increase / decrease liquidity | `propose_v3_increase` / `_decrease` | [ ] Phase E |
 | Collect fees | `propose_v3_collect` | [ ] Phase E |
 | V2 add / remove LP | — | [ ] only if product demand |
@@ -103,10 +103,10 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 
 | Human | Agent | Status |
 |-------|-------|--------|
-| Approvals manager (`j`): list | — | [ ] `list_allowances` |
-| Revoke allowance | — | [ ] `propose_revoke` (or named approve(0)) |
-| ERC-20 approve spender | via `propose_contract_call` | [~] prefer `propose_approve` |
-| Wrap / unwrap WPLS (`e`) | — | [ ] `propose_wrap` / `propose_unwrap` |
+| Approvals manager (`j`): list | `list_allowances` | [x] |
+| Revoke allowance | `propose_revoke` | [x] |
+| ERC-20 approve spender | via `propose_contract_call` | [~] prefer named `propose_approve` later |
+| Wrap / unwrap WPLS (`e`) | `propose_wrap` / `propose_unwrap` | [x] |
 | LibertySwap bridge (`f`) | — | [ ] `quote_bridge` / `propose_bridge` |
 | Official Omnibridge | — | [ ] separate track |
 
@@ -133,10 +133,9 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 
 ## Suggested build order (parity-first)
 
-0. **Sentient MCP** (`vaughan-sentient`) — `--profile sentient` auto-exec;
-   adviser (`default` / `vaughan`) stays propose→approve.  
-1. **Approvals + wrap** — agents fat-finger these constantly; tiny surface.  
-2. **Phase D mint + `list_v3_positions`** — completes wiz4rd “play the deploy.”  
+0. **Sentient MCP** (`vaughan-sentient`) — done (auto-exec when TUI unlocked).  
+1. **Approvals + wrap** — **done** (`list_allowances`, `propose_revoke`, wrap/unwrap).  
+2. **Phase D mint + `list_v3_positions`** — **done**.  
 3. **Phase E** increase / decrease / collect.  
 4. **Bridge quote/propose** — mirror LibertySwap TUI.  
 5. **History + token import** — research loop without PulseScan tab.  

@@ -46,6 +46,8 @@ proposals auto re-sim → policy gate → sign (no card). Legacy profile name
 | `quote_swap` | Pulse aggregator quote (Squirrel / PulseSwap / Piteas) — read-only |
 | `get_v3_pool` | wiz4rd V3 pool slot0 / liquidity (Pulse testnet 943) |
 | `quote_v3_swap` | wiz4rd V3 exact-in quote (local math on live pool) |
+| `list_allowances` | Non-zero ERC-20 allowances vs known Dex/Ag/Bridge spenders |
+| `list_v3_positions` | wiz4rd LP NFTs for an address (943; optional block range) |
 
 When the vault is locked and no explicit `address` is passed, read tools return
 `wallet_locked` with guidance to unlock Vaughan or pass `account_address`.
@@ -61,11 +63,15 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_swap` | Yes | Direct V2/PulseX router swap (path + amounts) |
 | `propose_agg_swap` | Yes | Aggregator quote → proposal (allowlisted routers only) |
 | `propose_v3_swap` | Yes | wiz4rd V3 exact-in swap (allowlisted SwapRouter on 943) |
+| `propose_v3_mint` | Yes | wiz4rd V3 open LP (allowlisted PositionManager on 943) |
+| `propose_wrap` | Yes | Native → WPLS (`deposit`) |
+| `propose_unwrap` | Yes | WPLS → native (`withdraw`) |
+| `propose_revoke` | Yes | ERC-20 `approve(spender, 0)` |
 | `propose_batch_7702` | Deferred | EIP-7702 batched send |
 
 On **`default`:** return `proposal_id` + `status: pending_user`; human approves.  
-On **`sentient` (target):** simulate → policy check → Vaughan signs/broadcasts for
-the sentient vault; return `tx_hash` or breaker trip — still no keys in MCP.
+On **`sentient`:** TUI unlocked on that profile auto re-sim → policy → sign;
+MCP still never holds keys.
 
 ## Meta tools
 

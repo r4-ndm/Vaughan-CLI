@@ -58,4 +58,8 @@ fn wiz4rd_tools_registered() {
     assert!(names.iter().any(|n| n == "get_v3_pool"));
     assert!(names.iter().any(|n| n == "quote_v3_swap"));
     assert!(names.iter().any(|n| n == "propose_v3_swap"));
+    assert!(names.iter().any(|n| n == "propose_v3_mint"));
+    assert!(names.iter().any(|n| n == "list_v3_positions"));
+    assert!(names.iter().any(|n| n == "propose_wrap"));
+    assert!(names.iter().any(|n| n == "propose_revoke"));
 }

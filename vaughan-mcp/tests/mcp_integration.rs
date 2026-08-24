@@ -94,4 +94,10 @@ fn mcp_tool_definitions_include_banned_absence() {
     assert!(names.iter().any(|n| *n == "get_v3_pool"));
     assert!(names.iter().any(|n| *n == "quote_v3_swap"));
     assert!(names.iter().any(|n| *n == "propose_v3_swap"));
+    assert!(names.iter().any(|n| *n == "propose_v3_mint"));
+    assert!(names.iter().any(|n| *n == "propose_wrap"));
+    assert!(names.iter().any(|n| *n == "propose_unwrap"));
+    assert!(names.iter().any(|n| *n == "propose_revoke"));
+    assert!(names.iter().any(|n| *n == "list_allowances"));
+    assert!(names.iter().any(|n| *n == "list_v3_positions"));
 }
