@@ -53,6 +53,11 @@ pub enum ApprovalKind {
         source: String,
         proposal: Box<TxProposal>,
     },
+    /// Sweep an ERC-5564 stealth note back to the active account.
+    StealthSweep {
+        stealth_address: String,
+        balance_display: String,
+    },
 }
 
 /// A request forwarded from the provider handler to the UI thread.
@@ -395,6 +400,22 @@ pub fn describe_approval(
             }
             Ok(("MCP transaction proposal".into(), lines))
         }
+        ApprovalKind::StealthSweep {
+            stealth_address,
+            balance_display,
+        } => {
+            let net = wallet.networks().active();
+            let testnet = if net.is_testnet { " (testnet)" } else { "" };
+            Ok((
+                "Sweep stealth note".into(),
+                vec![
+                    format!("From:    {stealth_address}"),
+                    format!("Amount:  {balance_display}"),
+                    format!("Network: {}{testnet}", net.name),
+                    "Moves funds to your active public account.".into(),
+                ],
+            ))
+        }
     }
 }
 
@@ -508,6 +529,32 @@ pub async fn execute_approval(
             proposal,
             ..
         } => {
+            use vaughan_core::core::proposal::ProposalType;
+            if matches!(proposal.proposal_type, ProposalType::Batch7702 { .. }) {
+                let txns = vaughan_aa::decode_execute(&proposal.calldata)
+                    .map_err(ProviderError::Internal)?;
+                let signer = wallet.active_signer().map_err(map_wallet_error)?;
+                let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
+                let result = vaughan_aa::submit_batch(
+                    &adapter,
+                    &signer,
+                    txns,
+                    vaughan_aa::AMBIRE_IMPLEMENTATION,
+                )
+                .await
+                .map_err(map_wallet_error)?;
+                if let Some(parent) = wallet.path().parent() {
+                    if let Ok(Some(token)) = vaughan_core::core::McpSessionToken::read(parent) {
+                        let queue = ProposalQueue::new(parent);
+                        let _ = queue.mark_approved(
+                            proposal_id,
+                            &result.tx_hash.to_string(),
+                            token.as_bytes(),
+                        );
+                    }
+                }
+                return Ok(result.tx_hash.to_string());
+            }
             resimulate_mcp_proposal(wallet, proposal).await?;
             let evm = apply_proposal(wallet, proposal).map_err(map_wallet_error)?;
             let hash = wallet
@@ -521,6 +568,30 @@ pub async fn execute_approval(
                 }
             }
             Ok(hash.to_string())
+        }
+        ApprovalKind::StealthSweep {
+            stealth_address, ..
+        } => {
+            let notes = wallet
+                .scan_stealth_notes()
+                .await
+                .map_err(map_wallet_error)?;
+            let note = notes
+                .into_iter()
+                .find(|n| {
+                    format!("{:#x}", n.announcement.stealth_address)
+                        .eq_ignore_ascii_case(stealth_address)
+                })
+                .ok_or_else(|| {
+                    ProviderError::Internal(format!(
+                        "no unswept stealth note for {stealth_address}"
+                    ))
+                })?;
+            wallet
+                .sweep_stealth_note(&note)
+                .await
+                .map(|h| h.to_string())
+                .map_err(map_wallet_error)
         }
     }
 }

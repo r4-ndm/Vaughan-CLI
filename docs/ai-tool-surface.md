@@ -53,6 +53,8 @@ proposals auto re-sim → policy gate → sign (no card). Legacy profile name
 | `resolve_token` | Probe ERC-20 metadata (symbol/decimals/name) |
 | `quote_bridge` | LibertySwap bridge quote (read-only) |
 | `watch_balance` | Native/ERC-20 snapshot + optional min/max threshold flags |
+| `get_stealth_uri` | Stealth meta-address URI (unlocked TUI / serve) |
+| `scan_stealth_notes` | Unswept stealth notes for this vault |
 
 When the vault is locked and no explicit `address` is passed, read tools return
 `wallet_locked` with guidance to unlock Vaughan or pass `account_address`.
@@ -77,9 +79,10 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_approve` | Yes | ERC-20 `approve(spender, amount)` |
 | `propose_revoke` | Yes | ERC-20 `approve(spender, 0)` |
 | `propose_bridge` | Yes | LibertySwap bridge (source-chain broadcast) |
-| `propose_stealth_send` | Yes | ERC-5564 pay + announce proposals (scan/sweep still TUI) |
+| `propose_stealth_send` | Yes | ERC-5564 pay + announce proposals |
 | `import_token` | Yes | Persist probed token into profile assets (needs profile dir) |
-| `propose_batch_7702` | Draft only | Proposal drafts exist; exec is still EOA `send_transaction`, not Ambire `submit_batch` |
+| `propose_batch_7702` | Yes | EIP-7702 Ambire batch — exec via `submit_batch` |
+| `sweep_stealth_note` | Yes | Sweep one stealth note (TUI card / sentient auto / serve) |
 
 On **`default`:** return `proposal_id` + `status: pending_user`; human approves.  
 On **`sentient`:** TUI unlocked on that profile auto re-sim → policy → sign;

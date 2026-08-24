@@ -604,6 +604,105 @@ impl App {
                     self.pending_approval = Some(PendingApproval { kind, reply });
                     break;
                 }
+                McpHostRequest::StealthUri { reply } => {
+                    if !self.wallet().is_unlocked() {
+                        let _ =
+                            reply.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
+                        continue;
+                    }
+                    let result = self
+                        .wallet()
+                        .stealth_uri()
+                        .map_err(|e| ProviderError::Internal(e.user_message()));
+                    let _ = reply.send(result);
+                }
+                McpHostRequest::StealthScan { reply } => {
+                    if !self.wallet().is_unlocked() {
+                        let _ =
+                            reply.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
+                        continue;
+                    }
+                    let notes = match self.handle.block_on(self.wallet().scan_stealth_notes()) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            let _ = reply.send(Err(ProviderError::Internal(e.user_message())));
+                            continue;
+                        }
+                    };
+                    let rows: Vec<_> = notes
+                        .iter()
+                        .map(|n| {
+                            serde_json::json!({
+                                "stealth_address": format!("{:#x}", n.announcement.stealth_address),
+                                "balance_wei": n.balance_wei.to_string(),
+                                "balance": n.balance_formatted,
+                                "view_tag": n.announcement.view_tag,
+                            })
+                        })
+                        .collect();
+                    let _ = reply.send(Ok(serde_json::json!({
+                        "notes": rows,
+                        "count": rows.len()
+                    })));
+                }
+                McpHostRequest::StealthSweep {
+                    stealth_address,
+                    reply,
+                } => {
+                    if !self.wallet().is_unlocked() {
+                        let _ =
+                            reply.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
+                        continue;
+                    }
+                    let notes = match self.handle.block_on(self.wallet().scan_stealth_notes()) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            let _ = reply.send(Err(ProviderError::Internal(e.user_message())));
+                            continue;
+                        }
+                    };
+                    let Some(note) = notes.iter().find(|n| {
+                        format!("{:#x}", n.announcement.stealth_address)
+                            .eq_ignore_ascii_case(&stealth_address)
+                    }) else {
+                        let _ = reply.send(Err(ProviderError::Internal(format!(
+                            "no unswept stealth note for {stealth_address}"
+                        ))));
+                        continue;
+                    };
+                    let kind = ApprovalKind::StealthSweep {
+                        stealth_address: stealth_address.clone(),
+                        balance_display: note.balance_formatted.clone(),
+                    };
+                    if crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name()) {
+                        let result =
+                            provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                        let _ = reply.send(result);
+                        continue;
+                    }
+                    if self.pending_approval.is_some() {
+                        let _ = reply.send(Err(ProviderError::Internal(
+                            "another approval is pending".into(),
+                        )));
+                        continue;
+                    }
+                    let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
+                    let (title, details) = match preview {
+                        Ok(preview) => preview,
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                            continue;
+                        }
+                    };
+                    self.approve_return = self.screen();
+                    self.view =
+                        View::Approve(ApproveView::new(title, Some("MCP stealth".into()), details));
+                    self.pending_approval = Some(PendingApproval {
+                        kind,
+                        reply: Some(reply),
+                    });
+                    break;
+                }
             }
         }
     }

@@ -16,3 +16,10 @@ pub mod build;
 pub mod encode;
 pub mod scw;
 pub mod sign;
+
+pub use abi::Transaction;
+pub use adapter::{
+    bootstrap_delegation, estimate_self_pay_fee, get_account_nonce, is_delegated, submit_batch,
+    submit_self_pay, BatchSubmitResult, AMBIRE_IMPLEMENTATION,
+};
+pub use encode::{decode_execute, encode_execute};

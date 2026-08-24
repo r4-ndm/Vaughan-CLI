@@ -25,6 +25,19 @@ pub enum McpIpcRequest {
         token: String,
         proposal_id: String,
     },
+    /// Stealth meta-address URI for the unlocked vault.
+    StealthUri {
+        token: String,
+    },
+    /// Scan announcer logs for unswept notes owned by this vault.
+    StealthScan {
+        token: String,
+    },
+    /// Sweep one note (by stealth address) back to the active account.
+    StealthSweep {
+        token: String,
+        stealth_address: String,
+    },
 }
 
 /// Response from the TUI listener to an MCP subprocess.

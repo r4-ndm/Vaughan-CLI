@@ -92,7 +92,7 @@ impl Tool for ProposeBatch7702Tool {
             });
         }
 
-        let batched_calldata = Bytes::from(encode_execute(&txns, &[0u8; 65]));
+        let batched_calldata = Bytes::from(encode_execute(&txns, &[0u8; 66]));
         let sender = context.active_address.unwrap_or(Address::ZERO);
 
         // Pre-flight simulation

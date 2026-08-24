@@ -15,6 +15,8 @@ pub const OFFICIAL_AGG_ROUTERS: &[&str] = &[
     "0xDa8953Fc615d6E816b9647Afd5536123dcE70B78",
     // PulseSwap advanced quote fixture / live shape
     "0xC994375187988C751C8fCb96A68A0f242947f0E6",
+    // EmpX / EmpSeal on-chain router (PulseChain mainnet)
+    "0x0Cf6D948Cf09ac83a6bf40C7AD7b44657A9F2A52",
 ];
 
 fn router_set() -> &'static HashSet<[u8; 20]> {

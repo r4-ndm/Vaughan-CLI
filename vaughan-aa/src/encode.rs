@@ -15,6 +15,13 @@ pub fn encode_execute(txns: &[Transaction], signature: &[u8]) -> Vec<u8> {
     .abi_encode()
 }
 
+/// Decode `execute(txns, signature)` calldata (selector + ABI args).
+pub fn decode_execute(calldata: &[u8]) -> Result<Vec<Transaction>, String> {
+    AmbireAccount::executeCall::abi_decode(calldata)
+        .map(|c| c.txns)
+        .map_err(|e| format!("decode Ambire execute: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

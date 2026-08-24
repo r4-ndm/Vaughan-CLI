@@ -14,7 +14,10 @@ use vaughan_core::core::proposal::{
     guard_mainnet_write, McpSessionToken, ProposalQueue, TxProposal,
 };
 
-use crate::client::{try_get_session, try_proposal_status, try_propose_live};
+use crate::client::{
+    try_get_session, try_proposal_status, try_propose_live, try_stealth_scan, try_stealth_sweep,
+    try_stealth_uri,
+};
 
 /// MCP runtime context (no vault unlock — read tools use RPC + optional address).
 #[derive(Debug, Clone)]
@@ -95,6 +98,27 @@ impl McpDispatcher {
             "description": "List all pending proposals in the file queue.",
             "inputSchema": { "type": "object", "properties": {} }
         }));
+        tools.push(json!({
+            "name": "get_stealth_uri",
+            "description": "This vault's ERC-5564 stealth meta-address URI (st:…). Requires unlocked TUI or vaughan serve.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        tools.push(json!({
+            "name": "scan_stealth_notes",
+            "description": "Scan for unswept stealth notes owned by this vault. Requires unlocked TUI or vaughan serve.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        tools.push(json!({
+            "name": "sweep_stealth_note",
+            "description": "Sweep one stealth note to the active account (approval card on adviser; auto on sentient).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "stealth_address": { "type": "string" }
+                },
+                "required": ["stealth_address"]
+            }
+        }));
         tools
     }
 
@@ -109,6 +133,9 @@ impl McpDispatcher {
             "get_proposal_status" => self.get_proposal_status(args, &ctx).await,
             "list_pending_proposals" => self.list_pending_proposals(&ctx),
             "import_token" => self.assist_side_effect("import_token", args, &ctx).await,
+            "get_stealth_uri" => self.stealth_uri(&ctx).await,
+            "scan_stealth_notes" => self.stealth_scan(&ctx).await,
+            "sweep_stealth_note" => self.stealth_sweep(args, &ctx).await,
             name if name.starts_with("propose_") => self.propose_tool(name, args, &ctx).await,
             name if self.sensory.definitions().iter().any(|d| d.name == name)
                 || name == "get_balance"
@@ -356,6 +383,43 @@ impl McpDispatcher {
             })
             .collect();
         Ok(json!({ "pending": ids }))
+    }
+
+    async fn stealth_uri(&self, _ctx: &McpContext) -> Result<Value, String> {
+        let session = McpSessionToken::read(&self.profile_dir)
+            .map_err(|e| e.user_message())?
+            .ok_or_else(|| "wallet_locked: unlock Vaughan or run vaughan serve".to_string())?;
+        match try_stealth_uri(&session).await {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Err("tui_offline: unlock Vaughan or run vaughan serve".into()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn stealth_scan(&self, _ctx: &McpContext) -> Result<Value, String> {
+        let session = McpSessionToken::read(&self.profile_dir)
+            .map_err(|e| e.user_message())?
+            .ok_or_else(|| "wallet_locked: unlock Vaughan or run vaughan serve".to_string())?;
+        match try_stealth_scan(&session).await {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Err("tui_offline: unlock Vaughan or run vaughan serve".into()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn stealth_sweep(&self, args: Value, _ctx: &McpContext) -> Result<Value, String> {
+        let addr = args
+            .get("stealth_address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing stealth_address".to_string())?;
+        let session = McpSessionToken::read(&self.profile_dir)
+            .map_err(|e| e.user_message())?
+            .ok_or_else(|| "wallet_locked: unlock Vaughan or run vaughan serve".to_string())?;
+        match try_stealth_sweep(&session, addr).await {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Err("tui_offline: unlock Vaughan or run vaughan serve".into()),
+            Err(e) => Err(e),
+        }
     }
 }
 

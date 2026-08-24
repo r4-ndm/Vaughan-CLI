@@ -1,15 +1,17 @@
 //! PulseChain swap aggregators — catalog + no-key quote clients.
 //!
 //! Primary focus: [`squirrelswap`] (Brain at `api.squirrelswap.pro`, no key).
-//! Also live: [`pulseswap`], [`crate::core::piteas`]. Others listed for UX.
+//! Also live: [`pulseswap`], [`crate::core::piteas`], [`empx`]. Others listed for UX.
 
 mod catalog;
+mod empx;
 mod pulseswap;
 mod routers;
 mod squirrelswap;
 mod types;
 
 pub use catalog::{AggAccess, AggVenue, AGG_VENUES};
+pub use empx::{EmpxClient, EMPX_ROUTER_369};
 pub use pulseswap::{PulseSwapClient, PULSESWAP_QUOTE_URL};
 pub use routers::{assert_agg_exec_targets, is_allowed_agg_router, OFFICIAL_AGG_ROUTERS};
 pub use squirrelswap::{SquirrelPreview, SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
@@ -37,6 +39,11 @@ pub async fn quote_aggregator(
             AggVenue::SquirrelSwap => SquirrelSwapClient::public()?.prepare_swap(req).await,
             AggVenue::PulseSwap => PulseSwapClient::public()?.quote(req).await,
             AggVenue::Piteas => quote_piteas(req, piteas_dir, vault_password).await,
+            AggVenue::Empseal => {
+                let rpc = std::env::var("VAUGHAN_EMPX_RPC")
+                    .unwrap_or_else(|_| "https://rpc.pulsechain.com".into());
+                EmpxClient::for_chain(369, &rpc)?.quote(req).await
+            }
             _ => Err(WalletError::Other(format!(
                 "{} marked live but has no client",
                 venue.label()

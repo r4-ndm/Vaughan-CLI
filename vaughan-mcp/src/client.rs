@@ -195,3 +195,64 @@ pub async fn ping(token: &str) -> bool {
         .map(|r| r.ok)
         .unwrap_or(false)
 }
+
+/// Query stealth URI via live control plane.
+pub async fn try_stealth_uri(token: &str) -> Result<Option<Value>, String> {
+    ipc_request(McpIpcRequest::StealthUri {
+        token: token.to_string(),
+    })
+    .await
+}
+
+/// Scan stealth notes via live control plane.
+pub async fn try_stealth_scan(token: &str) -> Result<Option<Value>, String> {
+    ipc_request(McpIpcRequest::StealthScan {
+        token: token.to_string(),
+    })
+    .await
+}
+
+/// Sweep a stealth note via live control plane.
+pub async fn try_stealth_sweep(
+    token: &str,
+    stealth_address: &str,
+) -> Result<Option<Value>, String> {
+    ipc_request(McpIpcRequest::StealthSweep {
+        token: token.to_string(),
+        stealth_address: stealth_address.to_string(),
+    })
+    .await
+}
+
+async fn ipc_request(req: McpIpcRequest) -> Result<Option<Value>, String> {
+    let addr = format!("127.0.0.1:{}", mcp_control_port());
+    let stream = match timeout(Duration::from_secs(2), TcpStream::connect(&addr)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(format!("socket connect failed: {e}")),
+        Err(_) => return Ok(None),
+    };
+    let line = encode_line(&req).map_err(|e| e.to_string())?;
+    let (reader, mut writer) = stream.into_split();
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    writer.flush().await.map_err(|e| e.to_string())?;
+    let mut buf = BufReader::new(reader);
+    let mut response_line = String::new();
+    timeout(IPC_TIMEOUT, buf.read_line(&mut response_line))
+        .await
+        .map_err(|_| "IPC timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let resp: McpIpcResponse =
+        decode_line(&response_line).map_err(|e| format!("invalid IPC response: {e}"))?;
+    if resp.ok {
+        Ok(resp.data)
+    } else {
+        let (code, msg) = resp
+            .error
+            .map(|e| (e.code, e.message))
+            .unwrap_or_else(|| ("ipc_error".into(), "unknown IPC error".into()));
+        Err(format!("{code}: {msg}"))
+    }
+}

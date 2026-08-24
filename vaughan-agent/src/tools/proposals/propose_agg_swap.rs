@@ -25,8 +25,9 @@ fn parse_venue(raw: &str) -> Result<AggVenue, AgentError> {
         "squirrel" | "squirrelswap" => Ok(AggVenue::SquirrelSwap),
         "pulseswap" | "pulse" => Ok(AggVenue::PulseSwap),
         "piteas" => Ok(AggVenue::Piteas),
+        "empx" | "empseal" => Ok(AggVenue::Empseal),
         other => Err(AgentError::InvalidToolCall(format!(
-            "Unknown venue '{other}' — use squirrel, pulseswap, or piteas"
+            "Unknown venue '{other}' — use squirrel, pulseswap, piteas, or empx"
         ))),
     }
 }
@@ -61,7 +62,7 @@ impl Tool for ProposeAggSwapTool {
             "properties": {
                 "venue": {
                     "type": "string",
-                    "description": "Aggregator: squirrel | pulseswap | piteas",
+                    "description": "Aggregator: squirrel | pulseswap | piteas | empx",
                     "default": "squirrel"
                 },
                 "token_in": {

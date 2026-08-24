@@ -67,7 +67,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 |-------|-------|--------|
 | Native / ERC-20 send | `propose_transfer` | [x] |
 | Arbitrary write (browser `send`) | `propose_contract_call` | [x] / [~] (TUI browser write gate still open) |
-| EIP-7702 Ambire batch send | `propose_batch_7702` | [~] draft proposal; AA exec still deferred (FR-3.3) |
+| EIP-7702 Ambire batch send | `propose_batch_7702` | [x] exec via Ambire `submit_batch` |
 
 ---
 
@@ -81,7 +81,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Dex: curated V2/V3 write polish | — | [ ] human Dex write path still open in TASKS |
 | wiz4rd V3 quote | `quote_v3_swap` | [x] |
 | wiz4rd V3 swap | `propose_v3_swap` | [x] |
-| EmpX / EmpSeal path-find | — | [ ] Alloy port still open (`docs/aggregator.md`) |
+| EmpX / EmpSeal path-find | `quote_swap` / `propose_agg_swap` venue `empx` | [x] Alloy `findBestPath` (369) |
 | Exact-out / multi-hop V3 | — | [ ] when product needs it |
 
 ---
@@ -116,8 +116,8 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 
 | Human | Agent | Status |
 |-------|-------|--------|
-| Stealth receive / send / scan / sweep | `propose_stealth_send` | [~] send propose; scan/sweep stay TUI/core |
-| Ambire AA batched UX | `propose_batch_7702` | [~] draft; AA submit path deferred |
+| Stealth receive / send / scan / sweep | `get_stealth_uri`, `propose_stealth_send`, `scan_stealth_notes`, `sweep_stealth_note` | [x] |
+| Ambire AA batched UX | `propose_batch_7702` | [x] exec via `submit_batch` |
 | Balance watch / thresholds | `watch_balance` | [x] |
 
 ---
@@ -140,7 +140,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 3. **Phase E** increase / decrease / collect — **done**.  
 4. **Bridge quote/propose** — **done**.  
 5. **History + token import** — **done**.  
-6. **Ambire batch exec + EmpX Alloy + stealth scan/sweep MCP** — still open.
+6. **Ambire batch exec + EmpX Alloy + stealth scan/sweep MCP** — **done**.
 
 Hard rules:
 

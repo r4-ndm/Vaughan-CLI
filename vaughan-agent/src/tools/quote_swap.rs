@@ -23,8 +23,9 @@ fn parse_venue(raw: &str) -> Result<AggVenue, AgentError> {
         "squirrel" | "squirrelswap" => Ok(AggVenue::SquirrelSwap),
         "pulseswap" | "pulse" => Ok(AggVenue::PulseSwap),
         "piteas" => Ok(AggVenue::Piteas),
+        "empx" | "empseal" => Ok(AggVenue::Empseal),
         other => Err(AgentError::InvalidToolCall(format!(
-            "Unknown venue '{other}' — use squirrel, pulseswap, or piteas"
+            "Unknown venue '{other}' — use squirrel, pulseswap, piteas, or empx"
         ))),
     }
 }
@@ -36,7 +37,7 @@ impl Tool for QuoteSwapTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch a PulseChain aggregator quote (Squirrel / PulseSwap / Piteas). \
+        "Fetch a PulseChain aggregator quote (Squirrel / PulseSwap / Piteas / EmpX). \
          Read-only — does not propose or sign. Use propose_agg_swap to turn a quote into an approval card."
     }
 
@@ -46,7 +47,7 @@ impl Tool for QuoteSwapTool {
             "properties": {
                 "venue": {
                     "type": "string",
-                    "description": "Aggregator: squirrel | pulseswap | piteas",
+                    "description": "Aggregator: squirrel | pulseswap | piteas | empx",
                     "default": "squirrel"
                 },
                 "token_in": {
@@ -159,6 +160,7 @@ mod tests {
     fn venue_aliases() {
         assert_eq!(parse_venue("squirrel").unwrap(), AggVenue::SquirrelSwap);
         assert_eq!(parse_venue("PulseSwap").unwrap(), AggVenue::PulseSwap);
+        assert_eq!(parse_venue("empx").unwrap(), AggVenue::Empseal);
         assert!(parse_venue("unknown").is_err());
     }
 }

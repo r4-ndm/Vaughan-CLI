@@ -314,7 +314,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Token discovery without a site: `resolve_token` + `import_token` (TUI paste polish still optional)
 
 ### P1 — Agent is the URL bar
-- [ ] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; **no partner key** — port from public SDK ABIs; see `docs/aggregator.md` no-permission matrix)
+- [x] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; PulseChain 369)
 - [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
 - [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`

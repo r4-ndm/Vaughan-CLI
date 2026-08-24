@@ -189,6 +189,90 @@ async fn handle_conn(
                 }
             }
         }
+        McpIpcRequest::StealthUri { token } => {
+            if token != session_token {
+                McpIpcResponse::failure("unauthorized", "invalid session token")
+            } else {
+                let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
+                match w.stealth_uri() {
+                    Ok(uri) => McpIpcResponse::success(serde_json::json!({ "uri": uri })),
+                    Err(e) => McpIpcResponse::failure("stealth_error", e.to_string()),
+                }
+            }
+        }
+        McpIpcRequest::StealthScan { token } => {
+            if token != session_token {
+                McpIpcResponse::failure("unauthorized", "invalid session token")
+            } else {
+                let notes = {
+                    let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
+                    handle
+                        .block_on(w.scan_stealth_notes())
+                        .map_err(|e| e.to_string())
+                };
+                match notes {
+                    Ok(notes) => {
+                        let rows: Vec<_> = notes
+                            .iter()
+                            .map(|n| {
+                                serde_json::json!({
+                                    "stealth_address": format!("{:#x}", n.announcement.stealth_address),
+                                    "balance_wei": n.balance_wei.to_string(),
+                                    "balance": n.balance_formatted,
+                                    "view_tag": n.announcement.view_tag,
+                                })
+                            })
+                            .collect();
+                        McpIpcResponse::success(serde_json::json!({
+                            "notes": rows,
+                            "count": rows.len(),
+                        }))
+                    }
+                    Err(e) => McpIpcResponse::failure("stealth_error", e),
+                }
+            }
+        }
+        McpIpcRequest::StealthSweep {
+            token,
+            stealth_address,
+        } => {
+            if token != session_token {
+                McpIpcResponse::failure("unauthorized", "invalid session token")
+            } else if !mcp_auto_exec_enabled(&profile_name) {
+                McpIpcResponse::failure(
+                    "pending_user",
+                    "stealth sweep on adviser profile needs unlocked TUI approval card",
+                )
+            } else {
+                let outcome = (|| -> Result<String, String> {
+                    let w = wallet
+                        .lock()
+                        .map_err(|_| "wallet lock poisoned".to_string())?;
+                    let notes = handle
+                        .block_on(w.scan_stealth_notes())
+                        .map_err(|e| e.to_string())?;
+                    let note = notes
+                        .into_iter()
+                        .find(|n| {
+                            format!("{:#x}", n.announcement.stealth_address)
+                                .eq_ignore_ascii_case(&stealth_address)
+                        })
+                        .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
+                    handle
+                        .block_on(w.sweep_stealth_note(&note))
+                        .map(|h| h.to_string())
+                        .map_err(|e| e.to_string())
+                })();
+                match outcome {
+                    Ok(tx_hash) => McpIpcResponse::success(serde_json::json!({
+                        "status": "approved",
+                        "tx_hash": tx_hash,
+                        "serve": true,
+                    })),
+                    Err(e) => McpIpcResponse::failure("stealth_error", e),
+                }
+            }
+        }
     };
 
     let out = encode_line(&response).map_err(|e| e.to_string())?;

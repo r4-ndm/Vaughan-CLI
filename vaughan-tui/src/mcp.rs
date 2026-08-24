@@ -33,6 +33,16 @@ pub enum McpHostRequest {
         /// `Some` when a live MCP client is waiting; `None` for file-queue surfacing.
         reply: Option<oneshot::Sender<Result<String, ProviderError>>>,
     },
+    StealthUri {
+        reply: oneshot::Sender<Result<String, ProviderError>>,
+    },
+    StealthScan {
+        reply: oneshot::Sender<Result<serde_json::Value, ProviderError>>,
+    },
+    StealthSweep {
+        stealth_address: String,
+        reply: oneshot::Sender<Result<String, ProviderError>>,
+    },
 }
 
 struct ListenerState {
@@ -264,6 +274,72 @@ async fn handle_connection(
                         })),
                         Ok(Err(e)) => McpIpcResponse::failure("user_rejected", e.to_string()),
                         Err(_) => McpIpcResponse::failure("tui_offline", "approval channel closed"),
+                    }
+                }
+            }
+        }
+        McpIpcRequest::StealthUri { token } => {
+            if token != session_token {
+                McpIpcResponse::failure("unauthorized", "invalid session token")
+            } else {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if ui_tx
+                    .send(McpHostRequest::StealthUri { reply: reply_tx })
+                    .is_err()
+                {
+                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
+                } else {
+                    match reply_rx.await {
+                        Ok(Ok(uri)) => McpIpcResponse::success(serde_json::json!({ "uri": uri })),
+                        Ok(Err(e)) => McpIpcResponse::failure("stealth_error", e.to_string()),
+                        Err(_) => McpIpcResponse::failure("tui_offline", "channel closed"),
+                    }
+                }
+            }
+        }
+        McpIpcRequest::StealthScan { token } => {
+            if token != session_token {
+                McpIpcResponse::failure("unauthorized", "invalid session token")
+            } else {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if ui_tx
+                    .send(McpHostRequest::StealthScan { reply: reply_tx })
+                    .is_err()
+                {
+                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
+                } else {
+                    match reply_rx.await {
+                        Ok(Ok(data)) => McpIpcResponse::success(data),
+                        Ok(Err(e)) => McpIpcResponse::failure("stealth_error", e.to_string()),
+                        Err(_) => McpIpcResponse::failure("tui_offline", "channel closed"),
+                    }
+                }
+            }
+        }
+        McpIpcRequest::StealthSweep {
+            token,
+            stealth_address,
+        } => {
+            if token != session_token {
+                McpIpcResponse::failure("unauthorized", "invalid session token")
+            } else {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if ui_tx
+                    .send(McpHostRequest::StealthSweep {
+                        stealth_address,
+                        reply: reply_tx,
+                    })
+                    .is_err()
+                {
+                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
+                } else {
+                    match reply_rx.await {
+                        Ok(Ok(tx_hash)) => McpIpcResponse::success(serde_json::json!({
+                            "status": "approved",
+                            "tx_hash": tx_hash,
+                        })),
+                        Ok(Err(e)) => McpIpcResponse::failure("user_rejected", e.to_string()),
+                        Err(_) => McpIpcResponse::failure("tui_offline", "channel closed"),
                     }
                 }
             }

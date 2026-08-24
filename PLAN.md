@@ -147,4 +147,3 @@ plane; stdio MCP stays the agent client.
 - **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
 - **MCP client diversity** — hand-rolled JSON-RPC subset; validate against Cursor / Claude Code as they evolve.
 - **Wallet daemon (v2)** — minimal `vaughan serve` shipped; full thin-client TUI still optional polish.
-- **EmpX / Ambire 7702 exec** — EmpX Alloy port and AA `submit_batch` for `propose_batch_7702` still open.
