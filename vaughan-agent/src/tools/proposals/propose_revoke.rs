@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
 
@@ -83,20 +84,24 @@ impl Tool for ProposeRevokeTool {
             }
             .abi_encode(),
         );
-        let proposal = TxProposal::new(
-            format!("revoke_{}", rand_id()),
-            ProposalType::ContractCall {
-                target: token,
-                function_name: Some("approve".into()),
-            },
-            token,
-            U256::ZERO,
-            calldata,
-            60_000,
-            true,
-            format!("{explanation} [revoke {token:#x} → spender {spender:#x}]"),
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("revoke_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: token,
+                    function_name: Some("approve".into()),
+                },
+                token,
+                U256::ZERO,
+                calldata,
+                60_000,
+                true,
+                format!("{explanation} [revoke {token:#x} → spender {spender:#x}]"),
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
         Ok(serde_json::to_value(&proposal)?)
     }
 }

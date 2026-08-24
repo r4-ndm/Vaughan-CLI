@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::security::stealth::{
@@ -73,43 +74,51 @@ impl Tool for ProposeStealthSendTool {
         let announcement = generate_stealth_address(&meta, None)
             .map_err(|e| AgentError::InvalidToolCall(format!("stealth generate: {e}")))?;
 
-        let pay = TxProposal::new(
-            format!("stealth_pay_{}", rand_id()),
-            ProposalType::NativeTransfer {
-                to: announcement.stealth_address,
-                amount_wei: amount,
-            },
-            announcement.stealth_address,
-            amount,
-            Bytes::new(),
-            21_000,
-            true,
-            format!(
-                "{explanation} [stealth pay → {:#x}]",
-                announcement.stealth_address
-            ),
+        let pay = attach_estimated_fee(
+            TxProposal::new(
+                format!("stealth_pay_{}", rand_id()),
+                ProposalType::NativeTransfer {
+                    to: announcement.stealth_address,
+                    amount_wei: amount,
+                },
+                announcement.stealth_address,
+                amount,
+                Bytes::new(),
+                21_000,
+                true,
+                format!(
+                    "{explanation} [stealth pay → {:#x}]",
+                    announcement.stealth_address
+                ),
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
 
         let metadata = native_announce_metadata(announcement.view_tag, amount);
         let announce_bytes = encode_announce_calldata(&announcement, &metadata);
-        let announce = TxProposal::new(
-            format!("stealth_announce_{}", rand_id()),
-            ProposalType::ContractCall {
-                target: ERC5564_ANNOUNCER,
-                function_name: Some("announce".into()),
-            },
-            ERC5564_ANNOUNCER,
-            U256::ZERO,
-            announce_bytes,
-            120_000,
-            true,
-            format!(
-                "{explanation} [stealth announce for {:#x}]",
-                announcement.stealth_address
-            ),
+        let announce = attach_estimated_fee(
+            TxProposal::new(
+                format!("stealth_announce_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: ERC5564_ANNOUNCER,
+                    function_name: Some("announce".into()),
+                },
+                ERC5564_ANNOUNCER,
+                U256::ZERO,
+                announce_bytes,
+                120_000,
+                true,
+                format!(
+                    "{explanation} [stealth announce for {:#x}]",
+                    announcement.stealth_address
+                ),
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
 
         Ok(json!({
             "stealth_address": format!("{:#x}", announcement.stealth_address),

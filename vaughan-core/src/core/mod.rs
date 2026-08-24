@@ -5,6 +5,7 @@ pub mod account;
 pub mod aggregator;
 pub mod bridge;
 pub mod dex_routers;
+pub mod mcp_host;
 pub mod mcp_ipc;
 pub mod network;
 pub mod persistence;
@@ -31,7 +32,14 @@ pub use bridge::{
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
 };
-pub use mcp_ipc::{decode_line, encode_line, McpIpcError, McpIpcRequest, McpIpcResponse};
+pub use mcp_host::{
+    dispatch_ipc_request, handle_ipc_connection, read_ipc_line, McpHostBackend, McpProposeOutcome,
+    McpSessionData,
+};
+pub use mcp_ipc::{
+    decode_ipc_line, decode_line, encode_line, session_token_valid, McpIpcError, McpIpcLineError,
+    McpIpcRequest, McpIpcResponse, MCP_IPC_MAX_LINE_BYTES,
+};
 pub use network::NetworkService;
 pub use persistence::{
     default_trusted_dapps, is_sentient_profile, merge_default_trusted_dapps, CustomNetwork,
@@ -44,9 +52,11 @@ pub use piteas::{
 };
 pub use profile::OperatingMode;
 pub use proposal::{
-    apply_proposal, guard_mainnet_write, mcp_control_port, mcp_mainnet_writes_allowed,
-    McpSessionToken, ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal,
-    TxProposal, MAX_PENDING_PROPOSALS, MCP_CONTROL_PORT, PROPOSAL_TTL_SECS,
+    apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, mcp_control_port,
+    mcp_mainnet_writes_allowed, proposal_status_json, validate_proposal_id, McpSessionToken,
+    ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal, TxProposal,
+    MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT, MCP_ENQUEUE_RATE_WINDOW_SECS,
+    MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
 };
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use transaction::{format_base_units, parse_native_amount, TransactionService};

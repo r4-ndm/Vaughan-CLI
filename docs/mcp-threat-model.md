@@ -36,18 +36,50 @@ seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 | Threat | Control |
 |--------|---------|
 | Agent lies in `explanation` | Labeled **untrusted**; calldata decode is authoritative |
-| Stale simulation | Re-simulate `eth_call` at approve (default) or pre-broadcast (sentient) |
+| Stale simulation | Re-simulate `eth_call` at approve (default) or pre-broadcast (sentient); **except** `Batch7702` — Ambire draft uses a placeholder signature, so integrity is abi-decode `execute(txns)` + fresh `submit_batch` |
 | Wrong chain | `chain_id` on proposal; reject on mismatch |
 | Queue file tampering | HMAC-SHA256 over proposal bytes + session secret |
 | Local socket hijack | Loopback only (`127.0.0.1:8746`); random session token in `mcp.session` (0600) |
 | MCP exfiltrates keys | MCP process never unlocks vault; banned tools + tests |
 | Agent spends human savings | Use distinct seeds; only share mnemonic for intentional partnership |
 | Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes |
-| Approval flooding | Max 10 pending proposals; rate limit per profile |
+| Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
 | Runaway sentient agent | Profile policy + circuit breakers + Esc kill-switch |
-| Fee spike | Re-estimate at approve / pre-broadcast; warn if >10% delta |
+| Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`) |
 | TOCTOU | Re-simulate + re-estimate fee before sign |
-| Double-spend proposal | Terminal states; idempotent by `proposal_id` |
+| Double-spend proposal | Terminal states; duplicate `proposal_id` rejected at enqueue |
+
+## Automated test coverage (approval path)
+
+Hand-rolled MCP stdio is intentionally thin; fund-safety controls below are
+what we regression-test in CI.
+
+| Threat row | Test |
+|------------|------|
+| Stale simulation | `vaughan-tui/tests/mcp_dogfood.rs::mcp_resim_blocks_insufficient_funds_before_sign` |
+| Wrong chain | `mcp_dogfood::mcp_chain_mismatch_blocks_sign`, `vaughan-core` `apply_proposal_rejects_network_mismatch` |
+| Queue tampering | `vaughan-core` `proposal_queue_rejects_tampered_hmac` |
+| Local socket hijack | `vaughan-tui/tests/mcp_listener.rs::mcp_loopback_rejects_bad_session_token` |
+| Mainnet accident | `vaughan-core` `guard_mainnet_write_gates` |
+| Approval flooding | `proposal_queue_rejects_when_full` + `check_enqueue_rate` in enqueue |
+| Fee spike at approve | `mcp_fee_spike_blocks_sign` + `fee_spike_threshold` |
+| Invalid proposal_id | `validate_proposal_id_rejects_path_traversal` + `mcp_host` dispatch test |
+| Duplicate proposal_id | `enqueue_rejects_duplicate_proposal_id` |
+| Offline write without session | `enqueue_rejects_empty_session_secret` + dispatch `session_required` |
+| IPC line size cap | `MCP_IPC_MAX_LINE_BYTES` in `decode_ipc_line` / `read_ipc_line` |
+| Constant-time token compare | `session_token_valid` in `mcp_ipc` |
+| Unified IPC dispatch | `vaughan-core/mcp_host.rs` (TUI + serve share one handler) |
+| User reject / terminal state | `mcp_dogfood::mcp_user_reject_lands_in_rejected_queue` |
+| Locked wallet | `mcp_dogfood::mcp_locked_wallet_blocks_sign` |
+| Expired proposal | `mcp_dogfood::mcp_expired_proposal_blocks_sign` |
+| Live IPC status without pending | `vaughan-core` `mark_approved_without_pending_still_records_status` |
+
+Run the suite:
+
+```sh
+cargo test -p vaughan-core --lib proposal_
+cargo test -p vaughan-tui --test mcp_dogfood --test mcp_listener
+```
 
 ## Trust boundaries
 

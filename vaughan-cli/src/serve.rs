@@ -5,16 +5,19 @@
 //! later TUI approve (or use sentient for agent autonomy).
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use secrecy::SecretString;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
 use vaughan_agent::paths::profile_dir;
-use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
+use vaughan_core::core::mcp_host::{
+    handle_ipc_connection, McpHostBackend, McpProposeOutcome, McpSessionData,
+};
 use vaughan_core::core::proposal::{
     guard_mainnet_write, mcp_control_port, McpSessionToken, ProposalQueue, TxProposal,
 };
@@ -76,13 +79,17 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
         let Ok(Ok((stream, _))) = accept else {
             continue;
         };
-        let wallet = wallet.clone();
-        let session = session.clone();
-        let profile_dir = profile_dir.clone();
-        let profile_name = profile.clone();
-        let handle = handle.clone();
+        let backend = ServeMcpBackend {
+            wallet: wallet.clone(),
+            handle: handle.clone(),
+            profile_dir: profile_dir.clone(),
+            profile_name: profile.clone(),
+            session_token: session.clone(),
+        };
+        let token = session.clone();
+        let dir = profile_dir.clone();
         tokio::spawn(async move {
-            let _ = handle_conn(stream, wallet, session, profile_dir, profile_name, handle).await;
+            let _ = handle_ipc_connection(stream, token, dir, backend).await;
         });
     }
 
@@ -99,205 +106,112 @@ pub fn password_from_env(password_env: Option<&str>) -> anyhow::Result<SecretStr
     Ok(SecretString::from(value))
 }
 
-async fn handle_conn(
-    stream: tokio::net::TcpStream,
+struct ServeMcpBackend {
     wallet: Arc<Mutex<WalletState>>,
-    session_token: String,
+    handle: Handle,
     profile_dir: PathBuf,
     profile_name: String,
-    handle: Handle,
-) -> Result<(), String> {
-    let (reader, mut writer) = stream.into_split();
-    let mut buf = BufReader::new(reader);
-    let mut line = String::new();
-    buf.read_line(&mut line).await.map_err(|e| e.to_string())?;
-    let req: McpIpcRequest = decode_line(&line).map_err(|e| e.to_string())?;
-
-    let response = match req {
-        McpIpcRequest::Ping { token } => {
-            if token == session_token {
-                McpIpcResponse::success(serde_json::json!({ "pong": true, "serve": true }))
-            } else {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            }
-        }
-        McpIpcRequest::Session { token } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
-                let addr = w.active_address().map_err(|e| e.to_string())?;
-                let net = w.networks().active();
-                McpIpcResponse::success(serde_json::json!({
-                    "address": addr,
-                    "chain_id": net.chain_id,
-                    "network_id": net.id,
-                    "serve": true,
-                }))
-            }
-        }
-        McpIpcRequest::ProposalStatus { token, proposal_id } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let queue = ProposalQueue::new(&profile_dir);
-                match queue.get_pending(&proposal_id, session_token.as_bytes()) {
-                    Ok(_) => McpIpcResponse::success(serde_json::json!({
-                        "proposal_id": proposal_id,
-                        "status": "pending_user",
-                    })),
-                    Err(_) => McpIpcResponse::success(serde_json::json!({
-                        "proposal_id": proposal_id,
-                        "status": "unknown",
-                    })),
-                }
-            }
-        }
-        McpIpcRequest::Propose {
-            token,
-            source,
-            proposal,
-        } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                match execute_propose(
-                    &wallet,
-                    &handle,
-                    &profile_dir,
-                    &profile_name,
-                    &source,
-                    *proposal,
-                    &session_token,
-                ) {
-                    Ok(ExecOutcome::Approved { tx_hash }) => {
-                        McpIpcResponse::success(serde_json::json!({
-                            "status": "approved",
-                            "tx_hash": tx_hash,
-                            "serve": true,
-                        }))
-                    }
-                    Ok(ExecOutcome::Queued { proposal_id }) => {
-                        McpIpcResponse::success(serde_json::json!({
-                            "status": "pending_user",
-                            "proposal_id": proposal_id,
-                            "serve": true,
-                            "message": "Queued — open Vaughan TUI on this profile to approve",
-                        }))
-                    }
-                    Err(e) => McpIpcResponse::failure("exec_failed", e),
-                }
-            }
-        }
-        McpIpcRequest::StealthUri { token } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
-                match w.stealth_uri() {
-                    Ok(uri) => McpIpcResponse::success(serde_json::json!({ "uri": uri })),
-                    Err(e) => McpIpcResponse::failure("stealth_error", e.to_string()),
-                }
-            }
-        }
-        McpIpcRequest::StealthScan { token } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let notes = {
-                    let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
-                    handle
-                        .block_on(w.scan_stealth_notes())
-                        .map_err(|e| e.to_string())
-                };
-                match notes {
-                    Ok(notes) => {
-                        let rows: Vec<_> = notes
-                            .iter()
-                            .map(|n| {
-                                serde_json::json!({
-                                    "stealth_address": format!("{:#x}", n.announcement.stealth_address),
-                                    "balance_wei": n.balance_wei.to_string(),
-                                    "balance": n.balance_formatted,
-                                    "view_tag": n.announcement.view_tag,
-                                })
-                            })
-                            .collect();
-                        McpIpcResponse::success(serde_json::json!({
-                            "notes": rows,
-                            "count": rows.len(),
-                        }))
-                    }
-                    Err(e) => McpIpcResponse::failure("stealth_error", e),
-                }
-            }
-        }
-        McpIpcRequest::StealthSweep {
-            token,
-            stealth_address,
-        } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else if !mcp_auto_exec_enabled(&profile_name) {
-                McpIpcResponse::failure(
-                    "pending_user",
-                    "stealth sweep on adviser profile needs unlocked TUI approval card",
-                )
-            } else {
-                let outcome = (|| -> Result<String, String> {
-                    let w = wallet
-                        .lock()
-                        .map_err(|_| "wallet lock poisoned".to_string())?;
-                    let notes = handle
-                        .block_on(w.scan_stealth_notes())
-                        .map_err(|e| e.to_string())?;
-                    let note = notes
-                        .into_iter()
-                        .find(|n| {
-                            format!("{:#x}", n.announcement.stealth_address)
-                                .eq_ignore_ascii_case(&stealth_address)
-                        })
-                        .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
-                    handle
-                        .block_on(w.sweep_stealth_note(&note))
-                        .map(|h| h.to_string())
-                        .map_err(|e| e.to_string())
-                })();
-                match outcome {
-                    Ok(tx_hash) => McpIpcResponse::success(serde_json::json!({
-                        "status": "approved",
-                        "tx_hash": tx_hash,
-                        "serve": true,
-                    })),
-                    Err(e) => McpIpcResponse::failure("stealth_error", e),
-                }
-            }
-        }
-    };
-
-    let out = encode_line(&response).map_err(|e| e.to_string())?;
-    writer
-        .write_all(out.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    writer.flush().await.map_err(|e| e.to_string())?;
-    Ok(())
+    session_token: String,
 }
 
-enum ExecOutcome {
-    Approved { tx_hash: String },
-    Queued { proposal_id: String },
+#[async_trait]
+impl McpHostBackend for ServeMcpBackend {
+    fn host_tag(&self) -> Option<&'static str> {
+        Some("serve")
+    }
+
+    async fn session(&self) -> Result<McpSessionData, String> {
+        let w = self.wallet.lock().map_err(|_| "wallet lock poisoned")?;
+        let addr = w.active_address().map_err(|e| e.to_string())?;
+        let net = w.networks().active();
+        Ok(McpSessionData {
+            address: addr.to_string(),
+            chain_id: net.chain_id,
+            network_id: net.id.clone(),
+        })
+    }
+
+    async fn propose(
+        &self,
+        source: &str,
+        proposal: TxProposal,
+    ) -> Result<McpProposeOutcome, String> {
+        execute_propose(
+            &self.wallet,
+            &self.handle,
+            &self.profile_dir,
+            &self.profile_name,
+            source,
+            proposal,
+            &self.session_token,
+        )
+    }
+
+    async fn stealth_uri(&self) -> Result<String, String> {
+        let w = self.wallet.lock().map_err(|_| "wallet lock poisoned")?;
+        w.stealth_uri().map_err(|e| e.to_string())
+    }
+
+    async fn stealth_scan(&self) -> Result<Value, String> {
+        let notes = {
+            let w = self.wallet.lock().map_err(|_| "wallet lock poisoned")?;
+            self.handle
+                .block_on(w.scan_stealth_notes())
+                .map_err(|e| e.to_string())?
+        };
+        let rows: Vec<_> = notes
+            .iter()
+            .map(|n| {
+                json!({
+                    "stealth_address": format!("{:#x}", n.announcement.stealth_address),
+                    "balance_wei": n.balance_wei.to_string(),
+                    "balance": n.balance_formatted,
+                    "view_tag": n.announcement.view_tag,
+                })
+            })
+            .collect();
+        Ok(json!({ "notes": rows, "count": rows.len() }))
+    }
+
+    async fn stealth_sweep(&self, stealth_address: &str) -> Result<String, String> {
+        if !mcp_auto_exec_enabled(&self.profile_name) {
+            return Err(
+                "tui_required: adviser serve cannot show a sweep card — unlock Vaughan TUI on \
+                 this profile (or use --profile sentient for headless auto-sweep)"
+                    .into(),
+            );
+        }
+        let w = self
+            .wallet
+            .lock()
+            .map_err(|_| "wallet lock poisoned".to_string())?;
+        let notes = self
+            .handle
+            .block_on(w.scan_stealth_notes())
+            .map_err(|e| e.to_string())?;
+        let note = notes
+            .into_iter()
+            .find(|n| {
+                format!("{:#x}", n.announcement.stealth_address)
+                    .eq_ignore_ascii_case(stealth_address)
+            })
+            .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
+        self.handle
+            .block_on(w.sweep_stealth_note(&note))
+            .map(|h| h.to_string())
+            .map_err(|e| e.to_string())
+    }
 }
 
 fn execute_propose(
     wallet: &Arc<Mutex<WalletState>>,
     handle: &Handle,
-    profile_dir: &std::path::Path,
+    profile_dir: &Path,
     profile_name: &str,
     source: &str,
     proposal: TxProposal,
     session_token: &str,
-) -> Result<ExecOutcome, String> {
+) -> Result<McpProposeOutcome, String> {
     {
         let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
         let net = w.networks().active();
@@ -321,12 +235,15 @@ fn execute_propose(
         let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
         let hash =
             sentient_mcp::auto_exec_mcp_proposal(&w, handle, &kind).map_err(|e| e.to_string())?;
-        return Ok(ExecOutcome::Approved { tx_hash: hash });
+        return Ok(McpProposeOutcome::Approved { tx_hash: hash });
     }
 
     let queue = ProposalQueue::new(profile_dir);
     queue
         .enqueue(proposal, source, session_token.as_bytes())
         .map_err(|e| e.to_string())?;
-    Ok(ExecOutcome::Queued { proposal_id })
+    Ok(McpProposeOutcome::Queued {
+        proposal_id,
+        message: "Queued — open Vaughan TUI on this profile to approve".into(),
+    })
 }

@@ -18,7 +18,7 @@ use vaughan_agent::paths::profile_dir;
 use vaughan_agent::tools::{default_assist_registry, ToolContext};
 use vaughan_core::chains::ChainTransaction;
 use vaughan_core::core::proposal::{ProposalQueue, TxProposal};
-use vaughan_core::core::{OperatingMode, StateManager, TransactionService, WalletState};
+use vaughan_core::core::{guard_mainnet_write, OperatingMode, StateManager, TransactionService, WalletState};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -614,9 +614,17 @@ async fn run_cli(
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     let proposal: TxProposal = serde_json::from_value(raw)?;
+                    guard_mainnet_write(proposal.chain_id, net.is_testnet)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                     let prof = profile_dir(wallet.path());
-                    let secret =
-                        vaughan_core::core::McpSessionToken::read(&prof)?.unwrap_or_default();
+                    let secret = vaughan_core::core::McpSessionToken::read(&prof)?
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "MCP session token missing — unlock Vaughan TUI or run \
+                                 `vaughan serve` on this profile first"
+                            )
+                        })?;
                     let queue = ProposalQueue::new(&prof);
                     let queued = queue
                         .enqueue(proposal.clone(), "cli", secret.as_bytes())

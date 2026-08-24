@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::{BridgeAsset, BridgeQuote, BridgeQuoteRequest, LibertySwapClient};
@@ -208,23 +209,27 @@ impl Tool for ProposeBridgeTool {
         } else {
             q.tx.data.clone()
         };
-        let proposal = TxProposal::new(
-            format!("bridge_{}", rand_id()),
-            ProposalType::ContractCall {
-                target: q.tx.to,
-                function_name: Some("libertyBridge".into()),
-            },
-            q.tx.to,
-            q.tx.value,
-            calldata,
-            500_000,
-            true,
-            format!(
-                "{explanation} [LibertySwap {}→{} src={} dest≈{}]",
-                q.src_token.chain_id, q.dest_token.chain_id, q.src_amount, q.dest_amount
-            ),
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("bridge_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: q.tx.to,
+                    function_name: Some("libertyBridge".into()),
+                },
+                q.tx.to,
+                q.tx.value,
+                calldata,
+                500_000,
+                true,
+                format!(
+                    "{explanation} [LibertySwap {}→{} src={} dest≈{}]",
+                    q.src_token.chain_id, q.dest_token.chain_id, q.src_amount, q.dest_amount
+                ),
+            )
+            .with_chain(q.src_token.chain_id, None),
+            context,
         )
-        .with_chain(q.src_token.chain_id, None);
+        .await;
         let mut out = serde_json::to_value(&proposal)?;
         if let Some(obj) = out.as_object_mut() {
             obj.insert("bridge_quote".into(), quote_to_json(&q));

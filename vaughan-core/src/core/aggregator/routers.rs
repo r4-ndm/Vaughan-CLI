@@ -17,6 +17,8 @@ pub const OFFICIAL_AGG_ROUTERS: &[&str] = &[
     "0xC994375187988C751C8fCb96A68A0f242947f0E6",
     // EmpX / EmpSeal on-chain router (PulseChain mainnet)
     "0x0Cf6D948Cf09ac83a6bf40C7AD7b44657A9F2A52",
+    // Piteas public router (PulseChain mainnet)
+    "0x6BF228eb7F8ad948d37deD07E595EfddfaAF88A6",
 ];
 
 fn router_set() -> &'static HashSet<[u8; 20]> {
@@ -58,12 +60,18 @@ mod tests {
     use alloy::primitives::address;
 
     #[test]
-    fn squirrel_and_pulseswap_routers_allowed() {
+    fn squirrel_pulseswap_empx_piteas_routers_allowed() {
         assert!(is_allowed_agg_router(address!(
             "0xDa8953Fc615d6E816b9647Afd5536123dcE70B78"
         )));
         assert!(is_allowed_agg_router(address!(
             "0xC994375187988C751C8fCb96A68A0f242947f0E6"
+        )));
+        assert!(is_allowed_agg_router(address!(
+            "0x0Cf6D948Cf09ac83a6bf40C7AD7b44657A9F2A52"
+        )));
+        assert!(is_allowed_agg_router(address!(
+            "0x6BF228eb7F8ad948d37deD07E595EfddfaAF88A6"
         )));
     }
 

@@ -12,6 +12,7 @@ use wiz4rd_sdk::tx::swap::apply_slippage;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::wiz4rd_common::{load_pool, resolve_token};
 use crate::tools::{Tool, ToolContext};
@@ -221,23 +222,27 @@ impl Tool for ProposeV3MintTool {
             .into_input()
             .ok_or_else(|| AgentError::InvalidToolCall("mint tx missing calldata".into()))?;
 
-        let proposal = TxProposal::new(
-            format!("v3_mint_{}", rand_id()),
-            ProposalType::ContractCall {
-                target: npm,
-                function_name: Some("mint".into()),
-            },
-            npm,
-            U256::ZERO,
-            calldata,
-            600_000,
-            true,
-            format!(
-                "{explanation} [wiz4rd mint fee {fee} ticks [{tick_lower},{tick_upper}] \
-                 amt0={amount0_desired} amt1={amount1_desired}]"
-            ),
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("v3_mint_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: npm,
+                    function_name: Some("mint".into()),
+                },
+                npm,
+                U256::ZERO,
+                calldata,
+                600_000,
+                true,
+                format!(
+                    "{explanation} [wiz4rd mint fee {fee} ticks [{tick_lower},{tick_upper}] \
+                     amt0={amount0_desired} amt1={amount1_desired}]"
+                ),
+            )
+            .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into())),
+            context,
         )
-        .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into()));
+        .await;
 
         Ok(serde_json::to_value(&proposal)?)
     }

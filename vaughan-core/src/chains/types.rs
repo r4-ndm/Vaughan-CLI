@@ -245,6 +245,24 @@ impl Fee {
             },
         }
     }
+
+    /// Upper-bound native cost in wei: `max_fee_per_gas * gas_limit` (EIP-1559).
+    ///
+    /// Used by MCP fee-spike checks and agent proposal stamping; matches the
+    /// wallet approval path in `vaughan-tui::provider`.
+    pub fn total_wei_evm(&self) -> Option<U256> {
+        let FeeDetails::Evm {
+            gas_limit,
+            max_fee_per_gas,
+            ..
+        } = &self.details
+        else {
+            return None;
+        };
+        let max_s = max_fee_per_gas.as_deref()?;
+        let per_gas = U256::from_str(max_s).ok()?;
+        Some(per_gas.saturating_mul(U256::from(*gas_limit)))
+    }
 }
 
 /// Family-specific fee parameters.
@@ -354,6 +372,32 @@ mod tests {
         let json = serde_json::to_string(&fee).unwrap();
         let back: Fee = serde_json::from_str(&json).unwrap();
         assert_eq!(back.currency, "PLS");
+    }
+
+    #[test]
+    fn fee_total_wei_evm() {
+        let fee = Fee {
+            total: "0.000063 ETH".into(),
+            currency: "ETH".into(),
+            details: FeeDetails::Evm {
+                gas_limit: 21_000,
+                max_fee_per_gas: Some("2000000000".into()),
+                max_priority_fee_per_gas: Some("1000000000".into()),
+            },
+        };
+        assert_eq!(
+            fee.total_wei_evm(),
+            Some(U256::from(21_000u64) * U256::from(2_000_000_000u64))
+        );
+        let legacy = Fee {
+            total: "0".into(),
+            currency: "BTC".into(),
+            details: FeeDetails::Bitcoin {
+                fee_rate_sat_per_vbyte: "1".into(),
+                estimated_vsize: 140,
+            },
+        };
+        assert!(legacy.total_wei_evm().is_none());
     }
 
     #[test]

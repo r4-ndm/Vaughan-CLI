@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::wpls_for_chain;
@@ -86,20 +87,24 @@ impl Tool for ProposeWrapTool {
         let (amount, explanation) = require_amount_explanation(&args)?;
         let wpls = wpls_addr(context.chain_id)?;
         let calldata = Bytes::from(IWETH9::depositCall {}.abi_encode());
-        let proposal = TxProposal::new(
-            format!("wrap_{}", rand_id()),
-            ProposalType::ContractCall {
-                target: wpls,
-                function_name: Some("deposit".into()),
-            },
-            wpls,
-            amount,
-            calldata,
-            80_000,
-            true,
-            format!("{explanation} [wrap {amount} wei → WPLS]"),
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("wrap_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: wpls,
+                    function_name: Some("deposit".into()),
+                },
+                wpls,
+                amount,
+                calldata,
+                80_000,
+                true,
+                format!("{explanation} [wrap {amount} wei → WPLS]"),
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
         Ok(serde_json::to_value(&proposal)?)
     }
 }
@@ -144,20 +149,24 @@ impl Tool for ProposeUnwrapTool {
         let (amount, explanation) = require_amount_explanation(&args)?;
         let wpls = wpls_addr(context.chain_id)?;
         let calldata = Bytes::from(IWETH9::withdrawCall { wad: amount }.abi_encode());
-        let proposal = TxProposal::new(
-            format!("unwrap_{}", rand_id()),
-            ProposalType::ContractCall {
-                target: wpls,
-                function_name: Some("withdraw".into()),
-            },
-            wpls,
-            U256::ZERO,
-            calldata,
-            80_000,
-            true,
-            format!("{explanation} [unwrap {amount} wei WPLS → native]"),
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("unwrap_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: wpls,
+                    function_name: Some("withdraw".into()),
+                },
+                wpls,
+                U256::ZERO,
+                calldata,
+                80_000,
+                true,
+                format!("{explanation} [unwrap {amount} wei WPLS → native]"),
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
         Ok(serde_json::to_value(&proposal)?)
     }
 }

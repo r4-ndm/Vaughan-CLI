@@ -531,8 +531,15 @@ pub async fn execute_approval(
         } => {
             use vaughan_core::core::proposal::ProposalType;
             if matches!(proposal.proposal_type, ProposalType::Batch7702 { .. }) {
+                // Ambire self-pay path: dummy draft signature cannot eth_call.
+                // Integrity check = abi-decode execute(txns) then submit_batch (fresh sig).
                 let txns = vaughan_aa::decode_execute(&proposal.calldata)
                     .map_err(ProviderError::Internal)?;
+                if txns.is_empty() {
+                    return Err(ProviderError::Internal(
+                        "batch7702: decoded execute had zero calls".into(),
+                    ));
+                }
                 let signer = wallet.active_signer().map_err(map_wallet_error)?;
                 let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
                 let result = vaughan_aa::submit_batch(
@@ -557,6 +564,20 @@ pub async fn execute_approval(
             }
             resimulate_mcp_proposal(wallet, proposal).await?;
             let evm = apply_proposal(wallet, proposal).map_err(map_wallet_error)?;
+            if let Ok(fresh_fee) = wallet.estimate_transaction_fee(evm.clone()).await {
+                if let Some(fresh_wei) = fresh_fee.total_wei_evm() {
+                    if vaughan_core::core::fee_spike_exceeds_threshold(
+                        proposal.estimated_fee_wei,
+                        fresh_wei,
+                    ) {
+                        return Err(ProviderError::InvalidParams(
+                            "network fee increased more than 10% since agent proposal — \
+                             deny and ask the agent to re-propose"
+                                .into(),
+                        ));
+                    }
+                }
+            }
             let hash = wallet
                 .send_transaction(evm)
                 .await

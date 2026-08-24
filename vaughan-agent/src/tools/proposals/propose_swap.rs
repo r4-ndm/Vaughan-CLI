@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::{Tool, ToolContext};
 
 sol! {
@@ -191,22 +192,26 @@ impl Tool for ProposeSwapTool {
             .and_then(|v| v.as_str())
             .unwrap_or("Swap proposal");
 
-        let proposal = TxProposal::new(
-            format!("swap_{}", super::propose_transfer::rand_id()),
-            ProposalType::DexSwap {
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("swap_{}", super::propose_transfer::rand_id()),
+                ProposalType::DexSwap {
+                    router,
+                    path,
+                    amount_in,
+                    min_amount_out,
+                },
                 router,
-                path,
-                amount_in,
-                min_amount_out,
-            },
-            router,
-            value_wei,
-            calldata,
-            250_000,
-            sim_success,
-            explanation,
+                value_wei,
+                calldata,
+                250_000,
+                sim_success,
+                explanation,
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
 
         Ok(serde_json::to_value(&proposal)?)
     }

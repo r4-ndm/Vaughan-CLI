@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::wiz4rd_common::{
     build_exact_in_calldata, load_pool, quote_pool, resolve_token, slippage_min_out,
@@ -131,25 +132,29 @@ impl Tool for ProposeV3SwapTool {
             simulate_swap(context, router, recipient, &calldata, value_wei).await
         };
 
-        let proposal = TxProposal::new(
-            format!("v3_swap_{}", rand_id()),
-            ProposalType::DexSwap {
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("v3_swap_{}", rand_id()),
+                ProposalType::DexSwap {
+                    router,
+                    path,
+                    amount_in,
+                    min_amount_out: amount_out_min,
+                },
                 router,
-                path,
-                amount_in,
-                min_amount_out: amount_out_min,
-            },
-            router,
-            value_wei,
-            calldata,
-            350_000,
-            sim_success,
-            format!(
-                "{explanation} [wiz4rd V3 fee {fee}: in {} → min out {}]",
-                amount_in, amount_out_min
-            ),
+                value_wei,
+                calldata,
+                350_000,
+                sim_success,
+                format!(
+                    "{explanation} [wiz4rd V3 fee {fee}: in {} → min out {}]",
+                    amount_in, amount_out_min
+                ),
+            )
+            .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into())),
+            context,
         )
-        .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into()));
+        .await;
 
         Ok(serde_json::to_value(&proposal)?)
     }

@@ -9,12 +9,17 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use async_trait::async_trait;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use vaughan_core::core::mcp_ipc::{decode_line, encode_line, McpIpcRequest, McpIpcResponse};
-use vaughan_core::core::proposal::{mcp_control_port, McpSessionToken, ProposalQueue, TxProposal};
+use vaughan_core::chains::evm::networks::get_network_by_id;
+use vaughan_core::core::mcp_host::{
+    handle_ipc_connection, McpHostBackend, McpProposeOutcome, McpSessionData,
+};
+use vaughan_core::core::proposal::{
+    guard_mainnet_write, mcp_control_port, McpSessionToken, ProposalQueue, TxProposal,
+};
 use vaughan_provider::ProviderError;
 
 /// Live session metadata exposed to MCP clients while the wallet is unlocked.
@@ -160,6 +165,114 @@ impl McpService {
     }
 }
 
+struct TuiMcpBackend {
+    ui_tx: mpsc::UnboundedSender<McpHostRequest>,
+    snapshot: Arc<RwLock<McpSessionSnapshot>>,
+}
+
+#[async_trait]
+impl McpHostBackend for TuiMcpBackend {
+    fn host_tag(&self) -> Option<&'static str> {
+        Some("tui")
+    }
+
+    async fn session(&self) -> Result<McpSessionData, String> {
+        let snap = self
+            .snapshot
+            .read()
+            .map_err(|_| "session snapshot poisoned")?;
+        match (&snap.address, snap.chain_id, &snap.network_id) {
+            (Some(address), Some(chain_id), Some(network_id)) => Ok(McpSessionData {
+                address: address.clone(),
+                chain_id,
+                network_id: network_id.clone(),
+            }),
+            _ => Err("wallet is locked".into()),
+        }
+    }
+
+    async fn propose(
+        &self,
+        source: &str,
+        proposal: TxProposal,
+    ) -> Result<McpProposeOutcome, String> {
+        let (chain_id, network_id) = {
+            let snap = self
+                .snapshot
+                .read()
+                .map_err(|_| "session snapshot poisoned".to_string())?;
+            match (snap.chain_id, snap.network_id.clone()) {
+                (Some(chain_id), Some(network_id)) => (chain_id, network_id),
+                _ => return Err("wallet is locked".into()),
+            }
+        };
+        let net = get_network_by_id(&network_id)
+            .ok_or_else(|| format!("unknown network: {network_id}"))?;
+        guard_mainnet_write(proposal.chain_id, net.is_testnet).map_err(|e| e.to_string())?;
+        if proposal.chain_id != 0 && proposal.chain_id != chain_id {
+            return Err(format!(
+                "network_mismatch: proposal chain_id {} != active {chain_id}",
+                proposal.chain_id
+            ));
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.ui_tx
+            .send(McpHostRequest::Propose {
+                proposal: Box::new(proposal),
+                source: source.to_string(),
+                reply: Some(reply_tx),
+            })
+            .map_err(|_| "wallet UI is closed".to_string())?;
+        match reply_rx.await {
+            Ok(Ok(tx_hash)) => Ok(McpProposeOutcome::Approved { tx_hash }),
+            Ok(Err(e)) => Ok(McpProposeOutcome::Rejected {
+                reason: e.to_string(),
+            }),
+            Err(_) => Err("approval channel closed".into()),
+        }
+    }
+
+    async fn stealth_uri(&self) -> Result<String, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.ui_tx
+            .send(McpHostRequest::StealthUri { reply: reply_tx })
+            .map_err(|_| "wallet UI is closed".to_string())?;
+        match reply_rx.await {
+            Ok(Ok(uri)) => Ok(uri),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("channel closed".into()),
+        }
+    }
+
+    async fn stealth_scan(&self) -> Result<serde_json::Value, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.ui_tx
+            .send(McpHostRequest::StealthScan { reply: reply_tx })
+            .map_err(|_| "wallet UI is closed".to_string())?;
+        match reply_rx.await {
+            Ok(Ok(data)) => Ok(data),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("channel closed".into()),
+        }
+    }
+
+    async fn stealth_sweep(&self, stealth_address: &str) -> Result<String, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.ui_tx
+            .send(McpHostRequest::StealthSweep {
+                stealth_address: stealth_address.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| "wallet UI is closed".to_string())?;
+        match reply_rx.await {
+            Ok(Ok(tx_hash)) => Ok(tx_hash),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("channel closed".into()),
+        }
+    }
+}
+
 async fn run_listener(
     stop: Arc<AtomicBool>,
     ui_tx: mpsc::UnboundedSender<McpHostRequest>,
@@ -181,176 +294,15 @@ async fn run_listener(
         let Ok(Ok((stream, _))) = accept else {
             continue;
         };
-        let ui_tx = ui_tx.clone();
+        let backend = TuiMcpBackend {
+            ui_tx: ui_tx.clone(),
+            snapshot: snapshot.clone(),
+        };
         let token = session_token.clone();
-        let profile_dir = profile_dir.clone();
-        let snapshot = snapshot.clone();
+        let dir = profile_dir.clone();
         tokio::spawn(async move {
-            let _ = handle_connection(stream, ui_tx, token, profile_dir, snapshot).await;
+            let _ = handle_ipc_connection(stream, token, dir, backend).await;
         });
     }
-    Ok(())
-}
-
-async fn handle_connection(
-    stream: tokio::net::TcpStream,
-    ui_tx: mpsc::UnboundedSender<McpHostRequest>,
-    session_token: String,
-    profile_dir: std::path::PathBuf,
-    snapshot: Arc<RwLock<McpSessionSnapshot>>,
-) -> Result<(), String> {
-    let (reader, mut writer) = stream.into_split();
-    let mut buf = BufReader::new(reader);
-    let mut line = String::new();
-    buf.read_line(&mut line).await.map_err(|e| e.to_string())?;
-    let req: McpIpcRequest = decode_line(&line).map_err(|e| e.to_string())?;
-
-    let response = match req {
-        McpIpcRequest::Ping { token } => {
-            if token == session_token {
-                McpIpcResponse::success(serde_json::json!({ "pong": true }))
-            } else {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            }
-        }
-        McpIpcRequest::Session { token } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let snap = snapshot.read().map_err(|_| "session snapshot poisoned")?;
-                if let (Some(address), Some(chain_id), Some(network_id)) =
-                    (&snap.address, snap.chain_id, &snap.network_id)
-                {
-                    McpIpcResponse::success(serde_json::json!({
-                        "address": address,
-                        "chain_id": chain_id,
-                        "network_id": network_id,
-                    }))
-                } else {
-                    McpIpcResponse::failure("wallet_locked", "wallet is locked")
-                }
-            }
-        }
-        McpIpcRequest::ProposalStatus { token, proposal_id } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let queue = ProposalQueue::new(&profile_dir);
-                match queue.get_pending(&proposal_id, session_token.as_bytes()) {
-                    Ok(_) => McpIpcResponse::success(serde_json::json!({
-                        "proposal_id": proposal_id,
-                        "status": "pending_user",
-                    })),
-                    Err(_) => McpIpcResponse::success(serde_json::json!({
-                        "proposal_id": proposal_id,
-                        "status": "unknown",
-                    })),
-                }
-            }
-        }
-        McpIpcRequest::Propose {
-            token,
-            source,
-            proposal,
-        } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if ui_tx
-                    .send(McpHostRequest::Propose {
-                        proposal,
-                        source,
-                        reply: Some(reply_tx),
-                    })
-                    .is_err()
-                {
-                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
-                } else {
-                    match reply_rx.await {
-                        Ok(Ok(tx_hash)) => McpIpcResponse::success(serde_json::json!({
-                            "status": "approved",
-                            "tx_hash": tx_hash,
-                        })),
-                        Ok(Err(e)) => McpIpcResponse::failure("user_rejected", e.to_string()),
-                        Err(_) => McpIpcResponse::failure("tui_offline", "approval channel closed"),
-                    }
-                }
-            }
-        }
-        McpIpcRequest::StealthUri { token } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if ui_tx
-                    .send(McpHostRequest::StealthUri { reply: reply_tx })
-                    .is_err()
-                {
-                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
-                } else {
-                    match reply_rx.await {
-                        Ok(Ok(uri)) => McpIpcResponse::success(serde_json::json!({ "uri": uri })),
-                        Ok(Err(e)) => McpIpcResponse::failure("stealth_error", e.to_string()),
-                        Err(_) => McpIpcResponse::failure("tui_offline", "channel closed"),
-                    }
-                }
-            }
-        }
-        McpIpcRequest::StealthScan { token } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if ui_tx
-                    .send(McpHostRequest::StealthScan { reply: reply_tx })
-                    .is_err()
-                {
-                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
-                } else {
-                    match reply_rx.await {
-                        Ok(Ok(data)) => McpIpcResponse::success(data),
-                        Ok(Err(e)) => McpIpcResponse::failure("stealth_error", e.to_string()),
-                        Err(_) => McpIpcResponse::failure("tui_offline", "channel closed"),
-                    }
-                }
-            }
-        }
-        McpIpcRequest::StealthSweep {
-            token,
-            stealth_address,
-        } => {
-            if token != session_token {
-                McpIpcResponse::failure("unauthorized", "invalid session token")
-            } else {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if ui_tx
-                    .send(McpHostRequest::StealthSweep {
-                        stealth_address,
-                        reply: reply_tx,
-                    })
-                    .is_err()
-                {
-                    McpIpcResponse::failure("tui_offline", "wallet UI is closed")
-                } else {
-                    match reply_rx.await {
-                        Ok(Ok(tx_hash)) => McpIpcResponse::success(serde_json::json!({
-                            "status": "approved",
-                            "tx_hash": tx_hash,
-                        })),
-                        Ok(Err(e)) => McpIpcResponse::failure("user_rejected", e.to_string()),
-                        Err(_) => McpIpcResponse::failure("tui_offline", "channel closed"),
-                    }
-                }
-            }
-        }
-    };
-
-    let out = encode_line(&response).map_err(|e| e.to_string())?;
-    writer
-        .write_all(out.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    writer.flush().await.map_err(|e| e.to_string())?;
     Ok(())
 }

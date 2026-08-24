@@ -12,6 +12,7 @@ use wiz4rd_sdk::tx::swap::apply_slippage;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::wiz4rd_common::config_for_context;
 use crate::tools::{Tool, ToolContext};
@@ -72,28 +73,32 @@ fn extract_npm_calldata(
     Ok((npm, calldata))
 }
 
-fn proposal_from_npm(
+async fn proposal_from_npm(
     id_prefix: &str,
     npm: alloy::primitives::Address,
     calldata: alloy::primitives::Bytes,
     gas: u64,
     explanation: String,
-    chain_id: u64,
+    context: &ToolContext,
 ) -> Result<Value, AgentError> {
-    let proposal = TxProposal::new(
-        format!("{id_prefix}_{}", rand_id()),
-        ProposalType::ContractCall {
-            target: npm,
-            function_name: Some(id_prefix.to_string()),
-        },
-        npm,
-        U256::ZERO,
-        calldata,
-        gas,
-        true,
-        explanation,
+    let proposal = attach_estimated_fee(
+        TxProposal::new(
+            format!("{id_prefix}_{}", rand_id()),
+            ProposalType::ContractCall {
+                target: npm,
+                function_name: Some(id_prefix.to_string()),
+            },
+            npm,
+            U256::ZERO,
+            calldata,
+            gas,
+            true,
+            explanation,
+        )
+        .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into())),
+        context,
     )
-    .with_chain(chain_id, Some("pulsechain-testnet-v4".into()));
+    .await;
     Ok(serde_json::to_value(&proposal)?)
 }
 
@@ -168,8 +173,9 @@ impl Tool for ProposeV3IncreaseTool {
             calldata,
             400_000,
             format!("{explanation} [increase token_id={token_id} amt0={amount0} amt1={amount1}]"),
-            context.chain_id,
+            context,
         )
+        .await
     }
 }
 
@@ -250,8 +256,9 @@ impl Tool for ProposeV3DecreaseTool {
             calldata,
             300_000,
             format!("{explanation} [decrease token_id={token_id} liquidity={liquidity}]"),
-            context.chain_id,
+            context,
         )
+        .await
     }
 }
 
@@ -321,7 +328,8 @@ impl Tool for ProposeV3CollectTool {
             calldata,
             200_000,
             format!("{explanation} [collect token_id={token_id}]"),
-            context.chain_id,
+            context,
         )
+        .await
     }
 }

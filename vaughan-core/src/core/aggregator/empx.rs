@@ -58,9 +58,10 @@ pub struct EmpxClient {
 
 impl EmpxClient {
     pub fn for_chain(chain_id: u64, rpc_url: &str) -> Result<Self, WalletError> {
-        if chain_id != 369 && chain_id != 31337 {
+        if chain_id != 369 {
             return Err(WalletError::Other(
-                "EmpX Alloy client is wired for PulseChain mainnet (369) only".into(),
+                "EmpX is PulseChain mainnet (369) only — switch network or use squirrel/pulseswap/piteas"
+                    .into(),
             ));
         }
         Ok(Self {

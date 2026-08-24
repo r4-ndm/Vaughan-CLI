@@ -986,6 +986,26 @@ impl WalletState {
         service.send(&adapter, ChainTransaction::Evm(tx)).await
     }
 
+    /// Contract call (or native transfer) using an already-approved fee.
+    ///
+    /// Does not re-estimate; `fee` is applied verbatim so the confirmation
+    /// matches what is signed (DEX / bridge / Ag flows).
+    pub async fn send_evm_with_fee(
+        &self,
+        tx: EvmTransaction,
+        fee: &Fee,
+    ) -> Result<TxHash, WalletError> {
+        let service = TransactionService::new();
+        let mut chain_tx = ChainTransaction::Evm(tx);
+        service.apply_fee(&mut chain_tx, fee)?;
+        let ChainTransaction::Evm(evm_tx) = chain_tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".to_string(),
+            ));
+        };
+        self.send_transaction(evm_tx).await
+    }
+
     /// Sign an EVM transaction without broadcasting it; returns the raw signed
     /// tx as `0x`-prefixed hex (serves `vaughan_signTransaction`).
     pub async fn sign_transaction(&self, tx: EvmTransaction) -> Result<String, WalletError> {

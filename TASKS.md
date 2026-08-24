@@ -301,7 +301,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Ag Anvil: SquirrelSwap `/swap` fixture → mock router → native + approve/swap broadcast (`vaughan-tui/tests/ag_view.rs`)
 - [x] Ag end-to-end polish: SquirrelSwap quote → route preview → ERC-20 approve (if needed) → swap confirm → broadcast (explicit approval only)
 - [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/piteas.md`)
-- [ ] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
+- [x] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
 - [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/wiz4rd-addresses.md`)
 - [x] wiz4rd MCP Phase B+C: `get_v3_pool`, `quote_v3_swap`, `propose_v3_swap` (`docs/pulse-defi-skills.md`)
 - [x] wiz4rd MCP Phase D: `propose_v3_mint` + `list_v3_positions`
@@ -309,7 +309,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] MCP wrap / unwrap / revoke / approve / list_allowances
 - [x] MCP bridge: `quote_bridge` / `propose_bridge` (LibertySwap)
 - [x] MCP history + token: `list_transfers`, `resolve_token`, `import_token`
-- [x] MCP stealth send propose (`propose_stealth_send`); scan/sweep remain TUI/core
+- [x] MCP stealth send propose (`propose_stealth_send`); scan/sweep MCP tools shipped
 - [x] MCP `watch_balance` for sentient threshold loops
 - [x] Token discovery without a site: `resolve_token` + `import_token` (TUI paste polish still optional)
 
@@ -318,7 +318,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
 - [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
-- [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md) (wrap/revoke/LP/bridge/history/import/approve); EmpX + 7702 AA exec still open
+- [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md); EmpX + 7702 AA exec + stealth scan/sweep MCP shipped
 - [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
 - [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/sentient-presets.md`](docs/sentient-presets.md), `vaughan-agent/presets/`)
 - [x] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `degen-policy.toml`)

@@ -11,7 +11,7 @@ use vaughan_core::chains::evm::adapter::EvmAdapter;
 use vaughan_core::chains::evm::networks::get_network_by_id;
 use vaughan_core::core::persistence::StateManager;
 use vaughan_core::core::proposal::{
-    guard_mainnet_write, McpSessionToken, ProposalQueue, TxProposal,
+    guard_mainnet_write, proposal_status_json, McpSessionToken, ProposalQueue, TxProposal,
 };
 
 use crate::client::{
@@ -315,15 +315,17 @@ impl McpDispatcher {
     ) -> Result<Value, String> {
         let session = McpSessionToken::read(&self.profile_dir)
             .map_err(|e| e.user_message())?
-            .unwrap_or_default();
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "session_required: unlock Vaughan or run vaughan serve before proposing writes"
+                    .to_string()
+            })?;
 
-        if !session.is_empty() {
-            match try_propose_live(&session, &ctx.source, &proposal).await {
-                Ok(Some(data)) => return Ok(data),
-                Ok(None) => {}
-                Err(e) if e.contains("wallet is locked") || e.contains("tui_offline") => {}
-                Err(e) => return Err(e),
-            }
+        match try_propose_live(&session, &ctx.source, &proposal).await {
+            Ok(Some(data)) => return Ok(data),
+            Ok(None) => {}
+            Err(e) if e.contains("wallet is locked") || e.contains("tui_offline") => {}
+            Err(e) => return Err(e),
         }
 
         let secret = session.as_bytes();
@@ -356,11 +358,8 @@ impl McpDispatcher {
         }
 
         let queue = ProposalQueue::new(&self.profile_dir);
-        match queue.get_pending(proposal_id, session.as_bytes()) {
-            Ok(_) => Ok(json!({
-                "proposal_id": proposal_id,
-                "status": "pending_user",
-            })),
+        match queue.lookup_status(proposal_id, session.as_bytes()) {
+            Ok(status) => Ok(proposal_status_json(proposal_id, &status)),
             Err(e) => Ok(json!({
                 "proposal_id": proposal_id,
                 "status": "unknown",

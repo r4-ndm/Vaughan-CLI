@@ -44,7 +44,7 @@ proposals auto re-sim → policy gate → sign (no card). Legacy profile name
 | `simulate_call` | `eth_call` pre-flight |
 | `get_dex_reserves` | Pair/pool reserves |
 | `search_pairs` | Factory log scan for pairs |
-| `quote_swap` | Pulse aggregator quote (Squirrel / PulseSwap / Piteas) — read-only |
+| `quote_swap` | Pulse aggregator quote (Squirrel / PulseSwap / Piteas / EmpX on 369) — read-only |
 | `get_v3_pool` | wiz4rd V3 pool slot0 / liquidity (Pulse testnet 943) |
 | `quote_v3_swap` | wiz4rd V3 exact-in quote (local math on live pool) |
 | `list_allowances` | Non-zero ERC-20 allowances vs known Dex/Ag/Bridge spenders |
@@ -81,8 +81,8 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_bridge` | Yes | LibertySwap bridge (source-chain broadcast) |
 | `propose_stealth_send` | Yes | ERC-5564 pay + announce proposals |
 | `import_token` | Yes | Persist probed token into profile assets (needs profile dir) |
-| `propose_batch_7702` | Yes | EIP-7702 Ambire batch — exec via `submit_batch` |
-| `sweep_stealth_note` | Yes | Sweep one stealth note (TUI card / sentient auto / serve) |
+| `propose_batch_7702` | Yes | EIP-7702 Ambire batch via `submit_batch` (decode execute calldata; no eth_call re-sim — draft uses a placeholder signature) |
+| `sweep_stealth_note` | Yes | Sweep one note (TUI approval card on adviser; sentient/`serve --profile sentient` auto). Adviser `vaughan serve` alone cannot show a card — use unlocked TUI. |
 
 On **`default`:** return `proposal_id` + `status: pending_user`; human approves.  
 On **`sentient`:** TUI unlocked on that profile auto re-sim → policy → sign;

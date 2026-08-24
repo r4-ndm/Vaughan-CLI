@@ -1,5 +1,7 @@
 //! Write Proposal Tools for AI Assisted Mode.
 
+mod fee;
+
 pub mod propose_agg_swap;
 pub mod propose_approve;
 pub mod propose_batch_7702;
@@ -27,3 +29,5 @@ pub use propose_v3_lp_lifecycle::{
 pub use propose_v3_mint::ProposeV3MintTool;
 pub use propose_v3_swap::ProposeV3SwapTool;
 pub use propose_wrap::{ProposeUnwrapTool, ProposeWrapTool};
+
+pub use fee::attach_estimated_fee;

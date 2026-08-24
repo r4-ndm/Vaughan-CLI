@@ -26,7 +26,7 @@ inspect_contract / get_v3_pool / list_allowances / list_v3_positions
 | `quote_v3_swap` | read | wiz4rd exact-in quote |
 | `list_v3_positions` | read | wiz4rd LP NFTs |
 | `list_allowances` | read | Known spender allowances |
-| `quote_swap` | read | Squirrel / PulseSwap / Piteas |
+| `quote_swap` | read | Squirrel / PulseSwap / Piteas / EmpX (369) |
 | `propose_swap` | write | Direct V2/PulseX router path |
 | `propose_v3_swap` | write | wiz4rd V3 SwapRouter (allowlisted) |
 | `propose_v3_mint` | write | wiz4rd open LP (NPM allowlisted) |

@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::{assert_agg_exec_targets, quote_aggregator, AggQuoteRequest, AggVenue};
@@ -131,7 +132,7 @@ impl Tool for ProposeAggSwapTool {
             account: context.active_address,
         };
 
-        let quote = quote_aggregator(venue, &req, None, None)
+        let quote = quote_aggregator(venue, &req, context.chain_id, None, None)
             .await
             .map_err(|e| AgentError::ProviderError(e.to_string()))?;
 
@@ -144,27 +145,39 @@ impl Tool for ProposeAggSwapTool {
             if native_out { Address::ZERO } else { token_out },
         ];
 
-        let proposal = TxProposal::new(
-            format!("agg_swap_{}", rand_id()),
-            ProposalType::DexSwap {
-                router: quote.tx.to,
-                path,
-                amount_in: quote.amount_in,
-                min_amount_out: quote.amount_out,
-            },
-            quote.tx.to,
-            quote.tx.value,
-            quote.tx.data.clone(),
-            gas_limit.max(100_000),
-            true,
-            format!(
-                "{explanation} [{} → out {} via {}]",
-                quote.amount_in,
-                quote.amount_out,
-                quote.venue.label()
-            ),
+        // EmpX calldata is always for chain 369; stamp that so approve cannot
+        // broadcast mainnet router bytes on another network.
+        let proposal_chain = if venue == AggVenue::Empseal {
+            369
+        } else {
+            context.chain_id
+        };
+
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("agg_swap_{}", rand_id()),
+                ProposalType::DexSwap {
+                    router: quote.tx.to,
+                    path,
+                    amount_in: quote.amount_in,
+                    min_amount_out: quote.amount_out,
+                },
+                quote.tx.to,
+                quote.tx.value,
+                quote.tx.data.clone(),
+                gas_limit.max(100_000),
+                true,
+                format!(
+                    "{explanation} [{} → out {} via {}]",
+                    quote.amount_in,
+                    quote.amount_out,
+                    quote.venue.label()
+                ),
+            )
+            .with_chain(proposal_chain, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
 
         Ok(serde_json::to_value(&proposal)?)
     }

@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::{Tool, ToolContext};
 
 sol! {
@@ -136,17 +137,21 @@ impl Tool for ProposeTransferTool {
         let sim_res = provider.call(tx).await;
         let sim_success = sim_res.is_ok();
 
-        let proposal = TxProposal::new(
-            format!("prop_{}", rand_id()),
-            proposal_type,
-            target,
-            value,
-            calldata,
-            65_000,
-            sim_success,
-            explanation,
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("prop_{}", rand_id()),
+                proposal_type,
+                target,
+                value,
+                calldata,
+                65_000,
+                sim_success,
+                explanation,
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
 
         Ok(serde_json::to_value(&proposal)?)
     }

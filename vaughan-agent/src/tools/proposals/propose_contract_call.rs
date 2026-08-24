@@ -9,6 +9,7 @@ use url::Url;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
+use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::{Tool, ToolContext};
 
 #[derive(Default)]
@@ -113,20 +114,24 @@ impl Tool for ProposeContractCallTool {
         let sim_res = provider.call(tx).await;
         let sim_success = sim_res.is_ok();
 
-        let proposal = TxProposal::new(
-            format!("call_{}", super::propose_transfer::rand_id()),
-            ProposalType::ContractCall {
-                target: to,
-                function_name,
-            },
-            to,
-            value_wei,
-            calldata,
-            120_000,
-            sim_success,
-            explanation,
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("call_{}", super::propose_transfer::rand_id()),
+                ProposalType::ContractCall {
+                    target: to,
+                    function_name,
+                },
+                to,
+                value_wei,
+                calldata,
+                120_000,
+                sim_success,
+                explanation,
+            )
+            .with_chain(context.chain_id, None),
+            context,
         )
-        .with_chain(context.chain_id, None);
+        .await;
 
         Ok(serde_json::to_value(&proposal)?)
     }

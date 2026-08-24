@@ -24,6 +24,18 @@ pub const PROPOSAL_TTL_SECS: u64 = 600;
 /// Maximum pending proposals per profile.
 pub const MAX_PENDING_PROPOSALS: usize = 10;
 
+/// Max length for [`TxProposal::proposal_id`] (filesystem-safe).
+pub const MAX_PROPOSAL_ID_LEN: usize = 64;
+
+/// Sliding window for MCP enqueue rate limiting (seconds).
+pub const MCP_ENQUEUE_RATE_WINDOW_SECS: u64 = 60;
+
+/// Max proposal enqueues per profile per [`MCP_ENQUEUE_RATE_WINDOW_SECS`].
+pub const MCP_MAX_ENQUEUES_PER_WINDOW: usize = 30;
+
+/// Reject MCP approve when fresh fee exceeds agent estimate by more than 10%.
+pub const MCP_FEE_SPIKE_THRESHOLD_BPS: u64 = 1100;
+
 /// Loopback port for MCP control plane (TUI listener).
 pub const MCP_CONTROL_PORT: u16 = 8746;
 
@@ -161,6 +173,11 @@ pub enum ProposalError {
     HmacInvalid,
     NotFound,
     QueueFull,
+    InvalidProposalId,
+    DuplicateProposalId,
+    SessionRequired,
+    RateLimited,
+    FeeSpike,
     Io(String),
 }
 
@@ -176,6 +193,11 @@ impl ProposalError {
             Self::HmacInvalid => "hmac_invalid",
             Self::NotFound => "not_found",
             Self::QueueFull => "queue_full",
+            Self::InvalidProposalId => "invalid_proposal_id",
+            Self::DuplicateProposalId => "duplicate_proposal_id",
+            Self::SessionRequired => "session_required",
+            Self::RateLimited => "rate_limited",
+            Self::FeeSpike => "fee_spike",
             Self::Io(_) => "io_error",
         }
     }
@@ -198,9 +220,37 @@ impl fmt::Display for ProposalError {
             Self::HmacInvalid => write!(f, "proposal integrity check failed"),
             Self::NotFound => write!(f, "proposal not found"),
             Self::QueueFull => write!(f, "too many pending proposals"),
+            Self::InvalidProposalId => write!(f, "proposal_id must be 1-64 chars [a-zA-Z0-9_]"),
+            Self::DuplicateProposalId => write!(f, "proposal_id already used"),
+            Self::SessionRequired => write!(f, "MCP session token required to queue proposals"),
+            Self::RateLimited => write!(f, "proposal enqueue rate limit exceeded"),
+            Self::FeeSpike => write!(f, "network fee increased more than 10% since proposal"),
             Self::Io(msg) => write!(f, "{msg}"),
         }
     }
+}
+
+/// Validate agent `proposal_id` before using it as a filename component.
+pub fn validate_proposal_id(id: &str) -> Result<(), ProposalError> {
+    if id.is_empty() || id.len() > MAX_PROPOSAL_ID_LEN {
+        return Err(ProposalError::InvalidProposalId);
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ProposalError::InvalidProposalId);
+    }
+    Ok(())
+}
+
+/// True when `fresh` exceeds `proposed` by more than 10% (agent estimate stale).
+pub fn fee_spike_exceeds_threshold(proposed: Option<U256>, fresh: U256) -> bool {
+    let Some(base) = proposed.filter(|v| !v.is_zero()) else {
+        return false;
+    };
+    fresh.saturating_mul(U256::from(100u64))
+        > base.saturating_mul(U256::from(MCP_FEE_SPIKE_THRESHOLD_BPS / 10))
 }
 
 impl std::error::Error for ProposalError {}
@@ -287,10 +337,16 @@ impl ProposalQueue {
         session_secret: &[u8],
     ) -> Result<QueuedProposal, ProposalError> {
         self.ensure_dirs()?;
+        if session_secret.is_empty() {
+            return Err(ProposalError::SessionRequired);
+        }
+        validate_proposal_id(&proposal.proposal_id)?;
+        self.ensure_proposal_id_available(&proposal.proposal_id)?;
         let pending = self.list_pending()?;
         if pending.len() >= MAX_PENDING_PROPOSALS {
             return Err(ProposalError::QueueFull);
         }
+        self.check_enqueue_rate()?;
         let source = source.into();
         let hmac = compute_proposal_hmac(session_secret, &proposal)?;
         let queued = QueuedProposal {
@@ -333,6 +389,7 @@ impl ProposalQueue {
         proposal_id: &str,
         session_secret: &[u8],
     ) -> Result<QueuedProposal, ProposalError> {
+        validate_proposal_id(proposal_id)?;
         let path = self.pending_dir().join(format!("{proposal_id}.json"));
         let data = fs::read_to_string(&path).map_err(|_| ProposalError::NotFound)?;
         let queued: QueuedProposal =
@@ -350,12 +407,21 @@ impl ProposalQueue {
         tx_hash: &str,
         session_secret: &[u8],
     ) -> Result<(), ProposalError> {
-        let queued = self.get_pending(proposal_id, session_secret)?;
-        let pending_path = self.pending_dir().join(format!("{proposal_id}.json"));
-        let _ = fs::remove_file(&pending_path);
+        validate_proposal_id(proposal_id)?;
+        self.ensure_dirs()?;
+        let (proposal, source) = match self.get_pending(proposal_id, session_secret) {
+            Ok(queued) => {
+                let pending_path = self.pending_dir().join(format!("{proposal_id}.json"));
+                let _ = fs::remove_file(&pending_path);
+                (Some(queued.proposal), queued.source)
+            }
+            // Live IPC auto-exec never enqueued — still persist outcome for status polls.
+            Err(_) => (None, "mcp".into()),
+        };
         let record = serde_json::json!({
-            "proposal": queued.proposal,
-            "source": queued.source,
+            "proposal_id": proposal_id,
+            "proposal": proposal,
+            "source": source,
             "status": { "status": "approved", "tx_hash": tx_hash },
         });
         let approved_path = self.approved_dir().join(format!("{proposal_id}.json"));
@@ -372,6 +438,7 @@ impl ProposalQueue {
         reason: &str,
         session_secret: &[u8],
     ) -> Result<(), ProposalError> {
+        validate_proposal_id(proposal_id)?;
         let queued = self.get_pending(proposal_id, session_secret)?;
         let pending_path = self.pending_dir().join(format!("{proposal_id}.json"));
         let _ = fs::remove_file(&pending_path);
@@ -386,6 +453,57 @@ impl ProposalQueue {
         write_atomic(&rejected_path, json.as_bytes())?;
         append_history(&self.root, &record)?;
         Ok(())
+    }
+
+    /// Resolve lifecycle status: pending → approved/rejected files → expired/unknown.
+    pub fn lookup_status(
+        &self,
+        proposal_id: &str,
+        session_secret: &[u8],
+    ) -> Result<ProposalStatus, ProposalError> {
+        self.ensure_dirs()?;
+        validate_proposal_id(proposal_id)?;
+        match self.get_pending(proposal_id, session_secret) {
+            Ok(queued) => {
+                if queued.proposal.is_expired() {
+                    return Ok(ProposalStatus::Expired);
+                }
+                return Ok(ProposalStatus::PendingUser);
+            }
+            Err(ProposalError::ProposalExpired) => return Ok(ProposalStatus::Expired),
+            Err(ProposalError::NotFound) | Err(ProposalError::HmacInvalid) => {}
+            Err(e) => return Err(e),
+        }
+
+        let approved_path = self.approved_dir().join(format!("{proposal_id}.json"));
+        if approved_path.exists() {
+            let data =
+                fs::read_to_string(&approved_path).map_err(|e| ProposalError::Io(e.to_string()))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&data).map_err(|e| ProposalError::Io(e.to_string()))?;
+            let tx_hash = v
+                .pointer("/status/tx_hash")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Ok(ProposalStatus::Approved { tx_hash });
+        }
+
+        let rejected_path = self.rejected_dir().join(format!("{proposal_id}.json"));
+        if rejected_path.exists() {
+            let data =
+                fs::read_to_string(&rejected_path).map_err(|e| ProposalError::Io(e.to_string()))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&data).map_err(|e| ProposalError::Io(e.to_string()))?;
+            let reason = v
+                .pointer("/status/reason")
+                .and_then(|x| x.as_str())
+                .unwrap_or("rejected")
+                .to_string();
+            return Ok(ProposalStatus::Rejected { reason });
+        }
+
+        Err(ProposalError::NotFound)
     }
 
     pub fn sweep_expired(&self) -> Result<usize, ProposalError> {
@@ -405,6 +523,50 @@ impl ProposalQueue {
             }
         }
         Ok(removed)
+    }
+
+    fn ensure_proposal_id_available(&self, proposal_id: &str) -> Result<(), ProposalError> {
+        let pending_path = self.pending_dir().join(format!("{proposal_id}.json"));
+        if pending_path.is_file() {
+            if let Ok(data) = fs::read_to_string(&pending_path) {
+                if let Ok(queued) = serde_json::from_str::<QueuedProposal>(&data) {
+                    if queued.proposal.is_expired() {
+                        let _ = fs::remove_file(&pending_path);
+                    } else {
+                        return Err(ProposalError::DuplicateProposalId);
+                    }
+                } else {
+                    return Err(ProposalError::DuplicateProposalId);
+                }
+            }
+        }
+        for dir in [self.approved_dir(), self.rejected_dir()] {
+            if dir.join(format!("{proposal_id}.json")).exists() {
+                return Err(ProposalError::DuplicateProposalId);
+            }
+        }
+        Ok(())
+    }
+
+    fn check_enqueue_rate(&self) -> Result<(), ProposalError> {
+        let path = self.root.join(".enqueue_rate.json");
+        let now = now_unix();
+        let mut stamps: Vec<u64> = if path.is_file() {
+            fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        stamps.retain(|t| now.saturating_sub(*t) < MCP_ENQUEUE_RATE_WINDOW_SECS);
+        if stamps.len() >= MCP_MAX_ENQUEUES_PER_WINDOW {
+            return Err(ProposalError::RateLimited);
+        }
+        stamps.push(now);
+        let json = serde_json::to_string(&stamps).map_err(|e| ProposalError::Io(e.to_string()))?;
+        write_atomic(&path, json.as_bytes())?;
+        Ok(())
     }
 }
 
@@ -539,6 +701,30 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         == 0
 }
 
+/// JSON shape for MCP / IPC proposal status polls.
+pub fn proposal_status_json(proposal_id: &str, status: &ProposalStatus) -> serde_json::Value {
+    match status {
+        ProposalStatus::PendingUser => serde_json::json!({
+            "proposal_id": proposal_id,
+            "status": "pending_user",
+        }),
+        ProposalStatus::Approved { tx_hash } => serde_json::json!({
+            "proposal_id": proposal_id,
+            "status": "approved",
+            "tx_hash": tx_hash,
+        }),
+        ProposalStatus::Rejected { reason } => serde_json::json!({
+            "proposal_id": proposal_id,
+            "status": "rejected",
+            "reason": reason,
+        }),
+        ProposalStatus::Expired => serde_json::json!({
+            "proposal_id": proposal_id,
+            "status": "expired",
+        }),
+    }
+}
+
 /// HMAC-SHA256 using only the `sha2` crate (allowlist-compliant).
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     const BLOCK: usize = 64;
@@ -637,6 +823,193 @@ mod tests {
 
         queue.mark_approved("prop_abc", "0xdead", secret).unwrap();
         assert!(queue.get_pending("prop_abc", secret).is_err());
+        match queue.lookup_status("prop_abc", secret).unwrap() {
+            ProposalStatus::Approved { tx_hash } => assert_eq!(tx_hash, "0xdead"),
+            other => panic!("expected approved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mark_approved_without_pending_still_records_status() {
+        let dir = TempDir::new().unwrap();
+        let queue = ProposalQueue::new(dir.path());
+        let secret = b"live-ipc-secret";
+        queue.mark_approved("prop_live", "0xcafe", secret).unwrap();
+        match queue.lookup_status("prop_live", secret).unwrap() {
+            ProposalStatus::Approved { tx_hash } => assert_eq!(tx_hash, "0xcafe"),
+            other => panic!("expected approved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_proposal_rejects_network_mismatch() {
+        let dir = TempDir::new().unwrap();
+        let mut wallet = WalletState::load(dir.path().join("wallet.json")).unwrap();
+        let mnemonic =
+            validate_mnemonic("test test test test test test test test test test test junk")
+                .unwrap();
+        wallet
+            .create(&SecretString::from("BombProof123!".to_string()), mnemonic)
+            .unwrap();
+        wallet.set_active_network("pulsechain-testnet-v4").unwrap();
+
+        let recipient = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+        let proposal = TxProposal::new(
+            "prop_mismatch",
+            ProposalType::NativeTransfer {
+                to: recipient,
+                amount_wei: U256::from(1u64),
+            },
+            recipient,
+            U256::from(1u64),
+            Bytes::new(),
+            21_000,
+            true,
+            "wrong chain",
+        )
+        .with_chain(369, Some("pulsechain".into()));
+
+        let err = apply_proposal(&wallet, &proposal).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("network mismatch") || msg.contains("369"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn guard_mainnet_write_gates() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("VAUGHAN_MCP_ALLOW_MAINNET").ok();
+
+        std::env::remove_var("VAUGHAN_MCP_ALLOW_MAINNET");
+        assert!(matches!(
+            guard_mainnet_write(369, false),
+            Err(ProposalError::MainnetBlocked)
+        ));
+        assert!(matches!(
+            guard_mainnet_write(1, false),
+            Err(ProposalError::MainnetBlocked)
+        ));
+        assert!(guard_mainnet_write(943, false).is_ok());
+        assert!(guard_mainnet_write(369, true).is_ok());
+
+        std::env::set_var("VAUGHAN_MCP_ALLOW_MAINNET", "1");
+        assert!(guard_mainnet_write(369, false).is_ok());
+
+        match prev {
+            Some(v) => std::env::set_var("VAUGHAN_MCP_ALLOW_MAINNET", v),
+            None => std::env::remove_var("VAUGHAN_MCP_ALLOW_MAINNET"),
+        }
+    }
+
+    #[test]
+    fn proposal_queue_rejects_when_full() {
+        let dir = TempDir::new().unwrap();
+        let queue = ProposalQueue::new(dir.path());
+        let secret = b"queue-full-secret-test!!!!!!";
+        for i in 0..MAX_PENDING_PROPOSALS {
+            let proposal = TxProposal::new(
+                format!("prop_full_{i}"),
+                ProposalType::NativeTransfer {
+                    to: address!("1111111111111111111111111111111111111111"),
+                    amount_wei: U256::from(1u64),
+                },
+                address!("1111111111111111111111111111111111111111"),
+                U256::from(1u64),
+                Bytes::new(),
+                21_000,
+                true,
+                "fill queue",
+            );
+            queue.enqueue(proposal, "test", secret).unwrap();
+        }
+        let overflow = TxProposal::new(
+            "prop_overflow",
+            ProposalType::NativeTransfer {
+                to: address!("2222222222222222222222222222222222222222"),
+                amount_wei: U256::from(1u64),
+            },
+            address!("2222222222222222222222222222222222222222"),
+            U256::from(1u64),
+            Bytes::new(),
+            21_000,
+            true,
+            "one too many",
+        );
+        assert!(matches!(
+            queue.enqueue(overflow, "test", secret),
+            Err(ProposalError::QueueFull)
+        ));
+    }
+
+    #[test]
+    fn validate_proposal_id_rejects_path_traversal() {
+        assert!(matches!(
+            validate_proposal_id("../evil"),
+            Err(ProposalError::InvalidProposalId)
+        ));
+        assert!(validate_proposal_id("prop_ok_123").is_ok());
+    }
+
+    #[test]
+    fn enqueue_rejects_empty_session_secret() {
+        let dir = TempDir::new().unwrap();
+        let queue = ProposalQueue::new(dir.path());
+        let proposal = TxProposal::new(
+            "prop_nosecret",
+            ProposalType::NativeTransfer {
+                to: address!("1111111111111111111111111111111111111111"),
+                amount_wei: U256::from(1u64),
+            },
+            address!("1111111111111111111111111111111111111111"),
+            U256::from(1u64),
+            Bytes::new(),
+            21_000,
+            true,
+            "test",
+        );
+        assert!(matches!(
+            queue.enqueue(proposal, "test", b""),
+            Err(ProposalError::SessionRequired)
+        ));
+    }
+
+    #[test]
+    fn enqueue_rejects_duplicate_proposal_id() {
+        let dir = TempDir::new().unwrap();
+        let queue = ProposalQueue::new(dir.path());
+        let secret = b"dup-test-secret!!!!!!!!!!!!!!";
+        let proposal = TxProposal::new(
+            "prop_dup",
+            ProposalType::NativeTransfer {
+                to: address!("1111111111111111111111111111111111111111"),
+                amount_wei: U256::from(1u64),
+            },
+            address!("1111111111111111111111111111111111111111"),
+            U256::from(1u64),
+            Bytes::new(),
+            21_000,
+            true,
+            "dup",
+        );
+        queue.enqueue(proposal.clone(), "a", secret).unwrap();
+        assert!(matches!(
+            queue.enqueue(proposal, "b", secret),
+            Err(ProposalError::DuplicateProposalId)
+        ));
+    }
+
+    #[test]
+    fn fee_spike_threshold() {
+        let base = U256::from(1000u64);
+        assert!(!fee_spike_exceeds_threshold(
+            Some(base),
+            U256::from(1100u64)
+        ));
+        assert!(fee_spike_exceeds_threshold(Some(base), U256::from(1101u64)));
+        assert!(!fee_spike_exceeds_threshold(None, U256::from(9999u64)));
     }
 
     #[test]

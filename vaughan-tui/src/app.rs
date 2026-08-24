@@ -1208,6 +1208,18 @@ impl App {
                             .map(|h| h.to_string()),
                     )
                 }
+                UiJob::EstimateEvmFee { tx } => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    UiJobResult::Fee(handle.block_on(w.estimate_transaction_fee(tx)))
+                }
+                UiJob::SendEvmWithFee { tx, fee } => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    UiJobResult::Send(
+                        handle
+                            .block_on(w.send_evm_with_fee(tx, &fee))
+                            .map(|h| h.to_string()),
+                    )
+                }
                 UiJob::AggQuote {
                     venue,
                     token_in,
@@ -1246,10 +1258,20 @@ impl App {
                     let dir = StateManager::default_path()
                         .ok()
                         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                    let chain_id = wallet
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .networks()
+                        .active()
+                        .chain_id;
                     UiJobResult::AggQuote(match parsed {
-                        Ok(req) => {
-                            handle.block_on(quote_aggregator(venue, &req, dir.as_deref(), None))
-                        }
+                        Ok(req) => handle.block_on(quote_aggregator(
+                            venue,
+                            &req,
+                            chain_id,
+                            dir.as_deref(),
+                            None,
+                        )),
                         Err(e) => Err(e),
                     })
                 }
@@ -1399,7 +1421,15 @@ impl App {
                         }
                         _ => None,
                     };
-                    if let Some(job) = reload {
+                    let dex_followup = {
+                        let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        if let View::Dex(v) = &mut self.view {
+                            v.followup_job(&wallet)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(job) = reload.or(dex_followup) {
                         self.spawn_job(job);
                     }
                 }

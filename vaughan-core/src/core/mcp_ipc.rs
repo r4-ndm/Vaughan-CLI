@@ -5,6 +5,42 @@ use serde_json::Value;
 
 use crate::core::proposal::TxProposal;
 
+/// Maximum bytes per IPC line (request or response) — rejects oversized payloads.
+pub const MCP_IPC_MAX_LINE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Errors decoding an IPC line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpIpcLineError {
+    TooLarge,
+    Parse(String),
+}
+
+impl std::fmt::Display for McpIpcLineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge => write!(f, "IPC line exceeds {MCP_IPC_MAX_LINE_BYTES} bytes"),
+            Self::Parse(msg) => write!(f, "IPC parse error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for McpIpcLineError {}
+
+/// Constant-time session token comparison (loopback hijack mitigation).
+pub fn session_token_valid(provided: &str, expected: &str) -> bool {
+    constant_time_eq(provided.as_bytes(), expected.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 /// Request from an MCP subprocess to the unlocked TUI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
@@ -84,7 +120,15 @@ pub fn encode_line<T: Serialize>(value: &T) -> Result<String, serde_json::Error>
     Ok(line)
 }
 
-/// Decode one newline-terminated JSON line.
+/// Decode one newline-terminated JSON line with a size cap.
+pub fn decode_ipc_line<T: for<'de> Deserialize<'de>>(line: &str) -> Result<T, McpIpcLineError> {
+    if line.len() > MCP_IPC_MAX_LINE_BYTES {
+        return Err(McpIpcLineError::TooLarge);
+    }
+    decode_line(line).map_err(|e| McpIpcLineError::Parse(e.to_string()))
+}
+
+/// Decode one newline-terminated JSON line (no size cap — prefer [`decode_ipc_line`]).
 pub fn decode_line<T: for<'de> Deserialize<'de>>(line: &str) -> Result<T, serde_json::Error> {
     serde_json::from_str(line.trim())
 }

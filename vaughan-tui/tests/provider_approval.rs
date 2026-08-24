@@ -89,6 +89,7 @@ async fn run_approval_consumer(
                     ApprovalKind::SignMessage { .. } => "message".to_string(),
                     ApprovalKind::SignTypedData { .. } => "typed".to_string(),
                     ApprovalKind::McpProposal { .. } => "mcp".to_string(),
+                    ApprovalKind::StealthSweep { .. } => "stealth_sweep".to_string(),
                 };
                 seen.lock().unwrap().push(summary.clone());
                 let result = match decide(&kind) {

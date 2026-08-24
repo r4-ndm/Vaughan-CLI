@@ -48,6 +48,15 @@ pub enum UiJob {
     SendEvm {
         tx: EvmTransaction,
     },
+    /// Fee estimate for an arbitrary EVM payload (DEX approve/swap confirm card).
+    EstimateEvmFee {
+        tx: EvmTransaction,
+    },
+    /// EVM call with a user-approved fee (matches Send confirm UX).
+    SendEvmWithFee {
+        tx: EvmTransaction,
+        fee: Fee,
+    },
     /// Aggregator Pathfinder / PulseSwap quote (no signing).
     AggQuote {
         venue: vaughan_core::core::AggVenue,

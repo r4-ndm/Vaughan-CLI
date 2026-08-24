@@ -47,11 +47,11 @@ Which venues we can integrate **without** partner signup / API keys:
 | **Jolt (CURV)** | **Yes** — powered by Switch.win routing | Listed as CURV | No — same gate as Switch |
 | **9X (9mm)** | Unknown / no public quote API found | Listed only | Not cleanly — ask or skip |
 
-**Without begging:** Squirrel + Piteas (shipped), EmpX (buildable).  
+**Without begging:** Squirrel + Piteas + EmpX (shipped).  
 **Needs a key:** Switch, Jolt.  
 **Stuck until a public API appears:** 9X.
 
-EmpX is on-chain routing (`empx-swap-sdk` → `findBestPath` / `getSwapCalldata`), not an HTTP Brain. A Vaughan client would reimplement contract calls with Alloy (ABI/interop only — no vendoring their TS).
+EmpX is on-chain routing (`empx-swap-sdk` → `findBestPath` / `getSwapCalldata`), reimplemented with Alloy (ABI/interop only — no vendoring their TS). PulseChain mainnet **369 only**.
 
 ## Listed / gated
 

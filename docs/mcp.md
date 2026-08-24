@@ -114,8 +114,11 @@ vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
   in shell history or shared hosts).
 - **Sentient / degen:** auto-exec under policy (same as unlocked TUI). Treat the
   host as a **hot wallet** — any same-user process with the session token can spend.
-- **Default:** queues `pending_user` (approve later in TUI, or use sentient).
+  Unlimited ERC-20 `propose_approve` also bypasses native size breakers (zero value).
+- **Default:** queues `pending_user` for normal proposes. Stealth **sweep** still
+  needs an unlocked TUI on adviser (serve returns `tui_required`).
 - Mainnet writes still require `VAUGHAN_MCP_ALLOW_MAINNET=1` (same gate as MCP stdio).
+- EmpX quotes/proposes are PulseChain **mainnet (369) only**.
 - MCP stdio (`vaughan mcp`) remains the agent-facing process; it attaches to the
   serve/TUI socket.
 

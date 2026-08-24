@@ -37,7 +37,7 @@ impl Tool for QuoteSwapTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch a PulseChain aggregator quote (Squirrel / PulseSwap / Piteas / EmpX). \
+        "Fetch a PulseChain aggregator quote (Squirrel / PulseSwap / Piteas / EmpX on 369). \
          Read-only — does not propose or sign. Use propose_agg_swap to turn a quote into an approval card."
     }
 
@@ -120,7 +120,7 @@ impl Tool for QuoteSwapTool {
             req.account = Some(account);
         }
 
-        let quote = quote_aggregator(venue, &req, None, None)
+        let quote = quote_aggregator(venue, &req, context.chain_id, None, None)
             .await
             .map_err(|e| AgentError::ProviderError(e.to_string()))?;
 

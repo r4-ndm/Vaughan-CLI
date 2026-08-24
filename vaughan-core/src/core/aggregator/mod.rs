@@ -27,10 +27,12 @@ use crate::error::WalletError;
 
 /// Fetch a ready-to-sign quote from a venue that supports no-key (or configured) access.
 ///
-/// `piteas_dir` is the Vaughan data dir (optional partner key for Piteas).
+/// `chain_id` is the wallet/session chain — EmpX refuses anything other than Pulse
+/// mainnet (369). `piteas_dir` is the Vaughan data dir (optional partner key for Piteas).
 pub async fn quote_aggregator(
     venue: AggVenue,
     req: &AggQuoteRequest,
+    chain_id: u64,
     piteas_dir: Option<&std::path::Path>,
     vault_password: Option<&SecretString>,
 ) -> Result<AggQuote, WalletError> {
@@ -42,7 +44,7 @@ pub async fn quote_aggregator(
             AggVenue::Empseal => {
                 let rpc = std::env::var("VAUGHAN_EMPX_RPC")
                     .unwrap_or_else(|_| "https://rpc.pulsechain.com".into());
-                EmpxClient::for_chain(369, &rpc)?.quote(req).await
+                EmpxClient::for_chain(chain_id, &rpc)?.quote(req).await
             }
             _ => Err(WalletError::Other(format!(
                 "{} marked live but has no client",
@@ -85,6 +87,7 @@ async fn quote_piteas(
     }
     let quote = client.quote(&q).await?;
     let to = MethodParameters::router_address()?;
+    assert_agg_exec_targets(to, to)?;
     Ok(AggQuote {
         venue: AggVenue::Piteas,
         amount_in: quote.src_amount_u256()?,

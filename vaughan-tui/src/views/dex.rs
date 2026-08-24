@@ -15,13 +15,15 @@ use ratatui::{
 };
 use std::str::FromStr;
 use tokio::runtime::Handle;
+use vaughan_core::chains::{EvmTransaction, Fee};
+use vaughan_core::core::is_allowed_dex_router;
 use vaughan_core::core::WalletState;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
 use crate::brand;
 use crate::input::{Input, InputAction};
-use crate::jobs::{spinner_frame, UiJob, UiJobResult};
+use crate::jobs::{spinner_frame, UiJobResult};
 use crate::views::dex_calldata::{
     build_approve_tx, build_swap_tx, encode_v3_path, hop_tokens, DexProtocol, DexSwapRequest,
 };
@@ -280,6 +282,7 @@ enum Focus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Busy {
     Idle,
+    EstimatingFee,
     Approving,
     Swapping,
 }
@@ -304,6 +307,10 @@ pub struct DexView {
     tx_hash: Option<String>,
     approve_hash: Option<String>,
     confirm_lines: Vec<String>,
+    pending_step: Option<ConfirmStep>,
+    pending_tx: Option<EvmTransaction>,
+    pending_fee: Option<Fee>,
+    pending_auto_fee_estimate: bool,
 }
 
 impl Default for DexView {
@@ -328,6 +335,10 @@ impl Default for DexView {
             tx_hash: None,
             approve_hash: None,
             confirm_lines: Vec::new(),
+            pending_step: None,
+            pending_tx: None,
+            pending_fee: None,
+            pending_auto_fee_estimate: false,
         }
     }
 }
@@ -393,12 +404,29 @@ impl DexView {
 
     pub fn apply_job_result(&mut self, result: UiJobResult) {
         match result {
+            UiJobResult::Fee(Ok(fee)) => {
+                self.busy = Busy::Idle;
+                self.pending_fee = Some(fee.clone());
+                self.confirm_lines.push(String::new());
+                self.confirm_lines.push(format!("Fee:      {}", fee.total));
+                if let Some(step) = self.pending_step.take() {
+                    self.stage = Stage::Confirm(step);
+                }
+            }
+            UiJobResult::Fee(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.pending_tx = None;
+                self.pending_fee = None;
+                self.pending_step = None;
+                self.status = e.user_message();
+                self.stage = Stage::Input;
+            }
             UiJobResult::Send(Ok(hash)) => match self.busy {
                 Busy::Approving => {
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
-                    self.status = format!("Approve sent ({hash}). Confirm swap next.");
-                    self.enter_confirm(ConfirmStep::Swap);
+                    self.status = format!("Approve sent ({hash}). Estimating swap fee…");
+                    self.pending_auto_fee_estimate = true;
                 }
                 Busy::Swapping => {
                     self.busy = Busy::Idle;
@@ -406,7 +434,7 @@ impl DexView {
                     self.stage = Stage::Done;
                     self.status = "Swap broadcast.".into();
                 }
-                Busy::Idle => {}
+                Busy::Idle | Busy::EstimatingFee => {}
             },
             UiJobResult::Send(Err(e)) => {
                 self.busy = Busy::Idle;
@@ -425,6 +453,7 @@ impl DexView {
             Stage::Done => self.render_done(frame, body),
         }
         let status_text = match self.busy {
+            Busy::EstimatingFee => format!("{} estimating fee…", spinner_frame(self.tick)),
             Busy::Approving => format!("{} approving router spend…", spinner_frame(self.tick)),
             Busy::Swapping => format!("{} broadcasting swap…", spinner_frame(self.tick)),
             Busy::Idle => self.status.clone(),
@@ -602,7 +631,7 @@ impl DexView {
         }
 
         match self.stage {
-            Stage::Input => self.handle_input_key(key),
+            Stage::Input => self.handle_input_key(key, wallet),
             Stage::Confirm(step) => self.handle_confirm_key(key, wallet, step),
             Stage::Done => match key.code {
                 KeyCode::Enter => {
@@ -629,7 +658,7 @@ impl DexView {
         self.fee = FEE_TIERS[next];
     }
 
-    fn handle_input_key(&mut self, key: KeyEvent) -> KeyOutcome {
+    fn handle_input_key(&mut self, key: KeyEvent, wallet: &WalletState) -> KeyOutcome {
         match key.code {
             KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
             KeyCode::Up | KeyCode::Down if self.focus == Focus::Dex => {
@@ -732,8 +761,7 @@ impl DexView {
                     } else {
                         ConfirmStep::Approve
                     };
-                    self.enter_confirm(step);
-                    KeyOutcome::Consumed
+                    self.begin_confirm(wallet, step)
                 }
                 Err(msg) => {
                     self.status = msg;
@@ -760,7 +788,29 @@ impl DexView {
         }
     }
 
-    fn enter_confirm(&mut self, step: ConfirmStep) {
+    fn begin_confirm(&mut self, wallet: &WalletState, step: ConfirmStep) -> KeyOutcome {
+        self.enter_confirm_lines(step);
+        let tx = match step {
+            ConfirmStep::Approve => self.build_approve_tx(wallet),
+            ConfirmStep::Swap => self.build_swap_tx(wallet),
+        };
+        match tx {
+            Ok(evm) => {
+                self.pending_step = Some(step);
+                self.pending_tx = Some(evm.clone());
+                self.pending_fee = None;
+                self.busy = Busy::EstimatingFee;
+                self.status.clear();
+                KeyOutcome::StartJob(crate::jobs::UiJob::EstimateEvmFee { tx: evm })
+            }
+            Err(msg) => {
+                self.status = msg;
+                KeyOutcome::Consumed
+            }
+        }
+    }
+
+    fn enter_confirm_lines(&mut self, step: ConfirmStep) {
         let hops = self
             .parsed_hops()
             .map(|p| {
@@ -815,7 +865,6 @@ impl DexView {
                 lines
             }
         };
-        self.stage = Stage::Confirm(step);
         if matches!(step, ConfirmStep::Approve) {
             self.status.clear();
         }
@@ -824,7 +873,7 @@ impl DexView {
     fn handle_confirm_key(
         &mut self,
         key: KeyEvent,
-        wallet: &mut WalletState,
+        _wallet: &mut WalletState,
         step: ConfirmStep,
     ) -> KeyOutcome {
         match key.code {
@@ -833,24 +882,20 @@ impl DexView {
                 KeyOutcome::Consumed
             }
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let built = match step {
-                    ConfirmStep::Approve => self.build_approve_job(wallet),
-                    ConfirmStep::Swap => self.build_swap_job(wallet),
+                let Some(fee) = self.pending_fee.clone() else {
+                    self.status = "fee estimate missing — Esc back and retry".into();
+                    return KeyOutcome::Consumed;
                 };
-                match built {
-                    Ok(job) => {
-                        self.busy = match step {
-                            ConfirmStep::Approve => Busy::Approving,
-                            ConfirmStep::Swap => Busy::Swapping,
-                        };
-                        KeyOutcome::StartJob(job)
-                    }
-                    Err(msg) => {
-                        self.status = msg;
-                        self.stage = Stage::Input;
-                        KeyOutcome::Consumed
-                    }
-                }
+                let Some(tx) = self.pending_tx.take() else {
+                    self.status = "transaction payload missing — Esc back and retry".into();
+                    return KeyOutcome::Consumed;
+                };
+                self.pending_fee = None;
+                self.busy = match step {
+                    ConfirmStep::Approve => Busy::Approving,
+                    ConfirmStep::Swap => Busy::Swapping,
+                };
+                KeyOutcome::StartJob(crate::jobs::UiJob::SendEvmWithFee { tx, fee })
             }
             _ => KeyOutcome::Consumed,
         }
@@ -865,7 +910,16 @@ impl DexView {
     }
 
     fn validate_fields(&self) -> Result<(), String> {
-        Address::from_str(self.router.value().trim()).map_err(|e| format!("bad router: {e}"))?;
+        let router = Address::from_str(self.router.value().trim()).map_err(|e| format!("bad router: {e}"))?;
+        if self.venue != DexVenue::Custom
+            && !is_allowed_dex_router(self.chain_id, router)
+        {
+            return Err(format!(
+                "router {router:#x} is not in Vaughan’s curated DEX catalog for {} — \
+                 use Custom to paste an unlisted router",
+                chain_label(self.chain_id)
+            ));
+        }
         let hops = self.parsed_hops()?;
         if self.protocol == DexProtocol::V3 {
             let _ = encode_v3_path(&hops, self.fee)?;
@@ -880,19 +934,17 @@ impl DexView {
         Ok(())
     }
 
-    fn build_approve_job(&self, wallet: &WalletState) -> Result<UiJob, String> {
+    fn build_approve_tx(&self, wallet: &WalletState) -> Result<EvmTransaction, String> {
         self.validate_fields()?;
         let router = Address::from_str(self.router.value().trim()).unwrap();
         let token_in = Address::from_str(self.token_in.value().trim()).unwrap();
         let amount_in = U256::from_str(self.amount.value().trim()).unwrap();
         let from = wallet.active_address().map_err(|e| e.user_message())?;
         let chain_id = wallet.networks().active().chain_id;
-        Ok(UiJob::SendEvm {
-            tx: build_approve_tx(token_in, router, amount_in, from, chain_id),
-        })
+        Ok(build_approve_tx(token_in, router, amount_in, from, chain_id))
     }
 
-    fn build_swap_job(&self, wallet: &WalletState) -> Result<UiJob, String> {
+    fn build_swap_tx(&self, wallet: &WalletState) -> Result<EvmTransaction, String> {
         self.validate_fields()?;
         let router = Address::from_str(self.router.value().trim()).unwrap();
         let token_in = Address::from_str(self.token_in.value().trim()).unwrap();
@@ -903,7 +955,7 @@ impl DexView {
         let recipient = Address::from_str(to_addr).map_err(|e| format!("bad account: {e}"))?;
         let chain_id = wallet.networks().active().chain_id;
 
-        let tx = build_swap_tx(&DexSwapRequest {
+        build_swap_tx(&DexSwapRequest {
             protocol: self.protocol,
             router,
             token_in,
@@ -916,8 +968,23 @@ impl DexView {
             recipient,
             from: to_addr.to_string(),
             chain_id,
-        })?;
-        Ok(UiJob::SendEvm { tx })
+        })
+    }
+
+    /// After approve broadcast, queue a swap fee estimate (called from the app loop).
+    pub fn followup_job(&mut self, wallet: &WalletState) -> Option<crate::jobs::UiJob> {
+        if !self.pending_auto_fee_estimate {
+            return None;
+        }
+        self.pending_auto_fee_estimate = false;
+        let step = ConfirmStep::Swap;
+        self.enter_confirm_lines(step);
+        let tx = self.build_swap_tx(wallet).ok()?;
+        self.pending_step = Some(step);
+        self.pending_tx = Some(tx.clone());
+        self.pending_fee = None;
+        self.busy = Busy::EstimatingFee;
+        Some(crate::jobs::UiJob::EstimateEvmFee { tx })
     }
 }
 
