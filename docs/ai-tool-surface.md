@@ -27,8 +27,9 @@ See [`mcp-threat-model.md`](mcp-threat-model.md) for security controls.
 | **Sentient** | Agent-led | `sentient` | `vaughan-sentient` | Yes | Same verbs; auto under policy | Vaughan signs for that seed |
 
 **Shipped today:** Adviser MCP (`default` propose → approve).  
-**Next:** Sentient MCP (`--profile sentient` auto-exec). Legacy profile name
-`degen` aliases to `sentient`.
+**Sentient MCP:** Unlock TUI on `--profile sentient` (or legacy `degen`); MCP
+proposals auto re-sim → policy gate → sign (no card). Legacy profile name
+`degen` aliases to sentient for auto-exec.
 
 ## Read tools (no approval)
 

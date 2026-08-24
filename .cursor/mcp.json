@@ -12,6 +12,19 @@
         "--profile",
         "default"
       ]
+    },
+    "vaughan-sentient": {
+      "command": "cargo",
+      "args": [
+        "run",
+        "-q",
+        "-p",
+        "vaughan-cli",
+        "--",
+        "mcp",
+        "--profile",
+        "sentient"
+      ]
     }
   }
 }

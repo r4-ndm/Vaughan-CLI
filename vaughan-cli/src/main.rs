@@ -149,6 +149,11 @@ enum Command {
         #[arg(long, default_value = "cursor")]
         source: String,
     },
+    /// Install a sentient skill+policy preset into the active profile.
+    Preset {
+        #[command(subcommand)]
+        action: PresetCmd,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -174,6 +179,17 @@ enum ProposalsCmd {
     Show { proposal_id: String },
 }
 
+#[derive(Debug, Subcommand)]
+enum PresetCmd {
+    /// List bundled preset ids.
+    List,
+    /// Copy preset SKILL.md + policy into this profile (`--profile sentient`).
+    Apply {
+        /// e.g. balanced, high-risk-gambler, quant-risk-reward, cautious
+        id: String,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let Cli {
@@ -191,6 +207,7 @@ fn main() {
             runtime.block_on(vaughan_mcp::run_stdio_server(profile, source))
                 .map_err(|e| anyhow::anyhow!("{e}"))
         }
+        Some(Command::Preset { action }) => run_preset(profile, json, action),
         Some(command) => {
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             runtime.block_on(run_cli(vault, profile, json, command))
@@ -534,6 +551,7 @@ async fn run_cli(
                 .await?;
         }
         Command::Mcp { .. } => unreachable!("mcp handled in main"),
+        Command::Preset { .. } => unreachable!("preset handled in main"),
         Command::Propose { action } => {
             unlock(&mut wallet, None)?;
             let net = wallet.networks().active();
@@ -633,6 +651,46 @@ async fn run_cli(
                     });
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_preset(profile: String, json_mode: bool, action: PresetCmd) -> anyhow::Result<()> {
+    match action {
+        PresetCmd::List => {
+            let ids = vaughan_agent::BUNDLED_PRESET_IDS;
+            let data = json!({ "presets": ids, "root": vaughan_agent::presets_root().display().to_string() });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("Bundled sentient presets:");
+                for id in ids {
+                    println!("  {id}");
+                }
+                println!(
+                    "Apply: vaughan --profile sentient preset apply <id>\nDocs: docs/sentient-presets.md"
+                );
+            });
+        }
+        PresetCmd::Apply { id } => {
+            let path = StateManager::profile_path(&profile).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let prof = profile_dir(&path);
+            std::fs::create_dir_all(&prof)?;
+            let skill_dir = vaughan_agent::apply_preset(&id, &prof)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let data = json!({
+                "preset": id,
+                "profile": profile,
+                "skills_dir": skill_dir.display().to_string(),
+                "policy": prof.join(vaughan_agent::DEGEN_POLICY_TOML).display().to_string(),
+            });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("Applied preset `{id}` to profile `{profile}`");
+                println!("  skills: {}", skill_dir.display());
+                println!(
+                    "  policy: {}",
+                    prof.join(vaughan_agent::DEGEN_POLICY_TOML).display()
+                );
+            });
         }
     }
     Ok(())

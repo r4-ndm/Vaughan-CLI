@@ -8,8 +8,9 @@ agents (Cursor, Claude Code, Codex) can use the same DeFi verbs as the TUI.
 1. **Adviser** — you use Vaughan; agent proposes; you approve (`vaughan` /
    `--profile default`).
 2. **Sentient** — the agent uses **its own seed** and acts with full control
-   (`vaughan-sentient` / `--profile sentient`; auto-exec under policy — wiring
-   in progress). Human may **partner** by sharing that same seed.
+   (`vaughan-sentient` / `--profile sentient`). Unlock the **sentient** TUI
+   session; MCP proposals auto-exec (re-sim + policy). Human may **partner** by
+   sharing that same seed + a skill preset.
 
 Signing never happens inside the MCP process. Keys stay in Vaughan.
 
@@ -39,8 +40,8 @@ dev). For an installed binary:
 
 ### Sentient (agent-led) — `vaughan-sentient`
 
-Separate MCP entry on the **agent’s** profile (not the human’s `default` savings
-unless you intentionally share a seed for partnership):
+Separate MCP entry on the **agent’s** profile. Unlock Vaughan with
+`--profile sentient` so the loopback session can auto-sign:
 
 ```json
 {
@@ -53,18 +54,16 @@ unless you intentionally share a seed for partnership):
 }
 ```
 
-Keep `vaughan` and `vaughan-sentient` as two named servers so roles stay clear.
-Legacy on-disk profile name `degen` still resolves as an alias of `sentient`
-until migrated.
+Install a behavior pack first: `vaughan --profile sentient preset apply balanced`.
 
-Build/install Vaughan first (`cargo install --path vaughan-cli`), or rely on the
-project `.cursor/mcp.json` which runs `cargo run -p vaughan-cli -- mcp`.
+Keep `vaughan` and `vaughan-sentient` as two named servers so roles stay clear.
+Legacy on-disk profile name `degen` still triggers the same auto-exec path.
 
 ## Architecture (v1)
 
 - **TUI / Vaughan owns keys** — MCP never unlocks the vault.
 - **Adviser path:** MCP → loopback → TUI approval card → sign.
-- **Sentient path (target):** MCP → Vaughan sentient session → policy → auto-sign.
+- **Sentient path:** MCP → Vaughan sentient session (unlocked) → policy → auto-sign.
 - **Offline adviser:** MCP writes `proposals/pending/*.json` → open Vaughan later → approve.
 - **Partnership:** human and agent unlock the same seed → same funds, either may act.
 

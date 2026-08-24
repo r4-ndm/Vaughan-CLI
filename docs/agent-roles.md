@@ -10,7 +10,7 @@ the same seed unless you intend a deliberate partnership.
 | **Vault / seed** | `default` — human’s savings | `sentient` — **the agent’s seed** |
 | **MCP server name** | `vaughan` | `vaughan-sentient` |
 | **CLI** | `--profile default` | `--profile sentient` |
-| **Writes** | Propose → TUI approval card | Auto under session policy |
+| **Writes** | Propose → TUI approval card | Auto re-sim → policy → sign (unlocked TUI) |
 | **Mental model** | “Help me trade / inspect” | “This is my wallet — I act” |
 
 Keys never leave the Vaughan process either way. The split is **whose seed** and

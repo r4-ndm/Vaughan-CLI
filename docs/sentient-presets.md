@@ -14,7 +14,16 @@ Presets are starting points. Copy into the profile and edit freely.
    - `~/.vaughan/…/profiles/sentient/skills/<name>/SKILL.md`
 3. Copy `policy.toml` → profile as `degen-policy.toml` (breaker numbers):
    - `~/.vaughan/…/profiles/sentient/degen-policy.toml`
-4. Point MCP at `vaughan-sentient` / `--profile sentient`.
+
+Or one shot:
+
+```bash
+vaughan --profile sentient preset apply balanced
+vaughan preset list
+```
+
+4. Point MCP at `vaughan-sentient` / `--profile sentient` (TUI must be unlocked on
+   that profile — proposals auto-exec after re-sim + policy).
 5. Customize: edit the skill text and `/policy set …` anytime.
 
 Bundled sources live under `vaughan-agent/presets/`.

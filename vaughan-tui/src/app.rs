@@ -553,6 +553,31 @@ impl App {
                         }
                         continue;
                     }
+                    let proposal_id = proposal.proposal_id.clone();
+                    let kind = ApprovalKind::McpProposal {
+                        proposal_id,
+                        source: source.clone(),
+                        proposal,
+                    };
+
+                    // Sentient / legacy degen: auto re-sim → policy → sign (no card).
+                    if crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name()) {
+                        tracing::info!(
+                            target: "vaughan_tui::mcp",
+                            source = %source,
+                            "sentient auto-exec MCP proposal"
+                        );
+                        let result = crate::sentient_mcp::auto_exec_mcp_proposal(
+                            &self.wallet(),
+                            &self.handle,
+                            &kind,
+                        );
+                        if let Some(r) = reply {
+                            let _ = r.send(result);
+                        }
+                        continue;
+                    }
+
                     if self.pending_approval.is_some() {
                         if let Some(r) = reply {
                             let _ = r.send(Err(ProviderError::Internal(
@@ -561,12 +586,6 @@ impl App {
                         }
                         continue;
                     }
-                    let proposal_id = proposal.proposal_id.clone();
-                    let kind = ApprovalKind::McpProposal {
-                        proposal_id,
-                        source: source.clone(),
-                        proposal,
-                    };
                     let preview =
                         provider::describe_approval(&kind, &self.wallet(), &self.handle);
                     let (title, details) = match preview {

@@ -12,6 +12,7 @@ pub mod input;
 pub mod jobs;
 pub mod mcp;
 pub mod provider;
+pub mod sentient_mcp;
 pub mod views;
 
 use std::io;

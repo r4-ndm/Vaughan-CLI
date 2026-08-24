@@ -44,7 +44,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Switch network | *(human only in Settings)* | [ ] named `switch_network` propose — or document “human switches” |
 | Unlock / lock vault | **never** MCP | n/a (hard ban) |
 | Export keys / mnemonic | **never** MCP | n/a (hard ban) |
-| Agent auto-trade without click | MCP `vaughan-sentient` / `--profile sentient` | [ ] wire auto-exec (breakers exist) |
+| Agent auto-trade without click | MCP `vaughan-sentient` / `--profile sentient` | [x] TUI auto-exec when unlocked |
 
 ---
 

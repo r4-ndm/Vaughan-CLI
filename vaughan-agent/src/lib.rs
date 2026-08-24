@@ -7,6 +7,7 @@
 pub mod degen;
 pub mod error;
 pub mod paths;
+pub mod presets;
 pub mod proposal;
 pub mod tools;
 pub mod types;
@@ -18,6 +19,7 @@ pub use degen::{
 };
 pub use error::AgentError;
 pub use paths::profile_dir;
+pub use presets::{apply_preset, presets_root, BUNDLED_PRESET_IDS};
 pub use proposal::{ProposalType, TxProposal};
 pub use tools::{
     commit_policy_proposal, default_assist_registry, default_degen_registry,
