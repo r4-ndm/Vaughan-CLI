@@ -107,9 +107,9 @@ Agents can also skip Vaughan and use cast/ethers against RPC — **that’s fine
 | Phase | Deliverable | Outcome |
 |-------|-------------|---------|
 | **A** | Pin 943 addresses + Dex “Wiz4rd” venue + docs | **Done** — humans can swap against deploy in TUI |
-| **B** | MCP read: pool / quote / positions | Agents explore without Vaughan unlock |
-| **C** | MCP `propose_v3_swap` + allowlist + Anvil/943 tests | Agents trade via approval cards |
-| **D** | MCP `propose_v3_mint` (+ approve sequence) | Agents open LP (what TASKS P3 called “Earn when real”) |
+| **B** | MCP read: pool / quote / positions | **Done** (pool + quote); positions still open |
+| **C** | MCP `propose_v3_swap` + allowlist + Anvil/943 tests | **Done** — `propose_v3_swap`; live 943 test `#[ignore]` |
+| **D** | MCP `propose_v3_mint` (+ approve sequence) | Agents open LP |
 | **E** | Collect / decrease / UI positions screen | Full LP lifecycle |
 
 ## What *not* to do

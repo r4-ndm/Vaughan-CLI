@@ -3,24 +3,29 @@
 pub mod execute_degen_swap;
 pub mod get_balance;
 pub mod get_dex_reserves;
+pub mod get_v3_pool;
 pub mod inspect_contract;
 pub mod proposals;
 pub mod propose_policy;
 pub mod quote_swap;
+pub mod quote_v3_swap;
 pub mod registry;
 pub mod search_pairs;
 pub mod simulate_call;
+pub mod wiz4rd_common;
 
 pub use execute_degen_swap::ExecuteDegenSwapTool;
 pub use get_balance::GetBalanceTool;
 pub use get_dex_reserves::GetDexReservesTool;
+pub use get_v3_pool::GetV3PoolTool;
 pub use inspect_contract::InspectContractTool;
 pub use proposals::{
     ProposeAggSwapTool, ProposeBatch7702Tool, ProposeContractCallTool, ProposeSwapTool,
-    ProposeTransferTool,
+    ProposeTransferTool, ProposeV3SwapTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_swap::QuoteSwapTool;
+pub use quote_v3_swap::QuoteV3SwapTool;
 pub use registry::ToolRegistry;
 pub use search_pairs::SearchPairsTool;
 pub use simulate_call::SimulateCallTool;
@@ -52,6 +57,8 @@ pub fn default_sensory_registry() -> ToolRegistry {
     registry.register(Arc::new(SearchPairsTool::new()));
     registry.register(Arc::new(SimulateCallTool::new()));
     registry.register(Arc::new(QuoteSwapTool::new()));
+    registry.register(Arc::new(GetV3PoolTool::new()));
+    registry.register(Arc::new(QuoteV3SwapTool::new()));
     registry
 }
 
@@ -61,6 +68,7 @@ pub fn default_assist_registry() -> ToolRegistry {
     registry.register(Arc::new(ProposeTransferTool::new()));
     registry.register(Arc::new(ProposeSwapTool::new()));
     registry.register(Arc::new(ProposeAggSwapTool::new()));
+    registry.register(Arc::new(ProposeV3SwapTool::new()));
     registry.register(Arc::new(ProposeBatch7702Tool::new()));
     registry.register(Arc::new(ProposeContractCallTool::new()));
     registry
