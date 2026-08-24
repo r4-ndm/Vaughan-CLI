@@ -55,21 +55,23 @@ vaughan proposals show prop_12345 --json
 
 ## Dogfood checklist (local)
 
-Automated coverage (CI):
+Automated coverage (CI) — **green as of 2026-08-24**:
 
 ```bash
 cargo test -p vaughan-tui --test mcp_dogfood --test mcp_listener
 cargo test -p vaughan-mcp --test mcp_integration
 ```
 
-Manual Cursor session (after unlock TUI):
+Covers: reject → `proposals/rejected/`, re-sim blocks overspend, loopback
+session ping, banned tools absent, `tools/list` + `get_network` stdio smoke.
 
-1. Connect Vaughan MCP (see config above; restart Cursor MCP).
+Manual Cursor session (after unlock TUI) — still recommended once per machine:
+
+1. Connect Vaughan MCP (`.cursor/mcp.json`; restart Cursor MCP).
 2. `get_address` / `list_assets` — should return the unlocked account.
-3. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file; `get_proposal_status` ≠ pending.
+3. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file.
 4. `propose_transfer` → **Approve** on testnet → status shows `tx_hash`.
-5. Overspend / bad calldata → approval fails with simulation revert (no broadcast).
-6. Optional Pulse DeFi: `quote_swap` then `propose_agg_swap` (mainnet needs `VAUGHAN_MCP_ALLOW_MAINNET=1`).
+5. Optional Pulse DeFi: `quote_swap` then `propose_agg_swap`.
 
 ## Troubleshooting
 

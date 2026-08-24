@@ -27,12 +27,14 @@ use crate::views::dex_calldata::{
 };
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
-/// Common V3 fee tiers (basis points × 100 → Uniswap `uint24`).
-const FEE_TIERS: &[u32] = &[100, 500, 3000, 10_000];
+/// Common V3 fee tiers. Includes Pancake/wiz4rd `2500` and `20000` (2%).
+const FEE_TIERS: &[u32] = &[100, 500, 2500, 3000, 10_000, 20_000];
 
 /// PulseChain DEX venues (↑/↓). AMM Uni-forks get routers; OTC/Balancer are listed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DexVenue {
+    /// Vaughan’s Pancake V3 fork on Pulse testnet (see `vaughan_core::core::wiz4rd`).
+    Wiz4rd,
     PulseX,
     PulseXV1,
     NineMm,
@@ -51,6 +53,7 @@ enum DexVenue {
 }
 
 const VENUES: &[DexVenue] = &[
+    DexVenue::Wiz4rd,
     DexVenue::PulseX,
     DexVenue::PulseXV1,
     DexVenue::NineMm,
@@ -71,6 +74,7 @@ const VENUES: &[DexVenue] = &[
 impl DexVenue {
     fn label(self) -> &'static str {
         match self {
+            Self::Wiz4rd => "Wiz4rd",
             Self::PulseX => "PulseX",
             Self::PulseXV1 => "PulseX V1",
             Self::NineMm => "9mm",
@@ -92,6 +96,7 @@ impl DexVenue {
     /// One-line blurb for status (what this venue is).
     fn blurb(self) -> &'static str {
         match self {
+            Self::Wiz4rd => "Vaughan Pancake V3 fork · Pulse testnet 943",
             Self::PulseX => "largest PLS DEX · V2 AMM + V3 SwapRouter",
             Self::PulseXV1 => "legacy PulseX V1 AMM router",
             Self::NineMm => "Uni V3-fork concentrated liquidity",
@@ -175,6 +180,10 @@ fn venue_router(venue: DexVenue, protocol: DexProtocol, chain_id: u64) -> Option
         return None;
     }
     match (venue, protocol, chain_id) {
+        // wiz4rd-swap — V3 only on Pulse testnet (docs/wiz4rd-addresses.md)
+        (DexVenue::Wiz4rd, DexProtocol::V3, 943) => {
+            Some(vaughan_core::core::wiz4rd::SWAP_ROUTER_943)
+        }
         // PulseX
         (DexVenue::PulseX, DexProtocol::V2, 369) => {
             Some("0x165C3410fC91EF562C50559f7d2289fEbed552d9")
@@ -324,15 +333,21 @@ impl Default for DexView {
 }
 
 impl DexView {
-    /// Prefill from the active chain (PulseX V2 default).
+    /// Prefill from the active chain (Wiz4rd V3 on 943; PulseX V2 elsewhere).
     pub fn for_chain(chain_id: u64) -> Self {
         let mut v = Self {
             chain_id,
             ..Self::default()
         };
+        if chain_id == 943 {
+            v.venue = DexVenue::Wiz4rd;
+            v.protocol = DexProtocol::V3;
+            v.fee = 500;
+        }
         v.apply_venue_defaults(true);
         v.status = match chain_id {
-            369 | 943 => "↑/↓ DEX · ←/→ V2/V3 · Space native · paste Custom router anytime".into(),
+            943 => "Wiz4rd V3 (testnet) · ↑/↓ venue · ←/→ V2/V3 · f fee tier".into(),
+            369 => "↑/↓ DEX · ←/→ V2/V3 · Space native · paste Custom router anytime".into(),
             _ => "↑/↓ DEX · ←/→ V2/V3 · paste a router address.".into(),
         };
         v
@@ -351,6 +366,11 @@ impl DexView {
 
         if self.venue == DexVenue::Custom && !overwrite_router {
             return;
+        }
+
+        // wiz4rd is V3-only — snap protocol when selecting the venue.
+        if self.venue == DexVenue::Wiz4rd {
+            self.protocol = DexProtocol::V3;
         }
 
         match venue_router(self.venue, self.protocol, self.chain_id) {

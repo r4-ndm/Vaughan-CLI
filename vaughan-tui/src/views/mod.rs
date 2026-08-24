@@ -247,7 +247,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("v", "Recv"),
         ("a", "Assets"),
         ("b", "Batch"),
-        ("w", "Dapps"),
+        ("w", "Web"),
         ("c", "Browse"),
         ("d", "Dex"),
         ("g", "Ag"),

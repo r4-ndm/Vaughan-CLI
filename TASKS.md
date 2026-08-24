@@ -274,15 +274,15 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ## Browserless Pulse (active product thesis)
 
 > **Pitch:** “The wallet that doesn’t need Chrome.” Approve calldata, not websites.
-> Primary path = Dashboard → Ag / Dex / Contract browser / Agent. Freedom
+> Primary path = Dashboard → Ag / Dex / Contract browser / MCP. Freedom
 > ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)) stays an
 > *optional* side door for odd dApps — not the default story.
 >
-> Exit demo (no browser window): unlock → Ag swap → contract probe → agent
-> explain → stealth receive.
+> Exit demo (no browser window): unlock → Ag swap → contract probe → MCP propose
+> → stealth receive.
 >
-> Related: `docs/aggregator.md`, `docs/piteas.md`, `docs/browser-engine.md`,
-> Phase 4 Dex/Ag scaffolds, Phase 5 agent tools.
+> Related: `docs/browserless-pulse.md`, `docs/aggregator.md`, `docs/mcp.md`,
+> Phase 4 Dex/Ag scaffolds, Phase 6 MCP.
 
 ### Degen session policy (guardrails the user owns)
 
@@ -302,6 +302,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Ag end-to-end polish: SquirrelSwap quote → route preview → ERC-20 approve (if needed) → swap confirm → broadcast (explicit approval only)
 - [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/piteas.md`)
 - [ ] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
+- [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/wiz4rd-addresses.md`)
 - [ ] Token discovery without a site: paste `0x` / PulseScan URL / agent “what is 0x…” → import to Assets
 
 ### P1 — Agent is the URL bar
@@ -328,8 +329,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] Watch mode: prices / wallet delta / breaker status; agent interrupts on thresholds only (degen-safe)
 
 ### Positioning (UX + docs)
-- [ ] Demote Dapps screen: rename/relabel to “Optional web (Freedom)” or nest under Advanced; default chrome emphasizes Ag / Dex / Browser / Agent
-- [ ] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom optional
+- [x] Demote Dapps screen: relabel to “Optional web / Freedom” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP
+- [x] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom optional (`docs/browserless-pulse.md`)
 - [ ] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame)
 
 ### Explicitly out of scope for this thesis

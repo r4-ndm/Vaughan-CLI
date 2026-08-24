@@ -15,6 +15,7 @@ pub mod stealth;
 pub mod transaction;
 pub mod vault_secrets;
 pub mod wallet;
+pub mod wiz4rd;
 
 pub use account::{Account, AccountManager};
 pub use aggregator::{
@@ -29,6 +30,10 @@ pub use bridge::{
 };
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
+};
+pub use wiz4rd::{
+    deployment_for_chain, position_manager as wiz4rd_position_manager,
+    swap_router as wiz4rd_swap_router, Wiz4rdDeployment, DEPLOYMENT_943, WIZ4RD_FEE_TIERS,
 };
 pub use network::NetworkService;
 pub use persistence::{

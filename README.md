@@ -11,22 +11,24 @@
   <a href="LICENSE-MIT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" /></a>
 </p>
 
-**Vaughan-CLI** is a Rust CLI wallet TUI:
+**Vaughan-CLI** is a Rust terminal wallet for **Browserless Pulse** — swap, inspect,
+and approve in the TUI without Chrome. Agents talk to Vaughan via MCP; Freedom
+Browser is an optional side door for odd dApps.
 
 - **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
 - **ratatui** for the terminal interface
 - **In-core ERC-5564 stealth** (Kohaku / RAILGUN deferred — see [docs/kohaku-go-no-go.md](docs/kohaku-go-no-go.md))
-- **Freedom Browser** integration — use Vaughan as the native signing provider for dApps
+- **MCP** for external agents — Cursor / Claude propose; you approve in Vaughan ([docs/mcp.md](docs/mcp.md))
+- **Freedom Browser** (optional) — EIP-1193 bridge when a website is unavoidable
 
-EVM-first and PulseChain-optimized, architected after the `vaughan-core` layering from
+EVM-first and PulseChain-optimized. Thesis: [docs/browserless-pulse.md](docs/browserless-pulse.md).
+Architecture mirrors the `vaughan-core` layering from
 [Vaughan-Dioxus](https://github.com/r4-ndm/Vaughan-Dioxus).
 
 > **Status:** public **prototype** on `main` — expect rough edges and breaking
-> changes. Phase 1–5 core wallet features are implemented; DEX / aggregator
-> paths are still evolving. **Plan change:** embedded in-wallet LLM chat is
-> retired — agents use Vaughan via MCP (`vaughan mcp`; see [docs/mcp.md](docs/mcp.md)).
-> Prefer testnet. Review [SECURITY.md](SECURITY.md) before trusting any build
-> with real funds.
+> changes. Primary UX is Dashboard → Ag / Dex / Browse / MCP — not a web wallet.
+> Embedded in-wallet LLM chat is retired. Prefer testnet. Review
+> [SECURITY.md](SECURITY.md) before trusting any build with real funds.
 
 ## Install
 
@@ -89,13 +91,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.
 
 ## Features
 
+- 🐸 **Browserless Pulse**: Ag / Dex / contract browser / approvals in-TUI — approve calldata, not websites
 - 🔒 **Sovereign self-custody**: password-encrypted vault (Argon2id + AES-256-GCM) with zero plain-text storage
 - 🧾 **BIP-39 & HD wallet**: mnemonic create/recover with standard `m/44'/60'/0'/0/{index}` derivation
 - ⛓️ **Multi-chain**: PulseChain (mainnet 369 / testnet 943), Ethereum, Sepolia, Polygon, BSC, Base
 - ⚡ **Ambire EIP-7702 smart accounts**: atomic batched transfers without ERC-4337 bundler overhead
-- 🖥️ **EIP-1193 provider bridge**: local WebSocket JSON-RPC provider with trusted-host allowlisting for Freedom Browser and dApps
-- 🔍 **Contract browser REPL (`wiz4rd-engine`)**: bytecode inspection, ERC-20/Uniswap capability probing, dynamic ABI calls
 - 🤖 **MCP for external agents**: `vaughan mcp` — Cursor / Claude / Codex propose txs; TUI approves; keys never leave the wallet process
+- 🔍 **Contract browser REPL (`wiz4rd-engine`)**: bytecode inspection, ERC-20/Uniswap capability probing, dynamic ABI calls
+- 🖥️ **Optional Freedom bridge**: local EIP-1193 WebSocket for odd dApps (`w` Web) — not the default path
 
 ## Architecture
 
@@ -112,6 +115,9 @@ vaughan-cli/
 
 ## Documentation
 
+- [docs/browserless-pulse.md](docs/browserless-pulse.md) — Product thesis (TUI-first; Freedom optional)
+- [docs/wiz4rd-addresses.md](docs/wiz4rd-addresses.md) — wiz4rd V3 deploy on Pulse testnet 943
+- [docs/wiz4rd-agent-plan.md](docs/wiz4rd-agent-plan.md) — Agents + wiz4rd capability plan
 - [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
 - [docs/ai-tool-surface.md](docs/ai-tool-surface.md) — Public tool contract for agents
 - [docs/pulse-defi-skills.md](docs/pulse-defi-skills.md) — Pulse DeFi MCP skill pack (quote / trade)

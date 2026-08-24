@@ -1,7 +1,7 @@
-//! Whitelisted dApps: add URLs, open in Freedom (Vaughan EIP-1193 bridge).
+//! Optional web (Freedom): whitelisted origins for the EIP-1193 bridge.
 //!
-//! Enter launches Freedom only — no system-browser fallback. If Freedom is not
-//! installed, the status line prompts the user to install it.
+//! Not the default Browserless Pulse path — use Ag / Dex / Browse / MCP first.
+//! Enter launches Freedom only — no system-browser fallback.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -61,12 +61,12 @@ impl DappsView {
                     frame,
                     content,
                     Some(brand::fade_line(
-                        " Trusted dApps (↑↓ · Enter → Freedom · a add · d delete · Esc) ",
+                        " Optional web / Freedom (↑↓ · Enter → Freedom · a add · d delete · Esc) ",
                     )),
                 );
                 if dapps.is_empty() {
                     frame.render_widget(
-                        Paragraph::new("  No dApps yet — press a to add one."),
+                        Paragraph::new("  No sites yet — press a to add one (optional Freedom path)."),
                         inner,
                     );
                 } else {

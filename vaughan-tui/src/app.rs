@@ -58,7 +58,7 @@ impl Screen {
             Self::Receive => "Receive",
             Self::Settings => "Settings",
             Self::Keys => "Keys",
-            Self::Dapps => "dApps",
+            Self::Dapps => "Web (Freedom)",
             Self::Assets => "Assets",
             Self::Browser => "Contract Browser",
             Self::Dex => "DEX",

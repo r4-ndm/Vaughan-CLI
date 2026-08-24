@@ -119,12 +119,29 @@ impl McpDispatcher {
         };
 
         match name {
-            "get_network" => Ok(json!({
-                "network_id": ctx.network_id,
-                "chain_id": ctx.chain_id,
-                "is_testnet": ctx.is_testnet,
-                "rpc_url": ctx.rpc_url,
-            })),
+            "get_network" => {
+                let mut out = json!({
+                    "network_id": ctx.network_id,
+                    "chain_id": ctx.chain_id,
+                    "is_testnet": ctx.is_testnet,
+                    "rpc_url": ctx.rpc_url,
+                });
+                if let Some(wiz) = vaughan_core::core::deployment_for_chain(ctx.chain_id) {
+                    out["wiz4rd"] = json!({
+                        "factory": wiz.factory,
+                        "pool_deployer": wiz.pool_deployer,
+                        "swap_router": wiz.swap_router,
+                        "position_manager": wiz.position_manager,
+                        "quoter_v2": wiz.quoter_v2,
+                        "tick_lens": wiz.tick_lens,
+                        "wpls": wiz.wpls,
+                        "smoke_token_wzrd": vaughan_core::core::wiz4rd::WZRD_SMOKE_943,
+                        "smoke_pool_wzrd_wpls_500": vaughan_core::core::wiz4rd::SMOKE_POOL_WZRD_WPLS_500_943,
+                        "fee_tiers": vaughan_core::core::WIZ4RD_FEE_TIERS,
+                    });
+                }
+                Ok(out)
+            }
             "get_address" => {
                 let addr = ctx.active_address.ok_or_else(|| {
                     "wallet_locked: unlock Vaughan TUI or pass account_address".to_string()
