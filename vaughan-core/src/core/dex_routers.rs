@@ -100,6 +100,13 @@ mod tests {
     }
 
     #[test]
+    fn wiz4rd_swap_router_allowed_on_943() {
+        let r = address!("0xfC656c95eCd418536844FeeaA46949bb9365BEaF");
+        assert!(is_allowed_dex_router(943, r));
+        assert!(!is_allowed_dex_router(369, r));
+    }
+
+    #[test]
     fn wiz4rd_npm_allowed_on_943() {
         let npm = address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745");
         assert!(is_allowed_dex_router(943, npm));
