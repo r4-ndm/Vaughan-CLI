@@ -4,9 +4,6 @@
 //! via ratatui's `TestBackend`. Unlocking decrypts the vault offline; the
 //! wallet itself is funded from the anvil dev mnemonic so the address is
 //! meaningful and the `accountsChanged` event dApps receive can be asserted.
-//!
-//! After a correct password the user must pick a session mode (FR-5.1) before
-//! reaching the dashboard.
 
 mod common;
 
@@ -53,8 +50,8 @@ fn locked_wallet(anvil: &Anvil, dir: &std::path::Path) -> WalletState {
     wallet
 }
 
-/// Correct password unlocks the vault and shows the session-mode picker
-/// (does not navigate yet). `accountsChanged` still fires on unlock.
+/// Correct password unlocks the vault, navigates to dashboard, and publishes
+/// `accountsChanged`.
 #[test]
 fn unlock_view_correct_password_unlocks_and_publishes_event() {
     let anvil = Anvil::start();
@@ -70,10 +67,11 @@ fn unlock_view_correct_password_unlocks_and_publishes_event() {
     let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
 
     assert!(
-        matches!(outcome, KeyOutcome::Consumed),
-        "password success stays on mode picker, got {outcome:?}"
+        matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)),
+        "password success should navigate to dashboard, got {outcome:?}"
     );
     assert!(wallet.is_unlocked(), "wallet must be unlocked");
+    assert_eq!(wallet.operating_mode(), OperatingMode::HumanOnly);
 
     let notification = rx.try_recv().expect("accountsChanged event must fire");
     let value: Value = serde_json::from_str(&notification).unwrap();
@@ -82,38 +80,6 @@ fn unlock_view_correct_password_unlocks_and_publishes_event() {
         value["params"][0].as_str().unwrap().to_lowercase(),
         wallet.active_address().unwrap().to_string().to_lowercase()
     );
-
-    let text = render(&view, &wallet);
-    assert!(
-        text.contains("Session mode") || text.contains("operating mode"),
-        "must show the session mode picker:\n{text}"
-    );
-    assert!(
-        text.contains("Classic Human") || text.contains("1 —"),
-        "must list Human mode:\n{text}"
-    );
-}
-
-/// After unlock, pressing `1` selects Human mode and navigates to the dashboard.
-#[test]
-fn unlock_view_mode_select_human_goes_to_dashboard() {
-    let anvil = Anvil::start();
-    let dir = tempfile::tempdir().unwrap();
-    let mut wallet = locked_wallet(&anvil, dir.path());
-
-    let (_rt, handle) = runtime_handle();
-    let events = EventBus::new();
-    let mut view = UnlockView::default();
-
-    type_text(&mut view, PASSWORD, &mut wallet, &handle, &events);
-    assert!(matches!(
-        view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events),
-        KeyOutcome::Consumed
-    ));
-
-    let outcome = view.handle_key(key(KeyCode::Char('1')), &mut wallet, &handle, &events);
-    assert!(matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)));
-    assert_eq!(wallet.operating_mode(), OperatingMode::HumanOnly);
 }
 
 /// A wrong password shows an error, keeps the wallet locked, and never

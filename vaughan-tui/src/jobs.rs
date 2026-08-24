@@ -68,6 +68,12 @@ pub enum UiJob {
         dst_chain: u64,
         recipient: String,
     },
+    /// Recent ERC-20 Transfer activity for History.
+    RefreshActivity {
+        limit: u32,
+    },
+    /// Scan known-spender allowances for Approvals.
+    RefreshAllowances,
 }
 
 /// Cached need-to-know strip shared across every unlocked screen.
@@ -90,6 +96,8 @@ pub struct ChromeSnapshot {
     pub pending_asset_idx: Option<usize>,
     /// Pending F3 account index (`Account::index`).
     pub pending_account_index: Option<u32>,
+    /// Count of MCP proposals waiting in the file queue.
+    pub mcp_pending: usize,
 }
 
 /// Status-strip focus for F1 / F2 / F3.
@@ -115,6 +123,8 @@ pub enum UiJobResult {
     SendStealth(Result<StealthSendResult, WalletError>),
     AggQuote(Result<vaughan_core::core::AggQuote, WalletError>),
     BridgeQuote(Box<Result<vaughan_core::core::BridgeQuote, WalletError>>),
+    Activity(Result<Vec<vaughan_core::chains::TxRecord>, WalletError>),
+    Allowances(Result<Vec<vaughan_core::chains::AllowanceEntry>, WalletError>),
 }
 
 /// Frames for a braille spinner (no extra deps).

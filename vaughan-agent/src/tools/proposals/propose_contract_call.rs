@@ -125,7 +125,8 @@ impl Tool for ProposeContractCallTool {
             120_000,
             sim_success,
             explanation,
-        );
+        )
+        .with_chain(context.chain_id, None);
 
         Ok(serde_json::to_value(&proposal)?)
     }

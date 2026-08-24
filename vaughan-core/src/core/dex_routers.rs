@@ -61,6 +61,25 @@ pub fn is_allowed_dex_router(chain_id: u64, router: Address) -> bool {
 /// PulseX V2 mainnet — convenient Anvil plant / test target.
 pub const PULSEX_V2_MAINNET: &str = "0x165C3410fC91EF562C50559f7d2289fEbed552d9";
 
+/// Pulse wrapped native (WPLS / tWPLS) for wrap/unwrap flows.
+pub fn wpls_for_chain(chain_id: u64) -> Option<Address> {
+    match chain_id {
+        369 => "0xA1077a294dDE1B09bB078844df40758a5D0f9a27".parse().ok(),
+        943 => "0x70499adEBB11Efd915E3b69E700c331778628707".parse().ok(),
+        _ => None,
+    }
+}
+
+/// Catalogued DEX routers for `chain_id` (label = short venue hint).
+pub fn dex_routers_labeled(chain_id: u64) -> Vec<(Address, &'static str)> {
+    let cid = if chain_id == 31337 { 369 } else { chain_id };
+    OFFICIAL_DEX_ROUTERS
+        .iter()
+        .filter(|(c, _)| *c == cid)
+        .filter_map(|(_, s)| s.parse::<Address>().ok().map(|a| (a, "DEX")))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

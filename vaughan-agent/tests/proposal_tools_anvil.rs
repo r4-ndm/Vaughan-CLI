@@ -67,7 +67,7 @@ async fn test_assist_registry_and_proposals_with_anvil() {
     );
     assert_eq!(prop.value_wei.to_string(), "1000000000000000000");
     assert!(prop.simulation_success);
-    assert_eq!(prop.llm_explanation, "Sending 1 ETH to second test account");
+    assert_eq!(prop.explanation, "Sending 1 ETH to second test account");
 
     // 2. Propose Batch 7702
     let batch_raw = registry

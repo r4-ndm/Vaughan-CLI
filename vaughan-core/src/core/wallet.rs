@@ -610,6 +610,83 @@ impl WalletState {
         adapter.get_assets(address, &extras).await
     }
 
+    /// Recent ERC-20 Transfer activity for the active account (newest first).
+    pub async fn activity(&self, limit: u32) -> Result<Vec<crate::chains::TxRecord>, WalletError> {
+        let (net, address) = self.active_context()?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        adapter.get_transaction_history(address, limit).await
+    }
+
+    /// Non-zero allowances of held ERC-20s against known Ag / Dex / Bridge spenders.
+    pub async fn list_allowances(&self) -> Result<Vec<crate::chains::AllowanceEntry>, WalletError> {
+        use crate::core::aggregator::OFFICIAL_AGG_ROUTERS;
+        use crate::core::bridge::OFFICIAL_ROUTERS;
+        use crate::core::dex_routers_labeled;
+        use alloy::primitives::{Address, U256};
+        use std::str::FromStr;
+
+        let (net, address) = self.active_context()?;
+        let owner = Address::from_str(address)
+            .map_err(|_| WalletError::InvalidTransaction(format!("active address: {address}")))?;
+        let assets = self.assets().await?;
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+
+        let mut spenders: Vec<(Address, &'static str)> = dex_routers_labeled(net.chain_id);
+        for s in OFFICIAL_AGG_ROUTERS {
+            if let Ok(a) = Address::from_str(s) {
+                spenders.push((a, "Ag"));
+            }
+        }
+        if net.chain_id == 369 || net.chain_id == 943 {
+            for s in OFFICIAL_ROUTERS {
+                if let Ok(a) = Address::from_str(s) {
+                    spenders.push((a, "Bridge"));
+                }
+            }
+        }
+        // Dedup spenders
+        spenders.sort_by_key(|(a, _)| *a);
+        spenders.dedup_by_key(|(a, _)| *a);
+
+        let mut out = Vec::new();
+        for bal in &assets {
+            let Some(ref ca) = bal.token.contract_address else {
+                continue;
+            };
+            let Ok(token) = Address::from_str(ca) else {
+                continue;
+            };
+            for (spender, label) in &spenders {
+                match adapter.get_erc20_allowance(token, owner, *spender).await {
+                    Ok(amount) if amount > U256::ZERO => {
+                        out.push(crate::chains::AllowanceEntry {
+                            token: format!("{token:#x}"),
+                            token_symbol: bal.token.symbol.clone(),
+                            token_decimals: bal.token.decimals,
+                            spender: format!("{spender:#x}"),
+                            spender_label: (*label).to_string(),
+                            amount: amount.to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Balance of a single ERC-20 (`token_address`) for the active account.
     pub async fn token_balance(&self, token_address: &str) -> Result<Balance, WalletError> {
         let (net, address) = self.active_context()?;

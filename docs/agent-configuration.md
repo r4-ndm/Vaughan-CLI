@@ -1,5 +1,11 @@
 # Vaughan AI Agent Configuration & User Guide
 
+> **Retired (2026-08-23):** Embedded in-wallet LLM chat, provider setup, and
+> `vaughan agent` / `vaughan policy` CLI are removed. Agents now use
+> [`docs/mcp.md`](mcp.md) (`vaughan mcp`). The `vaughan-agent` crate remains as
+> a library (proposals, tools, circuit breakers). This document is historical
+> reference only.
+
 This guide explains how to configure and use the AI Agent subsystem (`vaughan-agent`) across **AI-Assisted** and **Degen** operating modes.
 
 ---

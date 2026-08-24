@@ -99,8 +99,8 @@ impl SendView {
         Self {
             home_mode: true,
             focus: Focus::Idle,
-            status: "F1 network · F2 coin · F3 from · Enter edit · Tab fields · Enter review"
-                .into(),
+            recipient: Input::new(false, ""),
+            amount: Input::new(false, ""),
             ..Self::default()
         }
     }
@@ -196,8 +196,6 @@ impl SendView {
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
         let net = wallet.networks().active();
-        let testnet = if net.is_testnet { " (testnet)" } else { "" };
-        let from_label = wallet.active_account_label().unwrap_or("—");
         let status = if self.busy != Busy::Idle {
             let label = match self.busy {
                 Busy::Estimating => "estimating fee",
@@ -211,30 +209,12 @@ impl SendView {
 
         match self.stage {
             Stage::Input => {
-                let chunks = Layout::vertical([
-                    Constraint::Length(if self.home_mode { 1 } else { 0 }),
-                    Constraint::Length(3),
-                    Constraint::Length(3),
-                    Constraint::Length(if self.home_mode { 1 } else { 0 }),
-                    Constraint::Min(0),
-                ])
-                .areas::<5>(content);
-
-                if self.home_mode {
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            " Home — send ",
-                            Style::default()
-                                .fg(brand::accent_color())
-                                .add_modifier(Modifier::BOLD),
-                        ))),
-                        chunks[0],
-                    );
-                }
+                let [to_area, amount_area] =
+                    Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(content);
 
                 render_labeled_input(
                     frame,
-                    chunks[1],
+                    to_area,
                     self.recipient_label(),
                     &self.recipient,
                     self.focus == Focus::Recipient,
@@ -248,32 +228,15 @@ impl SendView {
                 );
                 render_labeled_input(
                     frame,
-                    chunks[2],
+                    amount_area,
                     &amount_label,
                     &self.amount,
                     self.focus == Focus::Amount,
                 );
-
-                if self.home_mode {
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            format!(
-                                "F1 {}{} · F2 {} · F3 {}",
-                                net.name,
-                                testnet,
-                                self.token
-                                    .as_ref()
-                                    .map(|t| t.symbol.as_str())
-                                    .unwrap_or(net.native_symbol.as_str()),
-                                from_label
-                            ),
-                            Style::default().fg(brand::body_color()),
-                        ))),
-                        chunks[3],
-                    );
-                }
             }
             Stage::Confirm => {
+                let testnet = if net.is_testnet { " (testnet)" } else { "" };
+                let from_label = wallet.active_account_label().unwrap_or("—");
                 let fee = self.selected_fee();
                 let fee_ref = fee.as_ref();
                 let fee_total = fee_ref.map(|f| f.total.clone()).unwrap_or_default();

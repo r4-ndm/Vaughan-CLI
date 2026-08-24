@@ -128,7 +128,8 @@ impl Tool for ProposeBatch7702Tool {
             180_000,
             sim_success,
             explanation,
-        );
+        )
+        .with_chain(context.chain_id, None);
 
         Ok(serde_json::to_value(&proposal)?)
     }

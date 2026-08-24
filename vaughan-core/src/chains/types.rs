@@ -287,6 +287,18 @@ pub struct TxRecord {
     pub is_token_transfer: bool,
 }
 
+/// Non-zero ERC-20 allowance for the Approvals manager.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowanceEntry {
+    pub token: String,
+    pub token_symbol: String,
+    pub token_decimals: u8,
+    pub spender: String,
+    pub spender_label: String,
+    /// Raw allowance in base units.
+    pub amount: String,
+}
+
 /// Transaction status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TxStatus {

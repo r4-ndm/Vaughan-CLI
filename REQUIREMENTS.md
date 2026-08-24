@@ -97,9 +97,19 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-5.4** Autonomous Read/Inspect Tools: Wrap `wiz4rd-engine` and `vaughan-core` for contract capability probing, balance inspection, selector reverse lookup, DEX reserves, and pre-flight call simulation without user prompts.
 - **FR-5.5** Guarded Propose-Only Write Tools (Assist Mode): Draft transfers, DEX swaps, and EIP-7702 batched calls into structured `TxProposal`s that require explicit human approval via the TUI/CLI confirmation card. Private keys are never exposed to the agent.
 - **FR-5.6** Autonomous Execution with Circuit Breakers (Degen Mode): In degen mode, automated signing is governed by hardcoded Rust circuit breakers (max position size %, gas burn rate ceiling, maximum 1.0% slippage, emergency kill-switch).
-- **FR-5.7** Multi-Model Provider Integration: Support local privacy-first models (Ollama, `llama.cpp` at `127.0.0.1`) and cloud APIs (Google Gemini, Anthropic, OpenAI) with AES-256-GCM encrypted API key vault storage.
-- **FR-5.8** TUI Agent Console & CLI Commands: Interactive agent console in `vaughan-tui` (`vaughan-tui/src/views/agent.rs`) with token streaming, and non-interactive CLI agent command (`vaughan agent "<prompt>"`).
+- **FR-5.7** ~~Multi-Model Provider Integration~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
+- **FR-5.8** ~~TUI Agent Console & CLI Commands~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 
+### Phase 6 — External Agent / MCP Integration
+
+- **FR-6.1** MCP stdio server (`vaughan mcp`): hand-rolled JSON-RPC subset (`initialize`, `tools/list`, `tools/call`, `ping`) over stdin/stdout; diagnostics to stderr only.
+- **FR-6.2** Public tool contract documented in `docs/ai-tool-surface.md`: read tools (no approval), write tools (propose only), meta tools, hard bans, structured error codes.
+- **FR-6.3** Hybrid IPC: loopback TCP (`127.0.0.1:8746`) when TUI unlocked; file queue (`proposals/pending/`) when offline; session token auth; HMAC integrity on queue files.
+- **FR-6.4** Unified human approval: MCP proposals route through the same `ApprovalKind` gate as EIP-1193 dApp requests; re-simulate and re-estimate fee at approve time.
+- **FR-6.5** MCP process never unlocks vault or holds key material; signing only in TUI after explicit user approval.
+- **FR-6.6** CLI `--json` surface on `balance`, `assets`, `browse`, `propose`, `proposals` for script/agent use without MCP.
+- **FR-6.7** Testnet-first default for MCP writes; mainnet writes require `VAUGHAN_MCP_ALLOW_MAINNET=1`.
+- **FR-6.8** Threat model in `docs/mcp-threat-model.md`; zero telemetry (NFR-2).
 
 ## Non-functional requirements
 

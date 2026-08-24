@@ -24,6 +24,7 @@ sol! {
         event Transfer(address indexed from, address indexed to, uint256 value);
 
         function balanceOf(address account) external view returns (uint256);
+        function allowance(address owner, address spender) external view returns (uint256);
         function decimals() external view returns (uint8);
         function symbol() external view returns (string memory);
         function name() external view returns (string memory);

@@ -24,7 +24,7 @@ fn runtime_handle() -> (tokio::runtime::Runtime, Handle) {
     (rt, handle)
 }
 
-/// Home shows the send-to field and F1/F2/F3 hint line.
+/// Home shows the send-to and amount fields.
 #[test]
 fn dashboard_view_shows_send_to() {
     let anvil = Anvil::start();
@@ -37,8 +37,8 @@ fn dashboard_view_shows_send_to() {
         "home must show Send to field:\n{text}"
     );
     assert!(
-        text.contains("F1") && text.contains("F2") && text.contains("F3"),
-        "home must hint chrome F1/F2/F3:\n{text}"
+        text.contains("Amount"),
+        "home must show amount field:\n{text}"
     );
 }
 

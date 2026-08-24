@@ -88,6 +88,7 @@ async fn run_approval_consumer(
                     ApprovalKind::SignTransaction(_) => "sign".to_string(),
                     ApprovalKind::SignMessage { .. } => "message".to_string(),
                     ApprovalKind::SignTypedData { .. } => "typed".to_string(),
+                    ApprovalKind::McpProposal { .. } => "mcp".to_string(),
                 };
                 seen.lock().unwrap().push(summary.clone());
                 let result = match decide(&kind) {

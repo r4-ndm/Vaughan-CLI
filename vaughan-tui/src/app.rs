@@ -1,27 +1,27 @@
 //! Application state and the main event loop.
 
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
-use secrecy::SecretString;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
-use vaughan_agent::{AgentSessionContext, CircuitBreakerConfig, DegenTrader, ModelConfig};
-use vaughan_core::core::{OperatingMode, StateManager, WalletState};
+use vaughan_agent::paths::profile_dir;
+use vaughan_core::core::proposal::ProposalQueue;
+use vaughan_core::core::{McpSessionToken, StateManager, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
-use std::str::FromStr;
-
 use crate::jobs::{ChromeFocus, ChromeSnapshot, UiJob, UiJobResult};
+use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, HostRequest};
 use crate::views::{
-    AaSendView, AgView, AgentSetupView, AgentView, ApproveView, AssetsView, BridgeView,
-    BrowserView, DappsView, DashboardView, DexView, KeysView, OnboardingView, PlaceholderView,
-    ReceiveView, SettingsView, UnlockView,
+    AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
+    DashboardView, DexView, HistoryView, KeysView, OnboardingView, PlaceholderView, ReceiveView,
+    SettingsView, UnlockView, WrapView,
 };
 
 /// The active screen.
@@ -29,7 +29,6 @@ use crate::views::{
 pub enum Screen {
     Onboarding,
     Unlock,
-    AgentSetup,
     Dashboard,
     AaSend,
     Receive,
@@ -38,13 +37,14 @@ pub enum Screen {
     Dapps,
     Assets,
     Browser,
-    Agent,
     Dex,
     Aggregator,
     SoonNft,
     Bridge,
     SoonStake,
-    SoonHistory,
+    History,
+    Approvals,
+    Wrap,
     Approve,
 }
 
@@ -53,7 +53,6 @@ impl Screen {
         match self {
             Self::Onboarding => "Onboarding",
             Self::Unlock => "Unlock",
-            Self::AgentSetup => "AI Setup",
             Self::Dashboard => "Dashboard",
             Self::AaSend => "Batch Send",
             Self::Receive => "Receive",
@@ -62,13 +61,14 @@ impl Screen {
             Self::Dapps => "dApps",
             Self::Assets => "Assets",
             Self::Browser => "Contract Browser",
-            Self::Agent => "AI Agent",
             Self::Dex => "DEX",
             Self::Aggregator => "Aggregator",
             Self::SoonNft => "NFT",
             Self::Bridge => "Bridge",
             Self::SoonStake => "Stake",
-            Self::SoonHistory => "History",
+            Self::History => "History",
+            Self::Approvals => "Approvals",
+            Self::Wrap => "Wrap",
             Self::Approve => "Approve",
         }
     }
@@ -108,7 +108,6 @@ impl std::fmt::Debug for KeyOutcome {
 pub enum View {
     Onboarding(OnboardingView),
     Unlock(UnlockView),
-    AgentSetup(AgentSetupView),
     Dashboard(DashboardView),
     AaSend(AaSendView),
     Receive(ReceiveView),
@@ -117,10 +116,12 @@ pub enum View {
     Dapps(DappsView),
     Assets(AssetsView),
     Browser(BrowserView),
-    Agent(Box<AgentView>),
     Dex(DexView),
     Aggregator(AgView),
     Bridge(BridgeView),
+    History(HistoryView),
+    Approvals(ApprovalsView),
+    Wrap(WrapView),
     Placeholder(PlaceholderView),
     Approve(ApproveView),
 }
@@ -130,7 +131,6 @@ impl View {
         match self {
             Self::Onboarding(_) => Screen::Onboarding,
             Self::Unlock(_) => Screen::Unlock,
-            Self::AgentSetup(_) => Screen::AgentSetup,
             Self::Dashboard(_) => Screen::Dashboard,
             Self::AaSend(_) => Screen::AaSend,
             Self::Receive(_) => Screen::Receive,
@@ -139,10 +139,12 @@ impl View {
             Self::Dapps(_) => Screen::Dapps,
             Self::Assets(_) => Screen::Assets,
             Self::Browser(_) => Screen::Browser,
-            Self::Agent(_) => Screen::Agent,
             Self::Dex(_) => Screen::Dex,
             Self::Aggregator(_) => Screen::Aggregator,
             Self::Bridge(_) => Screen::Bridge,
+            Self::History(_) => Screen::History,
+            Self::Approvals(_) => Screen::Approvals,
+            Self::Wrap(_) => Screen::Wrap,
             Self::Placeholder(v) => v.screen(),
             Self::Approve(_) => Screen::Approve,
         }
@@ -152,7 +154,6 @@ impl View {
         match self {
             Self::Onboarding(v) => v.render(frame, area, wallet),
             Self::Unlock(v) => v.render(frame, area, wallet),
-            Self::AgentSetup(v) => v.render(frame, area, wallet),
             Self::Dashboard(v) => v.render(frame, area, wallet),
             Self::AaSend(v) => v.render(frame, area, wallet),
             Self::Receive(v) => v.render(frame, area, wallet),
@@ -161,10 +162,12 @@ impl View {
             Self::Dapps(v) => v.render(frame, area, wallet),
             Self::Assets(v) => v.render(frame, area, wallet),
             Self::Browser(v) => v.render(frame, area, wallet),
-            Self::Agent(v) => v.render(frame, area, wallet.operating_mode()),
             Self::Dex(v) => v.render(frame, area, wallet),
             Self::Aggregator(v) => v.render(frame, area, wallet),
             Self::Bridge(v) => v.render(frame, area, wallet),
+            Self::History(v) => v.render(frame, area, wallet),
+            Self::Approvals(v) => v.render(frame, area, wallet),
+            Self::Wrap(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
@@ -180,7 +183,6 @@ impl View {
         match self {
             Self::Onboarding(v) => v.handle_key(key, wallet, handle, events),
             Self::Unlock(v) => v.handle_key(key, wallet, handle, events),
-            Self::AgentSetup(v) => v.handle_key(key, wallet, handle, events),
             Self::Dashboard(v) => v.handle_key(key, wallet, handle, events),
             Self::AaSend(v) => v.handle_key(key, wallet, handle, events),
             Self::Receive(v) => v.handle_key(key, wallet, handle, events),
@@ -189,20 +191,12 @@ impl View {
             Self::Dapps(v) => v.handle_key(key, wallet, handle, events),
             Self::Assets(v) => v.handle_key(key, wallet, handle, events),
             Self::Browser(v) => v.handle_key(key, wallet, handle, events),
-            Self::Agent(v) => {
-                let context = vaughan_agent::tools::ToolContext {
-                    rpc_url: wallet.networks().active().rpc_url.clone(),
-                    chain_id: wallet.networks().active().chain_id,
-                    active_address: wallet
-                        .active_address()
-                        .ok()
-                        .and_then(|a| alloy::primitives::Address::from_str(a).ok()),
-                };
-                v.handle_key(key, wallet.operating_mode(), &context, handle)
-            }
             Self::Dex(v) => v.handle_key(key, wallet, handle, events),
             Self::Aggregator(v) => v.handle_key(key, wallet, handle, events),
             Self::Bridge(v) => v.handle_key(key, wallet, handle, events),
+            Self::History(v) => v.handle_key(key, wallet, handle, events),
+            Self::Approvals(v) => v.handle_key(key, wallet, handle, events),
+            Self::Wrap(v) => v.handle_key(key, wallet, handle, events),
             Self::Placeholder(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
@@ -212,7 +206,7 @@ impl View {
 /// A sign/send request waiting on the user's approve/deny decision.
 struct PendingApproval {
     kind: ApprovalKind,
-    reply: oneshot::Sender<Result<String, ProviderError>>,
+    reply: Option<oneshot::Sender<Result<String, ProviderError>>>,
 }
 
 /// Root application state.
@@ -236,12 +230,11 @@ pub struct App {
     pending_approval: Option<PendingApproval>,
     /// Screen to return to after the pending approval resolves.
     approve_return: Screen,
-    /// Active LLM settings for this session (welcome setup / unlock load / env).
-    agent_config: ModelConfig,
-    /// Vault password kept while unlocked so `/provider` can re-encrypt API keys.
-    session_vault_password: Option<SecretString>,
     /// Always-on status strip: native balance + gas price.
     chrome: ChromeSnapshot,
+    /// MCP control plane (session + loopback listener).
+    mcp: McpService,
+    mcp_rx: mpsc::UnboundedReceiver<McpHostRequest>,
 }
 
 impl App {
@@ -258,9 +251,12 @@ impl App {
         };
         let events = EventBus::new();
         let (host_tx, host_rx) = mpsc::unbounded_channel();
+        let (mcp_tx, mcp_rx) = mpsc::unbounded_channel();
         let (job_tx, job_rx) = mpsc::unbounded_channel();
         let dapp_origins = wallet.trusted_dapp_origins();
         provider::spawn_provider_server(&handle, host_tx, events.clone(), dapp_origins);
+        let profile_dir = profile_dir(wallet.path());
+        let mcp = McpService::new(&profile_dir, mcp_tx);
         let mut app = Self {
             wallet: Arc::new(Mutex::new(wallet)),
             handle,
@@ -274,12 +270,12 @@ impl App {
             tick: 0,
             pending_approval: None,
             approve_return: Screen::Dashboard,
-            agent_config: ModelConfig::from_env(),
-            session_vault_password: None,
             chrome: ChromeSnapshot {
                 loading: false,
                 ..ChromeSnapshot::default()
             },
+            mcp,
+            mcp_rx,
         };
         app.navigate(screen);
         Ok(app)
@@ -332,7 +328,7 @@ impl App {
         while !self.quitting {
             self.tick = self.tick.wrapping_add(1);
             self.poll_provider();
-            self.poll_agent();
+            self.poll_mcp();
             self.poll_jobs();
             if let View::Dex(v) = &mut self.view {
                 v.set_tick(self.tick);
@@ -343,13 +339,19 @@ impl App {
             if let View::Bridge(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
+            if let View::History(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::Approvals(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::Wrap(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
             if let View::Dashboard(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
             if let View::Assets(v) = &mut self.view {
-                v.set_tick(self.tick);
-            }
-            if let View::Agent(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
             terminal.draw(|frame| crate::views::render(frame, self))?;
@@ -405,8 +407,7 @@ impl App {
                     Screen::Assets => Screen::Browser,
                     Screen::Browser => Screen::Dex,
                     Screen::Dex => Screen::Aggregator,
-                    Screen::Aggregator => Screen::Agent,
-                    Screen::Agent => Screen::Dashboard,
+                    Screen::Aggregator => Screen::Dashboard,
                     other => other,
                 };
                 if next != self.screen() {
@@ -428,6 +429,7 @@ impl App {
             }
             GlobalAction::Lock => {
                 if self.wallet().is_unlocked() {
+                    self.mcp.on_lock();
                     {
                         let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
                         wallet.lock();
@@ -448,11 +450,7 @@ impl App {
         }
 
         match outcome {
-            KeyOutcome::Navigate(screen) => {
-                self.capture_session_agent_config();
-                self.sync_agent_config_from_view();
-                self.navigate(screen);
-            }
+            KeyOutcome::Navigate(screen) => self.navigate(screen),
             KeyOutcome::StartJob(job) => self.spawn_job(job),
             KeyOutcome::SendAsset(balance) => {
                 // Align F2 with the asset the user picked from Assets.
@@ -464,46 +462,7 @@ impl App {
                 }
                 self.view = View::Dashboard(DashboardView::for_asset(balance));
             }
-            KeyOutcome::Consumed | KeyOutcome::NotHandled => {
-                self.sync_agent_config_from_view();
-            }
-        }
-    }
-
-    /// Keep `agent_config` aligned when Agent view hot-swaps `/model`.
-    fn sync_agent_config_from_view(&mut self) {
-        if let View::Agent(v) = &self.view {
-            let cfg = v.model_config();
-            if cfg.provider != self.agent_config.provider
-                || cfg.model_name != self.agent_config.model_name
-            {
-                self.agent_config = cfg.clone();
-            }
-        }
-    }
-
-    /// Pull agent config + vault password out of onboarding / unlock / setup before drop.
-    fn capture_session_agent_config(&mut self) {
-        match &mut self.view {
-            View::Onboarding(v) => {
-                if let Some(cfg) = v.take_session_agent_config() {
-                    self.agent_config = cfg;
-                }
-            }
-            View::Unlock(v) => {
-                if let Some(cfg) = v.take_session_agent_config() {
-                    self.agent_config = cfg;
-                }
-                if let Some(pw) = v.take_handoff_password() {
-                    self.session_vault_password = Some(pw);
-                }
-            }
-            View::AgentSetup(v) => {
-                if let Some(cfg) = v.take_session_agent_config() {
-                    self.agent_config = cfg;
-                }
-            }
-            _ => {}
+            KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
         }
     }
 
@@ -545,7 +504,10 @@ impl App {
                     };
                     self.approve_return = self.screen();
                     self.view = View::Approve(ApproveView::new(title, origin, details));
-                    self.pending_approval = Some(PendingApproval { kind: *kind, reply });
+                    self.pending_approval = Some(PendingApproval {
+                        kind: *kind,
+                        reply: Some(reply),
+                    });
                     // One approval on screen at a time; remaining queued
                     // requests are served once this one resolves.
                     break;
@@ -554,10 +516,81 @@ impl App {
         }
     }
 
-    /// Pump streaming agent chat events into the Agent view.
-    fn poll_agent(&mut self) {
-        if let View::Agent(view) = &mut self.view {
-            view.poll();
+    fn poll_mcp(&mut self) {
+        let mcp_pending = if self.wallet().is_unlocked() {
+            self.mcp.on_unlock(&self.handle);
+            let wallet = self.wallet();
+            let net = wallet.networks().active();
+            self.mcp.update_session(McpSessionSnapshot {
+                address: wallet.active_address().ok().map(str::to_string),
+                chain_id: Some(net.chain_id),
+                network_id: Some(net.id.clone()),
+            });
+            let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+            ProposalQueue::new(&profile_dir)
+                .list_pending()
+                .map(|p| p.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        self.chrome.mcp_pending = mcp_pending;
+        let pending_on_screen = self.pending_approval.is_some();
+        self.mcp.poll_file_queue(pending_on_screen);
+
+        while let Ok(request) = self.mcp_rx.try_recv() {
+            match request {
+                McpHostRequest::Propose {
+                    proposal,
+                    source,
+                    reply,
+                } => {
+                    if !self.wallet().is_unlocked() {
+                        if let Some(r) = reply {
+                            let _ = r.send(Err(ProviderError::Unauthorized(
+                                "wallet is locked".into(),
+                            )));
+                        }
+                        continue;
+                    }
+                    if self.pending_approval.is_some() {
+                        if let Some(r) = reply {
+                            let _ = r.send(Err(ProviderError::Internal(
+                                "another approval is pending".into(),
+                            )));
+                        }
+                        continue;
+                    }
+                    let proposal_id = proposal.proposal_id.clone();
+                    let kind = ApprovalKind::McpProposal {
+                        proposal_id,
+                        source: source.clone(),
+                        proposal,
+                    };
+                    let preview =
+                        provider::describe_approval(&kind, &self.wallet(), &self.handle);
+                    let (title, details) = match preview {
+                        Ok(preview) => preview,
+                        Err(error) => {
+                            if let Some(r) = reply {
+                                let _ = r.send(Err(error));
+                            }
+                            continue;
+                        }
+                    };
+                    self.approve_return = self.screen();
+                    self.view = View::Approve(ApproveView::new(
+                        title,
+                        Some(format!("MCP ({source})")),
+                        details,
+                    ));
+                    self.pending_approval = Some(PendingApproval {
+                        kind,
+                        reply,
+                    });
+                    break;
+                }
+            }
         }
     }
 
@@ -645,30 +678,32 @@ impl App {
         let Some(pending) = self.pending_approval.take() else {
             return;
         };
+        if deny {
+            if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
+                let wallet = self.wallet();
+                if let Some(parent) = wallet.path().parent() {
+                    if let Ok(Some(token)) = McpSessionToken::read(parent) {
+                        let queue = ProposalQueue::new(parent);
+                        let _ = queue.mark_rejected(proposal_id, "user rejected", token.as_bytes());
+                    }
+                }
+            }
+        }
         let result = if deny {
             Err(ProviderError::UserRejected)
         } else {
             provider::execute_approval_sync(&pending.kind, &self.wallet(), &self.handle)
         };
-        let _ = pending.reply.send(result);
+        let _ = pending.reply.map(|reply| reply.send(result));
         let back = self.approve_return;
         self.navigate(back);
     }
 
     /// Build the default view for `screen` (refreshing balance on Dashboard).
     fn navigate(&mut self, screen: Screen) {
-        // Prefer the session vault password so `/provider` can encrypt keys at rest.
-        // Unlock also deposits into `session_vault_password` via capture before this runs.
-        let setup_password = if screen == Screen::AgentSetup {
-            self.session_vault_password.clone()
-        } else {
-            None
-        };
-
         let view = match screen {
             Screen::Onboarding => View::Onboarding(OnboardingView::default()),
             Screen::Unlock => View::Unlock(UnlockView::default()),
-            Screen::AgentSetup => View::AgentSetup(AgentSetupView::new(setup_password)),
             Screen::Dashboard => {
                 let mut v = DashboardView::loading();
                 v.sync_from_chrome(&self.chrome);
@@ -713,29 +748,13 @@ impl App {
                 "Stake",
                 "Staking / liquid stake UI will land here.",
             )),
-            Screen::SoonHistory => View::Placeholder(PlaceholderView::new(
-                Screen::SoonHistory,
-                "History",
-                "Transaction history will land here.",
-            )),
-            Screen::Agent => {
-                let dir = vaughan_agent::profile_dir(self.wallet().path());
-                let mode = self.wallet().operating_mode();
-                let degen = if mode == OperatingMode::DegenTrader {
-                    build_session_degen_trader(&self.wallet())
-                } else {
-                    None
-                };
-                let session = build_agent_session_context(&self.wallet(), degen.as_deref());
-                View::Agent(Box::new(AgentView::with_session(
-                    self.agent_config.clone(),
-                    mode,
-                    Some(dir.as_path()),
-                    degen,
-                    session,
-                )))
+            Screen::History => View::History(HistoryView::loading()),
+            Screen::Approvals => View::Approvals(ApprovalsView::loading()),
+            Screen::Wrap => {
+                let chain_id = self.wallet().networks().active().chain_id;
+                View::Wrap(WrapView::for_chain(chain_id))
             }
-            // Approve is entered directly from `poll_provider` (it needs the
+            // Approve is entered directly from `poll_provider`
             // pending request + reply channel), never via navigation; this arm
             // is only here to keep the match exhaustive.
             Screen::Approve => View::Approve(ApproveView::new(
@@ -746,10 +765,18 @@ impl App {
         };
         self.view = view;
         match screen {
-            Screen::Onboarding | Screen::Unlock | Screen::AgentSetup | Screen::Approve => {}
+            Screen::Onboarding | Screen::Unlock | Screen::Approve => {}
             Screen::Assets => {
                 self.refresh_chrome();
                 self.spawn_job(UiJob::RefreshAssets);
+            }
+            Screen::History => {
+                self.refresh_chrome();
+                self.spawn_job(HistoryView::initial_job());
+            }
+            Screen::Approvals => {
+                self.refresh_chrome();
+                self.spawn_job(ApprovalsView::initial_job());
             }
             _ => self.refresh_chrome(),
         }
@@ -1161,6 +1188,14 @@ impl App {
                         Err(e) => Err(e),
                     }))
                 }
+                UiJob::RefreshActivity { limit } => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    UiJobResult::Activity(handle.block_on(w.activity(limit)))
+                }
+                UiJob::RefreshAllowances => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    UiJobResult::Allowances(handle.block_on(w.list_allowances()))
+                }
             };
             let _ = tx.send(result);
         });
@@ -1215,18 +1250,46 @@ impl App {
                     }
                     match &mut self.view {
                         View::Assets(v) => v.apply_assets(r),
-                        View::Agent(v) => v.apply_portfolio(r),
                         View::Dashboard(v) => v.sync_from_chrome(&self.chrome),
                         _ => {}
                     }
                 }
-                other => match &mut self.view {
-                    View::Dashboard(v) => v.apply_job_result(other),
-                    View::Dex(v) => v.apply_job_result(other),
-                    View::Aggregator(v) => v.apply_job_result(other),
-                    View::Bridge(v) => v.apply_job_result(other),
-                    _ => {}
-                },
+                other => {
+                    let reload = match &mut self.view {
+                        View::Dashboard(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::Dex(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::Aggregator(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::Bridge(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::History(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::Approvals(v) => {
+                            v.apply_job_result(other);
+                            v.reload_job()
+                        }
+                        View::Wrap(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(job) = reload {
+                        self.spawn_job(job);
+                    }
+                }
             }
         }
     }
@@ -1287,13 +1350,12 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'c' => GlobalAction::Navigate(Screen::Browser),
             'd' => GlobalAction::Navigate(Screen::Dex),
             'g' => GlobalAction::Navigate(Screen::Aggregator),
-            'q' => GlobalAction::Navigate(Screen::Agent),
             'n' | 'i' => GlobalAction::Navigate(Screen::Settings),
             'k' => GlobalAction::Navigate(Screen::Keys),
-            'e' => GlobalAction::Navigate(Screen::SoonNft),
+            'e' => GlobalAction::Navigate(Screen::Wrap),
             'f' => GlobalAction::Navigate(Screen::Bridge),
-            'j' => GlobalAction::Navigate(Screen::SoonStake),
-            'm' => GlobalAction::Navigate(Screen::SoonHistory),
+            'j' => GlobalAction::Navigate(Screen::Approvals),
+            'm' => GlobalAction::Navigate(Screen::History),
             'r' => GlobalAction::RefreshChrome,
             'h' => GlobalAction::Navigate(Screen::Dashboard),
             'l' => GlobalAction::Lock,
@@ -1301,55 +1363,6 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             _ => GlobalAction::None,
         },
         _ => GlobalAction::None,
-    }
-}
-
-/// Build a session [`DegenTrader`] from the unlocked burner wallet (Degen mode only).
-fn build_session_degen_trader(wallet: &WalletState) -> Option<Arc<DegenTrader>> {
-    let signer = wallet.active_signer().ok()?;
-    let net = wallet.networks().active();
-    let rpc_urls = vec![net.rpc_url.clone()];
-    let dir = vaughan_agent::profile_dir(wallet.path());
-    let cfg = vaughan_agent::breaker_config_for_session(Some(dir.as_path()), rpc_urls.len())
-        .unwrap_or_else(|e| {
-            tracing::warn!("degen policy load failed ({e}); using defaults");
-            CircuitBreakerConfig {
-                required_rpc_quorum: 1,
-                ..Default::default()
-            }
-        });
-    Some(Arc::new(DegenTrader::new(
-        signer,
-        rpc_urls,
-        net.chain_id,
-        cfg,
-    )))
-}
-
-/// Connected account + network facts for the agent system prompt / tools.
-fn build_agent_session_context(
-    wallet: &WalletState,
-    degen: Option<&DegenTrader>,
-) -> AgentSessionContext {
-    let net = wallet.networks().active();
-    let active_address = degen
-        .map(|t| format!("{:#x}", t.address()))
-        .or_else(|| wallet.active_address().ok().map(|a| a.to_string()));
-    let (max_position_pct, max_slippage_bps) = degen
-        .map(|t| {
-            let c = t.circuit_breaker().config();
-            (Some(c.max_position_pct), Some(c.max_slippage_bps))
-        })
-        .unwrap_or((None, None));
-    AgentSessionContext {
-        active_address,
-        chain_id: net.chain_id,
-        network_id: net.id.clone(),
-        network_name: net.name.clone(),
-        native_symbol: net.native_symbol.clone(),
-        is_testnet: net.is_testnet,
-        max_position_pct,
-        max_slippage_bps,
     }
 }
 
@@ -1382,10 +1395,10 @@ mod tests {
     }
 
     #[test]
-    fn q_opens_agent_when_unhandled() {
+    fn q_is_inert_when_unhandled() {
         assert_eq!(
             global_action(press('q'), &KeyOutcome::NotHandled),
-            GlobalAction::Navigate(Screen::Agent)
+            GlobalAction::None
         );
     }
 
@@ -1461,7 +1474,15 @@ mod tests {
         );
         assert_eq!(
             global_action(press('e'), &KeyOutcome::NotHandled),
-            GlobalAction::Navigate(Screen::SoonNft)
+            GlobalAction::Navigate(Screen::Wrap)
+        );
+        assert_eq!(
+            global_action(press('j'), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::Approvals)
+        );
+        assert_eq!(
+            global_action(press('m'), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::History)
         );
         assert_eq!(
             global_action(press('r'), &KeyOutcome::NotHandled),

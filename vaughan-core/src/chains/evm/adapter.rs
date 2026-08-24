@@ -61,6 +61,9 @@ pub fn transfer_topic0() -> B256 {
 /// address query.
 pub const DISCOVERY_BLOCK_WINDOW: u64 = 1_000_000;
 
+/// Block window for Activity / History (shorter than discovery for snappy UI).
+pub const HISTORY_BLOCK_WINDOW: u64 = 100_000;
+
 /// EVM adapter built on Alloy's HTTP provider, with transparent fallback to
 /// alternate RPC endpoints when the primary is down or rate-limited.
 pub struct EvmAdapter {
@@ -671,13 +674,119 @@ impl EvmAdapter {
         .ok()
     }
 
-    /// EVM-specific: ERC-20 transfer history (not yet implemented).
+    /// ERC-20 `Transfer` activity involving `wallet_address` over
+    /// [`HISTORY_BLOCK_WINDOW`] (sent + received). Sorted newest-first, capped
+    /// at `limit`. Native-only transfers without a token log are not included
+    /// (no explorer indexer).
     pub async fn get_token_transfer_history(
         &self,
-        _address: &str,
-        _limit: u32,
+        wallet_address: &str,
+        limit: u32,
     ) -> Result<Vec<TxRecord>, WalletError> {
-        Ok(Vec::new())
+        let wallet = parse_address(wallet_address)?;
+        let limit = limit.max(1) as usize;
+        let latest = self
+            .with_provider(|provider| async move {
+                provider
+                    .get_block_number()
+                    .await
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            })
+            .await?;
+        let from = latest.saturating_sub(HISTORY_BLOCK_WINDOW);
+
+        let mut records = Vec::new();
+        for filter in [
+            Filter::new()
+                .from_block(from)
+                .to_block(latest)
+                .event_signature(transfer_topic0())
+                .topic2(wallet),
+            Filter::new()
+                .from_block(from)
+                .to_block(latest)
+                .event_signature(transfer_topic0())
+                .topic1(wallet),
+        ] {
+            let logs = self
+                .with_provider(|provider| {
+                    let filter = filter.clone();
+                    async move {
+                        provider
+                            .get_logs(&filter)
+                            .await
+                            .map_err(|e| WalletError::RpcError(e.to_string()))
+                    }
+                })
+                .await?;
+            for log in logs {
+                let topics = log.topics();
+                if topics.len() < 3 {
+                    continue;
+                }
+                let from_addr = Address::from_slice(&topics[1].as_slice()[12..]);
+                let to_addr = Address::from_slice(&topics[2].as_slice()[12..]);
+                let amount = U256::from_be_slice(log.data().data.as_ref());
+                let token = log.inner.address;
+                let symbol = self.eth_call_symbol(token).await;
+                let hash = log
+                    .transaction_hash
+                    .map(|h| format!("{h:#x}"))
+                    .unwrap_or_default();
+                if hash.is_empty() {
+                    continue;
+                }
+                // Dedup same log seen in both queries
+                if records.iter().any(|r: &TxRecord| {
+                    r.hash == hash
+                        && r.token_address.as_deref() == Some(&format!("{token:#x}"))
+                        && r.from.eq_ignore_ascii_case(&format!("{from_addr:#x}"))
+                        && r.to.eq_ignore_ascii_case(&format!("{to_addr:#x}"))
+                }) {
+                    continue;
+                }
+                records.push(TxRecord {
+                    hash,
+                    from: format!("{from_addr:#x}"),
+                    to: format!("{to_addr:#x}"),
+                    value: amount.to_string(),
+                    status: TxStatus::Confirmed,
+                    block_number: log.block_number,
+                    timestamp: None,
+                    gas_used: None,
+                    token_symbol: symbol,
+                    token_address: Some(format!("{token:#x}")),
+                    is_token_transfer: true,
+                });
+            }
+        }
+        records.sort_by_key(|b| std::cmp::Reverse(b.block_number));
+        records.truncate(limit);
+        Ok(records)
+    }
+
+    /// `allowance(owner, spender)` for an ERC-20 (eth_call).
+    pub async fn get_erc20_allowance(
+        &self,
+        token: Address,
+        owner: Address,
+        spender: Address,
+    ) -> Result<U256, WalletError> {
+        let call = IERC20Metadata::allowanceCall { owner, spender };
+        let input = call.abi_encode();
+        let raw = self
+            .with_provider(|provider| {
+                let input = input.clone();
+                async move {
+                    provider
+                        .call(TransactionRequest::default().to(token).input(input.into()))
+                        .await
+                        .map_err(|e| WalletError::RpcError(e.to_string()))
+                }
+            })
+            .await?;
+        IERC20Metadata::allowanceCall::abi_decode_returns(&raw)
+            .map_err(|e| WalletError::RpcError(format!("allowance decode: {e}")))
     }
 
     /// Build and sign an EVM transaction, returning the raw signed envelope
@@ -994,11 +1103,12 @@ impl ChainAdapter for EvmAdapter {
 
     async fn get_transaction_history(
         &self,
-        _address: &str,
-        _limit: u32,
+        address: &str,
+        limit: u32,
     ) -> Result<Vec<TxRecord>, WalletError> {
-        // Explorer-backed history is a Phase 2 feature.
-        Ok(Vec::new())
+        // Explorer-backed native history is Phase 2; ERC-20 Transfer logs cover
+        // Ag / Dex / Bridge token activity without an indexer.
+        self.get_token_transfer_history(address, limit).await
     }
 }
 

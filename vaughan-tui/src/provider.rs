@@ -14,12 +14,15 @@
 use std::env;
 use std::sync::Arc;
 
+use alloy::primitives::Address;
+use alloy::providers::Provider;
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
 use vaughan_core::chains::{EvmTransaction, Fee};
+use vaughan_core::core::proposal::{apply_proposal, ProposalQueue, TxProposal};
 use vaughan_core::core::{format_base_units, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::server::DEFAULT_PORT;
@@ -44,6 +47,12 @@ pub enum ApprovalKind {
     SignMessage { address: String, message: String },
     /// EIP-712 typed-data signing.
     SignTypedData { address: String, typed_data: Value },
+    /// MCP / external agent transaction proposal.
+    McpProposal {
+        proposal_id: String,
+        source: String,
+        proposal: Box<TxProposal>,
+    },
 }
 
 /// A request forwarded from the provider handler to the UI thread.
@@ -352,6 +361,42 @@ pub fn describe_approval(
                 ],
             ))
         }
+        ApprovalKind::McpProposal {
+            proposal,
+            source,
+            ..
+        } => {
+            let net = wallet.networks().active();
+            let to = format!("{:#x}", proposal.to);
+            let value = format_base_units(&proposal.value_wei.to_string(), net.decimals);
+            let testnet = if net.is_testnet { " (testnet)" } else { "" };
+            let data = if proposal.calldata.is_empty() {
+                None
+            } else {
+                Some(format!("0x{}", hex::encode(&proposal.calldata)))
+            };
+            let mut lines = vec![
+                format!("Source:  MCP ({source})"),
+                format!("To:      {to}"),
+                format!("Value:   {value} {}", net.native_symbol),
+                format!("Network: {}{testnet}", net.name),
+                format!("Gas:     {}", proposal.gas_limit),
+                format!(
+                    "Sim (agent): {}",
+                    if proposal.simulation_success {
+                        "ok"
+                    } else {
+                        "failed — will re-simulate"
+                    }
+                ),
+                "Note:    Agent explanation is UNTRUSTED — verify calldata below".to_string(),
+                format!("Agent:   {}", proposal.explanation),
+            ];
+            if let Some(d) = data {
+                lines.push(format!("Data:    {d}"));
+            }
+            Ok(("MCP transaction proposal".into(), lines))
+        }
     }
 }
 
@@ -460,7 +505,67 @@ pub async fn execute_approval(
                 .map(|hash| hash.to_string())
                 .map_err(map_wallet_error)
         }
+        ApprovalKind::McpProposal {
+            proposal_id,
+            proposal,
+            ..
+        } => {
+            resimulate_mcp_proposal(wallet, proposal).await?;
+            let evm = apply_proposal(wallet, proposal).map_err(map_wallet_error)?;
+            let hash = wallet
+                .send_transaction(evm)
+                .await
+                .map_err(map_wallet_error)?;
+            if let Some(parent) = wallet.path().parent() {
+                if let Ok(Some(token)) = vaughan_core::core::McpSessionToken::read(parent) {
+                    let queue = ProposalQueue::new(parent);
+                    let _ = queue.mark_approved(proposal_id, &hash.to_string(), token.as_bytes());
+                }
+            }
+            Ok(hash.to_string())
+        }
     }
+}
+
+/// FR-6.4: re-run `eth_call` at approve time so stale agent simulations cannot
+/// bypass a fresh on-chain check immediately before sign/broadcast.
+async fn resimulate_mcp_proposal(
+    wallet: &WalletState,
+    proposal: &TxProposal,
+) -> Result<(), ProviderError> {
+    let from_str = wallet
+        .active_address()
+        .map_err(map_wallet_error)?;
+    let from: Address = from_str.parse().map_err(|_| {
+        ProviderError::Internal("active account address is invalid".into())
+    })?;
+    let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
+    let to = proposal.to;
+    let value = proposal.value_wei;
+    let data = proposal.calldata.clone();
+    adapter
+        .with_provider(|provider| {
+            let data = data.clone();
+            async move {
+                let tx = alloy::rpc::types::eth::TransactionRequest::default()
+                    .from(from)
+                    .to(to)
+                    .input(data.into())
+                    .value(value);
+                provider
+                    .call(tx)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            }
+        })
+        .await
+        .map_err(|e| match e {
+            WalletError::RpcError(msg) => {
+                ProviderError::InvalidParams(format!("simulation reverted: {msg}"))
+            }
+            other => map_wallet_error(other),
+        })
 }
 
 /// Synchronous wrapper for the UI thread: runs [`execute_approval`] via

@@ -33,7 +33,8 @@ In scope:
 - Vault encryption, key handling, memory zeroization, and secret logging
 - Transaction signing, approval flows, and broadcast paths
 - EIP-1193 provider bridge and dApp approval UX
-- AI agent tools that can propose or execute on-chain actions
+- MCP external-agent tools (`vaughan mcp`) and proposal/approval flows
+- EIP-1193 provider bridge proposal paths (dApp + MCP unified gate)
 - Dependency supply-chain issues in this repository's direct build
 
 Out of scope:

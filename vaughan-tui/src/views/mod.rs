@@ -7,8 +7,7 @@
 
 pub mod aa_send;
 pub mod ag;
-pub mod agent;
-pub mod agent_setup;
+pub mod approvals;
 pub mod approve;
 pub mod assets;
 pub mod bridge;
@@ -17,6 +16,7 @@ pub mod dapps;
 pub mod dashboard;
 pub mod dex;
 pub mod dex_calldata;
+pub mod history;
 pub mod keys;
 pub mod onboarding;
 pub mod placeholder;
@@ -24,11 +24,11 @@ pub mod receive;
 pub mod send;
 pub mod settings;
 pub mod unlock;
+pub mod wrap;
 
 pub use aa_send::AaSendView;
 pub use ag::AgView;
-pub use agent::AgentView;
-pub use agent_setup::AgentSetupView;
+pub use approvals::ApprovalsView;
 pub use approve::ApproveView;
 pub use assets::AssetsView;
 pub use bridge::BridgeView;
@@ -36,6 +36,7 @@ pub use browser::BrowserView;
 pub use dapps::DappsView;
 pub use dashboard::DashboardView;
 pub use dex::DexView;
+pub use history::HistoryView;
 pub use keys::KeysView;
 pub use onboarding::OnboardingView;
 pub use placeholder::PlaceholderView;
@@ -43,9 +44,10 @@ pub use receive::ReceiveView;
 pub use send::SendView;
 pub use settings::SettingsView;
 pub use unlock::UnlockView;
+pub use wrap::WrapView;
 
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
@@ -58,12 +60,30 @@ use crate::input::Input;
 use crate::jobs::{spinner_frame, ChromeFocus};
 
 /// Render the full screen: wordmark, address, need-to-know status, body, footer.
+///
+/// While the vault is locked (welcome / unlock), chrome is omitted so the splash
+/// can show only the big wordmark + password — no empty status boxes.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let unlocked = app.try_wallet().is_some_and(|w| w.is_unlocked());
+
+    if !unlocked {
+        let [body, slogan] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        app.render_body(frame, body);
+        frame.render_widget(
+            Paragraph::new(brand::typing_slogan(app.tick())).alignment(Alignment::Center),
+            slogan,
+        );
+        if app.quit_confirm().is_some() {
+            render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
+        }
+        return;
+    }
+
     // Status boxes + three rows of footer key chips when unlocked (no row gap).
     let status_h = 3u16;
-    let footer_h = if unlocked { 9 } else { 3 };
+    let footer_h = 9u16;
 
     let [logo, _gap_above, addr_row, _gap_below, status_bar, body, footer] = Layout::vertical([
         Constraint::Length(1), // VAUGHAN banner
@@ -79,21 +99,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(brand::logo_banner(logo.width)), logo);
     render_address_under_augha(frame, addr_row, app);
     render_status_strip(frame, status_bar, app, unlocked);
-    if unlocked {
-        render_action_footer(frame, footer, app);
-    } else {
-        let [quit_box] = Layout::horizontal([Constraint::Percentage(100)]).areas(footer);
-        // Centre a single quit chip.
-        let w = quit_box.width.min(16);
-        let x = quit_box.x + quit_box.width.saturating_sub(w) / 2;
-        let chip = Rect {
-            x,
-            y: quit_box.y,
-            width: w,
-            height: quit_box.height.min(3),
-        };
-        render_key_chip(frame, chip, "x", "Quit");
-    }
+    render_action_footer(frame, footer, app);
     app.render_body(frame, body);
     if app.quit_confirm().is_some() {
         render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
@@ -144,7 +150,11 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
             .unwrap_or_else(|| ("—".into(), String::new(), "ETH".into()))
     };
 
-    let network_value = format!("{net_name}{testnet}");
+    let network_value = if chrome.mcp_pending > 0 {
+        format!("{net_name}{testnet} · MCP {}", chrome.mcp_pending)
+    } else {
+        format!("{net_name}{testnet}")
+    };
 
     let asset_idx = if chrome.focus == ChromeFocus::Asset {
         chrome.pending_asset_idx.unwrap_or(chrome.asset_idx)
@@ -232,7 +242,7 @@ fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focu
 fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     // No `s Send` chip — Send stays available via global `s`.
     // Theme (`t`) is intentionally omitted from the footer.
-    // 21 chips → three even rows of 7 (no vertical gap between rows).
+    // 20 chips → three rows (7 + 7 + 6).
     let keys: &[(&str, &str)] = &[
         ("v", "Recv"),
         ("a", "Assets"),
@@ -245,11 +255,10 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("n", "Net"),
         ("i", "Settings"),
         ("k", "Keys"),
-        ("e", "NFT"),
+        ("e", "Wrap"),
         ("f", "Bridge"),
-        ("j", "Stake"),
+        ("j", "Appr"),
         ("m", "Hist"),
-        ("q", "Agent"),
         ("r", "Refresh"),
         ("l", "Lock"),
         ("tab", "Next"),
@@ -258,8 +267,9 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     ];
 
     let n = keys.len();
-    debug_assert_eq!(n, 21);
-    let row_n = n / 3;
+    debug_assert_eq!(n, 20);
+    let row1_n = 7;
+    let row2_n = 7;
     let [row1, row2, row3] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(3),
@@ -268,9 +278,9 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     .spacing(0)
     .areas(area);
 
-    render_chip_row(frame, row1, &keys[..row_n]);
-    render_chip_row(frame, row2, &keys[row_n..row_n * 2]);
-    render_chip_row(frame, row3, &keys[row_n * 2..]);
+    render_chip_row(frame, row1, &keys[..row1_n]);
+    render_chip_row(frame, row2, &keys[row1_n..row1_n + row2_n]);
+    render_chip_row(frame, row3, &keys[row1_n + row2_n..]);
 }
 
 /// Evenly spaced faded boxes, one per key chip.
@@ -413,6 +423,9 @@ fn fit_raw(address: &str, budget: usize) -> String {
 }
 
 /// Render a labelled text input inside a faded square box (yellow title when focused).
+///
+/// The title carries the label; the inner area shows only the value (or stays
+/// blank when empty and unfocused — no duplicated `Label:` / placeholder noise).
 pub(crate) fn render_labeled_input(
     frame: &mut Frame,
     area: Rect,
@@ -427,9 +440,10 @@ pub(crate) fn render_labeled_input(
         brand::fade_line(&title_text)
     };
     let inner = brand::render_faded_box(frame, area, Some(title));
-    let mut line = Line::from(Span::raw(format!("{label}: ")));
-    line.extend(input.line());
-    frame.render_widget(Paragraph::new(line), inner);
+    if !focused && input.value().is_empty() {
+        return;
+    }
+    frame.render_widget(Paragraph::new(input.line()), inner);
 }
 
 /// A status/error line rendered at the bottom of a view's body.

@@ -22,9 +22,11 @@ EVM-first and PulseChain-optimized, architected after the `vaughan-core` layerin
 [Vaughan-Dioxus](https://github.com/r4-ndm/Vaughan-Dioxus).
 
 > **Status:** public **prototype** on `main` — expect rough edges and breaking
-> changes. Phase 1–5 core features are implemented; DEX / aggregator / agent
-> paths are still evolving. Prefer testnet. Review [SECURITY.md](SECURITY.md)
-> before trusting any build with real funds.
+> changes. Phase 1–5 core wallet features are implemented; DEX / aggregator
+> paths are still evolving. **Plan change:** embedded in-wallet LLM chat is
+> retired — agents use Vaughan via MCP (`vaughan mcp`; see [docs/mcp.md](docs/mcp.md)).
+> Prefer testnet. Review [SECURITY.md](SECURITY.md) before trusting any build
+> with real funds.
 
 ## Install
 
@@ -62,7 +64,6 @@ vaughan tui          # same as above
 vaughan balance      # scriptable CLI subcommands
 vaughan send …
 vaughan browse 0x…
-vaughan agent "inspect 0x…" --mode assist
 ```
 
 Ensure `~/.local/bin` (or `~/.cargo/bin` when using the cargo fallback) is on your `PATH`.
@@ -94,10 +95,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.
 - ⚡ **Ambire EIP-7702 smart accounts**: atomic batched transfers without ERC-4337 bundler overhead
 - 🖥️ **EIP-1193 provider bridge**: local WebSocket JSON-RPC provider with trusted-host allowlisting for Freedom Browser and dApps
 - 🔍 **Contract browser REPL (`wiz4rd-engine`)**: bytecode inspection, ERC-20/Uniswap capability probing, dynamic ABI calls
-- 🤖 **Sandboxed AI agent subsystem (`vaughan-agent`)**:
-  - **Human Purist mode**: cold-storage isolation with zero AI code execution
-  - **AI Assisted mode**: propose-only advisor with sensory tools and ground-truth calldata confirmation cards
-  - **Degen mode**: autonomous trader on an isolated burner profile with multi-RPC quorum validation and circuit breakers
+- 🤖 **MCP for external agents**: `vaughan mcp` — Cursor / Claude / Codex propose txs; TUI approves; keys never leave the wallet process
 
 ## Architecture
 
@@ -106,20 +104,23 @@ vaughan-cli/
 ├─ vaughan-core/      # Vault encryption, HD wallets, EVM adapters, contract browser engine
 ├─ vaughan-aa/        # Ambire EIP-7702 batching, delegation, and signature serialization
 ├─ vaughan-provider/  # Local EIP-1193 WebSocket JSON-RPC server and allowlist security
-├─ vaughan-agent/     # Multi-provider LLM engine, sensory & proposal tools, circuit breakers
-├─ vaughan-tui/       # Ratatui terminal frontend (views, dashboard, batch send, agent chat REPL)
+├─ vaughan-agent/     # Library: proposal engine, sensory tools, circuit breakers
+├─ vaughan-mcp/       # MCP stdio server for external agents (Cursor, Claude, …)
+├─ vaughan-tui/       # Ratatui terminal frontend (views, dashboard, batch send)
 └─ vaughan-cli/       # Unified `vaughan` binary: TUI by default, CLI subcommands
 ```
 
 ## Documentation
 
-- [docs/agent-configuration.md](docs/agent-configuration.md) — Ollama, Gemini, OpenAI, and agent profiles
-- [docs/AI-AGENT-ARCHITECTURE.md](docs/AI-AGENT-ARCHITECTURE.md) — AI agent architecture and sandboxing
+- [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
+- [docs/ai-tool-surface.md](docs/ai-tool-surface.md) — Public tool contract for agents
+- [docs/mcp-threat-model.md](docs/mcp-threat-model.md) — MCP threat model
 - [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md) — EIP-1193 provider bridge
 - [docs/ambire-aa.md](docs/ambire-aa.md) — Ambire EIP-7702 batch transactions
 - [docs/browser-engine.md](docs/browser-engine.md) — Smart contract browser engine
 - [docs/piteas.md](docs/piteas.md) — PulseChain Piteas swap / quote integration notes
 - [docs/aggregator.md](docs/aggregator.md) — Multi-DEX aggregator surface
+- [PLAN.md](PLAN.md) — Architecture and phase plan (incl. MCP pivot)
 - [REQUIREMENTS.md](REQUIREMENTS.md) — Functional and non-functional requirements
 - [TASKS.md](TASKS.md) — Implementation backlog and test matrix
 - [SECURITY.md](SECURITY.md) — Vulnerability reporting ([@VaughanWallet](https://x.com/VaughanWallet))

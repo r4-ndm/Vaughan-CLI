@@ -79,7 +79,9 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         UiJob::RefreshChrome
         | UiJob::SendEvm { .. }
         | UiJob::AggQuote { .. }
-        | UiJob::BridgeQuote { .. } => return,
+        | UiJob::BridgeQuote { .. }
+        | UiJob::RefreshActivity { .. }
+        | UiJob::RefreshAllowances => return,
     };
     view.apply_job_result(result);
 }

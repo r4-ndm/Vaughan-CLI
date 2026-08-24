@@ -5,11 +5,18 @@
 //! scripts and CI. All vault-touching subcommands require the wallet password
 //! — via `--password-env NAME` for automation, or an interactive prompt.
 
+mod json_out;
+
 use std::path::PathBuf;
 
+use alloy::primitives::Address;
 use clap::{Parser, Subcommand};
 use secrecy::SecretString;
+use serde_json::json;
+use vaughan_agent::paths::profile_dir;
+use vaughan_agent::tools::{default_assist_registry, ToolContext};
 use vaughan_core::chains::ChainTransaction;
+use vaughan_core::core::proposal::{ProposalQueue, TxProposal};
 use vaughan_core::core::{OperatingMode, StateManager, TransactionService, WalletState};
 
 #[derive(Debug, Parser)]
@@ -23,13 +30,13 @@ struct Cli {
     #[arg(long, global = true)]
     vault: Option<PathBuf>,
 
-    /// Profile name (default: "default"; isolated degen bot: "degen").
+    /// Profile name (default: "default").
     #[arg(long, global = true, default_value = "default")]
     profile: String,
 
-    /// Operating mode (human, assist, degen).
+    /// Emit machine-readable JSON (`{ "ok": true, "data": … }`).
     #[arg(long, global = true)]
-    mode: Option<String>,
+    json: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -126,62 +133,67 @@ enum Command {
         #[arg(long)]
         rpc_url: Option<String>,
     },
-    /// Ask the AI Agent to inspect contracts, query balances, or prepare proposals.
-    Agent {
-        /// The query or instruction for the AI agent subsystem.
-        prompt: String,
-        /// Network id override (e.g. pulsechain, pulsechain-testnet-v4).
-        #[arg(long)]
-        network: Option<String>,
-        /// RPC url override.
-        #[arg(long)]
-        rpc_url: Option<String>,
-    },
-    /// Degen session policy (guardrails in `degen-policy.toml`).
-    ///
-    /// Prefer `--profile degen`. Does not require unlock for show/set (file only);
-    /// live breaker reload happens next Agent session / `/policy reload` in TUI.
-    Policy {
+    /// Draft a transaction proposal (does not sign — queues for TUI approval).
+    Propose {
         #[command(subcommand)]
-        action: PolicyCmd,
+        action: ProposeCmd,
+    },
+    /// List or inspect pending MCP/CLI proposals.
+    Proposals {
+        #[command(subcommand)]
+        action: ProposalsCmd,
+    },
+    /// MCP stdio server for external agents (Cursor, Claude Code, …).
+    Mcp {
+        /// Client label shown on approval cards (e.g. cursor, claude).
+        #[arg(long, default_value = "cursor")]
+        source: String,
     },
 }
 
 #[derive(Debug, Subcommand)]
-enum PolicyCmd {
-    /// Print current policy (defaults if file missing).
-    Show,
-    /// Reload/validate file and print summary.
-    Reload,
-    /// Allow `enforcement disabled` (writes acknowledge_unsafe = true).
-    ConfirmUnsafe,
-    /// Set one key (enforcement, max_slippage_bps, …).
-    Set {
-        /// Policy field name.
-        key: String,
-        /// New value.
-        value: String,
+enum ProposeCmd {
+    /// Draft a native or ERC-20 transfer proposal.
+    Transfer {
+        recipient: String,
+        /// Amount in base units (wei).
+        amount: String,
+        /// Optional ERC-20 token contract (omit for native).
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long, default_value = "CLI transfer proposal")]
+        explanation: String,
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum ProposalsCmd {
+    /// List pending proposals.
+    List,
+    /// Show one proposal by id.
+    Show { proposal_id: String },
+}
+
 fn main() {
+    let cli = Cli::parse();
     let Cli {
         vault,
         profile,
-        mode,
+        json,
         command,
-    } = Cli::parse();
+    } = cli;
     let result = match command {
         None | Some(Command::Tui) => {
             vaughan_tui::run_interactive().map_err(|e| anyhow::anyhow!("{}", e))
         }
-        Some(Command::Policy { action }) => {
+        Some(Command::Mcp { source }) => {
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-            runtime.block_on(run_policy_cli(vault, profile, action))
+            runtime.block_on(vaughan_mcp::run_stdio_server(profile, source))
+                .map_err(|e| anyhow::anyhow!("{e}"))
         }
         Some(command) => {
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-            runtime.block_on(run_cli(vault, profile, mode, command))
+            runtime.block_on(run_cli(vault, profile, json, command))
         }
     };
     if let Err(e) = result {
@@ -193,17 +205,9 @@ fn main() {
 async fn run_cli(
     vault: Option<PathBuf>,
     profile: String,
-    mode: Option<String>,
+    json_mode: bool,
     command: Command,
 ) -> anyhow::Result<()> {
-    let mode = match mode.as_deref() {
-        Some("degen") | Some("degen-trader") => OperatingMode::DegenTrader,
-        Some("assist") | Some("ai-assisted") => OperatingMode::AiAssisted,
-        Some("human") | Some("human-only") | None => OperatingMode::HumanOnly,
-        Some(unknown) => {
-            anyhow::bail!("unknown operating mode: '{unknown}'. Valid: human, assist, degen")
-        }
-    };
     let path = if let Some(custom_vault) = vault {
         custom_vault
     } else {
@@ -212,21 +216,40 @@ async fn run_cli(
             std::process::exit(1);
         })
     };
-    let mut wallet = WalletState::load_with_session(path, mode, profile)?;
+    let mut wallet = WalletState::load_with_session(path, OperatingMode::HumanOnly, profile)?;
 
     match command {
         Command::Tui => unreachable!("tui handled in main"),
         Command::Networks => {
-            for net in wallet.networks().networks() {
-                println!(
-                    "{:<24} chain {}  {}  {}",
-                    net.id,
-                    net.chain_id,
-                    if net.is_testnet { "testnet" } else { "mainnet" },
-                    net.rpc_url
-                );
-            }
-            println!("active: {}", wallet.networks().active_id());
+            let nets: Vec<_> = wallet
+                .networks()
+                .networks()
+                .iter()
+                .map(|net| {
+                    json!({
+                        "id": net.id,
+                        "chain_id": net.chain_id,
+                        "testnet": net.is_testnet,
+                        "rpc_url": net.rpc_url,
+                    })
+                })
+                .collect();
+            let data = json!({
+                "networks": nets,
+                "active": wallet.networks().active_id(),
+            });
+            json_out::print_json_value(json_mode, &data, || {
+                for net in wallet.networks().networks() {
+                    println!(
+                        "{:<24} chain {}  {}  {}",
+                        net.id,
+                        net.chain_id,
+                        if net.is_testnet { "testnet" } else { "mainnet" },
+                        net.rpc_url
+                    );
+                }
+                println!("active: {}", wallet.networks().active_id());
+            });
         }
         Command::Create { password_env } => {
             if wallet.is_initialized() {
@@ -265,12 +288,15 @@ async fn run_cli(
                 wallet.set_rpc_override(&url);
             }
             let balance = wallet.balance().await?;
-            println!(
-                "{}  ({} {})",
-                wallet.active_address()?,
-                balance.formatted,
-                balance.token.symbol
-            );
+            let addr = wallet.active_address()?.to_string();
+            let data = json!({
+                "address": addr,
+                "balance": balance.formatted,
+                "symbol": balance.token.symbol,
+            });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("{addr}  ({} {})", balance.formatted, balance.token.symbol);
+            });
         }
         Command::Assets {
             network,
@@ -286,19 +312,32 @@ async fn run_cli(
             }
             let assets = wallet.assets().await?;
             let addr = wallet.active_address()?.to_string();
-            println!("{addr}");
-            if assets.is_empty() {
-                println!("no balances detected");
-            }
-            for bal in assets {
-                let contract = bal
-                    .token
-                    .contract_address
-                    .as_deref()
-                    .map(|a| format!("  {a}"))
-                    .unwrap_or_default();
-                println!("{:<6} {}{contract}", bal.token.symbol, bal.formatted);
-            }
+            let rows: Vec<_> = assets
+                .iter()
+                .map(|bal| {
+                    json!({
+                        "symbol": bal.token.symbol,
+                        "formatted": bal.formatted,
+                        "contract": bal.token.contract_address,
+                    })
+                })
+                .collect();
+            let data = json!({ "address": addr, "assets": rows });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("{addr}");
+                if assets.is_empty() {
+                    println!("no balances detected");
+                }
+                for bal in assets {
+                    let contract = bal
+                        .token
+                        .contract_address
+                        .as_deref()
+                        .map(|a| format!("  {a}"))
+                        .unwrap_or_default();
+                    println!("{:<6} {}{contract}", bal.token.symbol, bal.formatted);
+                }
+            });
         }
         Command::Send {
             to,
@@ -399,52 +438,94 @@ async fn run_cli(
                                 .call_raw(&provider, addr, bytes)
                                 .await
                                 .map_err(vaughan_core::error::WalletError::RpcError)?;
-                            println!("0x{}", hex::encode(&out));
+                            let data = json!({
+                                "address": addr.to_checksum(None),
+                                "chain_id": chain_id,
+                                "result_hex": format!("0x{}", hex::encode(&out)),
+                            });
+                            json_out::print_json_value(json_mode, &data, || {
+                                println!("0x{}", hex::encode(&out));
+                            });
                             return Ok(());
                         }
 
                         let insp = eng.inspect(&provider, chain_id, addr).await;
-                        println!("Address:     {}", addr.to_checksum(None));
-                        println!("Chain:       {} ({})", net.name, chain_id);
-                        println!("Fingerprint: {:?}", insp.fingerprint);
+                        let mut data = json!({
+                            "address": addr.to_checksum(None),
+                            "chain_id": chain_id,
+                            "network": net.name,
+                            "fingerprint": format!("{:?}", insp.fingerprint),
+                        });
 
                         match &insp.abi_resolution {
                             vaughan_core::browser::abi::AbiResolution::Verified(abi) => {
-                                println!(
-                                    "ABI:         Verified ({} functions)",
-                                    abi.functions.len()
-                                );
+                                data["abi"] = json!({
+                                    "status": "verified",
+                                    "function_count": abi.functions.len(),
+                                });
                                 if let Some(fn_name) = c {
                                     let res = eng
                                         .call_named(&provider, addr, abi, &fn_name, &av)
                                         .await
                                         .map_err(vaughan_core::error::WalletError::RpcError)?;
-                                    if res.decoded_values.is_empty() {
-                                        println!("Result:      0x{}", hex::encode(&res.raw_output));
-                                    } else {
-                                        println!("Result:      {}", res.decoded_values.join(", "));
-                                    }
+                                    data["call"] = json!({
+                                        "function": fn_name,
+                                        "decoded": res.decoded_values,
+                                        "result_hex": format!("0x{}", hex::encode(&res.raw_output)),
+                                    });
+                                    json_out::print_json_value(json_mode, &data, || {
+                                        if res.decoded_values.is_empty() {
+                                            println!("Result:      0x{}", hex::encode(&res.raw_output));
+                                        } else {
+                                            println!("Result:      {}", res.decoded_values.join(", "));
+                                        }
+                                    });
                                 } else {
                                     let mut names: Vec<_> =
                                         abi.functions.keys().map(|k| k.as_str()).collect();
                                     names.sort_unstable();
-                                    println!("Functions:   {}", names.join(", "));
+                                    data["functions"] = json!(names);
+                                    json_out::print_json_value(json_mode, &data, || {
+                                        println!("Address:     {}", addr.to_checksum(None));
+                                        println!("Chain:       {} ({})", net.name, chain_id);
+                                        println!("Fingerprint: {:?}", insp.fingerprint);
+                                        println!(
+                                            "ABI:         Verified ({} functions)",
+                                            abi.functions.len()
+                                        );
+                                        println!("Functions:   {}", names.join(", "));
+                                    });
                                 }
                             }
                             vaughan_core::browser::abi::AbiResolution::Unverified => {
-                                println!(
-                                    "ABI:         Unverified ({} candidate selectors)",
-                                    insp.candidate_selectors.len()
-                                );
                                 let hex_list: Vec<_> = insp
                                     .candidate_selectors
                                     .iter()
                                     .map(|s| vaughan_core::browser::selectors::selector_to_hex(*s))
                                     .collect();
-                                println!("Selectors:   {}", hex_list.join(", "));
+                                data["abi"] = json!({
+                                    "status": "unverified",
+                                    "candidate_selectors": hex_list,
+                                });
+                                json_out::print_json_value(json_mode, &data, || {
+                                    println!("Address:     {}", addr.to_checksum(None));
+                                    println!("Chain:       {} ({})", net.name, chain_id);
+                                    println!("Fingerprint: {:?}", insp.fingerprint);
+                                    println!(
+                                        "ABI:         Unverified ({} candidate selectors)",
+                                        insp.candidate_selectors.len()
+                                    );
+                                    println!("Selectors:   {}", hex_list.join(", "));
+                                });
                             }
                             vaughan_core::browser::abi::AbiResolution::Error(err) => {
-                                println!("ABI:         Error ({err})");
+                                data["abi"] = json!({ "status": "error", "message": err });
+                                json_out::print_json_value(json_mode, &data, || {
+                                    println!("Address:     {}", addr.to_checksum(None));
+                                    println!("Chain:       {} ({})", net.name, chain_id);
+                                    println!("Fingerprint: {:?}", insp.fingerprint);
+                                    println!("ABI:         Error ({err})");
+                                });
                             }
                         }
                         Ok(())
@@ -452,239 +533,105 @@ async fn run_cli(
                 })
                 .await?;
         }
-        Command::Agent {
-            prompt,
-            network,
-            rpc_url,
-        } => {
-            use std::str::FromStr;
-            if mode == OperatingMode::HumanOnly {
-                anyhow::bail!("AI agent is disabled in Human-Only operating mode (use --mode assist or --mode degen)");
-            }
-            if let Some(id) = network {
-                wallet.set_active_network(&id)?;
-            }
-            let active_net = wallet.networks().active();
-            let effective_rpc = rpc_url.unwrap_or_else(|| active_net.rpc_url.clone());
-
-            let context = vaughan_agent::tools::ToolContext {
-                rpc_url: effective_rpc,
-                chain_id: active_net.chain_id,
+        Command::Mcp { .. } => unreachable!("mcp handled in main"),
+        Command::Propose { action } => {
+            unlock(&mut wallet, None)?;
+            let net = wallet.networks().active();
+            let registry = default_assist_registry();
+            let context = ToolContext {
+                rpc_url: wallet.active_rpc_url(),
+                chain_id: net.chain_id,
                 active_address: wallet
                     .active_address()
                     .ok()
-                    .and_then(|a| alloy::primitives::Address::from_str(a).ok()),
+                    .and_then(|a| a.parse::<Address>().ok()),
             };
-
-            let registry = if mode == OperatingMode::DegenTrader {
-                match wallet.active_signer() {
-                    Ok(signer) => {
-                        use std::sync::Arc;
-                        use vaughan_agent::DegenTrader;
-                        let dir = vaughan_agent::profile_dir(wallet.path());
-                        let cfg = vaughan_agent::breaker_config_for_session(Some(dir.as_path()), 1)
-                            .map_err(|e| anyhow::anyhow!("degen policy: {e}"))?;
-                        let trader = Arc::new(DegenTrader::new(
-                            signer,
-                            vec![context.rpc_url.clone()],
-                            context.chain_id,
-                            cfg,
-                        ));
-                        vaughan_agent::tools::default_degen_registry(trader, dir.as_path())
+            match action {
+                ProposeCmd::Transfer {
+                    recipient,
+                    amount,
+                    token,
+                    explanation,
+                } => {
+                    let mut args = json!({
+                        "recipient": recipient,
+                        "amount": amount,
+                        "explanation": explanation,
+                    });
+                    if let Some(t) = token {
+                        args["token_address"] = json!(t);
                     }
-                    Err(e) => {
-                        anyhow::bail!("Degen mode needs an unlocked vault signer: {e}");
-                    }
-                }
-            } else {
-                vaughan_agent::tools::default_assist_registry()
-            };
-            let tokens: Vec<&str> = prompt.split_whitespace().collect();
-            if tokens.is_empty() {
-                anyhow::bail!("empty prompt");
-            }
-            let cmd = tokens[0].to_lowercase();
-            match cmd.as_str() {
-                "inspect" => {
-                    if tokens.len() < 2 {
-                        anyhow::bail!("usage: vaughan agent \"inspect <0xAddress>\"");
-                    }
-                    let res = registry
-                        .execute(
-                            "inspect_contract",
-                            serde_json::json!({ "address": tokens[1] }),
-                            &context,
-                        )
-                        .await?;
-                    println!("{}", serde_json::to_string_pretty(&res)?);
-                }
-                "balance" => {
-                    let addr = if tokens.len() > 1 {
-                        tokens[1].to_string()
-                    } else if let Some(a) = context.active_address {
-                        format!("{a:#x}")
-                    } else {
-                        anyhow::bail!("no account address provided");
-                    };
-                    let res = registry
-                        .execute(
-                            "get_balance",
-                            serde_json::json!({ "account_address": addr }),
-                            &context,
-                        )
-                        .await?;
-                    println!("{}", serde_json::to_string_pretty(&res)?);
-                }
-                "transfer" => {
-                    if tokens.len() < 3 {
-                        anyhow::bail!(
-                            "usage: vaughan agent \"transfer <0xRecipient> <amount_wei>\""
-                        );
-                    }
-                    let res = registry
-                        .execute(
-                            "propose_transfer",
-                            serde_json::json!({
-                                "recipient": tokens[1],
-                                "amount": tokens[2],
-                                "explanation": format!("CLI agent transfer of {} wei to {}", tokens[2], tokens[1])
-                            }),
-                            &context,
-                        )
-                        .await?;
-                    println!("{}", serde_json::to_string_pretty(&res)?);
-                }
-                _ => {
-                    use std::io::Write;
-                    use tokio::sync::{mpsc, watch};
-                    use vaughan_agent::{
-                        build_system_prompt, create_llm_client, profile_dir, run_assist_turn,
-                        AgentSessionContext, ChatUiEvent, ModelConfig,
-                    };
-
-                    let client = create_llm_client(ModelConfig::from_env())
+                    let raw = registry
+                        .execute("propose_transfer", args, &context)
+                        .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
-                    let (_cancel_tx, cancel_rx) = watch::channel(false);
-                    let dir = profile_dir(wallet.path());
-                    let net = wallet.networks().active();
-                    let (max_position_pct, max_slippage_bps) = if mode == OperatingMode::DegenTrader
-                    {
-                        let cfg = vaughan_agent::breaker_config_for_session(Some(dir.as_path()), 1)
-                            .map_err(|e| anyhow::anyhow!("degen policy: {e}"))?;
-                        (Some(cfg.max_position_pct), Some(cfg.max_slippage_bps))
-                    } else {
-                        (None, None)
-                    };
-                    let session = AgentSessionContext {
-                        active_address: context.active_address.map(|a| format!("{a:#x}")),
-                        chain_id: context.chain_id,
-                        network_id: net.id.clone(),
-                        network_name: net.name.clone(),
-                        native_symbol: net.native_symbol.clone(),
-                        is_testnet: net.is_testnet,
-                        max_position_pct,
-                        max_slippage_bps,
-                    };
-                    let mut history = vec![build_system_prompt(
-                        mode,
-                        Some(dir.as_path()),
-                        Some(&session),
-                    )];
-
-                    let turn = run_assist_turn(
-                        &mut history,
-                        client,
-                        &registry,
-                        &context,
-                        prompt.as_str(),
-                        ui_tx,
-                        cancel_rx,
-                    );
-                    let pump = async {
-                        while let Some(ev) = ui_rx.recv().await {
-                            match ev {
-                                ChatUiEvent::Delta(d) => {
-                                    print!("{d}");
-                                    let _ = std::io::stdout().flush();
-                                }
-                                ChatUiEvent::ToolCall { name, args } => {
-                                    println!("\n[tool] {name} {args}");
-                                }
-                                ChatUiEvent::ToolResult { name, result } => {
-                                    println!("[result:{name}] {result}");
-                                }
-                                ChatUiEvent::Status(s) if !s.is_empty() => {
-                                    eprintln!("[{s}]");
-                                }
-                                ChatUiEvent::Error { message, .. } => {
-                                    eprintln!("error: {message}");
-                                }
-                                ChatUiEvent::Cancelled { .. } => {
-                                    eprintln!("cancelled");
-                                }
-                                ChatUiEvent::Finished { .. }
-                                | ChatUiEvent::Proposal(_)
-                                | ChatUiEvent::PolicyProposal(_)
-                                | ChatUiEvent::Status(_) => {}
-                            }
-                        }
-                    };
-                    let (turn_res, _) = tokio::join!(turn, pump);
-                    println!();
-                    turn_res.map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let proposal: TxProposal = serde_json::from_value(raw)?;
+                    let prof = profile_dir(wallet.path());
+                    let secret = vaughan_core::core::McpSessionToken::read(&prof)?
+                        .unwrap_or_default();
+                    let queue = ProposalQueue::new(&prof);
+                    let queued = queue
+                        .enqueue(proposal.clone(), "cli", secret.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let data = json!({
+                        "proposal_id": queued.proposal.proposal_id,
+                        "status": "pending_user",
+                        "proposal": queued.proposal,
+                    });
+                    json_out::print_json_value(json_mode, &data, || {
+                        println!("proposal_id: {}", queued.proposal.proposal_id);
+                        println!("status: pending_user (open Vaughan TUI to approve)");
+                    });
                 }
             }
         }
-        Command::Policy { .. } => unreachable!("policy handled in main"),
-    }
-    Ok(())
-}
-
-/// Policy file ops need a profile directory only (no valid vault required).
-async fn run_policy_cli(
-    vault: Option<PathBuf>,
-    profile: String,
-    action: PolicyCmd,
-) -> anyhow::Result<()> {
-    use vaughan_agent::{load_policy, save_policy, AgentSessionPolicy, DEGEN_POLICY_TOML};
-
-    let dir = if let Some(custom) = vault {
-        vaughan_agent::profile_dir(&custom)
-    } else {
-        let wallet_path = StateManager::profile_path(&profile)
-            .map_err(|e| anyhow::anyhow!("could not resolve profile path for `{profile}`: {e}"))?;
-        vaughan_agent::profile_dir(&wallet_path)
-    };
-
-    match action {
-        PolicyCmd::Show | PolicyCmd::Reload => {
-            let policy = load_policy(&dir).unwrap_or_default();
-            println!("{} ({})", DEGEN_POLICY_TOML, dir.display());
-            for line in policy.summary_lines() {
-                println!("{line}");
-            }
-        }
-        PolicyCmd::ConfirmUnsafe => {
-            let mut policy = load_policy(&dir).unwrap_or_default();
-            policy.acknowledge_unsafe = true;
-            save_policy(&dir, &policy).map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!(
-                "acknowledge_unsafe = true written to {}/{}",
-                dir.display(),
-                DEGEN_POLICY_TOML
-            );
-            println!("You may now: vaughan --profile degen policy set enforcement disabled");
-        }
-        PolicyCmd::Set { key, value } => {
-            let mut policy = load_policy(&dir).unwrap_or_else(|_| AgentSessionPolicy::default());
-            policy
-                .set_field(&key, &value)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            save_policy(&dir, &policy).map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!("updated {key} = {value}");
-            for line in policy.summary_lines() {
-                println!("{line}");
+        Command::Proposals { action } => {
+            let prof = profile_dir(wallet.path());
+            let secret = vaughan_core::core::McpSessionToken::read(&prof)?
+                .unwrap_or_default();
+            let queue = ProposalQueue::new(&prof);
+            match action {
+                ProposalsCmd::List => {
+                    let pending = queue.list_pending().map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let rows: Vec<_> = pending
+                        .iter()
+                        .map(|q| {
+                            json!({
+                                "proposal_id": q.proposal.proposal_id,
+                                "source": q.source,
+                                "chain_id": q.proposal.chain_id,
+                            })
+                        })
+                        .collect();
+                    let data = json!({ "pending": rows });
+                    json_out::print_json_value(json_mode, &data, || {
+                        if pending.is_empty() {
+                            println!("no pending proposals");
+                        }
+                        for q in pending {
+                            println!(
+                                "{}  source={}  chain={}",
+                                q.proposal.proposal_id, q.source, q.proposal.chain_id
+                            );
+                        }
+                    });
+                }
+                ProposalsCmd::Show { proposal_id } => {
+                    let queued = queue
+                        .get_pending(&proposal_id, secret.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let data = json!({
+                        "proposal_id": proposal_id,
+                        "status": "pending_user",
+                        "source": queued.source,
+                        "proposal": queued.proposal,
+                    });
+                    json_out::print_json_value(json_mode, &data, || {
+                        if let Ok(text) = serde_json::to_string_pretty(&queued.proposal) {
+                            println!("{text}");
+                        }
+                    });
+                }
             }
         }
     }

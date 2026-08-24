@@ -1,7 +1,8 @@
 //! Vaughan wordmark and chrome polish helpers (pure ratatui, no extra crates).
 //!
 //! **Fixed (never themed):**
-//! - **Banner** (`VAUGHAN`): green → orange → purple
+//! - **Banner** (`VAUGHAN`): neon blue → purple → hot pink
+//! - **Splash slogan**: ghost typewriter — "the best wallet in the galaxy"
 //! - **Wallet address**: Dioxus rainbow (`0x` / green / grey / orange / grey / purple)
 //!
 //! **Themed** (hidden hotkey `t` / `Ctrl+t` — not shown in the footer):
@@ -661,7 +662,7 @@ pub fn title_color() -> Color {
 /// Which gradient to use for text or box borders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FadePalette {
-    /// Top wordmark: always green → orange → purple (not themed).
+    /// Top wordmark / splash art: always neon blue → purple → hot pink (not themed).
     Banner,
     /// Panels / titles: themed.
     Box,
@@ -669,11 +670,21 @@ pub enum FadePalette {
     Footer,
 }
 
-/// Banner stops: green → orange → purple (fixed).
+/// Banner stops: neon blue → neon purple → hot pink (fixed).
 const FADE_BANNER: [(f64, Rgb); 3] = [
-    (0.0, (51, 204, 51)),  // green
-    (0.5, (255, 153, 51)), // orange
-    (1.0, (178, 76, 255)), // purple
+    (0.0, (0, 245, 255)),  // neon blue
+    (0.5, (180, 0, 255)),  // neon purple
+    (1.0, (255, 20, 147)), // hot pink
+];
+
+/// FIGlet ANSI Shadow–style `VAUGHAN` (Claude Code–like splash). Pure data, no crate.
+const LOGO_ART: &[&str] = &[
+    "██╗   ██╗ █████╗ ██╗   ██╗ ██████╗ ██╗  ██╗ █████╗ ███╗   ██╗",
+    "██║   ██║██╔══██╗██║   ██║██╔════╝ ██║  ██║██╔══██╗████╗  ██║",
+    "██║   ██║███████║██║   ██║██║  ███╗███████║███████║██╔██╗ ██║",
+    "╚██╗ ██╔╝██╔══██║██║   ██║██║   ██║██╔══██║██╔══██║██║╚██╗██║",
+    " ╚████╔╝ ██║  ██║╚██████╔╝╚██████╔╝██║  ██║██║  ██║██║ ╚████║",
+    "  ╚═══╝  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝",
 ];
 
 fn lerp(a: u8, b: u8, t: f64) -> u8 {
@@ -730,7 +741,7 @@ const ADDR_ORANGE: Color = Color::Rgb(255, 153, 51);
 const ADDR_PURPLE: Color = Color::Rgb(178, 76, 255);
 
 /// Full-width top banner: `/` to the left edge, centered `VAUGHAN`, `\` to the right,
-/// with a green→orange→purple colour fade across the row.
+/// with a neon-blue→purple→hot-pink colour fade across the row.
 ///
 /// Example at width 27: `//////////VAUGHAN\\\\\\\\\\`
 pub fn logo_banner(width: u16) -> Line<'static> {
@@ -746,6 +757,99 @@ pub fn logo_banner(width: u16) -> Line<'static> {
         format!("{}{}{}", "/".repeat(left), WORD, "\\".repeat(right))
     };
     fade_line_with(&text, FadePalette::Banner)
+}
+
+/// Natural width (columns) of [`logo_art_lines`] before centring.
+pub fn logo_art_width() -> usize {
+    LOGO_ART
+        .iter()
+        .map(|row| row.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Row count of the multi-line splash wordmark.
+pub fn logo_art_height() -> u16 {
+    LOGO_ART.len() as u16
+}
+
+/// Multi-line FIGlet-style `VAUGHAN` splash, centred in `width`, with a
+/// neon-blue→purple→hot-pink fade across each row.
+///
+/// When `width` is narrower than the glyph, falls back to a single [`logo_banner`]
+/// line so narrow terminals stay usable.
+pub fn logo_art_lines(width: u16) -> Vec<Line<'static>> {
+    let art_w = logo_art_width();
+    if width == 0 {
+        return Vec::new();
+    }
+    if (width as usize) < art_w {
+        return vec![logo_banner(width)];
+    }
+
+    let pad = (width as usize - art_w) / 2;
+    LOGO_ART
+        .iter()
+        .map(|row| {
+            let mut spans = Vec::with_capacity(pad + art_w);
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
+            }
+            // Right-pad short rows so the fade spans the full glyph width.
+            let padded = format!("{row:<art_w$}");
+            for (i, ch) in padded.chars().enumerate() {
+                let t = if art_w <= 1 {
+                    0.0
+                } else {
+                    i as f64 / (art_w - 1) as f64
+                };
+                spans.push(Span::styled(
+                    ch.to_string(),
+                    Style::default()
+                        .fg(fade_color_with(FadePalette::Banner, t))
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Splash tagline typed by a ghost in the terminal.
+pub const SPLASH_SLOGAN: &str = "the best wallet in the galaxy";
+
+/// Ghost typewriter for [`SPLASH_SLOGAN`], driven by the UI tick (~80 ms).
+///
+/// Types one character at a time, then holds with a blinking caret (plays once).
+pub fn typing_slogan(tick: u64) -> Line<'static> {
+    const TICKS_PER_CHAR: u64 = 2; // ~160 ms per glyph
+
+    let chars: Vec<char> = SPLASH_SLOGAN.chars().collect();
+    let type_phase = (chars.len() as u64).saturating_mul(TICKS_PER_CHAR);
+    let visible = if tick < type_phase {
+        ((tick / TICKS_PER_CHAR) as usize).min(chars.len())
+    } else {
+        chars.len()
+    };
+
+    let typed: String = chars.into_iter().take(visible).collect();
+    let caret = if (tick / 4).is_multiple_of(2) {
+        "▌"
+    } else {
+        " "
+    };
+
+    let ghost = Style::default()
+        .fg(Color::Rgb(170, 150, 220))
+        .add_modifier(Modifier::DIM | Modifier::ITALIC);
+    let caret_style = Style::default()
+        .fg(Color::Rgb(0, 245, 255))
+        .add_modifier(Modifier::BOLD);
+
+    Line::from(vec![
+        Span::styled(typed, ghost),
+        Span::styled(caret.to_string(), caret_style),
+    ])
 }
 
 /// One [`Line`] for panel titles: box fade, or solid title ink on no-fade themes.
@@ -1138,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn banner_fade_runs_green_to_purple() {
+    fn banner_fade_runs_neon_blue_to_pink() {
         let line = logo_banner(40);
         assert!(line.spans.len() >= 2);
         let first = match line.spans[0].style.fg {
@@ -1153,19 +1257,12 @@ mod tests {
             Some(Color::Rgb(r, g, b)) => (r, g, b),
             other => panic!("expected Rgb at end, got {other:?}"),
         };
-        // Start near green, mid toward orange, end near purple.
+        assert_eq!(first, (0, 245, 255), "start should be neon blue");
         assert!(
-            first.1 > first.0 && first.1 > first.2,
-            "start should be green: {first:?}"
+            mid.0 > 100 && mid.2 > 180,
+            "mid should lean purple: {mid:?}"
         );
-        assert!(
-            mid.0 > 180 && mid.1 > 100,
-            "mid should lean orange: {mid:?}"
-        );
-        assert!(
-            last.0 > 100 && last.2 > last.1,
-            "end should be purple: {last:?}"
-        );
+        assert_eq!(last, (255, 20, 147), "end should be hot pink");
         let colours: Vec<_> = line.spans.iter().filter_map(|s| s.style.fg).collect();
         let unique: std::collections::HashSet<_> = colours.iter().collect();
         assert!(
@@ -1173,6 +1270,73 @@ mod tests {
             "expected a multi-stop fade, got {}",
             unique.len()
         );
+    }
+
+    #[test]
+    fn logo_art_lines_centred_with_banner_fade() {
+        let width = (logo_art_width() + 10) as u16;
+        let lines = logo_art_lines(width);
+        assert_eq!(lines.len(), logo_art_height() as usize);
+        let first = &lines[0];
+        let s: String = first.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(s.contains('█'), "expected block glyph: {s}");
+        assert_eq!(s.chars().count(), pad_len(width) + logo_art_width());
+        let coloured: Vec<_> = first
+            .spans
+            .iter()
+            .filter(|sp| sp.style.fg.is_some())
+            .collect();
+        assert!(!coloured.is_empty());
+        assert_eq!(coloured[0].style.fg, Some(Color::Rgb(0, 245, 255)));
+        assert_eq!(
+            coloured.last().unwrap().style.fg,
+            Some(Color::Rgb(255, 20, 147))
+        );
+    }
+
+    fn pad_len(width: u16) -> usize {
+        (width as usize - logo_art_width()) / 2
+    }
+
+    #[test]
+    fn logo_art_falls_back_when_narrow() {
+        let lines = logo_art_lines(20);
+        assert_eq!(lines.len(), 1);
+        let s: String = lines[0]
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(s.contains(WORD), "{s}");
+        assert_eq!(s.chars().count(), 20);
+    }
+
+    #[test]
+    fn typing_slogan_reveals_progressively() {
+        let early: String = typing_slogan(0)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        // First frame: caret only (no letters yet).
+        assert!(!early.contains("best"), "{early}");
+
+        let mid_tick = 2 * 10; // ~10 chars in
+        let mid: String = typing_slogan(mid_tick)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(mid.starts_with("the best"), "{mid}");
+        assert!(mid.len() < SPLASH_SLOGAN.len() + 2, "{mid}");
+
+        let done_tick = 2 * SPLASH_SLOGAN.chars().count() as u64 + 5;
+        let done: String = typing_slogan(done_tick)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(done.contains(SPLASH_SLOGAN), "{done}");
     }
 
     #[test]

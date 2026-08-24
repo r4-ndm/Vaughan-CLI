@@ -7,9 +7,10 @@ authoritative for how work gets done here.
 
 **Vaughan-CLI** — a Rust multi-chain CLI wallet TUI. EVM-first, PulseChain-optimized.
 
-- `vaughan-core/` — library: chain adapters (Alloy EVM), core services, browser engine (`wiz4rd-engine`), security, persistence
+- `vaughan-core/` — library: chain adapters (Alloy EVM), core services, browser engine (`wiz4rd-engine`), security, persistence, MCP proposal queue/IPC
 - `vaughan-aa/` — EIP-7702 / Ambire smart accounts and batched sends
-- `vaughan-agent/` — [Phase 5] AI Agent engine, LLM clients, tool registry, Degen circuit breakers
+- `vaughan-agent/` — [Phase 5] proposal engine, tool registry, Degen circuit breakers (no LLM client)
+- `vaughan-mcp/` — [Phase 6] MCP stdio server for external agents (Cursor, Claude, …)
 - `vaughan-provider/` — [Phase 2] local EIP-1193 bridge for Freedom Browser
 - `vaughan-cli/` — unified `vaughan` binary (TUI by default; CLI subcommands for scripts)
 - `vaughan-tui/` — ratatui terminal frontend (library + dev `vaughan-tui` binary)
@@ -147,7 +148,7 @@ listed here requires approval before it is added.
 | Terminal events | `crossterm` |
 | Provider WebSocket server (Phase 2) | `tokio-tungstenite` |
 | Stream/sink utilities for WS | `futures-util` |
-| Multi-provider LLM chat client | `genai` |
+| Multi-provider LLM chat client | ~~`genai`~~ — **removed**; agents use external MCP hosts |
 | secp256k1 arithmetic (ERC-5564) | `k256` |
 | Privacy / stealth (Phase 3) | `vaughan-core::security::stealth` (not Kohaku) |
 | Test temp dirs (dev only) | `tempfile` |

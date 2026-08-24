@@ -6,7 +6,8 @@ Vaughan-CLI is a sovereign Rust multi-chain CLI wallet TUI:
 
 - **Alloy** — wallet core: keys, signing, RPC, transaction building/broadcast.
 - **wiz4rd-engine** — contract browser, dynamic call encoder/decoder, capability prober, DEX factory/pair indexer.
-- **vaughan-agent** — multi-mode AI agent subsystem (Pure Human, AI Assist, Degen Bot) with hard security sandboxing.
+- **External agents via MCP** — Cursor / Claude / Codex call `vaughan mcp`; the TUI owns keys and approvals. Embedded in-wallet LLM chat is retired.
+- **vaughan-agent** — library only: proposal engine, sensory/write tools, Degen circuit breakers (no LLM client).
 - **ERC-5564 stealth** — spec-first in `vaughan-core` (`docs/erc-5564-stealth.md`). RAILGUN / Kohaku remain deferred (`docs/kohaku-go-no-go.md`).
 - **ratatui** — terminal UI.
 - **Freedom Browser** — dApp browser that uses Vaughan as its native signing provider.
@@ -26,10 +27,11 @@ vaughan-cli/
 │  ├─ security/          # hd_wallet (BIP-39/32/44), encryption (Argon2id + AES-256-GCM)
 │  └─ error.rs, logging.rs
 ├─ vaughan-aa/           # EIP-7702 / Ambire smart accounts & batching
-├─ vaughan-agent/        # [Phase 5] AI Agent engine, LLM clients, tool registry, Degen circuit breakers
+├─ vaughan-agent/        # [Phase 5] proposal engine, tool registry, Degen circuit breakers (no LLM)
+├─ vaughan-mcp/          # [Phase 6] MCP stdio server for external agents
 ├─ vaughan-provider/     # [Phase 2] local EIP-1193 bridge + approval UX + trusted hosts
-├─ vaughan-cli/          # Non-interactive CLI binary (send, balance, deploy, browse, agent)
-└─ vaughan-tui/          # Interactive ratatui TUI binary (views, REPL, agent console)
+├─ vaughan-cli/          # Unified `vaughan` binary (TUI + CLI: send, balance, browse, mcp, …)
+└─ vaughan-tui/          # Interactive ratatui TUI (views, dashboard, approvals)
 ```
 
 ## Multi-chain architecture
@@ -68,7 +70,7 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 | HD wallet | bip39 + bip32 | RustCrypto stack, actively maintained; bip39 for mnemonics, bip32 for derivation |
 | Vault crypto | Argon2id + AES-256-GCM | Argon2id KDF, authenticated encryption |
 | Contract Engine | pure Rust (`wiz4rd-engine`) | Alloy JSON ABI + `alloy-dyn-abi` dynamic encoding + PUSH4 parser + event log scanner |
-| AI Agent | `vaughan-agent` | Advisor-by-default, local Ollama / encrypted cloud LLM, schema tool-calling, Degen circuit breakers |
+| External agents | `vaughan-mcp` + `vaughan-agent` | MCP stdio; propose-only writes; TUI approval; Degen circuit breakers |
 | ERC-5564 stealth | `k256` + keccak256 in `vaughan-core` | Spec-first scheme 1; Kohaku unused |
 | kohaku-rs / RAILGUN | not a dep | **Deferred** — upstream RAILGUN derivation incompatibility |
 | Ambire AA | Rust + Alloy + Ambire ABI | Reimplement from the on-chain `AmbireAccount` contract; Vaughan-Dioxus as guide only |
@@ -96,33 +98,51 @@ fetch + cache, selector probing, dyn-abi generic calls, event-scan pair/pool
 discovery), surfaced as an interactive REPL view in `vaughan-tui` and non-interactive
 CLI batch execution (`vaughan browse <address>`). Anvil test suite verified.
 
-### Phase 5 — AI Agent Integration & Multi-Mode Security Sandbox (Current)
-Three-tier operating mode decided at startup (`HumanOnly`, `AiAssisted`, `DegenTrader`).
-Zero private key access for the advisor, physical capital isolation (burner profile)
-for autonomous degen trading, dual-horizon gas ceilings, and ground-truth UI rendering.
-Full spec: `docs/AI-AGENT-ARCHITECTURE.md`.
+### Phase 5 — AI Agent Integration & Multi-Mode Security Sandbox
+Shipped the tool/proposal/circuit-breaker foundation and (historically) an embedded
+LLM chat path. **Plan change (2026-08-23):** embedded in-wallet LLM UI/CLI was
+retired in favour of Vaughan-as-MCP-tool for external agents. Historical design:
+`docs/AI-AGENT-ARCHITECTURE.md`. Retired UX guide: `docs/agent-configuration.md`.
+
+### Phase 6 — External Agent / MCP (Current)
+Vaughan is a **signing wallet that agents call**, not a host for its own LLM:
+
+- `vaughan mcp` — hand-rolled MCP JSON-RPC over stdio (`docs/mcp.md`)
+- Hybrid IPC — loopback `127.0.0.1:8746` when TUI unlocked; file queue when offline
+- Unified approval with EIP-1193 (`ApprovalKind::McpProposal`); re-simulate at approve
+- MCP never unlocks the vault; testnet-first writes (`VAUGHAN_MCP_ALLOW_MAINNET=1`)
+- Tool contract + threat model: `docs/ai-tool-surface.md`, `docs/mcp-threat-model.md`
+- Requirements: FR-6.1–FR-6.8 in `REQUIREMENTS.md`
+
+**Why the pivot:** one approval gate for dApps and agents; no API keys or model
+routing inside the wallet; agents bring their own model (Cursor, Claude Code, …);
+smaller attack surface (no `genai` / chat / provider setup in-process).
+
+**Deferred v2:** `vaughan serve` wallet daemon — TUI/MCP/CLI become thin clients.
 
 ## Security model
 
 - **Mnemonic encrypted at rest**: Argon2id -> AES-256-GCM; plaintext only in memory while unlocked.
-- **Zero AI key exposure**: `vaughan-agent` has zero memory references to `Vault` or `SignerContext`.
-- **Ground-truth rendering**: The TUI confirmation modal displays independently decoded bytecode, ignoring all LLM commentary.
-- **Physical capital isolation**: Degen mode runs strictly in `~/.vaughan/profiles/degen/` with separate seed phrases.
+- **Zero AI key exposure**: MCP and `vaughan-agent` never unlock the vault or hold signers.
+- **Ground-truth rendering**: The TUI approval card shows calldata/value/network; agent explanations are labelled untrusted.
+- **Physical capital isolation**: Degen profile paths remain available for high-risk sessions (`~/.vaughan/profiles/degen/`).
 - **Circuit breakers**: Max position sizing % per trade, dual-horizon gas caps, adaptive slippage ceilings, and emergency kill-switches (`Esc`/`q`).
-- **No telemetry/analytics**: Local Ollama option for 100% offline private execution. Testnet-first for all fund-moving features.
+- **No telemetry/analytics**: Testnet-first for all fund-moving features (including MCP writes).
 
 ## Build order
 
-1. `vaughan-core`: chains, core, security, browser engine (`wiz4rd-engine`)
+1. `vaughan-core`: chains, core, security, browser engine (`wiz4rd-engine`), proposal queue + MCP IPC
 2. `vaughan-provider`: local EIP-1193 bridge + trusted hosts
 3. `vaughan-aa`: EIP-7702 smart account batching
-4. `vaughan-agent`: multi-mode engine, tool registry, LLM clients, circuit breakers
-5. `vaughan-tui`: views (onboarding, unlock, dashboard, send, browser, agent, aa_send, settings)
-6. `vaughan-cli`: CLI commands (send, balance, deploy, browse, agent)
-7. `cargo build` + unit tests + Anvil e2e tests + `clippy` + `fmt`
+4. `vaughan-agent`: tool registry, proposals, circuit breakers (no LLM client)
+5. `vaughan-mcp`: MCP stdio server for external agents
+6. `vaughan-tui`: views + MCP listener + unified approval gate
+7. `vaughan-cli`: CLI commands (send, balance, browse, propose, mcp, …)
+8. `cargo build` + unit tests + Anvil e2e tests + `clippy` + `fmt`
 
 ## Risks / open items
 
 - **Freedom Browser bridge** — transport requires a new signer backend + local socket.
 - **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
-- **Local LLM latency** — local Ollama response time depends on user hardware; provide streaming token feedback in TUI.
+- **MCP client diversity** — hand-rolled JSON-RPC subset; validate against Cursor / Claude Code as they evolve.
+- **Wallet daemon (v2)** — hybrid IPC is interim; long-lived `vaughan serve` still deferred.

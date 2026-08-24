@@ -10,6 +10,7 @@ pub mod brand;
 pub mod freedom;
 pub mod input;
 pub mod jobs;
+pub mod mcp;
 pub mod provider;
 pub mod views;
 

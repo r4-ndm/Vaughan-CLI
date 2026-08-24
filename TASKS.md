@@ -199,8 +199,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ## Phase 5 — AI Agent Integration & Multi-Mode Security Sandbox
 
-> Full specification: `docs/AI-AGENT-ARCHITECTURE.md`.
-> Complete security sandboxing: 3-tier operating mode decided at startup, zero private key access for the advisor, isolated burner profile for degen bot, deterministic circuit breakers.
+> **Embedded LLM UI/CLI retired (2026-08-23); superseded by Phase 6 MCP.** In-TUI chat,
+> provider setup, mode picker, `vaughan agent`, and `vaughan policy` are removed.
+> `vaughan-agent` remains as a slim library (proposals, tools, circuit breakers) consumed
+> by `vaughan mcp`. Setup: `docs/mcp.md`. Historical spec: `docs/AI-AGENT-ARCHITECTURE.md`.
 
 ### Step 1: 3-Tier Operating Mode & Profile Isolation (Done)
 - [x] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `DegenTrader` (FR-5.1)
@@ -309,13 +311,13 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — feeds later MCP work under “DeFi AI king”
 
 ### P2 — Replace explorer & settings tabs people open constantly
-- [ ] Activity / History screen (replace `SoonHistory` placeholder): native + ERC-20 transfers, tx status, link-out optional only
+- [x] Activity / History screen (`m`): ERC-20 Transfer logs (sent/received) over recent window; reload; native-only without token log still needs explorer later
 - [x] Anvil: ERC-20 approve → revoke (`approve(spender,0)`) clears allowance (`browserless_anvil.rs` + `build_revoke_tx`)
-- [ ] Approvals manager: list ERC-20 allowances for active account; one-shot revoke via approval card
+- [x] Approvals manager (`j`): list ERC-20 allowances vs known Ag/Dex/Bridge spenders; one-shot revoke via confirm card
 - [x] Anvil: WPLS wrap (`deposit`) / unwrap (`withdraw`) against MockWeth (`browserless_anvil.rs` + `build_wrap_tx` / `build_unwrap_tx`)
 - [x] Bridge (`f`): LibertySwap USDC cross-chain quote → approve → source broadcast (`docs/bridge.md`; not official Omnibridge)
 - [ ] Official Pulse Omnibridge / PulseRamp client (lock-and-mint ETH ↔ Pulse) — separate from LibertySwap
-- [ ] Wrap / unwrap WPLS as a first-class tiny flow (no bridge dApp)
+- [x] Wrap / unwrap WPLS as a first-class tiny flow (`e`)
 - [ ] Contract browser gated writes: `send` / `write` from REPL → same Approve view as Send (read path already shipped)
 
 ### P3 — Earn / advanced (only when real)
@@ -343,7 +345,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > Session policy foundation shipped under **Browserless Pulse → Degen session policy**.
 
 - [x] P0: `AgentSessionPolicy` + wire Degen breakers + Agent `/policy` (see Browserless Pulse)
-- [ ] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Degen under policy)
+- [x] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Degen under policy) — `vaughan mcp`, hybrid IPC, `docs/mcp.md`
 - [ ] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real)
 - [ ] P3: x402 client (opportunistic — only with real counterparties)
 - [ ] P4: gas tank, optional hardware signer, local deny lists (never hosted TEE / KYT telemetry)
