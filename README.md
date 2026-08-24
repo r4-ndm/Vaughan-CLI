@@ -70,6 +70,101 @@ vaughan browse 0x…
 
 Ensure `~/.local/bin` (or `~/.cargo/bin` when using the cargo fallback) is on your `PATH`.
 
+## Getting started for humans
+
+Vaughan is a **terminal wallet for PulseChain**. You stay in control: every spend
+needs your explicit approval unless you deliberately set up a separate
+“sentient” burner profile (see [docs/agent-roles.md](docs/agent-roles.md)).
+
+**Start on testnet (chain 943)** until you are comfortable. Mainnet (369) is
+supported but real money — treat mistakes as permanent.
+
+### First run
+
+1. Run `vaughan` and **create** or **restore** a wallet (12-word phrase).
+2. Pick **PulseChain testnet** in Settings if it is not already active.
+3. Get test PLS from a faucet if your balance is zero.
+4. Stay on the **Dashboard** — that is home. Other screens are one key away.
+
+### Where to do what (TUI shortcuts)
+
+| Key | Screen | Use it for |
+|-----|--------|------------|
+| `s` | Send | Send native PLS or ERC-20 |
+| `g` | Ag | Aggregator swap (best route across venues) |
+| `d` | Dex | Swap on a named DEX (PulseX, Wiz4rd, …) |
+| `c` | Browse | Inspect any contract — read-only REPL |
+| `e` | Wrap | Wrap / unwrap WPLS |
+| `m` | History | Recent token transfers |
+| `j` | Approvals | See and revoke token allowances |
+| `w` | Web | Optional Freedom Browser side door |
+| `Tab` | — | Cycle Ag → Dex → Browse → … |
+
+**Browserless Pulse** means: swap, inspect, and revoke **without opening
+PulseX (or similar) in Chrome**. Freedom is optional for odd dApps that still
+need a website.
+
+### Typical flows
+
+**Swap without a website**
+
+1. Unlock → press `g` (Ag) or `d` (Dex).
+2. Enter amount and tokens (Dex prefills routers for known venues).
+3. Review the confirm screen — **fee is shown before you approve**.
+4. For token→token swaps, you may approve the router once, then confirm the swap.
+
+**Send to someone**
+
+1. `s` → recipient address → amount → confirm (fee shown) → broadcast.
+
+**Inspect a contract**
+
+1. `c` → `browse 0x…` → `call balanceOf(0x…)` or `probe` to see what it is.
+
+### Using AI safely (MCP)
+
+External agents (Cursor, Claude, Codex) do **not** get your keys. They call
+Vaughan over MCP, which **proposes** transactions; **you** approve in the TUI.
+
+Rough flow:
+
+1. Configure MCP per [docs/mcp.md](docs/mcp.md) (`vaughan mcp` stdio server).
+2. Ask the agent to quote or inspect (read-only tools are safe to run freely).
+3. When it calls `propose_*`, open Vaughan — a proposal card appears.
+4. Read the decoded calldata and fee, not just the agent’s explanation text.
+5. Approve or deny. Denied proposals are discarded; approved ones broadcast once.
+
+Guards you get by default: re-simulation at approve time, chain mismatch
+rejection, fee-spike rejection if gas jumped more than ~10% since the proposal,
+session token for the local queue, and testnet-first mainnet gating for MCP
+writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
+
+### What is in good shape vs still rough
+
+| Area | Status |
+|------|--------|
+| Core wallet (create, send, receive, networks) | Solid |
+| Ag + Dex swaps with fee on confirm | Solid |
+| MCP propose → human approve | Solid |
+| Stealth send / receive (ERC-5564) | Solid on testnet |
+| Smart-account batch sends (7702) | Testnet-first |
+| Slash commands (`/swap …` in chat) | Not shipped yet |
+| Contract browser **writes** from REPL | Not shipped yet |
+| Recorded demo walkthrough | Not shipped yet |
+
+This repo is a **prototype** — expect rough edges. Read [SECURITY.md](SECURITY.md)
+before mainnet funds.
+
+### Headless / scripting
+
+```bash
+vaughan balance --network pulsechain-testnet-v4
+vaughan send 0x… --value 0.01 --network pulsechain-testnet-v4
+vaughan serve --password-env VAUGHAN_PASSWORD   # unlock + MCP listener for agents
+```
+
+For agent tool names and limits, see [docs/ai-tool-surface.md](docs/ai-tool-surface.md).
+
 ## Build from source (developers)
 
 ```bash
