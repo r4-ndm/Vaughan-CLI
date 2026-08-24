@@ -13,24 +13,40 @@ Bind this document before shipping MCP v1.
 
 ## Out of scope (explicit)
 
-- User approves what is shown on the approval card.
+- User approves what is shown on the **adviser** (`default`) approval card.
+- Outcomes on a **sentient** seed the agent (or partner) chose to fund.
+- Shared-seed partnership without a skill preset (user’s choice; not Vaughan’s fault).
 - OS-level keyloggers, clipboard sniffers, shoulder surfing.
-- Smart contract exploits after a correct approval (user accepted calldata).
+- Smart contract exploits after a correct approval / policy-allowed auto-exec.
+
+## Product model (adviser vs sentient)
+
+Full write-up: [`agent-roles.md`](agent-roles.md).
+
+| Role | Trust assumption | Control |
+|------|------------------|---------|
+| **Adviser** (`default` / `vaughan`) | Agent may be wrong; human wants help | Every write needs human approve |
+| **Sentient** (`sentient` / `vaughan-sentient`) | Agent acts on **its** seed (or shared partnership seed + skill preset) | Auto-exec under policy; don’t conflate with human `default` |
+
+Primary separation is **whose seed** and **who decides**. Partnership = shared
+seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 
 ## Controls matrix
 
 | Threat | Control |
 |--------|---------|
 | Agent lies in `explanation` | Labeled **untrusted**; calldata decode is authoritative |
-| Stale simulation | Re-simulate `eth_call` at approve; block if revert |
-| Wrong chain | `chain_id` on proposal; reject approve on mismatch |
+| Stale simulation | Re-simulate `eth_call` at approve (default) or pre-broadcast (sentient) |
+| Wrong chain | `chain_id` on proposal; reject on mismatch |
 | Queue file tampering | HMAC-SHA256 over proposal bytes + session secret |
 | Local socket hijack | Loopback only (`127.0.0.1:8746`); random session token in `mcp.session` (0600) |
 | MCP exfiltrates keys | MCP process never unlocks vault; banned tools + tests |
+| Agent spends human savings | Use distinct seeds; only share mnemonic for intentional partnership |
 | Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes |
 | Approval flooding | Max 10 pending proposals; rate limit per profile |
-| Fee spike | Re-estimate at approve; warn if >10% delta vs proposal |
-| TOCTOU | Re-simulate + re-estimate fee at approve time |
+| Runaway sentient agent | Profile policy + circuit breakers + Esc kill-switch |
+| Fee spike | Re-estimate at approve / pre-broadcast; warn if >10% delta |
+| TOCTOU | Re-simulate + re-estimate fee before sign |
 | Double-spend proposal | Terminal states; idempotent by `proposal_id` |
 
 ## Trust boundaries
@@ -38,15 +54,16 @@ Bind this document before shipping MCP v1.
 ```
 ┌─────────────────────────────────────────┐
 │  UNTRUSTED: Cursor / agent / MCP process │
-│  - May call read + propose tools only    │
+│  - Read + write tools (propose or auto)  │
 │  - Never holds vault password or keys    │
 └──────────────────┬──────────────────────┘
                    │ loopback socket / file queue
                    ▼
 ┌─────────────────────────────────────────┐
-│  TRUSTED: Vaughan TUI (unlocked)         │
+│  TRUSTED: Vaughan (unlocked profile)     │
 │  - Owns WalletState + signing            │
-│  - Unified approval with EIP-1193        │
+│  - adviser (default): human approval     │
+│  - sentient: policy auto-sign            │
 └─────────────────────────────────────────┘
 ```
 

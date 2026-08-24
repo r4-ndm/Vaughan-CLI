@@ -1,0 +1,8 @@
+# Copied to profile as degen-policy.toml — balanced
+enforcement = "enforced"
+acknowledge_unsafe = false
+max_position_pct = 15
+max_slippage_bps = 100
+max_session_gas_wei = "200000000000000000"
+max_consecutive_errors = 5
+required_rpc_quorum = 1

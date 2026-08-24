@@ -14,7 +14,9 @@ The architecture strictly enforces four fundamental axioms:
 1. **The AI Agent is an Advisor by default, never a Signer without physical capital isolation.**
 2. **Unified Approval Pipeline:** AI agent proposals and dApp EIP-1193 requests pass through the exact same ground-truth verification and confirmation UI.
 3. **Multi-RPC Quorum:** Autonomous Degen circuit breakers verify pool reserves across multiple independent RPC endpoints to defeat compromised/out-of-sync nodes.
-4. **Physical Capital Isolation:** Autonomous execution (Degen Mode) runs in a dedicated burner sub-profile with separate keys; primary funds are physically unlinked and inaccessible.
+4. **Sentient profile isolation:** Agent-led execution uses the `sentient`
+   profile (the agent’s own seed; legacy name `degen`). Human `default` stays
+   separate unless both parties intentionally share a mnemonic (partnership).
 
 ---
 
@@ -27,9 +29,9 @@ Operating mode is chosen **once at startup / onboarding** and is **permanently i
                                       │
          ┌────────────────────────────┼────────────────────────────┐
          ▼                            ▼                            ▼
-  [1] Pure Human Mode         [2] AI Assist Mode          [3] Degen Bot Mode
-  • Zero AI code initialized  • AI Advisor loaded         • Autonomous Agent
-  • Zero LLM network calls    • Propose-Only (Read safe)  • Isolated burner wallet
+  [1] Pure Human Mode         [2] AI Assist Mode          [3] Sentient Mode
+  • Zero AI code initialized  • AI Adviser loaded         • Agent’s own seed
+  • Zero LLM network calls    • Propose-Only (Read safe)  • Auto under policy
   • 100% manual wallet        • Unified Approval Pipeline • Multi-RPC Quorum check
   • CANNOT switch to AI       • CANNOT auto-execute       • Hard slippage ceilings
 ```
@@ -39,15 +41,16 @@ Operating mode is chosen **once at startup / onboarding** and is **permanently i
 * **Compile-Time Feature Flag**: Vaughan provides an optional `cargo build --no-default-features` path that completely compiles out the `vaughan-agent` crate for pure sovereign cold storage.
 * **Session Lock**: Impossible to switch to AI assist during the session.
 
-### 2. Mode 2: AI Assist Mode (`OperatingMode::AiAssisted`)
+### 2. Mode 2: AI Assist Mode (`OperatingMode::AiAssisted`) — **Adviser**
 * **Purpose**: Active DeFi users seeking contract inspection, arbitrage scanning, transaction simulation, and natural language batch composition.
 * **Security Model**: The agent has **zero access to private keys or signing capabilities**.
 * **Unified Approval**: Generates a typed `TxProposal` which transforms into a standard `HostRequest::Transaction`. The confirmation screen uses the identical ground-truth bytecode decoder used by the EIP-1193 dApp bridge.
 
-### 3. Mode 3: Degen Bot Mode (`OperatingMode::DegenTrader`)
-* **Storage Isolation**: Runs in a **dedicated isolated profile directory** (`~/.vaughan/profiles/degen/`) with its own independent seed phrase and funds.
-* **Safety**: Primary savings/vault are physically unlinked and inaccessible on the filesystem.
-* **Execution**: Automated signing strictly bound by hardcoded Rust **circuit breakers**, **Multi-RPC Quorum**, and an emergency kill-switch.
+### 3. Mode 3: Sentient Mode (`OperatingMode::DegenTrader` — legacy enum name)
+* **Seed ownership**: Profile `sentient` (`~/.vaughan/…/profiles/sentient/`; legacy path `…/degen/`) holds **the agent’s seed**.
+* **Partnership**: A human may share that mnemonic to co-hold the same vault; otherwise keep `default` separate.
+* **Execution**: Automated signing bound by **circuit breakers**, **Multi-RPC Quorum**, and an emergency kill-switch.
+* **MCP**: `vaughan-sentient` / `--profile sentient` (when wired).
 
 ---
 

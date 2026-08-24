@@ -1,0 +1,8 @@
+# Copied to profile as degen-policy.toml — quant risk/reward
+enforcement = "enforced"
+acknowledge_unsafe = false
+max_position_pct = 10
+max_slippage_bps = 50
+max_session_gas_wei = "150000000000000000"
+max_consecutive_errors = 3
+required_rpc_quorum = 1

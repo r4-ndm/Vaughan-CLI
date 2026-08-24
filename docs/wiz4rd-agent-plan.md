@@ -112,6 +112,8 @@ Agents can also skip Vaughan and use cast/ethers against RPC — **that’s fine
 | **D** | MCP `propose_v3_mint` (+ approve sequence) | Agents open LP |
 | **E** | Collect / decrease / UI positions screen | Full LP lifecycle |
 
+Broader “agents = humans in DeFi” checklist (wrap, revoke, bridge, …): [`defi-agent-parity.md`](defi-agent-parity.md).
+
 ## What *not* to do
 
 - Don’t put private keys or unlock in the MCP process.  

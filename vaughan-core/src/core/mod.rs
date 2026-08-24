@@ -38,7 +38,8 @@ pub use wiz4rd::{
 pub use network::NetworkService;
 pub use persistence::{
     default_trusted_dapps, merge_default_trusted_dapps, CustomNetwork, CustomToken, PersistedState,
-    StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE,
+    StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
+    is_sentient_profile,
 };
 pub use piteas::{
     AuthStyle, MethodParameters, NativeToken, PiteasClient, PiteasFileConfig, PiteasQuote,

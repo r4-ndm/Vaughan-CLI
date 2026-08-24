@@ -40,3 +40,5 @@ Smoke WZRD: `0x29bab93456c0E97EE931C1554c7C215480aa7766` — see [`wiz4rd-addres
 Mainnet writes require `VAUGHAN_MCP_ALLOW_MAINNET=1`.
 
 LP mint (`propose_v3_mint`) is still Phase D.
+
+Full human↔agent coverage checklist: [`defi-agent-parity.md`](defi-agent-parity.md).

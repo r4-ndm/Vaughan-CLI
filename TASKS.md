@@ -312,6 +312,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
 - [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
+- [ ] **DeFi agent parity** — check off human↔MCP verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md) (wrap/revoke/LP/bridge/…)
+- [ ] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec (agent’s seed); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
+- [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/sentient-presets.md`](docs/sentient-presets.md), `vaughan-agent/presets/`)
+- [ ] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `degen-policy.toml`)
 
 ### P2 — Replace explorer & settings tabs people open constantly
 - [x] Activity / History screen (`m`): ERC-20 Transfer logs (sent/received) over recent window; reload; native-only without token log still needs explorer later

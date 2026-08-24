@@ -1,18 +1,30 @@
 # Vaughan MCP Setup
 
-Vaughan exposes a **Model Context Protocol (MCP)** stdio server so external agents
-(Cursor, Claude Code, Codex) can inspect chains and **propose** transactions.
-Signing always happens in the Vaughan TUI after explicit human approval.
+Vaughan exposes a **Model Context Protocol (MCP)** stdio server so external
+agents (Cursor, Claude Code, Codex) can use the same DeFi verbs as the TUI.
+
+**Two roles** — details: [`agent-roles.md`](agent-roles.md):
+
+1. **Adviser** — you use Vaughan; agent proposes; you approve (`vaughan` /
+   `--profile default`).
+2. **Sentient** — the agent uses **its own seed** and acts with full control
+   (`vaughan-sentient` / `--profile sentient`; auto-exec under policy — wiring
+   in progress). Human may **partner** by sharing that same seed.
+
+Signing never happens inside the MCP process. Keys stay in Vaughan.
 
 See also:
 
-- [`ai-tool-surface.md`](ai-tool-surface.md) — tool contract
-- [`mcp-threat-model.md`](mcp-threat-model.md) — security controls
+- [`agent-roles.md`](agent-roles.md) — adviser vs sentient  
+- [`ai-tool-surface.md`](ai-tool-surface.md) — tool contract  
+- [`mcp-threat-model.md`](mcp-threat-model.md) — security controls  
 
 ## Cursor configuration
 
+### Adviser (human-led) — `vaughan`
+
 Project config ships at [`.cursor/mcp.json`](../.cursor/mcp.json) (cargo-run for
-dev). For an installed binary, use:
+dev). For an installed binary:
 
 ```json
 {
@@ -25,14 +37,36 @@ dev). For an installed binary, use:
 }
 ```
 
+### Sentient (agent-led) — `vaughan-sentient`
+
+Separate MCP entry on the **agent’s** profile (not the human’s `default` savings
+unless you intentionally share a seed for partnership):
+
+```json
+{
+  "mcpServers": {
+    "vaughan-sentient": {
+      "command": "vaughan",
+      "args": ["mcp", "--profile", "sentient"]
+    }
+  }
+}
+```
+
+Keep `vaughan` and `vaughan-sentient` as two named servers so roles stay clear.
+Legacy on-disk profile name `degen` still resolves as an alias of `sentient`
+until migrated.
+
 Build/install Vaughan first (`cargo install --path vaughan-cli`), or rely on the
 project `.cursor/mcp.json` which runs `cargo run -p vaughan-cli -- mcp`.
 
 ## Architecture (v1)
 
-- **TUI owns keys** — MCP never unlocks the vault.
-- **Live path:** MCP → loopback `127.0.0.1:8746` → TUI approval card → sign.
-- **Offline path:** MCP writes `proposals/pending/*.json` → open Vaughan later → approve.
+- **TUI / Vaughan owns keys** — MCP never unlocks the vault.
+- **Adviser path:** MCP → loopback → TUI approval card → sign.
+- **Sentient path (target):** MCP → Vaughan sentient session → policy → auto-sign.
+- **Offline adviser:** MCP writes `proposals/pending/*.json` → open Vaughan later → approve.
+- **Partnership:** human and agent unlock the same seed → same funds, either may act.
 
 ## CLI JSON (without MCP)
 
@@ -48,30 +82,11 @@ vaughan proposals show prop_12345 --json
 ## Success test (testnet 943)
 
 1. Unlock Vaughan TUI on PulseChain testnet v4.
-2. In Cursor: *"Check my testnet balance and draft 0.01 tPLS to `0x…`."*
-3. Agent calls read tools → `propose_transfer` → **one approval card** in TUI.
-4. Approve → `get_proposal_status` returns `tx_hash`.
-5. Confirm: no keys in the MCP process; tx matches decoded calldata.
-
-## Dogfood checklist (local)
-
-Automated coverage (CI) — **green as of 2026-08-24**:
-
-```bash
-cargo test -p vaughan-tui --test mcp_dogfood --test mcp_listener
-cargo test -p vaughan-mcp --test mcp_integration
-```
-
-Covers: reject → `proposals/rejected/`, re-sim blocks overspend, loopback
-session ping, banned tools absent, `tools/list` + `get_network` stdio smoke.
-
-Manual Cursor session (after unlock TUI) — still recommended once per machine:
-
-1. Connect Vaughan MCP (`.cursor/mcp.json`; restart Cursor MCP).
-2. `get_address` / `list_assets` — should return the unlocked account.
-3. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file.
-4. `propose_transfer` → **Approve** on testnet → status shows `tx_hash`.
-5. Optional Pulse DeFi: `quote_swap` then `propose_agg_swap`.
+2. Connect Vaughan MCP (`.cursor/mcp.json`; restart Cursor MCP).
+3. `get_address` / `list_assets` — should return the unlocked account.
+4. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file.
+5. `propose_transfer` → **Approve** on testnet → status shows `tx_hash`.
+6. Optional Pulse DeFi: `quote_swap` then `propose_agg_swap`.
 
 ## Troubleshooting
 

@@ -20,11 +20,19 @@ pub const CURRENT_VERSION: u32 = 1;
 /// Default wallet data file name.
 pub const WALLET_FILE: &str = "wallet.json";
 
-/// Default profile name.
+/// Default profile name (human adviser / savings).
 pub const DEFAULT_PROFILE: &str = "default";
 
-/// Isolated degen profile name.
+/// Sentient agent profile — the agent's own seed (`vaughan-sentient` MCP).
+pub const SENTIENT_PROFILE: &str = "sentient";
+
+/// Legacy alias for [`SENTIENT_PROFILE`] (pre-rename on-disk / CLI).
 pub const DEGEN_PROFILE: &str = "degen";
+
+/// True if `name` is the sentient (agent-owned) profile, including legacy `degen`.
+pub fn is_sentient_profile(name: &str) -> bool {
+    name == SENTIENT_PROFILE || name == DEGEN_PROFILE
+}
 
 /// Everything persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,7 +462,18 @@ mod tests {
         let degen_path = StateManager::profile_path(DEGEN_PROFILE).unwrap();
         assert!(degen_path.ends_with("vaughan-cli/profiles/degen/wallet.json"));
 
+        let sentient_path = StateManager::profile_path(SENTIENT_PROFILE).unwrap();
+        assert!(sentient_path.ends_with("vaughan-cli/profiles/sentient/wallet.json"));
+
         let custom_path = StateManager::profile_path("bot1").unwrap();
         assert!(custom_path.ends_with("vaughan-cli/profiles/bot1/wallet.json"));
+    }
+
+    #[test]
+    fn sentient_profile_includes_legacy_degen_alias() {
+        assert!(is_sentient_profile(SENTIENT_PROFILE));
+        assert!(is_sentient_profile(DEGEN_PROFILE));
+        assert!(!is_sentient_profile(DEFAULT_PROFILE));
+        assert!(!is_sentient_profile("bot1"));
     }
 }

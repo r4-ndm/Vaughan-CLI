@@ -35,6 +35,12 @@ kind: must | guide
 | `contract-inspection` | guide | all |
 | `pulsechain-context` | guide | all |
 
+## Sentient partner presets
+
+Premade **skill + `policy.toml`** packs (gambler → quant → cautious) for humans
+who share a seed with an agent — no contracts, just rules. See
+[`../presets/`](../presets/) and [`docs/sentient-presets.md`](../../docs/sentient-presets.md).
+
 ## User overrides
 
 Place the same folder layout under the profile directory:
