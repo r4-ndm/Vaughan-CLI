@@ -52,7 +52,8 @@ seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 ## Automated test coverage (approval path)
 
 Hand-rolled MCP stdio is intentionally thin; fund-safety controls below are
-what we regression-test in CI.
+what we regression-test in CI. Full `rmcp` rewrite is **not needed now** —
+see [`mcp-transport.md`](mcp-transport.md).
 
 | Threat row | Test |
 |------------|------|

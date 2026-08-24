@@ -18,6 +18,7 @@ use crate::client::{
     ping, try_get_session, try_proposal_status, try_propose_live, try_stealth_scan,
     try_stealth_sweep, try_stealth_uri,
 };
+use crate::session_bridge::session_bridge_tool_definitions;
 
 /// MCP runtime context (no vault unlock — read tools use RPC + optional address).
 #[derive(Debug, Clone)]
@@ -67,64 +68,7 @@ impl McpDispatcher {
                 }));
             }
         }
-        tools.push(json!({
-            "name": "get_address",
-            "description": "Active wallet address when Vaughan TUI is unlocked (session bridge).",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "get_network",
-            "description": "Active network id, chain id, and RPC for the MCP session.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "list_assets",
-            "description": "Native + known ERC-20 balances for the unlocked active account.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "get_proposal_status",
-            "description": "Get lifecycle status of a pending or completed proposal.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "proposal_id": { "type": "string" }
-                },
-                "required": ["proposal_id"]
-            }
-        }));
-        tools.push(json!({
-            "name": "list_pending_proposals",
-            "description": "List all pending proposals in the file queue.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "get_control_plane_status",
-            "description": "Whether Vaughan TUI or `vaughan serve` is reachable on loopback, \
-                 and whether the wallet session is unlocked. Sentients should poll this before writes.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "get_stealth_uri",
-            "description": "This vault's ERC-5564 stealth meta-address URI (st:…). Requires unlocked TUI or vaughan serve.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "scan_stealth_notes",
-            "description": "Scan for unswept stealth notes owned by this vault. Requires unlocked TUI or vaughan serve.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }));
-        tools.push(json!({
-            "name": "sweep_stealth_note",
-            "description": "Sweep one stealth note to the active account (approval card on adviser; auto on sentient).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "stealth_address": { "type": "string" }
-                },
-                "required": ["stealth_address"]
-            }
-        }));
+        tools.extend(session_bridge_tool_definitions());
         tools
     }
 

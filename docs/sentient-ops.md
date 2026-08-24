@@ -85,13 +85,13 @@ hand-maintained duplicate list). Session bridge tools
 **Conformance:** `cargo test -p vaughan-mcp --test conformance` + human checklist
 [`mcp-smoke.md`](mcp-smoke.md).
 
-Full migration to `rmcp` / official MCP Rust crates is **deferred** while the
-fund-safety path (re-sim, fee spike, HMAC queue) stays in-house. Revisit when
-registry + IPC are boringly stable.
+**`rmcp`:** not needed now. Decision, revisit triggers, and a future spike recipe:
+[`mcp-transport.md`](mcp-transport.md).
 
 ## Related
 
 - [`mcp.md`](mcp.md) — setup  
+- [`mcp-transport.md`](mcp-transport.md) — hand-rolled vs `rmcp`  
 - [`agent-roles.md`](agent-roles.md) — adviser vs sentient  
 - [`mcp-threat-model.md`](mcp-threat-model.md) — hot-wallet warning for serve  
 - [`sentient-presets.md`](sentient-presets.md) — skill packs  

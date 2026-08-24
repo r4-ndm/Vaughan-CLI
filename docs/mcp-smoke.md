@@ -3,6 +3,26 @@
 Manual verification that Vaughan’s MCP stdio subset works with a real host.
 Automated wire-format tests: `cargo test -p vaughan-mcp --test conformance`.
 
+## Break map (symptom → file → test)
+
+Two cables: **stdio MCP** (host ↔ `vaughan mcp`) and **loopback IPC** (`vaughan-mcp`
+↔ TUI/`serve`). Don’t confuse them when debugging.
+
+| Symptom | Look here | Prove with |
+|---------|-----------|------------|
+| Host hangs / garbage on stdout | `vaughan-mcp/src/server.rs` (logs must be stderr) | `cargo test -p vaughan-mcp --test conformance` |
+| `initialize` / `ping` / method-not-found | `server.rs` + fixtures under `vaughan-mcp/tests/fixtures/` | conformance |
+| Tool missing from catalog | `dispatch.rs` + `session_bridge.rs` + agent registries | conformance `tools/list` |
+| Wrong tool schema / banned name | `vaughan-agent` tool defs; MCP filters in `dispatch.rs` | conformance |
+| `wallet_locked` / no address | `dispatch.rs` `refresh_context` + `client.rs` `try_get_session` | unlock TUI/`serve`; dogfood |
+| `tui_offline` / `ready_for_writes: false` | `client.rs` ping; TUI/`serve` listener | `get_control_plane_status` smoke |
+| Propose never reaches approve | `dispatch.rs` `propose_tool` → queue + live IPC | `mcp_listener` / dogfood |
+| Fee spike / re-sim reject | `vaughan-core` `mcp_host` / proposal approve path | unit + TUI tests |
+| Session bridge def drift | `vaughan-mcp/src/session_bridge.rs` | `session_bridge` unit test |
+| Framing / `rmcp` question | [`mcp-transport.md`](mcp-transport.md) | — |
+
+Transport decision (hand-rolled vs `rmcp`): [`mcp-transport.md`](mcp-transport.md).
+
 ## Claimed protocol subset
 
 | Item | Vaughan |
@@ -14,7 +34,8 @@ Automated wire-format tests: `cargo test -p vaughan-mcp --test conformance`.
 | Tool errors | `result.isError: true` + text content (not always a JSON-RPC `error` object) |
 
 If a host requires Content-Length framing, it is **unsupported** until we document
-a second transport mode.
+a second transport mode. Prefer a **small hand-rolled fix** before adopting `rmcp`
+— see [`mcp-transport.md`](mcp-transport.md) (`rmcp` rewrite is **not needed now**).
 
 ## Prerequisites
 
@@ -82,6 +103,7 @@ Stable substrings / codes (see also [`ai-tool-surface.md`](ai-tool-surface.md)):
 ## Related
 
 - [`mcp.md`](mcp.md) — setup  
+- [`mcp-transport.md`](mcp-transport.md) — why we stay hand-rolled (no `rmcp` now)  
 - [`mcp-threat-model.md`](mcp-threat-model.md) — security  
 - [`sentient-ops.md`](sentient-ops.md) — always-on serve  
 - `vaughan-mcp/tests/fixtures/` — golden request lines  

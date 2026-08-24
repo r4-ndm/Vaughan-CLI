@@ -78,6 +78,8 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         // Chrome / DEX / Ag / Bridge jobs are not used by SendView tests.
         UiJob::RefreshChrome
         | UiJob::SendEvm { .. }
+        | UiJob::EstimateEvmFee { .. }
+        | UiJob::SendEvmWithFee { .. }
         | UiJob::AggQuote { .. }
         | UiJob::BridgeQuote { .. }
         | UiJob::RefreshActivity { .. }

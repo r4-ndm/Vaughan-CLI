@@ -107,7 +107,7 @@ retired in favour of Vaughan-as-MCP-tool for external agents. Historical design:
 ### Phase 6 — External Agent / MCP (Current)
 Vaughan is a **signing wallet that agents call**, not a host for its own LLM:
 
-- `vaughan mcp` — hand-rolled MCP JSON-RPC over stdio (`docs/mcp.md`)
+- `vaughan mcp` — hand-rolled MCP JSON-RPC over stdio (`docs/mcp.md`); transport decision: `docs/mcp-transport.md` (no `rmcp` rewrite now)
 - Hybrid IPC — loopback `127.0.0.1:8746` when TUI unlocked; file queue when offline
 - Unified approval with EIP-1193 (`ApprovalKind::McpProposal`); re-simulate at approve
 - MCP never unlocks the vault; testnet-first writes (`VAUGHAN_MCP_ALLOW_MAINNET=1`)
@@ -145,5 +145,5 @@ plane; stdio MCP stays the agent client.
 
 - **Freedom Browser bridge** — transport requires a new signer backend + local socket.
 - **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
-- **MCP client diversity** — hand-rolled JSON-RPC subset; validate against Cursor / Claude Code as they evolve.
+- **MCP client diversity** — hand-rolled JSON-RPC subset by design; validate against Cursor / Claude Code via [`docs/mcp-smoke.md`](docs/mcp-smoke.md) + `vaughan-mcp` conformance tests. Full `rmcp` rewrite is **not scheduled** — see [`docs/mcp-transport.md`](docs/mcp-transport.md).
 - **Wallet daemon (v2)** — minimal `vaughan serve` shipped; full thin-client TUI still optional polish.

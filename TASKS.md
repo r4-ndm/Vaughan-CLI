@@ -353,7 +353,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - WalletConnect-as-default identity (keeps users married to websites)
 - 1:1 clones of every Pulse website — prefer verbs: swap, inspect, revoke, send, stealth
 - Hosted multi-tenant / cloud fire-and-forget signing (see [`docs/sentient-ops.md`](docs/sentient-ops.md))
-- Full `rmcp` MCP rewrite until fund-safety path is boringly stable
+- Full `rmcp` MCP rewrite — **not needed now**; deferred until revisit triggers in [`docs/mcp-transport.md`](docs/mcp-transport.md) (prefer smallest hand-rolled fix first)
 
 ## Later — DeFi AI king / Coinbase compete (deferred)
 

@@ -19,6 +19,7 @@ See also:
 - [`agent-roles.md`](agent-roles.md) — adviser vs sentient  
 - [`sentient-ops.md`](sentient-ops.md) — always-on serve, watch loops, isolation limits  
 - [`mcp-smoke.md`](mcp-smoke.md) — Cursor smoke checklist + conformance test how-to  
+- [`mcp-transport.md`](mcp-transport.md) — hand-rolled vs `rmcp` decision (no rewrite now)  
 - [`ai-tool-surface.md`](ai-tool-surface.md) — tool contract  
 - [`mcp-threat-model.md`](mcp-threat-model.md) — security controls  
 

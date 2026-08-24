@@ -7,6 +7,8 @@
 //! `tools/list`, `tools/call`. Diagnostics go to **stderr only**.
 //!
 //! Hosts that require Content-Length framing are out of scope until documented.
+//! Do **not** start an `rmcp` rewrite without the revisit triggers in
+//! `docs/mcp-transport.md`.
 
 use std::io::{self, BufRead, Write};
 
