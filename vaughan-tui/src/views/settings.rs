@@ -24,6 +24,8 @@ enum Stage {
     #[default]
     List,
     Add,
+    /// Ledger USB / Linux udev help (no secrets).
+    HardwareHelp,
 }
 
 pub struct SettingsView {
@@ -88,14 +90,53 @@ impl SettingsView {
                     .collect();
 
                 let list = List::new(items);
+                let [list_area, hint_area] =
+                    Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(content);
                 let inner = brand::render_faded_box(
                     frame,
-                    content,
+                    list_area,
                     Some(brand::fade_line(
-                        " Networks (↑↓ Enter switch · a add custom · d delete custom · Esc) ",
+                        " Networks (↑↓ Enter · a add · d delete · h HW USB · Esc) ",
                     )),
                 );
                 frame.render_widget(list, inner);
+                let hint_inner = brand::render_faded_box(frame, hint_area, None);
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "h — Ledger/Trezor USB help (Linux udev) · k — Keys",
+                        Style::default().fg(Color::DarkGray),
+                    ))),
+                    hint_inner,
+                );
+            }
+            Stage::HardwareHelp => {
+                let inner = brand::render_faded_box(
+                    frame,
+                    content,
+                    Some(brand::fade_line(" Hardware USB (Linux) ")),
+                );
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(Span::styled(
+                            "Official vendor docs only (no third-party scripts)",
+                            Style::default().fg(Color::Yellow),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled("Ledger", Style::default().fg(Color::Cyan))),
+                        Line::from("  support.ledger.com/article/115005165269-zd"),
+                        Line::from("  Then: unlock · Ethereum app · Keys → 4 Add Ledger"),
+                        Line::from(""),
+                        Line::from(Span::styled("Trezor", Style::default().fg(Color::Cyan))),
+                        Line::from("  trezor.io/guides/trezorctl/udev-rules"),
+                        Line::from("  (Vaughan Trezor signing is Phase 2)"),
+                        Line::from(""),
+                        Line::from("After either guide: re-login if asked, replug the device."),
+                        Line::from(""),
+                        Line::from("Esc — back to networks"),
+                    ])
+                    .wrap(Wrap { trim: false }),
+                    inner,
+                );
             }
             Stage::Add => {
                 let [msg, name_a, chain_a, rpc_a, sym_a] = Layout::vertical([
@@ -146,6 +187,13 @@ impl SettingsView {
         match self.stage {
             Stage::List => self.handle_list_key(key, wallet, events),
             Stage::Add => self.handle_add_key(key, wallet, events),
+            Stage::HardwareHelp => match key.code {
+                KeyCode::Esc => {
+                    self.stage = Stage::List;
+                    KeyOutcome::Consumed
+                }
+                _ => KeyOutcome::Consumed,
+            },
         }
     }
 
@@ -160,6 +208,11 @@ impl SettingsView {
             KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
             KeyCode::Char('k') => KeyOutcome::Navigate(Screen::Keys),
             KeyCode::Char('w') => KeyOutcome::Navigate(Screen::Dapps),
+            KeyCode::Char('h') => {
+                self.stage = Stage::HardwareHelp;
+                self.status.clear();
+                KeyOutcome::Consumed
+            }
             KeyCode::Char('a') => {
                 self.stage = Stage::Add;
                 self.focus = 0;

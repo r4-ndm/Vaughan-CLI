@@ -30,7 +30,7 @@ fn map_ledger(err: impl std::fmt::Display) -> WalletError {
     let lower = msg.to_lowercase();
     if lower.contains("hid") || lower.contains("device") || lower.contains("not found") {
         WalletError::HardwareUnsupported(format!(
-            "Ledger not ready — unlock, open the Ethereum app, check USB/udev: {msg}"
+            "Ledger not ready — unlock, open Ethereum app, check USB. On Linux: Settings → h or support.ledger.com/article/115005165269-zd: {msg}"
         ))
     } else if lower.contains("reject") || lower.contains("denied") {
         WalletError::SigningFailed("rejected on Ledger".into())

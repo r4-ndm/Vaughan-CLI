@@ -331,11 +331,33 @@ Do **not** add crates in Phase 0.
 
 ---
 
+## Linux USB (udev) — Ledger & Trezor
+
+On Linux (including **CachyOS** / Arch), user-space HID access almost always
+needs vendor udev rules. Without them, Vaughan fails with “device not found” /
+HID errors even when the device is unlocked.
+
+**In the TUI:** Settings (`n` / `i`) → **`h`**.
+
+Follow the vendor’s own docs only (do not use third-party GitHub mirrors or
+unofficial scripts — bugs there are easy to miss):
+
+| Vendor | Official page |
+|---|---|
+| **Ledger** | [Fix USB connection issues](https://support.ledger.com/article/115005165269-zd) |
+| **Trezor** | [Udev rules](https://trezor.io/guides/trezorctl/udev-rules) |
+
+After installing rules per those pages: re-login if asked, replug the device.
+Ledger in Vaughan: unlock → open the **Ethereum** app → Keys → **4 Add Ledger**.
+Trezor signing in Vaughan is **Phase 2**; udev from Trezor’s guide is still fine to install now.
+
+---
+
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| HID flaky on Linux (perms, udev) | Document udev rules; clear “device locked / busy” errors |
+| HID flaky on Linux (perms, udev) | Settings `h` → official [Ledger](https://support.ledger.com/article/115005165269-zd) / [Trezor](https://trezor.io/guides/trezorctl/udev-rules) docs only |
 | Blind signing on device | Prefer clear-signing apps; warn in TUI |
 | AA / 7702 + HW | Out of scope v1; keep Ambire on software EOAs |
 | Stealth needs spend key | Keep stealth on HD vault only |

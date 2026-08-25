@@ -104,6 +104,17 @@ supported but real money — treat mistakes as permanent.
 PulseX (or similar) in Chrome**. Freedom is optional for odd dApps that still
 need a website.
 
+### Hardware wallets on Linux (udev)
+
+USB needs vendor udev rules (CachyOS/Arch included). In the TUI:
+**Settings (`n`) → `h`**, or see
+[`docs/hardware-wallets.md`](docs/hardware-wallets.md#linux-usb-udev--ledger--trezor).
+
+- Ledger: [Fix USB connection issues](https://support.ledger.com/article/115005165269-zd)
+- Trezor: [Udev rules](https://trezor.io/guides/trezorctl/udev-rules)
+
+Then Keys → **4 Add Ledger** when ready (Trezor signing is Phase 2).
+
 ### Typical flows
 
 **Swap without a website**

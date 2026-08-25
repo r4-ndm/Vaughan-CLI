@@ -62,6 +62,33 @@ fn settings_view_lists_networks_with_active_marker() {
     );
 }
 
+/// `h` opens Ledger + Trezor Linux USB help with official udev links.
+#[test]
+fn settings_view_h_opens_hardware_usb_help() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let mut view = SettingsView::new(0);
+
+    view.handle_key(key(KeyCode::Char('h')), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(text.contains("support.ledger.com/article/115005165269-zd"));
+    assert!(text.contains("trezor.io/guides/trezorctl/udev-rules"));
+    assert!(
+        !text.contains("github.com"),
+        "must not point at GitHub for udev:\n{text}"
+    );
+
+    view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(
+        text.contains("PulseChain"),
+        "Esc returns to network list:\n{text}"
+    );
+}
+
 /// Enter on a highlighted network switches to it: the wallet's active network
 /// changes, the render moves the marker, a status line confirms, and the
 /// `chainChanged` event fires with the new chain id.

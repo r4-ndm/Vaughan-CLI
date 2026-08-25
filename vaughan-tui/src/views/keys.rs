@@ -190,6 +190,11 @@ impl KeysView {
                 frame.render_widget(
                     Paragraph::new(vec![
                         Line::from("Unlock Ledger, open the Ethereum app, then press Enter."),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "Linux USB: Settings (n) → h — Ledger/Trezor udev help",
+                            Style::default().fg(Color::DarkGray),
+                        )),
                         Line::from("Esc — cancel"),
                     ])
                     .wrap(Wrap { trim: false }),
