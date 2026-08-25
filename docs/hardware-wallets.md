@@ -1,9 +1,9 @@
 # Hardware wallets — Ledger & Trezor plan
 
-**Status:** Plan + readiness (2026-08-25). No HID crates. **Do not start Phase 0 until this doc’s readiness verdict is accepted.**  
+**Status:** Phase 0 in progress / landed (abstraction, no HID). Readiness accepted 2026-08-25.  
 **Goal:** Optional hardware signer for EOAs on Pulse/EVM, same approval UX as software.
 
-Hardware is **deferred product** (TASKS P4) until this plan’s Phase 0–1 land. Pushed on `main` as `bed8bfc` (plan) after polish `76a7b4c`.
+Hardware is **deferred product** (TASKS P4) until Phase 1 lands device backends. Phase 0 seams live under `vaughan-core::security::hardware`.
 
 ---
 
@@ -280,14 +280,14 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 
 ### Phase 0 — Abstraction prep (no new crates)
 
-- [ ] Module skeleton `security/hardware/` (`types`, `backend`, `session` stub, `profiles/evm`)
-- [ ] `AccountKind` + `HardwareAccountRecord` **with `family` + opaque path** in vault (serde, forward-compatible)
-- [ ] `SignerBackend` + `SignRequest`/`SignResult` + `LocalSignerBackend` (EVM variants only)
-- [ ] Route local personal / typed / tx sign through backend (behavior unchanged); thin EVM helpers OK
-- [ ] `EvmAdapter` seam: sign via backend → `broadcast_raw` (no `PrivateKeySigner` required on adapter for the long-term path)
-- [ ] Guards: export / stealth / AA refuse HW; reject non-EVM `SignRequest` on local EVM-only backend
-- [ ] Unit tests: vault roundtrip `hardware: []`; local Anvil paths green; compile proves no HID deps
-- [ ] Doc this file + TASKS “HW Phase 0”
+- [x] Module skeleton `security/hardware/` (`types`, `backend`, `session` stub, `profiles/evm`)
+- [x] `AccountKind` + `HardwareAccountRecord` **with `family` + opaque path** in vault (serde, forward-compatible)
+- [x] `SignerBackend` + `SignRequest`/`SignResult` + `LocalSignerBackend` (EVM variants only)
+- [x] Route local personal / typed / tx sign through backend (behavior unchanged); thin EVM helpers OK
+- [x] `EvmAdapter` seam: wallet `prepare_sign_raw` → backend sign → `broadcast_raw` (unsigned adapter for fees/nonce)
+- [x] Guards: export / stealth / AA refuse HW; reject non-EVM requests when only EVM local exists
+- [x] Unit tests: vault roundtrip `hardware: []`; local Anvil paths green; compile proves no HID deps
+- [x] Doc this file + TASKS “HW Phase 0”
 
 **Exit:** software wallet identical; types and module seams ready for Ledger **and** a future non-EVM profile without trait rewrites.
 

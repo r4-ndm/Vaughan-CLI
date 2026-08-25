@@ -19,7 +19,7 @@ pub mod vault_secrets;
 pub mod wallet;
 pub mod wiz4rd;
 
-pub use account::{Account, AccountManager};
+pub use account::{Account, AccountManager, IMPORTED_INDEX_BASE};
 pub use aggregator::{
     assert_agg_exec_targets, is_allowed_agg_router, quote_aggregator, AggAccess, AggExecTx,
     AggQuote, AggQuoteRequest, AggVenue, SquirrelPreview, SquirrelSwapClient, AGG_VENUES,

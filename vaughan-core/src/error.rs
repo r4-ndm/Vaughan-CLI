@@ -95,6 +95,10 @@ pub enum WalletError {
     #[error("wallet is locked")]
     WalletLocked,
 
+    /// Operation requires a software key (export, AA, stealth, or no device yet).
+    #[error("hardware unsupported: {0}")]
+    HardwareUnsupported(String),
+
     /// Fallback for uncategorized errors.
     #[error("{0}")]
     Other(String),
@@ -144,6 +148,7 @@ impl WalletError {
             Self::KeyDerivationFailed(_) => "Could not derive the account key.".to_string(),
             Self::AccountNotFound(_) => "The requested account was not found.".to_string(),
             Self::NetworkNotFound(_) => "The requested network is not configured.".to_string(),
+            Self::HardwareUnsupported(msg) => msg.clone(),
         }
     }
 }
@@ -197,6 +202,7 @@ mod tests {
             WalletError::NetworkError("x".into()),
             WalletError::InvalidPassword,
             WalletError::NotInitialized,
+            WalletError::HardwareUnsupported("connect a Ledger".into()),
             WalletError::Other("boom".into()),
         ];
         for v in variants {

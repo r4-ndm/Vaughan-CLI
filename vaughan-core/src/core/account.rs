@@ -1,4 +1,5 @@
-//! Account management: HD accounts from a mnemonic plus optional imported keys.
+//! Account management: HD accounts from a mnemonic, imported keys, and
+//! hardware watch records (Phase 0 — no device I/O).
 
 use alloy::signers::local::PrivateKeySigner;
 use bip39::Mnemonic;
@@ -9,6 +10,9 @@ use crate::core::vault_secrets::{
     parse_private_key, private_key_hex, ImportedKeyRecord, VaultSecrets,
 };
 use crate::error::WalletError;
+use crate::security::hardware::{
+    AccountKind, HardwareAccountRecord, LocalSignerBackend, HARDWARE_INDEX_BASE,
+};
 use crate::security::hd_wallet::{
     derive_account, derive_account_from_parent, derive_account_parent, validate_mnemonic,
 };
@@ -16,16 +20,19 @@ use crate::security::hd_wallet::{
 /// Stable index base for imported keys (HD accounts stay at 0..N-1).
 pub const IMPORTED_INDEX_BASE: u32 = 1_000_000;
 
-/// A wallet account: HD-derived or imported private key.
+/// A wallet account: HD-derived, imported private key, or hardware watch.
 ///
-/// The address is public; signing material lives only in [`AccountManager`].
+/// The address is public; signing material lives only in [`AccountManager`]
+/// (hardware accounts have none in-process).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     pub index: u32,
     pub address: String,
-    /// Display label (`wallet 0` or `W1-HD 1` for imports).
+    /// Display label (`wallet 0`, `W1-HD 1`, or `Ledger · EVM · path`).
     pub label: String,
+    /// True for hex imports (not HD, not hardware).
     pub is_imported: bool,
+    pub kind: AccountKind,
 }
 
 struct ImportedKey {
@@ -37,7 +44,8 @@ struct ImportedKey {
     parent_wallet: u32,
 }
 
-/// Accounts derived from an unlocked mnemonic, plus optional imported EOAs.
+/// Accounts derived from an unlocked mnemonic, plus optional imported EOAs
+/// and hardware watch records.
 ///
 /// The mnemonic is secret material: this type deliberately implements no
 /// `Debug`/`Display`, and the mnemonic is zeroized on drop (via `bip39`).
@@ -45,6 +53,7 @@ pub struct AccountManager {
     mnemonic: Mnemonic,
     accounts: Vec<Account>,
     imported: Vec<ImportedKey>,
+    hardware: Vec<HardwareAccountRecord>,
     active_index: u32,
 }
 
@@ -66,7 +75,7 @@ impl AccountManager {
 
     /// Derive `count` HD accounts with account 0 active.
     pub fn new(mnemonic: Mnemonic, count: u32) -> Result<Self, WalletError> {
-        Self::with_active(mnemonic, 0, count, Vec::new())
+        Self::with_active(mnemonic, 0, count, Vec::new(), Vec::new())
     }
 
     /// Derive `count` accounts from a mnemonic phrase (validated first).
@@ -74,8 +83,17 @@ impl AccountManager {
         Self::new(validate_mnemonic(phrase)?, count)
     }
 
-    /// Build from decoded vault secrets (HD + imported).
+    /// Build from decoded vault secrets (HD + imported) and optional hardware watches.
     pub fn from_secrets(secrets: &VaultSecrets, count: u32) -> Result<Self, WalletError> {
+        Self::from_secrets_with_hardware(secrets, count, &[])
+    }
+
+    /// Like [`Self::from_secrets`], merging persisted hardware watch records.
+    pub fn from_secrets_with_hardware(
+        secrets: &VaultSecrets,
+        count: u32,
+        hardware: &[HardwareAccountRecord],
+    ) -> Result<Self, WalletError> {
         let mnemonic = validate_mnemonic(&secrets.mnemonic)?;
         let imported = secrets
             .imported
@@ -90,7 +108,7 @@ impl AccountManager {
                 })
             })
             .collect::<Result<Vec<_>, WalletError>>()?;
-        Self::with_active(mnemonic, 0, count, imported)
+        Self::with_active(mnemonic, 0, count, imported, hardware.to_vec())
     }
 
     /// Derive `count` HD accounts with `active_index` active.
@@ -99,34 +117,32 @@ impl AccountManager {
         active_index: u32,
         count: u32,
         imported: Vec<ImportedKey>,
+        hardware: Vec<HardwareAccountRecord>,
     ) -> Result<Self, WalletError> {
-        let parent = derive_account_parent(&mnemonic)?;
-        let mut accounts = Vec::with_capacity(count as usize + imported.len());
-        for index in 0..count {
-            let signer = derive_account_from_parent(&parent, index)?;
-            accounts.push(Account {
-                index,
-                address: signer.address().to_string(),
-                label: hd_wallet_label(index),
-                is_imported: false,
-            });
-        }
-        for (i, key) in imported.iter().enumerate() {
-            accounts.push(Account {
-                index: IMPORTED_INDEX_BASE + i as u32,
-                address: key.address.clone(),
-                label: Self::display_imported_label(key, &imported),
-                is_imported: true,
-            });
-        }
         let mut am = Self {
             mnemonic,
-            accounts,
+            accounts: Vec::new(),
             imported,
+            hardware,
             active_index: 0,
         };
+        am.rebuild_account_list_with_hd_count(count)?;
         am.set_active(active_index)?;
         Ok(am)
+    }
+
+    /// Replace hardware watch list (e.g. after unlock from [`PersistedState`]).
+    pub fn set_hardware(
+        &mut self,
+        hardware: Vec<HardwareAccountRecord>,
+    ) -> Result<(), WalletError> {
+        self.hardware = hardware;
+        self.rebuild_account_list()
+    }
+
+    /// Hardware watch records (persisted separately from the encrypted vault).
+    pub fn hardware(&self) -> &[HardwareAccountRecord] {
+        &self.hardware
     }
 
     /// Resolve import display: keep custom labels; empty → `Wn-HD k`.
@@ -147,11 +163,16 @@ impl AccountManager {
         let count = self
             .accounts
             .iter()
-            .filter(|a| !a.is_imported)
+            .filter(|a| matches!(a.kind, AccountKind::Hd))
             .count()
             .max(1) as u32;
+        self.rebuild_account_list_with_hd_count(count)
+    }
+
+    fn rebuild_account_list_with_hd_count(&mut self, count: u32) -> Result<(), WalletError> {
         let parent = derive_account_parent(&self.mnemonic)?;
-        let mut accounts = Vec::with_capacity(count as usize + self.imported.len());
+        let mut accounts =
+            Vec::with_capacity(count as usize + self.imported.len() + self.hardware.len());
         for index in 0..count {
             let signer = derive_account_from_parent(&parent, index)?;
             accounts.push(Account {
@@ -159,6 +180,7 @@ impl AccountManager {
                 address: signer.address().to_string(),
                 label: hd_wallet_label(index),
                 is_imported: false,
+                kind: AccountKind::Hd,
             });
         }
         for (i, key) in self.imported.iter().enumerate() {
@@ -167,6 +189,16 @@ impl AccountManager {
                 address: key.address.clone(),
                 label: Self::display_imported_label(key, &self.imported),
                 is_imported: true,
+                kind: AccountKind::Imported,
+            });
+        }
+        for (i, hw) in self.hardware.iter().enumerate() {
+            accounts.push(Account {
+                index: HARDWARE_INDEX_BASE + i as u32,
+                address: hw.address.clone(),
+                label: hw.display_label(),
+                is_imported: false,
+                kind: AccountKind::Hardware(hw.clone()),
             });
         }
         self.accounts = accounts;
@@ -195,14 +227,15 @@ impl AccountManager {
     /// Active HD wallet index (`wallet N`), or the import's parent when on an import.
     pub fn active_parent_wallet(&self) -> u32 {
         let active = self.active_account();
-        if active.is_imported {
-            self.imported
+        match &active.kind {
+            AccountKind::Imported => self
+                .imported
                 .iter()
                 .find(|k| k.address.eq_ignore_ascii_case(&active.address))
                 .map(|k| k.parent_wallet)
-                .unwrap_or(0)
-        } else {
-            active.index
+                .unwrap_or(0),
+            AccountKind::Hd => active.index,
+            AccountKind::Hardware(_) => 0,
         }
     }
 
@@ -249,13 +282,34 @@ impl AccountManager {
         SecretString::new(self.mnemonic.to_string())
     }
 
+    /// Refuse hardware accounts for software-only operations.
+    pub fn require_software_account(&self, index: u32) -> Result<(), WalletError> {
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.index == index)
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))?;
+        if account.kind.is_hardware() {
+            return Err(WalletError::HardwareUnsupported(
+                "this account is on a hardware wallet — keys never leave the device".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Active account must be software (HD or imported).
+    pub fn require_software_active(&self) -> Result<(), WalletError> {
+        self.require_software_account(self.active_index)
+    }
+
     /// Active account's private key hex for export (password-gated by caller).
     pub fn export_private_key(&self, index: u32) -> Result<SecretString, WalletError> {
+        self.require_software_account(index)?;
         let signer = self.signer(index)?;
         Ok(private_key_hex(&signer))
     }
 
-    /// All accounts (HD then imported).
+    /// All accounts (HD, then imported, then hardware).
     pub fn accounts(&self) -> &[Account] {
         &self.accounts
     }
@@ -298,29 +352,43 @@ impl AccountManager {
     }
 
     /// Re-derive or load the signing key for `index` (caller drops it when done).
+    ///
+    /// Hardware accounts return [`WalletError::HardwareUnsupported`].
     pub fn signer(&self, index: u32) -> Result<PrivateKeySigner, WalletError> {
+        self.require_software_account(index)?;
         if let Some(account) = self.accounts.iter().find(|a| a.index == index) {
-            if account.is_imported {
-                let offset = (index - IMPORTED_INDEX_BASE) as usize;
-                let key = self.imported.get(offset).ok_or_else(|| {
-                    WalletError::AccountNotFound(format!("imported account {index}"))
-                })?;
-                return parse_private_key(key.private_key.expose_secret());
+            match &account.kind {
+                AccountKind::Imported => {
+                    let offset = (index - IMPORTED_INDEX_BASE) as usize;
+                    let key = self.imported.get(offset).ok_or_else(|| {
+                        WalletError::AccountNotFound(format!("imported account {index}"))
+                    })?;
+                    return parse_private_key(key.private_key.expose_secret());
+                }
+                AccountKind::Hd => return derive_account(&self.mnemonic, index),
+                AccountKind::Hardware(_) => unreachable!("require_software_account"),
             }
-            return derive_account(&self.mnemonic, index);
         }
         Err(WalletError::AccountNotFound(format!(
             "account index {index}"
         )))
     }
 
-    /// The active account's signing key.
+    /// The active account's signing key (software only).
     pub fn active_signer(&self) -> Result<PrivateKeySigner, WalletError> {
         self.signer(self.active_index)
     }
 
+    /// Local [`LocalSignerBackend`] for the active software account.
+    pub fn active_local_backend(&self) -> Result<LocalSignerBackend, WalletError> {
+        Ok(LocalSignerBackend::new(self.active_signer()?))
+    }
+
     /// ERC-5564 spend/view keys derived from this vault's mnemonic.
+    ///
+    /// Refuses when the active account is hardware (stealth stays HD-only).
     pub fn stealth_keys(&self) -> Result<crate::security::stealth::StealthMetaKeys, WalletError> {
+        self.require_software_active()?;
         crate::security::stealth::StealthMetaKeys::from_mnemonic(&self.mnemonic)
     }
 }
@@ -421,5 +489,48 @@ mod tests {
             .import_private_key("", &SecretString::new(ANVIL_KEY0.into()))
             .unwrap();
         assert_eq!(a.label, "W1-HD 1");
+    }
+
+    #[test]
+    fn hardware_watch_refuses_export_and_signer() {
+        use crate::security::hardware::{HardwareVendor, HwChainFamily};
+
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 1).unwrap();
+        am.set_hardware(vec![HardwareAccountRecord {
+            vendor: HardwareVendor::Ledger,
+            family: HwChainFamily::Evm,
+            derivation_path: "m/44'/60'/0'/0/0".into(),
+            network_id: Some("943".into()),
+            address: "0x1111111111111111111111111111111111111111".into(),
+            label: String::new(),
+        }])
+        .unwrap();
+        assert_eq!(am.accounts().len(), 2);
+        let hw_index = am
+            .accounts()
+            .iter()
+            .find(|a| a.kind.is_hardware())
+            .map(|a| a.index)
+            .unwrap();
+        assert!(am
+            .accounts()
+            .iter()
+            .find(|a| a.index == hw_index)
+            .unwrap()
+            .label
+            .contains("Ledger"));
+        am.set_active(hw_index).unwrap();
+        assert!(matches!(
+            am.export_private_key(hw_index),
+            Err(WalletError::HardwareUnsupported(_))
+        ));
+        assert!(matches!(
+            am.active_signer(),
+            Err(WalletError::HardwareUnsupported(_))
+        ));
+        assert!(matches!(
+            am.stealth_keys(),
+            Err(WalletError::HardwareUnsupported(_))
+        ));
     }
 }

@@ -271,12 +271,18 @@ impl WalletState {
             .collect())
     }
 
-    /// The active account's signing key (requires an unlocked wallet).
+    /// The active account's signing key (requires an unlocked **software** wallet).
     ///
     /// Exposed for flows that sign outside the built-in send path (e.g. the
-    /// AA batched-send view); the caller drops the key when done.
+    /// AA batched-send view); the caller drops the key when done. Hardware
+    /// accounts return [`WalletError::HardwareUnsupported`].
     pub fn active_signer(&self) -> Result<PrivateKeySigner, WalletError> {
         self.require_unlocked()?.active_signer()
+    }
+
+    /// Local [`LocalSignerBackend`] for the active software account.
+    pub fn active_local_backend(&self) -> Result<crate::security::LocalSignerBackend, WalletError> {
+        self.require_unlocked()?.active_local_backend()
     }
 
     /// The effective RPC URL of the active network (override if set).
@@ -336,8 +342,12 @@ impl WalletState {
         })?;
         let mut secrets = VaultSecrets::decode(phrase)?;
         plaintext.zeroize();
-        let mut accounts =
-            AccountManager::from_secrets(&secrets, AccountManager::DEFAULT_ACCOUNT_COUNT)?;
+        let hardware = persisted.hardware.clone();
+        let mut accounts = AccountManager::from_secrets_with_hardware(
+            &secrets,
+            AccountManager::DEFAULT_ACCOUNT_COUNT,
+            &hardware,
+        )?;
         secrets.zeroize();
         if accounts.set_active(persisted.active_account_index).is_err() {
             // Imported-only edge / stale index: fall back to first account.
@@ -372,8 +382,11 @@ impl WalletState {
     }
 
     /// Export the BIP-39 recovery phrase after password confirmation.
+    ///
+    /// Refuses when the active account is hardware (Keys UX: no seed reveal
+    /// while F3 is on a device watch account).
     pub fn export_mnemonic(&self, password: &SecretString) -> Result<SecretString, WalletError> {
-        self.require_unlocked()?;
+        self.require_unlocked()?.require_software_active()?;
         self.verify_password(password)?;
         Ok(self.require_unlocked()?.mnemonic_phrase())
     }
@@ -1019,13 +1032,8 @@ impl WalletState {
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         use crate::core::broadcasts::{BroadcastEntry, BroadcastReceipt};
 
-        let (adapter, mut prepared) = self.signed_adapter_and_tx(tx).await?;
-        if prepared.nonce.is_none() {
-            prepared.nonce = Some(adapter.get_pending_nonce(&prepared.from).await?);
-        }
-        let hash = TransactionService::new()
-            .send(&adapter, ChainTransaction::Evm(prepared.clone()))
-            .await?;
+        let (adapter, prepared, raw) = self.prepare_sign_raw(tx).await?;
+        let hash = adapter.broadcast_raw(raw).await?;
         let entry = BroadcastEntry::from_prepared(&prepared, hash.0.clone(), label);
         Ok(BroadcastReceipt {
             hash: hash.0,
@@ -1087,8 +1095,8 @@ impl WalletState {
     /// Sign an EVM transaction without broadcasting it; returns the raw signed
     /// tx as `0x`-prefixed hex (serves `vaughan_signTransaction`).
     pub async fn sign_transaction(&self, tx: EvmTransaction) -> Result<String, WalletError> {
-        let (adapter, tx) = self.signed_adapter_and_tx(tx).await?;
-        adapter.sign_transaction(ChainTransaction::Evm(tx)).await
+        let (_adapter, _prepared, raw) = self.prepare_sign_raw(tx).await?;
+        Ok(format!("0x{}", hex::encode(raw)))
     }
 
     /// Estimate the fee for an arbitrary EVM transaction payload.
@@ -1110,24 +1118,81 @@ impl WalletState {
     /// Sign `message` as an EIP-191 personal message with the active account;
     /// returns the signature as a `0x`-prefixed hex string.
     pub fn sign_message(&self, message: &[u8]) -> Result<String, WalletError> {
-        let signer = self.require_unlocked()?.active_signer()?;
-        crate::security::signing::sign_personal_message(&signer, message)
+        let backend = self.active_local_backend()?;
+        // Local backend is sync underneath; drive via existing helpers.
+        crate::security::signing::sign_personal_message(backend.local_signer(), message)
     }
 
     /// Sign an EIP-712 typed-data payload with the active account; returns the
     /// signature as a `0x`-prefixed hex string.
     pub fn sign_typed_data(&self, typed_data: &serde_json::Value) -> Result<String, WalletError> {
-        let signer = self.require_unlocked()?.active_signer()?;
-        crate::security::signing::sign_typed_data(&signer, typed_data)
+        let backend = self.active_local_backend()?;
+        backend.sign_typed_data_json(typed_data)
+    }
+
+    /// Prepare fees/nonce on an unsigned adapter, sign via [`LocalSignerBackend`],
+    /// return `(adapter, prepared_tx, raw_envelope)` for broadcast or return.
+    async fn prepare_sign_raw(
+        &self,
+        mut tx: EvmTransaction,
+    ) -> Result<(EvmAdapter, EvmTransaction, Vec<u8>), WalletError> {
+        use crate::security::hardware::{SignRequest, SignResult, SignerBackend};
+
+        let accounts = self.require_unlocked()?;
+        accounts.require_software_active()?;
+        let net = self.networks.active();
+        let adapter = EvmAdapter::new(
+            &self.effective_rpc(),
+            net.chain_id,
+            &net.name,
+            &net.fallback_rpc_urls,
+        )
+        .await?;
+        // Only estimate when the caller left gas/fees unspecified; a
+        // fully-specified tx (e.g. from the browser signer backend) is signed
+        // exactly as given.
+        let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
+        if tx.gas_limit.is_none() || missing_fees {
+            let mut chain_tx = ChainTransaction::Evm(tx);
+            let fee = adapter.estimate_fee(&chain_tx).await?;
+            TransactionService::new().apply_fee(&mut chain_tx, &fee)?;
+            let ChainTransaction::Evm(prepared) = chain_tx else {
+                return Err(WalletError::InvalidTransaction(
+                    "expected an EVM transaction".to_string(),
+                ));
+            };
+            tx = prepared;
+        }
+        if tx.nonce.is_none() {
+            tx.nonce = Some(adapter.get_pending_nonce(&tx.from).await?);
+        }
+        let backend = accounts.active_local_backend()?;
+        let raw = match backend
+            .sign(SignRequest::EvmTransaction { tx: tx.clone() })
+            .await?
+        {
+            SignResult::RawTx(raw) => raw,
+            SignResult::SignatureHex(_) => {
+                return Err(WalletError::SigningFailed(
+                    "expected raw transaction envelope".into(),
+                ));
+            }
+        };
+        Ok((adapter, tx, raw))
     }
 
     /// Build a signer-backed adapter for the active network and prepare `tx`
     /// (fill missing gas/fees) for signing or broadcast.
+    ///
+    /// Prefer [`Self::prepare_sign_raw`] for new paths; kept for callers that
+    /// still use [`EvmAdapter`] with an in-process signer.
+    #[allow(dead_code)]
     async fn signed_adapter_and_tx(
         &self,
         mut tx: EvmTransaction,
     ) -> Result<(EvmAdapter, EvmTransaction), WalletError> {
         let accounts = self.require_unlocked()?;
+        accounts.require_software_active()?;
         let net = self.networks.active();
         let signer = accounts.active_signer()?;
         let adapter = EvmAdapter::with_signer(
@@ -1138,9 +1203,6 @@ impl WalletState {
             &net.fallback_rpc_urls,
         )
         .await?;
-        // Only estimate when the caller left gas/fees unspecified; a
-        // fully-specified tx (e.g. from the browser signer backend) is signed
-        // exactly as given.
         let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
         if tx.gas_limit.is_none() || missing_fees {
             let mut chain_tx = ChainTransaction::Evm(tx);

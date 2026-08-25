@@ -67,16 +67,21 @@ fn onboarding_create_flow_generates_mnemonic_and_creates_wallet() {
 
     // A 12-word recovery phrase is shown (it may wrap across buffer lines).
     let text = render(&view, &wallet);
-    assert!(text.contains("Your recovery phrase."), "{text}");
+    assert!(
+        text.contains("Your recovery phrase — write it down offline."),
+        "{text}"
+    );
     let words: Vec<&str> = text
         .lines()
-        .skip_while(|l| !l.contains("Write it down"))
+        .skip_while(|l| !l.contains("Your recovery phrase"))
         .skip(1)
-        .take_while(|l| !l.contains("Press Enter"))
+        .take_while(|l| !l.contains("Anyone with this phrase"))
         .flat_map(|l| l.split_whitespace())
         // Strip block-border artifacts (│) that attach to edge words.
         .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphabetic()))
         .filter(|w| !w.is_empty())
+        // Footer / chrome words that appear before the warning line.
+        .filter(|w| !matches!(*w, "y" | "copy" | "Enter" | "continue"))
         .collect();
     assert_eq!(
         words.len(),

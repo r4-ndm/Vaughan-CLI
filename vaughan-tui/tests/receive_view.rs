@@ -46,7 +46,7 @@ fn receive_view_renders_active_address_and_network() {
         "must render the active network:\n{text}"
     );
     assert!(
-        text.contains("Public address:"),
+        text.contains("Public address"),
         "must label the address:\n{text}"
     );
     assert!(

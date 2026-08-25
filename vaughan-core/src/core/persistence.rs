@@ -62,6 +62,9 @@ pub struct PersistedState {
     /// User-defined EVM networks (merged after built-ins).
     #[serde(default)]
     pub custom_networks: Vec<CustomNetwork>,
+    /// Hardware watch accounts (address + path; no secrets). Forward-compatible.
+    #[serde(default)]
+    pub hardware: Vec<crate::security::hardware::HardwareAccountRecord>,
 }
 
 /// A user-imported ERC-20 (shown in Assets even at zero balance).
@@ -190,6 +193,7 @@ impl PersistedState {
             custom_tokens: Vec::new(),
             trusted_dapps: default_trusted_dapps(),
             custom_networks: Vec::new(),
+            hardware: Vec::new(),
         }
     }
 
@@ -209,6 +213,7 @@ impl PersistedState {
             custom_tokens: Vec::new(),
             trusted_dapps: default_trusted_dapps(),
             custom_networks: Vec::new(),
+            hardware: Vec::new(),
         }
     }
 }
@@ -410,6 +415,47 @@ mod tests {
         assert_eq!(loaded.vault.ciphertext, "cc");
         assert_eq!(loaded.version, CURRENT_VERSION);
         assert_eq!(loaded.trusted_dapps.len(), default_trusted_dapps().len());
+        assert!(loaded.hardware.is_empty());
+    }
+
+    #[test]
+    fn hardware_field_roundtrip() {
+        use crate::security::hardware::{HardwareAccountRecord, HardwareVendor, HwChainFamily};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WALLET_FILE);
+        let sm = StateManager::new(path);
+        let mut state = PersistedState::new(dummy_vault(), "pulsechain-testnet-v4");
+        state.hardware.push(HardwareAccountRecord {
+            vendor: HardwareVendor::Trezor,
+            family: HwChainFamily::Evm,
+            derivation_path: "m/44'/60'/0'/0/1".into(),
+            network_id: Some("943".into()),
+            address: "0x2222222222222222222222222222222222222222".into(),
+            label: "trezor-1".into(),
+        });
+        sm.save(&state).unwrap();
+        let loaded = sm.load().unwrap();
+        assert_eq!(loaded.hardware.len(), 1);
+        assert_eq!(loaded.hardware[0].label, "trezor-1");
+        assert_eq!(loaded.hardware[0].vendor, HardwareVendor::Trezor);
+    }
+
+    #[test]
+    fn legacy_json_without_hardware_deserializes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WALLET_FILE);
+        let json =
+            serde_json::to_string(&PersistedState::new(dummy_vault(), "pulsechain")).unwrap();
+        // Strip hardware if present — simulate pre-Phase-0 file.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("hardware");
+        }
+        std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+        let sm = StateManager::new(path);
+        let loaded = sm.load().unwrap();
+        assert!(loaded.hardware.is_empty());
     }
 
     #[test]
