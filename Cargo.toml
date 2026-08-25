@@ -30,6 +30,7 @@ alloy = { version = "2", default-features = false, features = [
     "reqwest-default-tls",
     "signers",
     "signer-local",
+    "signer-ledger",
     "rpc-types-eth",
     "consensus",
     "eips",
@@ -45,6 +46,8 @@ alloy = { version = "2", default-features = false, features = [
 # also enables optional cloud/ledger signer crates whose published versions
 # don't resolve, so we enable the feature on the dyn-abi sub-crate directly.
 alloy-dyn-abi = { version = "1.6", features = ["eip712"] }
+# Ledger USB signer (Phase 1). eip712 here only — do not enable Alloy top-level eip712.
+alloy-signer-ledger = { version = "2", default-features = false, features = ["eip712"] }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }

@@ -145,6 +145,30 @@ impl AccountManager {
         &self.hardware
     }
 
+    /// Append a hardware watch account and select it.
+    pub fn add_hardware(&mut self, record: HardwareAccountRecord) -> Result<Account, WalletError> {
+        if self
+            .accounts
+            .iter()
+            .any(|a| a.address.eq_ignore_ascii_case(&record.address))
+        {
+            return Err(WalletError::Other(
+                "that address is already in this wallet".to_string(),
+            ));
+        }
+        self.hardware.push(record);
+        self.rebuild_account_list()?;
+        let account = self
+            .accounts
+            .iter()
+            .rev()
+            .find(|a| a.kind.is_hardware())
+            .cloned()
+            .ok_or_else(|| WalletError::Other("hardware account missing after rebuild".into()))?;
+        self.active_index = account.index;
+        Ok(account)
+    }
+
     /// Resolve import display: keep custom labels; empty → `Wn-HD k`.
     fn display_imported_label(key: &ImportedKey, all: &[ImportedKey]) -> String {
         if !key.label.trim().is_empty() {

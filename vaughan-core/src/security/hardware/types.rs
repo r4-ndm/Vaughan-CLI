@@ -105,6 +105,11 @@ pub enum SignRequest {
     EvmPersonal {
         message: Vec<u8>,
     },
+    /// Full EIP-712 JSON (required for Ledger; local may hash then sign).
+    EvmTypedData {
+        payload: serde_json::Value,
+    },
+    /// Pre-hashed typed data (local only — Ledger rejects this).
     EvmTypedDataHash {
         hash: B256,
     },

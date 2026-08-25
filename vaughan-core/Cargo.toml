@@ -8,7 +8,9 @@ description = "Shared wallet core: chains, core logic, security, persistence"
 [dependencies]
 alloy = { workspace = true }
 alloy-dyn-abi = { workspace = true }
+alloy-signer-ledger = { workspace = true }
 async-trait = { workspace = true }
+futures-util = { workspace = true }
 url = { workspace = true }
 tokio = { workspace = true }
 moka = { workspace = true }

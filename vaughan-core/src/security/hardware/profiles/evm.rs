@@ -31,6 +31,9 @@ pub async fn sign_evm_local(
         SignRequest::EvmPersonal { message } => Ok(SignResult::SignatureHex(
             sign_personal_message(signer, &message)?,
         )),
+        SignRequest::EvmTypedData { payload } => {
+            Ok(SignResult::SignatureHex(sign_typed_data(signer, &payload)?))
+        }
         SignRequest::EvmTypedDataHash { hash } => {
             Ok(SignResult::SignatureHex(sign_hash(signer, &hash)?))
         }

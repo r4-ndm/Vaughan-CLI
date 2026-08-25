@@ -98,6 +98,39 @@ impl ChromeRpcSnapshot {
     }
 }
 
+enum OwnedSignerBackend {
+    Local(crate::security::LocalSignerBackend),
+    Ledger(crate::security::LedgerSignerBackend),
+    Mock(crate::security::MockSignerBackend),
+}
+
+impl OwnedSignerBackend {
+    async fn sign(
+        &self,
+        req: crate::security::SignRequest,
+    ) -> Result<crate::security::SignResult, WalletError> {
+        use crate::security::SignerBackend;
+        match self {
+            Self::Local(b) => b.sign(req).await,
+            Self::Ledger(b) => b.sign(req).await,
+            Self::Mock(b) => b.sign(req).await,
+        }
+    }
+}
+
+fn block_on_wallet<F: std::future::Future>(fut: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("wallet sign runtime");
+            rt.block_on(fut)
+        }
+    }
+}
+
 /// Top-level wallet state.
 pub struct WalletState {
     state: StateManager,
@@ -111,6 +144,8 @@ pub struct WalletState {
     session_mode: OperatingMode,
     /// Active profile name (e.g. "default", "sentient").
     session_profile: String,
+    /// CI / Anvil: sign hardware accounts with this mock instead of USB Ledger.
+    hw_mock: Option<crate::security::MockSignerBackend>,
 }
 
 impl WalletState {
@@ -138,6 +173,7 @@ impl WalletState {
                     accounts: None,
                     session_mode: mode,
                     session_profile: profile_str,
+                    hw_mock: None,
                 });
             }
             Err(e) => return Err(e),
@@ -169,6 +205,7 @@ impl WalletState {
             accounts: None,
             session_mode: effective_mode,
             session_profile: effective_profile,
+            hw_mock: None,
         })
     }
 
@@ -251,6 +288,71 @@ impl WalletState {
     pub fn active_account_export_context(&self) -> Result<(String, String, bool), WalletError> {
         let a = self.require_unlocked()?.active_account();
         Ok((a.label.clone(), a.address.clone(), a.is_imported))
+    }
+
+    /// True when the F3-active account is a hardware watch record.
+    pub fn active_is_hardware(&self) -> Result<bool, WalletError> {
+        Ok(self.require_unlocked()?.active_account().kind.is_hardware())
+    }
+
+    /// Persist a hardware watch account and make it active (no secrets).
+    pub fn add_hardware_account(
+        &mut self,
+        record: crate::security::HardwareAccountRecord,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        let account = self
+            .accounts
+            .as_mut()
+            .ok_or(WalletError::WalletLocked)?
+            .add_hardware(record)?;
+        self.persist_hardware()?;
+        Ok(account)
+    }
+
+    /// Preview Ledger Live paths `0..4` (device must be unlocked + Ethereum app).
+    pub async fn preview_ledger_accounts(&self) -> Result<Vec<(String, String)>, WalletError> {
+        let chain_id = self.networks.active().chain_id;
+        crate::security::preview_ledger_live_paths(5, Some(chain_id)).await
+    }
+
+    /// Discover a Ledger account at `path` and add it as a watch record.
+    pub async fn add_ledger_account(
+        &mut self,
+        path: &str,
+        label: &str,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        let net = self.networks.active();
+        let record = crate::security::discover_ledger_account(
+            path,
+            Some(net.chain_id),
+            Some(net.chain_id.to_string()),
+            label,
+        )
+        .await?;
+        self.add_hardware_account(record)
+    }
+
+    /// CI/Anvil: sign hardware accounts with `mock` instead of USB (address must match).
+    pub fn set_hardware_mock(&mut self, mock: crate::security::MockSignerBackend) {
+        self.hw_mock = Some(mock);
+    }
+
+    fn persist_hardware(&mut self) -> Result<(), WalletError> {
+        let hardware = self
+            .accounts
+            .as_ref()
+            .ok_or(WalletError::WalletLocked)?
+            .hardware()
+            .to_vec();
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted.hardware = hardware;
+        if let Some(accounts) = self.accounts.as_ref() {
+            persisted.active_account_index = accounts.active_index();
+        }
+        self.state.save(persisted)?;
+        Ok(())
     }
 
     /// Display label for account `index` (F3 chrome preview).
@@ -1117,30 +1219,77 @@ impl WalletState {
 
     /// Sign `message` as an EIP-191 personal message with the active account;
     /// returns the signature as a `0x`-prefixed hex string.
+    ///
+    /// Hardware accounts require a Tokio runtime (confirm on device).
     pub fn sign_message(&self, message: &[u8]) -> Result<String, WalletError> {
+        if self.active_is_hardware().unwrap_or(false) {
+            return block_on_wallet(self.sign_message_async(message));
+        }
         let backend = self.active_local_backend()?;
-        // Local backend is sync underneath; drive via existing helpers.
         crate::security::signing::sign_personal_message(backend.local_signer(), message)
+    }
+
+    /// Async personal-sign (Ledger confirm-on-device when active is hardware).
+    pub async fn sign_message_async(&self, message: &[u8]) -> Result<String, WalletError> {
+        use crate::security::{SignRequest, SignResult};
+        let backend = self.owned_active_backend()?;
+        match backend
+            .sign(SignRequest::EvmPersonal {
+                message: message.to_vec(),
+            })
+            .await?
+        {
+            SignResult::SignatureHex(s) => Ok(s),
+            SignResult::RawTx(_) => {
+                Err(WalletError::SigningFailed("expected signature hex".into()))
+            }
+        }
     }
 
     /// Sign an EIP-712 typed-data payload with the active account; returns the
     /// signature as a `0x`-prefixed hex string.
     pub fn sign_typed_data(&self, typed_data: &serde_json::Value) -> Result<String, WalletError> {
+        if self.active_is_hardware().unwrap_or(false) {
+            return block_on_wallet(self.sign_typed_data_async(typed_data.clone()));
+        }
         let backend = self.active_local_backend()?;
         backend.sign_typed_data_json(typed_data)
     }
 
-    /// Prepare fees/nonce on an unsigned adapter, sign via [`LocalSignerBackend`],
+    /// Async EIP-712 sign (full JSON — required for Ledger).
+    pub async fn sign_typed_data_async(
+        &self,
+        typed_data: serde_json::Value,
+    ) -> Result<String, WalletError> {
+        use crate::security::{SignRequest, SignResult};
+        let backend = self.owned_active_backend()?;
+        match backend
+            .sign(SignRequest::EvmTypedData {
+                payload: typed_data,
+            })
+            .await?
+        {
+            SignResult::SignatureHex(s) => Ok(s),
+            SignResult::RawTx(_) => {
+                Err(WalletError::SigningFailed("expected signature hex".into()))
+            }
+        }
+    }
+
+    /// Prepare fees/nonce on an unsigned adapter, sign via active backend,
     /// return `(adapter, prepared_tx, raw_envelope)` for broadcast or return.
     async fn prepare_sign_raw(
         &self,
         mut tx: EvmTransaction,
     ) -> Result<(EvmAdapter, EvmTransaction, Vec<u8>), WalletError> {
-        use crate::security::hardware::{SignRequest, SignResult, SignerBackend};
+        use crate::security::{SignRequest, SignResult};
 
         let accounts = self.require_unlocked()?;
-        accounts.require_software_active()?;
         let net = self.networks.active();
+        // Ensure `from` matches active account when left default by callers.
+        if tx.from.is_empty() {
+            tx.from = accounts.active_address().to_string();
+        }
         let adapter = EvmAdapter::new(
             &self.effective_rpc(),
             net.chain_id,
@@ -1148,9 +1297,6 @@ impl WalletState {
             &net.fallback_rpc_urls,
         )
         .await?;
-        // Only estimate when the caller left gas/fees unspecified; a
-        // fully-specified tx (e.g. from the browser signer backend) is signed
-        // exactly as given.
         let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
         if tx.gas_limit.is_none() || missing_fees {
             let mut chain_tx = ChainTransaction::Evm(tx);
@@ -1166,7 +1312,7 @@ impl WalletState {
         if tx.nonce.is_none() {
             tx.nonce = Some(adapter.get_pending_nonce(&tx.from).await?);
         }
-        let backend = accounts.active_local_backend()?;
+        let backend = self.owned_active_backend()?;
         let raw = match backend
             .sign(SignRequest::EvmTransaction { tx: tx.clone() })
             .await?
@@ -1179,6 +1325,36 @@ impl WalletState {
             }
         };
         Ok((adapter, tx, raw))
+    }
+
+    fn owned_active_backend(&self) -> Result<OwnedSignerBackend, WalletError> {
+        use crate::security::{AccountKind, HardwareVendor, LedgerSignerBackend};
+
+        let accounts = self.require_unlocked()?;
+        let chain_id = self.networks.active().chain_id;
+        match &accounts.active_account().kind {
+            AccountKind::Hardware(rec) => {
+                if let Some(mock) = &self.hw_mock {
+                    if !mock.address_string().eq_ignore_ascii_case(&rec.address) {
+                        return Err(WalletError::HardwareUnsupported(
+                            "hardware mock address does not match active watch account".into(),
+                        ));
+                    }
+                    return Ok(OwnedSignerBackend::Mock(mock.clone()));
+                }
+                match rec.vendor {
+                    HardwareVendor::Ledger => Ok(OwnedSignerBackend::Ledger(
+                        LedgerSignerBackend::new(rec.clone(), Some(chain_id))?,
+                    )),
+                    HardwareVendor::Trezor => Err(WalletError::HardwareUnsupported(
+                        "Trezor support is Phase 2 — not enabled yet".into(),
+                    )),
+                }
+            }
+            AccountKind::Hd | AccountKind::Imported => {
+                Ok(OwnedSignerBackend::Local(accounts.active_local_backend()?))
+            }
+        }
     }
 
     /// Build a signer-backed adapter for the active network and prepare `tx`

@@ -1,9 +1,9 @@
 # Hardware wallets — Ledger & Trezor plan
 
-**Status:** Phase 0 in progress / landed (abstraction, no HID). Readiness accepted 2026-08-25.  
+**Status:** Phase 1 Ledger landed (USB + mock CI). Live 943 device smoke still optional.  
 **Goal:** Optional hardware signer for EOAs on Pulse/EVM, same approval UX as software.
 
-Hardware is **deferred product** (TASKS P4) until Phase 1 lands device backends. Phase 0 seams live under `vaughan-core::security::hardware`.
+Hardware watch accounts + Ledger signing live under `vaughan-core::security::hardware`. Trezor is Phase 2.
 
 ---
 
@@ -293,13 +293,13 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 
 ### Phase 1 — Ledger EOA (USB)
 
-- [ ] **Dependency approval:** Alloy Ledger signer + transport (exact crates TBD against allowlist review)
-- [ ] `DeviceSession` + `LedgerTransport` (HID only) + `EvmHwProfile` wiring — no fee/RPC in transport
-- [ ] TUI: add device (EVM), confirm-on-device chrome, timeout / user-reject / wrong-app mapping
-- [ ] Anvil: mock `DeviceSession` for CI; optional `#[ignore]` live test when device present
-- [ ] Pulse testnet 943 native send + `personal_sign` smoke
+- [x] **Dependency approval:** Alloy `signer-ledger` + `alloy-signer-ledger` (eip712) — approved 2026-08-25
+- [x] `DeviceSession` + `LedgerDeviceSession` / `LedgerSignerBackend` — no fee/RPC in transport
+- [x] TUI Keys: Add Ledger (preview paths, persist watch, confirm-on-device messaging)
+- [x] Anvil: `MockSignerBackend` / `MockDeviceSession` (`vaughan-core/tests/hardware_anvil.rs`)
+- [ ] Pulse testnet 943 native send + `personal_sign` smoke (live device; optional `#[ignore]`)
 
-**Exit:** Ledger EVM account can send + dApp-sign on 943 with double confirm (TUI + device); seams unused by BTC/DOT yet but not EVM-locked.
+**Exit:** Ledger EVM account can send + dApp-sign on 943 with double confirm (TUI + device); seams unused by BTC/DOT yet but not EVM-locked. Mock path green without USB.
 
 ### Phase 2 — Trezor EOA
 

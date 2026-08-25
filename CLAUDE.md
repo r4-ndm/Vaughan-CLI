@@ -127,6 +127,7 @@ listed here requires approval before it is added.
 | Concern | Crate |
 |---|---|
 | EVM chains, provider, signing, tx building | `alloy` |
+| Ledger hardware signer (Phase 1) | `alloy-signer-ledger` (via Alloy `signer-ledger`; HID via `coins-ledger`) |
 | Async trait objects | `async-trait` |
 | Async runtime | `tokio` |
 | URLs | `url` |

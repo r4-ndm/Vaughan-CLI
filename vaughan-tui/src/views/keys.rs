@@ -1,10 +1,11 @@
-//! Keys: export recovery phrase / private key, import a hex private key.
+//! Keys: export recovery phrase / private key, import hex key, add Ledger.
 //!
 //! Every reveal path re-checks the vault password. Secrets are shown once and
 //! cleared when the user leaves the screen — never logged.
 //!
 //! Private-key export always uses the **F3-active** account (the account shown
 //! in the status strip). Recovery phrase is the vault HD seed (all HD wallets).
+//! Hardware accounts cannot export keys; use option 4 to add a Ledger watch.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -30,6 +31,7 @@ enum MenuItem {
     ExportPhrase,
     ExportKey,
     ImportKey,
+    AddLedger,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,7 @@ enum Stage {
     Password,
     Reveal,
     ImportForm,
+    LedgerPick,
 }
 
 pub struct KeysView {
@@ -53,6 +56,9 @@ pub struct KeysView {
     revealed: Option<String>,
     reveal_title: String,
     status: String,
+    /// Ledger Live preview: (path, address).
+    ledger_paths: Vec<(String, String)>,
+    ledger_sel: usize,
 }
 
 impl Default for KeysView {
@@ -68,6 +74,8 @@ impl Default for KeysView {
             revealed: None,
             reveal_title: String::new(),
             status: String::new(),
+            ledger_paths: Vec::new(),
+            ledger_sel: 0,
         }
     }
 }
@@ -87,7 +95,13 @@ impl KeysView {
     fn f3_account_line(wallet: &WalletState) -> String {
         match wallet.active_account_export_context() {
             Ok((label, address, imported)) => {
-                let kind = if imported { "imported" } else { "HD" };
+                let kind = if wallet.active_is_hardware().unwrap_or(false) {
+                    "hardware"
+                } else if imported {
+                    "imported"
+                } else {
+                    "HD"
+                };
                 format!("F3 account: {label} ({kind}) · {}", short_addr(&address))
             }
             Err(_) => "F3 account: —".into(),
@@ -106,7 +120,7 @@ impl KeysView {
 
         let text = match self.stage {
             Stage::Menu => vec![
-                Line::from("Keys — export / import (password required)"),
+                Line::from("Keys — export / import / Ledger (password for secrets)"),
                 Line::from(Span::styled(f3.clone(), Style::default().fg(Color::Cyan))),
                 Line::from(""),
                 menu_line(
@@ -118,6 +132,10 @@ impl KeysView {
                     "2  Export F3 account private key",
                 ),
                 menu_line(self.menu == MenuItem::ImportKey, "3  Import private key"),
+                menu_line(
+                    self.menu == MenuItem::AddLedger,
+                    "4  Add Ledger (USB · Ethereum app)",
+                ),
                 Line::from(""),
                 Line::from("Enter — continue   Esc — dashboard"),
             ],
@@ -132,6 +150,7 @@ impl KeysView {
                         "Re-enter vault password to show this F3 account's private key"
                     }
                     MenuItem::ImportKey => "Re-enter vault password to import a key",
+                    MenuItem::AddLedger => "Unlock device, open Ethereum app, then continue",
                 }),
                 Line::from(""),
                 Line::from("Esc — cancel"),
@@ -141,9 +160,42 @@ impl KeysView {
                 Line::from("Import a hex private key into this vault"),
                 Line::from("Tab — next field   Enter — import   Esc — cancel"),
             ],
+            Stage::LedgerPick => {
+                let mut lines = vec![
+                    Line::from(Span::styled(
+                        "Confirm on Ledger if prompted · ↑↓ pick · Enter add · Esc cancel",
+                        Style::default().fg(Color::Yellow),
+                    )),
+                    Line::from(""),
+                ];
+                if self.ledger_paths.is_empty() {
+                    lines.push(Line::from("No paths — check USB / Ethereum app."));
+                } else {
+                    for (i, (path, addr)) in self.ledger_paths.iter().enumerate() {
+                        lines.push(menu_line(
+                            i == self.ledger_sel,
+                            &format!("{path}  {}", short_addr(addr)),
+                        ));
+                    }
+                }
+                lines
+            }
         };
 
         match self.stage {
+            Stage::Password if matches!(self.menu, MenuItem::AddLedger) => {
+                // Ledger connect does not need vault password — show hint only.
+                let inner =
+                    brand::render_faded_box(frame, content, Some(brand::fade_line(" Ledger ")));
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("Unlock Ledger, open the Ethereum app, then press Enter."),
+                        Line::from("Esc — cancel"),
+                    ])
+                    .wrap(Wrap { trim: false }),
+                    inner,
+                );
+            }
             Stage::Password => {
                 let [msg, pw] =
                     ratatui::layout::Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
@@ -171,6 +223,11 @@ impl KeysView {
                     &self.private_key,
                     self.import_focus == 1,
                 );
+            }
+            Stage::LedgerPick => {
+                let inner =
+                    brand::render_faded_box(frame, content, Some(brand::fade_line(" Ledger ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             _ => {
                 let inner =
@@ -210,7 +267,6 @@ impl KeysView {
             head_inner,
         );
 
-        // Plain full-width paragraph — no box borders adjacent to the secret.
         let secret = self.revealed.as_deref().unwrap_or("");
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -236,7 +292,7 @@ impl KeysView {
         &mut self,
         key: KeyEvent,
         wallet: &mut WalletState,
-        _handle: &Handle,
+        handle: &Handle,
         _events: &EventBus,
     ) -> KeyOutcome {
         match self.stage {
@@ -254,25 +310,52 @@ impl KeysView {
                     self.menu = MenuItem::ImportKey;
                     KeyOutcome::Consumed
                 }
+                KeyCode::Char('4') => {
+                    self.menu = MenuItem::AddLedger;
+                    KeyOutcome::Consumed
+                }
                 KeyCode::Up | KeyCode::Down => {
-                    self.menu = match (self.menu, key.code) {
-                        (MenuItem::ExportPhrase, KeyCode::Down) => MenuItem::ExportKey,
-                        (MenuItem::ExportKey, KeyCode::Down) => MenuItem::ImportKey,
-                        (MenuItem::ImportKey, KeyCode::Up) => MenuItem::ExportKey,
-                        (MenuItem::ExportKey, KeyCode::Up) => MenuItem::ExportPhrase,
-                        (MenuItem::ImportKey, KeyCode::Down) => MenuItem::ExportPhrase,
-                        (MenuItem::ExportPhrase, KeyCode::Up) => MenuItem::ImportKey,
-                        (m, _) => m,
-                    };
+                    self.menu = cycle_menu(self.menu, key.code == KeyCode::Down);
                     KeyOutcome::Consumed
                 }
                 KeyCode::Enter => {
                     self.status.clear();
                     self.password.set_value("");
-                    self.stage = Stage::Password;
+                    if self.menu == MenuItem::AddLedger {
+                        self.stage = Stage::Password; // device-ready gate (no vault pw)
+                    } else {
+                        self.stage = Stage::Password;
+                    }
                     KeyOutcome::Consumed
                 }
                 _ => KeyOutcome::NotHandled,
+            },
+            Stage::Password if self.menu == MenuItem::AddLedger => match key.code {
+                KeyCode::Esc => {
+                    self.stage = Stage::Menu;
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Enter => {
+                    self.status = "Connecting to Ledger…".into();
+                    match handle.block_on(wallet.preview_ledger_accounts()) {
+                        Ok(paths) => {
+                            self.ledger_paths = paths;
+                            self.ledger_sel = 0;
+                            self.stage = Stage::LedgerPick;
+                            self.status = if self.ledger_paths.is_empty() {
+                                "No accounts returned".into()
+                            } else {
+                                "Confirm address matches the device, then Enter".into()
+                            };
+                        }
+                        Err(e) => {
+                            self.status = e.user_message();
+                            self.stage = Stage::Menu;
+                        }
+                    }
+                    KeyOutcome::Consumed
+                }
+                _ => KeyOutcome::Consumed,
             },
             Stage::Password => {
                 if key.code == KeyCode::Esc {
@@ -329,11 +412,45 @@ impl KeysView {
                                 }
                                 Err(e) => self.status = e.user_message(),
                             },
+                            MenuItem::AddLedger => unreachable!("handled above"),
                         }
                         KeyOutcome::Consumed
                     }
                 }
             }
+            Stage::LedgerPick => match key.code {
+                KeyCode::Esc => {
+                    self.ledger_paths.clear();
+                    self.stage = Stage::Menu;
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Up if self.ledger_sel > 0 => {
+                    self.ledger_sel -= 1;
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Down if self.ledger_sel + 1 < self.ledger_paths.len() => {
+                    self.ledger_sel += 1;
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Enter => {
+                    if let Some((path, _)) = self.ledger_paths.get(self.ledger_sel).cloned() {
+                        self.status = "Confirm on Ledger if asked…".into();
+                        match handle.block_on(wallet.add_ledger_account(&path, "")) {
+                            Ok(account) => {
+                                self.ledger_paths.clear();
+                                self.stage = Stage::Menu;
+                                self.status = format!(
+                                    "Added {} — F3 selected · confirm on device when signing",
+                                    account.label
+                                );
+                            }
+                            Err(e) => self.status = e.user_message(),
+                        }
+                    }
+                    KeyOutcome::Consumed
+                }
+                _ => KeyOutcome::Consumed,
+            },
             Stage::Reveal => match key.code {
                 KeyCode::Esc => {
                     self.clear_secret();
@@ -411,6 +528,20 @@ impl KeysView {
 impl Drop for KeysView {
     fn drop(&mut self) {
         self.clear_secret();
+    }
+}
+
+fn cycle_menu(menu: MenuItem, down: bool) -> MenuItem {
+    use MenuItem::*;
+    match (menu, down) {
+        (ExportPhrase, true) => ExportKey,
+        (ExportKey, true) => ImportKey,
+        (ImportKey, true) => AddLedger,
+        (AddLedger, true) => ExportPhrase,
+        (ExportPhrase, false) => AddLedger,
+        (AddLedger, false) => ImportKey,
+        (ImportKey, false) => ExportKey,
+        (ExportKey, false) => ExportPhrase,
     }
 }
 

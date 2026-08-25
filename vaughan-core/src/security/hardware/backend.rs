@@ -56,11 +56,7 @@ impl SignerBackend for LocalSignerBackend {
     }
 
     async fn sign(&self, req: SignRequest) -> Result<SignResult, WalletError> {
-        match &req {
-            SignRequest::EvmPersonal { .. }
-            | SignRequest::EvmTypedDataHash { .. }
-            | SignRequest::EvmTransaction { .. } => sign_evm_local(&self.signer, req).await,
-        }
+        sign_evm_local(&self.signer, req).await
     }
 }
 

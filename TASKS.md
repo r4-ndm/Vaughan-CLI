@@ -370,7 +370,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
   - Plan: [`docs/hardware-wallets.md`](docs/hardware-wallets.md) (Ledger + Trezor; Phase 0 abstraction first, no HID crates until approved)
   - [x] HW readiness check (2026-08-25): Phase 0 = Go-with-fixes; see readiness section in plan doc
   - [x] HW Phase 0: modular `security/hardware/` + family-agnostic `SignerBackend` + EVM profile + vault `hardware[]` (no new deps; multichain-ready seams)
-  - [ ] HW Phase 1: Ledger EOA on Pulse testnet 943 (deps require allowlist approval)
+  - [x] HW Phase 1: Ledger EOA (`alloy-signer-ledger`, Keys Add Ledger, mock Anvil); live 943 device smoke still optional
   - [ ] HW Phase 2: Trezor EOA parity
   - [ ] HW Phase 3: hardening (re-verify, blind-sign policy); AA/stealth on HW stay out of scope
 
