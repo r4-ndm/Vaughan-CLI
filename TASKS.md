@@ -368,7 +368,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] P3: x402 client (opportunistic — only with real counterparties)
 - [ ] P4: gas tank, optional hardware signer, local deny lists (never hosted TEE / KYT telemetry)
   - Plan: [`docs/hardware-wallets.md`](docs/hardware-wallets.md) (Ledger + Trezor; Phase 0 abstraction first, no HID crates until approved)
-  - [ ] HW Phase 0: `AccountKind` / vault `hardware[]` / `SignerBackend` + local impl (no new deps)
+  - [x] HW readiness check (2026-08-25): Phase 0 = Go-with-fixes; see readiness section in plan doc
+  - [ ] HW Phase 0: modular `security/hardware/` + family-agnostic `SignerBackend` + EVM profile + vault `hardware[]` (no new deps; multichain-ready seams)
   - [ ] HW Phase 1: Ledger EOA on Pulse testnet 943 (deps require allowlist approval)
   - [ ] HW Phase 2: Trezor EOA parity
   - [ ] HW Phase 3: hardening (re-verify, blind-sign policy); AA/stealth on HW stay out of scope
