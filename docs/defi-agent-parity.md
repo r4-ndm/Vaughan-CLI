@@ -108,7 +108,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | ERC-20 approve spender | `propose_approve` | [x] |
 | Wrap / unwrap WPLS (`e`) | `propose_wrap` / `propose_unwrap` | [x] |
 | LibertySwap bridge (`f`) | `quote_bridge` / `propose_bridge` | [x] |
-| Official Omnibridge | — | [ ] separate track |
+| Official Omnibridge | — | [ ] deferred (LibertySwap Bridge covers convenience) |
 
 ---
 

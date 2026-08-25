@@ -148,9 +148,10 @@ writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
 | MCP propose → human approve | Solid |
 | Stealth send / receive (ERC-5564) | Solid on testnet |
 | Smart-account batch sends (7702) | Testnet-first |
-| Slash commands (`/swap …` in chat) | Not shipped yet |
-| Contract browser **writes** from REPL | Not shipped yet |
+| Slash commands (`/swap …` in Browser REPL) | Shipped (jump to Ag / browse / Approvals / Receive) |
+| Contract browser **writes** from REPL | Shipped (`write` / `writeraw` → fee confirm) |
 | Recorded demo walkthrough | Not shipped yet |
+| Official Omnibridge / PulseRamp | Deferred (use LibertySwap Bridge) |
 
 This repo is a **prototype** — expect rough edges. Read [SECURITY.md](SECURITY.md)
 before mainnet funds.

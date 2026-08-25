@@ -81,7 +81,13 @@ probe                         # re-run selector sniff → protocol fingerprint
 info                          # name/ABI source (verified vs probed), bytecode size
 call slot0()                  # call any function on current contract (read-only)
 call getReserves()            # decoded output, typed
+write approve 0xSpender 1     # encode write → fee confirm → broadcast (verified ABI)
+writeraw 0xd0e30db0 value 1e18 # raw calldata write → same Approve path
 pairs                         # event-scan a factory: list pairs/pools (any fork)
+/swap 1                       # intent macro → Ag screen
+/inspect 0x…                  # intent → browse
+/revoke                       # intent → Approvals
+/stealth receive              # intent → Receive (stealth URI)
 token 0x95B3…90ab             # metadata probes: symbol, decimals, totalSupply
 help                          # command list
 history                       # scroll previous commands/output
@@ -91,6 +97,9 @@ Example session: `browse <pulsex-factory>` → `pairs` (186k pairs found) →
 `browse <pair-address>` → `call getReserves()` → `token <token0>`.
 
 Batch mode for scripting: `vaughan browser -c "browse 0x…; call slot0()"`.
+
+**Writes** always go through the same fee-confirm → explicit Enter broadcast
+gate as Send / Dex (never auto-sign). Unverified contracts use `writeraw`.
 
 ## 6. Building blocks (battle-tested only)
 
@@ -115,7 +124,9 @@ exists battle-tested, use it; do not hand-roll.
 - [ ] **Probe** — capability library (ERC20, V2 factory/pair, V3 factory/pool, WETH, Multicall3, …) probed via `eth_call`; returns a protocol fingerprint (e.g. `v2-factory`, `erc20`, `unknown`).
 - [ ] **PUSH4 extraction** — derive candidate selectors from bytecode for unverified contracts (correctly skipping PUSH-data; PUSH0 handled).
 - [ ] **Signature lookup** — resolve selectors to signatures via 4byte.directory; offline fallback = raw selector hex.
-- [ ] **Generic call** — `call <sig or selector> [args]` on the current contract, typed decode of the result, clear error on revert.
+- [x] **Generic call** — `call <sig or selector> [args]` on the current contract, typed decode of the result, clear error on revert.
+- [x] **Gated writes** — `write` / `writeraw` encode → fee estimate → Confirm card → broadcast (same path as Send).
+- [x] **Intent macros** — `/swap`, `/inspect`, `/revoke`, `/stealth receive` jump to existing TUI surfaces.
 - [ ] **Event scan** — `pairs <factory>` via `PairCreated`/`PoolCreated` topic0 logs (paginated), without init code hashes.
 - [ ] **REPL view** — input line + scrolling output; stateful current-contract context; `help`; history (persisted); tab completion of commands/selectors.
 - [ ] **Batch mode** — `-c "cmd1; cmd2"` non-interactive, same engine.
@@ -123,7 +134,7 @@ exists battle-tested, use it; do not hand-roll.
 
 ### Non-functional
 - [ ] **Pure Rust, no cast/foundry at runtime** — the engine must work with zero external binaries. `cast` is a dev-time cross-check only.
-- [ ] **Read-only on other DEXes in v0.1** — no write calls through the browser. Money-moving flows only via Vaughan's existing approval + signer path.
+- [x] **Read-only by default; writes gated** — money-moving browser commands use Vaughan's existing approval + signer path (never auto-broadcast).
 - [ ] **Graceful degradation** — unverified + no explorer access → probe-only support; never crash, always explain.
 - [ ] **Network-aware** — ABI cache and probe results keyed by chain; works on PulseChain testnet 943 and mainnet 369.
 - [ ] **Quality gate** — `cargo build`, `cargo test`, `cargo fmt --check`, `cargo clippy -D warnings` all clean (existing workspace standard).
@@ -136,11 +147,11 @@ exists battle-tested, use it; do not hand-roll.
 
 ## 9. Scope boundaries (explicitly deferred)
 
-- Write calls / swaps on other DEXes (v0.1 is read-only)
 - Cross-DEX routing / aggregation — **out of Vaughan**; build a proper swap aggregator in `wiz4rd-swap` instead of a wallet `price` view
 - StableSwap / exotic curve math (renders as a contract; views attach only where standard interfaces match)
 - Tx replay / tracing (`cast run` equivalent needs an EVM — **revm**, battle-tested, used by Foundry; a later power feature)
 - DEX *views* (V2/V3 price) — from `wiz4rd-sdk` at workspace integration, not the engine
+- Official Omnibridge / PulseRamp client — separate track; LibertySwap Bridge (`f`) covers convenience cross-chain for now
 
 ## 10. Cross-references
 

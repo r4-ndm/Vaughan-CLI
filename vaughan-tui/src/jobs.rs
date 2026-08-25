@@ -1,7 +1,7 @@
 //! Background UI jobs so RPC work never `block_on`s the TUI thread.
 
 use vaughan_core::chains::{Balance, EvmTransaction, Fee};
-use vaughan_core::core::StealthSendResult;
+use vaughan_core::core::{BroadcastEntry, BroadcastReceipt, ReplaceKind, StealthSendResult};
 use vaughan_core::error::WalletError;
 use vaughan_core::security::stealth::StealthAnnouncement;
 
@@ -83,6 +83,19 @@ pub enum UiJob {
     },
     /// Scan known-spender allowances for Approvals.
     RefreshAllowances,
+    /// Poll inclusion status for a broadcast hash (Send Done screen).
+    PollTxStatus {
+        tx_hash: String,
+    },
+    /// Refresh status for session recent broadcasts (hashes listed).
+    RefreshBroadcastStatuses {
+        hashes: Vec<String>,
+    },
+    /// Cancel or speed-up a pending session broadcast.
+    ReplaceBroadcast {
+        entry: BroadcastEntry,
+        kind: ReplaceKind,
+    },
 }
 
 /// Cached need-to-know strip shared across every unlocked screen.
@@ -93,6 +106,10 @@ pub struct ChromeSnapshot {
     pub gas_gwei: Option<String>,
     pub loading: bool,
     pub error: Option<String>,
+    /// Brief chrome toast (e.g. "F3 address copied") — shown under the address.
+    pub flash: Option<String>,
+    /// Ticks remaining before [`Self::flash`] clears (decremented each UI tick).
+    pub flash_ticks_left: u8,
     /// Which status box is hotkeyed (F1 / F2 / F3).
     pub focus: ChromeFocus,
     /// Assets with a balance (F2 ↑/↓). Filled by [`UiJob::RefreshAssets`].
@@ -128,12 +145,16 @@ pub enum UiJobResult {
     Balance(Result<Balance, WalletError>),
     Assets(Result<Vec<Balance>, WalletError>),
     Fee(Result<Fee, WalletError>),
-    Send(Result<String, WalletError>),
+    /// Successful send includes a [`BroadcastReceipt`] for History tracking.
+    Send(Result<BroadcastReceipt, WalletError>),
     SendStealth(Result<StealthSendResult, WalletError>),
     AggQuote(Result<vaughan_core::core::AggQuote, WalletError>),
     BridgeQuote(Box<Result<vaughan_core::core::BridgeQuote, WalletError>>),
     Activity(Result<Vec<vaughan_core::chains::TxRecord>, WalletError>),
     Allowances(Result<Vec<vaughan_core::chains::AllowanceEntry>, WalletError>),
+    TxStatus(Result<vaughan_core::chains::TxStatus, WalletError>),
+    /// Updated statuses for session broadcasts `(hash, status)`.
+    BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),
 }
 
 /// Frames for a braille spinner (no extra deps).

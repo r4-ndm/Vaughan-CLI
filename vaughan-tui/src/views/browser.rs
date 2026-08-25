@@ -2,7 +2,8 @@
 //!
 //! Stateful interactive terminal REPL for inspecting contracts, probing
 //! interfaces (ERC-20, Uniswap V2/V3, Multicall), executing read-only dynamic
-//! calls (`alloy-dyn-abi`), and discovering liquidity pairs/pools.
+//! calls (`alloy-dyn-abi`), gated writes (`write` / `writeraw` → fee confirm →
+//! broadcast), discovering pairs/pools, and intent macros (`/swap`, `/inspect`, …).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -18,14 +19,30 @@ use vaughan_core::browser::events::PairDiscovery;
 use vaughan_core::browser::probe::ContractFingerprint;
 use vaughan_core::browser::selectors::selector_to_hex;
 use vaughan_core::browser::{BrowserEngine, ContractInspection};
-use vaughan_core::core::WalletState;
+use vaughan_core::chains::{EvmTransaction, Fee};
+use vaughan_core::core::{TransactionService, WalletState};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
 use crate::brand;
 use crate::input::{Input, InputAction};
+use crate::intent::parse_intent;
+use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::{body_areas, status_paragraph};
 use alloy::primitives::Address;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Repl,
+    ConfirmWrite,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Busy {
+    Idle,
+    EstimatingFee,
+    Sending,
+}
 
 /// Stateful Browser REPL View.
 pub struct BrowserView {
@@ -38,6 +55,12 @@ pub struct BrowserView {
     logs: Vec<Line<'static>>,
     scroll_offset: usize,
     status: String,
+    stage: Stage,
+    busy: Busy,
+    tick: u64,
+    pending_tx: Option<EvmTransaction>,
+    pending_fee: Option<Fee>,
+    confirm_lines: Vec<String>,
 }
 
 impl Default for BrowserView {
@@ -81,12 +104,113 @@ impl BrowserView {
             logs,
             scroll_offset: 0,
             status: String::new(),
+            stage: Stage::Repl,
+            busy: Busy::Idle,
+            tick: 0,
+            pending_tx: None,
+            pending_fee: None,
+            confirm_lines: Vec::new(),
+        }
+    }
+
+    /// Animation tick for fee/send spinners.
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
+    /// Inspect an address (used by `/inspect` intent from other screens).
+    pub fn browse_address(&mut self, addr_str: &str, wallet: &WalletState, handle: &Handle) {
+        self.cmd_browse(addr_str, wallet, handle);
+    }
+
+    pub fn apply_job_result(&mut self, result: UiJobResult) {
+        match result {
+            UiJobResult::Fee(Ok(fee)) => {
+                self.pending_fee = Some(fee.clone());
+                self.busy = Busy::Idle;
+                self.status = format!(
+                    "Est. fee ~{} {} · Enter broadcast · Esc cancel",
+                    fee.total, fee.currency
+                );
+            }
+            UiJobResult::Fee(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.stage = Stage::Repl;
+                self.pending_tx = None;
+                self.status = e.user_message();
+                self.log_error(&format!("Fee estimate failed: {}", e.user_message()));
+            }
+            UiJobResult::Send(Ok(receipt)) => {
+                let hash = receipt.hash;
+                self.busy = Busy::Idle;
+                self.stage = Stage::Repl;
+                self.pending_tx = None;
+                self.pending_fee = None;
+                self.confirm_lines.clear();
+                self.status = format!("Broadcast {hash}");
+                self.logs.push(Line::from(vec![
+                    Span::styled(
+                        "✔ Write tx: ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(hash),
+                ]));
+                self.logs.push(Line::from(""));
+            }
+            UiJobResult::Send(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.stage = Stage::Repl;
+                self.pending_tx = None;
+                self.pending_fee = None;
+                self.status = e.user_message();
+                self.log_error(&format!("Write failed: {}", e.user_message()));
+            }
+            _ => {}
         }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
         let net = wallet.networks().active();
+
+        if self.stage == Stage::ConfirmWrite {
+            let title = brand::fade_line(" Confirm contract write ");
+            let inner = brand::render_faded_box(frame, content, Some(title));
+            let mut lines: Vec<Line> = self
+                .confirm_lines
+                .iter()
+                .map(|s| Line::from(s.clone()))
+                .collect();
+            lines.push(Line::from(""));
+            match self.busy {
+                Busy::EstimatingFee => {
+                    lines.push(Line::from(format!(
+                        "{} estimating fee…",
+                        spinner_frame(self.tick)
+                    )));
+                }
+                Busy::Sending => {
+                    lines.push(Line::from(format!(
+                        "{} broadcasting…",
+                        spinner_frame(self.tick)
+                    )));
+                }
+                Busy::Idle => {
+                    if let Some(fee) = &self.pending_fee {
+                        lines.push(Line::from(format!(
+                            "Est. fee: {} {}",
+                            fee.total, fee.currency
+                        )));
+                    }
+                    lines.push(Line::from("Enter approve · Esc cancel"));
+                }
+            }
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+            frame.render_widget(status_paragraph(&self.status), status_area);
+            return;
+        }
 
         // Split content into header (context info), log pane (scrollable output), and prompt
         let chunks = Layout::vertical([
@@ -223,6 +347,37 @@ impl BrowserView {
         handle: &Handle,
         _events: &EventBus,
     ) -> KeyOutcome {
+        if self.busy != Busy::Idle {
+            return KeyOutcome::Consumed;
+        }
+
+        if self.stage == Stage::ConfirmWrite {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.stage = Stage::Repl;
+                    self.pending_tx = None;
+                    self.pending_fee = None;
+                    self.confirm_lines.clear();
+                    self.status = "Write cancelled".into();
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let Some(fee) = self.pending_fee.clone() else {
+                        self.status = "fee estimate missing — Esc back and retry".into();
+                        return KeyOutcome::Consumed;
+                    };
+                    let Some(tx) = self.pending_tx.take() else {
+                        self.status = "transaction payload missing — Esc back and retry".into();
+                        return KeyOutcome::Consumed;
+                    };
+                    self.pending_fee = None;
+                    self.busy = Busy::Sending;
+                    KeyOutcome::StartJob(UiJob::SendEvmWithFee { tx, fee })
+                }
+                _ => KeyOutcome::Consumed,
+            };
+        }
+
         match key.code {
             KeyCode::Esc => {
                 if !self.input.value().is_empty() {
@@ -273,12 +428,12 @@ impl BrowserView {
                 match action {
                     InputAction::Submitted => {
                         let cmd = self.input.take_string().trim().to_string();
-                        if !cmd.is_empty() {
-                            self.history.push(cmd.clone());
-                            self.history_index = None;
-                            self.execute_command(&cmd, wallet, handle);
+                        if cmd.is_empty() {
+                            return KeyOutcome::Consumed;
                         }
-                        KeyOutcome::Consumed
+                        self.history.push(cmd.clone());
+                        self.history_index = None;
+                        self.execute_command(&cmd, wallet, handle)
                     }
                     InputAction::Consumed => KeyOutcome::Consumed,
                     InputAction::Ignored => KeyOutcome::NotHandled,
@@ -287,47 +442,91 @@ impl BrowserView {
         }
     }
 
-    fn execute_command(&mut self, cmd: &str, wallet: &WalletState, handle: &Handle) {
+    fn execute_command(&mut self, cmd: &str, wallet: &WalletState, handle: &Handle) -> KeyOutcome {
         self.scroll_offset = 0;
         self.logs.push(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(Color::Yellow)),
             Span::raw(cmd.to_string()),
         ]));
 
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            return;
+        if let Some(parsed) = parse_intent(cmd) {
+            match parsed {
+                Ok(nav) => {
+                    self.logs.push(Line::from(format!("→ intent {nav:?}")));
+                    self.logs.push(Line::from(""));
+                    // Same-screen inspect: browse without leaving Browser.
+                    if let crate::intent::IntentNav::BrowserInspect { address } = &nav {
+                        self.cmd_browse(address, wallet, handle);
+                        self.logs.push(Line::from(""));
+                        return KeyOutcome::Consumed;
+                    }
+                    return KeyOutcome::Intent(nav);
+                }
+                Err(e) => {
+                    self.log_error(&e);
+                    self.logs.push(Line::from(""));
+                    return KeyOutcome::Consumed;
+                }
+            }
         }
 
-        match parts[0].to_lowercase().as_str() {
-            "help" | "?" => self.cmd_help(),
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            return KeyOutcome::Consumed;
+        }
+
+        let outcome = match parts[0].to_lowercase().as_str() {
+            "help" | "?" => {
+                self.cmd_help();
+                KeyOutcome::Consumed
+            }
             "clear" | "cls" => {
                 self.logs.clear();
+                KeyOutcome::Consumed
             }
-            "browse" | "b" => {
+            "browse" | "b" | "inspect" => {
                 if parts.len() < 2 {
                     self.log_error("Usage: browse <0xContractAddress>");
-                    return;
+                    KeyOutcome::Consumed
+                } else {
+                    self.cmd_browse(parts[1], wallet, handle);
+                    KeyOutcome::Consumed
                 }
-                self.cmd_browse(parts[1], wallet, handle);
             }
-            "probe" | "p" => self.cmd_probe(wallet, handle),
-            "info" | "i" => self.cmd_info(),
+            "probe" | "p" => {
+                self.cmd_probe(wallet, handle);
+                KeyOutcome::Consumed
+            }
+            "info" | "i" => {
+                self.cmd_info();
+                KeyOutcome::Consumed
+            }
             "call" => {
                 if parts.len() < 2 {
                     self.log_error("Usage: call <function_name> [arg1 arg2 ...]");
-                    return;
+                } else {
+                    let func_name = parts[1];
+                    let args: Vec<String> = parts[2..].iter().map(|s| s.to_string()).collect();
+                    self.cmd_call(func_name, &args, wallet, handle);
                 }
-                let func_name = parts[1];
-                let args: Vec<String> = parts[2..].iter().map(|s| s.to_string()).collect();
-                self.cmd_call(func_name, &args, wallet, handle);
+                KeyOutcome::Consumed
             }
             "callraw" => {
                 if parts.len() < 2 {
                     self.log_error("Usage: callraw <0xHexCalldata>");
-                    return;
+                } else {
+                    self.cmd_call_raw(parts[1], wallet, handle);
                 }
-                self.cmd_call_raw(parts[1], wallet, handle);
+                KeyOutcome::Consumed
+            }
+            "write" | "send" => self.cmd_write(&parts[1..], wallet),
+            "writeraw" | "sendraw" => {
+                if parts.len() < 2 {
+                    self.log_error("Usage: writeraw <0xHexCalldata> [value <wei>]");
+                    KeyOutcome::Consumed
+                } else {
+                    self.cmd_write_raw(&parts[1..], wallet)
+                }
             }
             "pairs" => {
                 let limit = parts
@@ -335,15 +534,18 @@ impl BrowserView {
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(10);
                 self.cmd_pairs(0, limit, wallet, handle);
+                KeyOutcome::Consumed
             }
             other => {
                 self.log_error(&format!(
                     "Unknown command '{}'. Type 'help' for commands.",
                     other
                 ));
+                KeyOutcome::Consumed
             }
-        }
+        };
         self.logs.push(Line::from(""));
+        outcome
     }
 
     fn cmd_help(&mut self) {
@@ -363,18 +565,206 @@ impl BrowserView {
             "  info                       Show contract code size, chain ID, and ABI status",
         ));
         self.logs.push(Line::from(
-            "  call <fn_name> [args...]   Execute read-only function call against ABI",
+            "  call <fn_name> [args...]   Read-only eth_call against verified ABI",
         ));
         self.logs.push(Line::from(
-            "  callraw <0xCalldata>       Execute raw read-only eth_call",
+            "  callraw <0xCalldata>       Read-only eth_call with raw calldata",
         ));
-        self.logs.push(Line::from("  pairs [limit]              List pairs if current contract is a Uniswap V2/PulseX factory"));
+        self.logs.push(Line::from(
+            "  write <fn> [args...] [value <wei>]   Encode write → fee confirm → broadcast",
+        ));
+        self.logs.push(Line::from(
+            "  writeraw <0xCalldata> [value <wei>]  Raw write → fee confirm → broadcast",
+        ));
+        self.logs.push(Line::from(
+            "  pairs [limit]              List pairs if current contract is a V2 factory",
+        ));
+        self.logs.push(Line::from(
+            "  /swap [amt] [token]        Intent → Ag screen",
+        ));
+        self.logs.push(Line::from(
+            "  /inspect <0x>              Intent → browse address",
+        ));
+        self.logs.push(Line::from(
+            "  /revoke                    Intent → Approvals manager",
+        ));
+        self.logs.push(Line::from(
+            "  /stealth receive           Intent → Receive (stealth URI)",
+        ));
         self.logs.push(Line::from(
             "  clear                      Clear console output",
         ));
         self.logs.push(Line::from(
             "  help                       Show this help menu",
         ));
+    }
+
+    /// Split trailing `value <wei>` from args; default value `"0"`.
+    fn split_value_suffix(parts: &[&str]) -> Result<(Vec<String>, String), String> {
+        if parts.is_empty() {
+            return Ok((Vec::new(), "0".into()));
+        }
+        let last = parts.len() - 1;
+        if last >= 1 && parts[last - 1].eq_ignore_ascii_case("value") {
+            let wei = parts[last].to_string();
+            if wei.parse::<alloy::primitives::U256>().is_err() {
+                return Err(format!("invalid value wei: {wei}"));
+            }
+            let args: Vec<String> = parts[..last - 1].iter().map(|s| s.to_string()).collect();
+            return Ok((args, wei));
+        }
+        Ok((parts.iter().map(|s| s.to_string()).collect(), "0".into()))
+    }
+
+    fn cmd_write(&mut self, parts: &[&str], wallet: &WalletState) -> KeyOutcome {
+        if parts.is_empty() {
+            self.log_error("Usage: write <fn_name> [args...] [value <wei>]");
+            return KeyOutcome::Consumed;
+        }
+        let target = match self.active_address {
+            Some(a) => a,
+            None => {
+                self.log_error("No target contract. Use `browse <0xAddress>` first.");
+                return KeyOutcome::Consumed;
+            }
+        };
+        let abi = match &self.current_inspection {
+            Some(insp) => match &insp.abi_resolution {
+                AbiResolution::Verified(abi) => abi.clone(),
+                _ => {
+                    self.log_error(
+                        "Verified ABI required for `write`. Use `writeraw <0xCalldata>` instead.",
+                    );
+                    return KeyOutcome::Consumed;
+                }
+            },
+            None => {
+                self.log_error("Contract not inspected. Run `browse <0xAddress>` first.");
+                return KeyOutcome::Consumed;
+            }
+        };
+
+        let (mut args, value) = match Self::split_value_suffix(parts) {
+            Ok(v) => v,
+            Err(e) => {
+                self.log_error(&e);
+                return KeyOutcome::Consumed;
+            }
+        };
+        if args.is_empty() {
+            self.log_error("Usage: write <fn_name> [args...] [value <wei>]");
+            return KeyOutcome::Consumed;
+        }
+        let func_name = args.remove(0);
+        let calldata = match BrowserEngine::encode_named(&abi, &func_name, &args) {
+            Ok(c) => c,
+            Err(e) => {
+                self.log_error(&format!("Encode failed: {e}"));
+                return KeyOutcome::Consumed;
+            }
+        };
+        self.begin_write_confirm(
+            wallet,
+            target,
+            &format!("0x{}", hex::encode(&calldata)),
+            &value,
+            &format!("write {func_name}({})", args.join(" ")),
+        )
+    }
+
+    fn cmd_write_raw(&mut self, parts: &[&str], wallet: &WalletState) -> KeyOutcome {
+        let target = match self.active_address {
+            Some(a) => a,
+            None => {
+                self.log_error("No target contract. Use `browse <0xAddress>` first.");
+                return KeyOutcome::Consumed;
+            }
+        };
+        let (args, value) = match Self::split_value_suffix(parts) {
+            Ok(v) => v,
+            Err(e) => {
+                self.log_error(&e);
+                return KeyOutcome::Consumed;
+            }
+        };
+        if args.len() != 1 {
+            self.log_error("Usage: writeraw <0xHexCalldata> [value <wei>]");
+            return KeyOutcome::Consumed;
+        }
+        let calldata_hex = &args[0];
+        let clean = calldata_hex
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(calldata_hex.trim());
+        if hex::decode(clean).is_err() {
+            self.log_error("Invalid hex calldata");
+            return KeyOutcome::Consumed;
+        }
+        self.begin_write_confirm(wallet, target, &format!("0x{clean}"), &value, "writeraw")
+    }
+
+    fn begin_write_confirm(
+        &mut self,
+        wallet: &WalletState,
+        target: Address,
+        data_hex: &str,
+        value: &str,
+        summary: &str,
+    ) -> KeyOutcome {
+        let from = match wallet.active_address() {
+            Ok(a) => a,
+            Err(e) => {
+                self.log_error(&e.user_message());
+                return KeyOutcome::Consumed;
+            }
+        };
+        let chain_id = wallet.networks().active().chain_id;
+        let tx = match TransactionService::new().build_contract_call(
+            from.to_string(),
+            target.to_checksum(None),
+            data_hex,
+            value,
+            chain_id,
+        ) {
+            Ok(vaughan_core::chains::ChainTransaction::Evm(evm)) => evm,
+            Ok(_) => {
+                self.log_error("expected EVM transaction");
+                return KeyOutcome::Consumed;
+            }
+            Err(e) => {
+                self.log_error(&e.user_message());
+                return KeyOutcome::Consumed;
+            }
+        };
+
+        self.confirm_lines = vec![
+            "Contract write (gated — same signer path as Send)".into(),
+            String::new(),
+            format!("Action:  {summary}"),
+            format!("To:      {}", tx.to),
+            format!("From:    {}", tx.from),
+            format!("Value:   {} wei", tx.value),
+            format!(
+                "Data:    {}…",
+                tx.data
+                    .as_deref()
+                    .unwrap_or("0x")
+                    .chars()
+                    .take(42)
+                    .collect::<String>()
+            ),
+            format!("Chain:   {chain_id}"),
+        ];
+        self.pending_tx = Some(tx.clone());
+        self.pending_fee = None;
+        self.stage = Stage::ConfirmWrite;
+        self.busy = Busy::EstimatingFee;
+        self.status = "Estimating fee…".into();
+        self.logs.push(Line::from(vec![
+            Span::styled("→ ", Style::default().fg(Color::Cyan)),
+            Span::raw("opening write confirm (Enter broadcasts after fee)"),
+        ]));
+        KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx })
     }
 
     fn cmd_browse(&mut self, addr_str: &str, wallet: &WalletState, handle: &Handle) {

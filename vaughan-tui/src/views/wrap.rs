@@ -100,7 +100,8 @@ impl WrapView {
 
     pub fn apply_job_result(&mut self, result: UiJobResult) {
         match result {
-            UiJobResult::Send(Ok(hash)) => {
+            UiJobResult::Send(Ok(receipt)) => {
+                let hash = receipt.hash;
                 self.busy = Busy::Idle;
                 self.stage = Stage::Input;
                 self.pending_wei = None;

@@ -43,6 +43,7 @@ async fn ipc_roundtrip(req: McpIpcRequest) -> McpIpcResponse {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // serializes VAUGHAN_MCP_PORT across tests
 async fn mcp_loopback_ping_and_session() {
     let _guard = LISTENER_TEST_LOCK.lock().unwrap();
     let port = free_port();
@@ -81,6 +82,7 @@ async fn mcp_loopback_ping_and_session() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // serializes VAUGHAN_MCP_PORT across tests
 async fn mcp_loopback_rejects_bad_session_token() {
     let _guard = LISTENER_TEST_LOCK.lock().unwrap();
     let port = free_port();

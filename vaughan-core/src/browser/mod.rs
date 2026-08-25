@@ -88,6 +88,20 @@ impl BrowserEngine {
         }
     }
 
+    /// Encode calldata for a named ABI function (no RPC). Used by gated writes.
+    pub fn encode_named(
+        abi: &JsonAbi,
+        function_name: &str,
+        args: &[String],
+    ) -> Result<Bytes, String> {
+        let func = abi
+            .functions
+            .get(function_name)
+            .and_then(|funcs| funcs.first())
+            .ok_or_else(|| format!("Function '{function_name}' not found in contract ABI"))?;
+        DynamicCaller::encode_call(func, args)
+    }
+
     /// Execute a dynamic read-only call on a contract function by name.
     pub async fn call_named<P: Provider>(
         &self,
@@ -101,7 +115,7 @@ impl BrowserEngine {
             .functions
             .get(function_name)
             .and_then(|funcs| funcs.first())
-            .ok_or_else(|| format!("Function '{}' not found in contract ABI", function_name))?;
+            .ok_or_else(|| format!("Function '{function_name}' not found in contract ABI"))?;
 
         DynamicCaller::call_function(provider, target, func, args).await
     }

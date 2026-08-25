@@ -384,8 +384,10 @@ mod tests {
 
     #[test]
     fn disabled_requires_ack() {
-        let mut p = AgentSessionPolicy::default();
-        p.enforcement = EnforcementMode::Disabled;
+        let mut p = AgentSessionPolicy {
+            enforcement: EnforcementMode::Disabled,
+            ..Default::default()
+        };
         assert!(p.validate().is_err());
         p.acknowledge_unsafe = true;
         assert!(p.validate().is_ok());
@@ -394,8 +396,10 @@ mod tests {
     #[test]
     fn set_slippage_persists() {
         let dir = tempdir().unwrap();
-        let mut p = AgentSessionPolicy::default();
-        p.max_slippage_bps = 500;
+        let p = AgentSessionPolicy {
+            max_slippage_bps: 500,
+            ..Default::default()
+        };
         save_policy(dir.path(), &p).unwrap();
         assert_eq!(load_policy(dir.path()).unwrap().max_slippage_bps, 500);
     }
@@ -433,8 +437,10 @@ mod tests {
 
     #[test]
     fn disable_after_prior_ack_ok() {
-        let mut before = AgentSessionPolicy::default();
-        before.acknowledge_unsafe = true;
+        let before = AgentSessionPolicy {
+            acknowledge_unsafe: true,
+            ..Default::default()
+        };
         let prop = build_policy_proposal(
             before,
             &[("enforcement".into(), "disabled".into())],

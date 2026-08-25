@@ -130,7 +130,9 @@ impl BridgeView {
                 preset_index(369)
             };
         }
-        v.status = "LibertySwap · USDC cross-chain · not official Omnibridge · Enter quotes".into();
+        v.status =
+            "LibertySwap · USDC cross-chain · not official Omnibridge · dest arrives async · Enter quotes"
+                .into();
         v
     }
 
@@ -160,8 +162,9 @@ impl BridgeView {
                     self.stage = Stage::Input;
                 }
             },
-            UiJobResult::Send(Ok(hash)) => match self.busy {
+            UiJobResult::Send(Ok(receipt)) => match self.busy {
                 Busy::Approving => {
+                    let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
                     self.status = format!("Approve sent ({hash}). Confirm bridge next.");
@@ -169,6 +172,7 @@ impl BridgeView {
                     self.rebuild_confirm_lines(ConfirmStep::Bridge);
                 }
                 Busy::Bridging => {
+                    let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.tx_hash = Some(hash);
                     self.stage = Stage::Done;

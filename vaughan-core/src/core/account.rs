@@ -364,6 +364,25 @@ mod tests {
     }
 
     #[test]
+    fn export_private_key_matches_selected_account() {
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 3).unwrap();
+        am.set_active(2).unwrap();
+        let expected = am.active_address().to_lowercase();
+        let sk = am.export_private_key(am.active_index()).unwrap();
+        let signer = parse_private_key(sk.expose_secret()).unwrap();
+        assert_eq!(format!("{}", signer.address()).to_lowercase(), expected);
+
+        am.set_active(0).unwrap();
+        let sk0 = am.export_private_key(0).unwrap();
+        let s0 = parse_private_key(sk0.expose_secret()).unwrap();
+        assert_eq!(
+            format!("{}", s0.address()).to_lowercase(),
+            am.active_address().to_lowercase()
+        );
+        assert_ne!(sk.expose_secret(), sk0.expose_secret());
+    }
+
+    #[test]
     fn signer_matches_address() {
         let am = AccountManager::from_phrase(TEST_MNEMONIC, 2).unwrap();
         let signer = am.active_signer().unwrap();

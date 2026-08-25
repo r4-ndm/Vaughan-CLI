@@ -151,18 +151,27 @@ impl Default for AgView {
 
 impl AgView {
     pub fn for_chain(chain_id: u64) -> Self {
+        Self::for_chain_prefill(chain_id, None, None)
+    }
+
+    /// Ag screen with optional amount / token-out from an intent macro.
+    pub fn for_chain_prefill(chain_id: u64, amount: Option<&str>, token_out: Option<&str>) -> Self {
         let mut v = Self {
             chain_id,
             ..Self::default()
         };
         v.slippage.set_value("0.5");
-        v.amount.set_value("1");
+        v.amount.set_value(amount.unwrap_or("1").trim().to_string());
         if let Some(wpls) = non_empty(wpls_for_chain(chain_id)) {
             v.token_in.set_value(wpls);
             v.native_in = true;
         }
-        if chain_id == 369 {
+        if let Some(out) = token_out.filter(|s| !s.trim().is_empty()) {
+            v.token_out.set_value(out.trim().to_string());
+        } else if chain_id == 369 {
             v.token_out.set_value(PLSX_369);
+        }
+        if chain_id == 369 {
             v.status =
                 "Squirrel · native PLS → PLSX · amount e.g. 1 · Enter quote · Space toggles native"
                     .into();
@@ -208,8 +217,9 @@ impl AgView {
                 self.status = e.user_message();
                 self.stage = Stage::Input;
             }
-            UiJobResult::Send(Ok(hash)) => match self.busy {
+            UiJobResult::Send(Ok(receipt)) => match self.busy {
                 Busy::Approving => {
+                    let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
                     self.status = format!("Approve sent ({hash}). Confirm swap next.");
@@ -217,6 +227,7 @@ impl AgView {
                     self.rebuild_confirm_lines(ConfirmStep::Swap);
                 }
                 Busy::Swapping => {
+                    let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.tx_hash = Some(hash);
                     self.stage = Stage::Done;

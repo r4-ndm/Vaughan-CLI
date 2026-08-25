@@ -58,6 +58,20 @@ use crate::app::App;
 use crate::brand;
 use crate::input::Input;
 use crate::jobs::{spinner_frame, ChromeFocus};
+use vaughan_core::chains::Balance;
+use vaughan_core::core::format_display_amount;
+
+/// Max fractional digits in the F2 chrome box (status strip).
+const F2_FRAC_DIGITS: usize = 4;
+
+/// Compact `amount symbol` for F2 (trim zeros, cap frac digits).
+fn format_f2_balance(b: &Balance) -> String {
+    format!(
+        "{} {}",
+        format_display_amount(&b.raw, b.token.decimals, F2_FRAC_DIGITS),
+        b.token.symbol
+    )
+}
 
 /// Render the full screen: wordmark, address, need-to-know status, body, footer.
 ///
@@ -85,11 +99,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     let status_h = 3u16;
     let footer_h = 9u16;
 
-    let [logo, _gap_above, addr_row, _gap_below, status_bar, body, footer] = Layout::vertical([
+    let [logo, _gap_above, addr_row, flash_row, status_bar, body, footer] = Layout::vertical([
         Constraint::Length(1), // VAUGHAN banner
         Constraint::Length(1), // blank above address
         Constraint::Length(1), // colour-coded address
-        Constraint::Length(1), // blank below address
+        Constraint::Length(1), // copy toast / blank
         Constraint::Length(status_h),
         Constraint::Min(0),
         Constraint::Length(footer_h),
@@ -98,6 +112,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Paragraph::new(brand::logo_banner(logo.width)), logo);
     render_address_under_augha(frame, addr_row, app);
+    render_chrome_flash(frame, flash_row, app);
     render_status_strip(frame, status_bar, app, unlocked);
     render_action_footer(frame, footer, app);
     app.render_body(frame, body);
@@ -111,6 +126,23 @@ fn render_address_under_augha(frame: &mut Frame, area: Rect, app: &App) {
     let address = chrome_address(app);
     frame.render_widget(
         Paragraph::new(brand::colored_address_under_augha(&address, area.width)),
+        area,
+    );
+}
+
+/// Copy / toast line under the address (visible on home and every unlocked screen).
+fn render_chrome_flash(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(msg) = app.chrome().flash.as_deref() else {
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            msg.to_string(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center),
         area,
     );
 }
@@ -165,12 +197,12 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
     let token_value = if chrome.assets_loading && chrome.assets.is_empty() {
         format!("{} …", spinner_frame(app.tick()))
     } else if let Some(b) = chrome.assets.get(asset_idx) {
-        format!("{} {}", b.formatted, b.token.symbol)
+        format_f2_balance(b)
     } else if chrome.loading && chrome.balance.is_none() {
         format!("{} …", spinner_frame(app.tick()))
     } else {
         match &chrome.balance {
-            Some(b) => format!("{} {}", b.formatted, b.token.symbol),
+            Some(b) => format_f2_balance(b),
             None => format!("— {native_sym}"),
         }
     };
@@ -242,7 +274,7 @@ fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focu
 fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     // No `s Send` chip — Send stays available via global `s`.
     // Theme (`t`) is intentionally omitted from the footer.
-    // 20 chips → three rows (7 + 7 + 6).
+    // 21 chips → three rows of 7.
     let keys: &[(&str, &str)] = &[
         ("v", "Recv"),
         ("a", "Assets"),
@@ -259,6 +291,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("f", "Bridge"),
         ("j", "Appr"),
         ("m", "Hist"),
+        ("o", "NFT"),
         ("r", "Refresh"),
         ("l", "Lock"),
         ("tab", "Next"),
@@ -267,7 +300,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     ];
 
     let n = keys.len();
-    debug_assert_eq!(n, 20);
+    debug_assert_eq!(n, 21);
     let row1_n = 7;
     let row2_n = 7;
     let [row1, row2, row3] = Layout::vertical([

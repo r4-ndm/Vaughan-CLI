@@ -316,7 +316,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### P1 — Agent is the URL bar
 - [x] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; PulseChain 369)
 - [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
-- [ ] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` (thin wrappers over tools + views)
+- [x] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` in Browser REPL → existing surfaces (`vaughan-tui/src/intent.rs`)
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
 - [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md); EmpX + 7702 AA exec + stealth scan/sweep MCP shipped
 - [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
@@ -330,14 +330,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Approvals manager (`j`): list ERC-20 allowances vs known Ag/Dex/Bridge spenders; one-shot revoke via confirm card
 - [x] Anvil: WPLS wrap (`deposit`) / unwrap (`withdraw`) against MockWeth (`browserless_anvil.rs` + `build_wrap_tx` / `build_unwrap_tx`)
 - [x] Bridge (`f`): LibertySwap USDC cross-chain quote → approve → source broadcast (`docs/bridge.md`; not official Omnibridge)
-- [ ] Official Pulse Omnibridge / PulseRamp client (lock-and-mint ETH ↔ Pulse) — separate from LibertySwap
+- [ ] Official Pulse Omnibridge / PulseRamp client (lock-and-mint ETH ↔ Pulse) — **deferred** (polish first; LibertySwap remains Bridge)
 - [x] Wrap / unwrap WPLS as a first-class tiny flow (`e`)
-- [ ] Contract browser gated writes: `send` / `write` from REPL → same Approve view as Send (read path already shipped)
+- [x] Contract browser gated writes: `write` / `writeraw` from REPL → fee confirm → broadcast (same path as Send)
 
 ### P3 — Earn / advanced (only when real)
 - [ ] LP positions (V2 balance + remove liquidity); V3 only if demand is proven
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
-- [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain”
+- [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred
 - [ ] Local EIP-712: paste/load typed-data JSON → Approve view (for protocols that insist on `eth_signTypedData_v4` without a webview)
 - [x] Watch mode (MCP): `watch_balance` + `watch_quote` threshold snapshots; agent owns poll loop
 - [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/sentient-ops.md`](docs/sentient-ops.md))
@@ -374,3 +374,16 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] `chains/polkadot/` adapter (Substrate, SS58 addresses, weight-based fees, `subxt`)
 
 - [ ] Family-aware derivation schemes (BIP-44 per coin type; Substrate `//`-path secret URIs)
+
+## Robustness (fund-safety + ops, not new product)
+
+> Order: CI/Anvil → vault durability → post-broadcast receipt → RPC clarity →
+> stealth mainnet. Omnibridge / LP / non-EVM stay deferred.
+
+- [x] CI installs Foundry/Anvil so bomb-proof suites actually run (green ≠ skipped)
+- [x] Vault durability: keep `wallet.json.bak` of last good write; load falls back on corrupt primary
+- [x] Post-broadcast: poll receipt after Send Done (Pending / Confirmed / Failed); `r` re-check
+- [x] RPC user messages: distinguish “all endpoints failed” / fallback exhausted
+- [x] Dex builders: no `unwrap` after validate (map parse errors to `Result`)
+- [x] Session recent-broadcast list on History; cancel / speed-up pending (EIP-1559); live smoke cron
+- [ ] Stealth announcer CREATE2 on Pulse 369 (ops; needs funded PLS — see Phase 3)

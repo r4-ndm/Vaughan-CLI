@@ -26,6 +26,7 @@ use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, ChromeSnapshot, UiJob, UiJobResult};
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Input,
     Confirm,
@@ -45,6 +46,7 @@ enum Busy {
     Idle,
     Estimating,
     Sending,
+    PollingStatus,
 }
 
 pub struct SendView {
@@ -58,6 +60,8 @@ pub struct SendView {
     base_fee: Option<Fee>,
     speed: FeeSpeed,
     tx_hash: Option<String>,
+    /// Inclusion status after broadcast (polled via RPC).
+    receipt_status: Option<vaughan_core::chains::TxStatus>,
     stealth: Option<StealthAnnouncement>,
     busy: Busy,
     /// Animation tick mirrored from the app loop while busy.
@@ -84,6 +88,7 @@ impl Default for SendView {
             base_fee: None,
             speed: FeeSpeed::Normal,
             tx_hash: None,
+            receipt_status: None,
             stealth: None,
             busy: Busy::Idle,
             tick: 0,
@@ -172,14 +177,16 @@ impl SendView {
                 self.busy = Busy::Idle;
                 self.status = e.user_message();
             }
-            UiJobResult::Send(Ok(hash)) => {
-                self.tx_hash = Some(hash);
+            UiJobResult::Send(Ok(receipt)) => {
+                self.tx_hash = Some(receipt.hash);
+                self.receipt_status = None;
                 self.status.clear();
                 self.busy = Busy::Idle;
                 self.stage = Stage::Done;
             }
             UiJobResult::SendStealth(Ok(r)) => {
                 self.tx_hash = Some(format!("{}/{}", r.pay_tx, r.announce_tx));
+                self.receipt_status = None;
                 self.status.clear();
                 self.busy = Busy::Idle;
                 self.stage = Stage::Done;
@@ -189,8 +196,58 @@ impl SendView {
                 self.status = e.user_message();
                 self.stage = Stage::Input;
             }
+            UiJobResult::TxStatus(Ok(status)) => {
+                self.receipt_status = Some(status);
+                self.busy = Busy::Idle;
+                self.status = match status {
+                    vaughan_core::chains::TxStatus::Pending => {
+                        "Still pending on RPC · r to re-check".into()
+                    }
+                    vaughan_core::chains::TxStatus::Confirmed => "Confirmed on-chain".into(),
+                    vaughan_core::chains::TxStatus::Failed => {
+                        "Failed on-chain (receipt status 0)".into()
+                    }
+                };
+            }
+            UiJobResult::TxStatus(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.status = e.user_message();
+            }
             _ => {}
         }
+    }
+
+    /// After a successful broadcast, return a job to poll inclusion (first hash
+    /// only for stealth pay+announce pairs). Marks the view busy while polling.
+    pub fn followup_poll_status(&mut self) -> Option<UiJob> {
+        if self.stage != Stage::Done || self.busy != Busy::Idle {
+            return None;
+        }
+        if self.receipt_status.is_some() {
+            return None;
+        }
+        let hash = self.tx_hash.as_ref()?;
+        let first = hash.split('/').next()?.trim();
+        if first.is_empty() {
+            return None;
+        }
+        self.busy = Busy::PollingStatus;
+        Some(UiJob::PollTxStatus {
+            tx_hash: first.to_string(),
+        })
+    }
+
+    fn begin_poll_status(&mut self) -> KeyOutcome {
+        let Some(hash) = self.tx_hash.as_ref() else {
+            return KeyOutcome::Consumed;
+        };
+        let first = hash.split('/').next().unwrap_or(hash).trim().to_string();
+        if first.is_empty() {
+            return KeyOutcome::Consumed;
+        }
+        self.busy = Busy::PollingStatus;
+        self.status.clear();
+        KeyOutcome::StartJob(UiJob::PollTxStatus { tx_hash: first })
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
@@ -200,6 +257,7 @@ impl SendView {
             let label = match self.busy {
                 Busy::Estimating => "estimating fee",
                 Busy::Sending => "broadcasting",
+                Busy::PollingStatus => "checking receipt",
                 Busy::Idle => "",
             };
             format!("{} {label}…", spinner_frame(self.tick))
@@ -324,15 +382,23 @@ impl SendView {
                 } else {
                     "Transaction broadcast"
                 };
+                let status_line = match self.receipt_status {
+                    Some(vaughan_core::chains::TxStatus::Pending) => "Status:   Pending",
+                    Some(vaughan_core::chains::TxStatus::Confirmed) => "Status:   Confirmed",
+                    Some(vaughan_core::chains::TxStatus::Failed) => "Status:   Failed",
+                    None => "Status:   checking…",
+                };
                 let back = if self.home_mode {
-                    "Enter — new send"
+                    "Enter — new send · r — re-check receipt"
                 } else {
-                    "Enter — back to home"
+                    "Enter — back to home · r — re-check receipt"
                 };
                 let text = vec![
                     Line::from(label),
                     Line::from(""),
                     Line::from(Span::styled(hash, Style::default().fg(Color::Green))),
+                    Line::from(""),
+                    Line::from(status_line),
                     Line::from(""),
                     Line::from(back),
                 ];
@@ -421,6 +487,7 @@ impl SendView {
                 _ => KeyOutcome::NotHandled,
             },
             Stage::Done => match key.code {
+                KeyCode::Char('r') | KeyCode::Char('R') => self.begin_poll_status(),
                 KeyCode::Enter | KeyCode::Esc => {
                     if self.home_mode {
                         *self = Self::home();

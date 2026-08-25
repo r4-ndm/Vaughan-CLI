@@ -1,0 +1,48 @@
+# Periodic live API smoke (ignored tests). Failures are informational —
+# they catch broken public endpoints without blocking PRs.
+name: Live smoke
+
+on:
+  schedule:
+    # Daily 06:15 UTC
+    - cron: "15 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  smoke:
+    name: ignored live APIs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Liberty Swap quote (Pulse → Base USDC)
+        run: >
+          cargo test -p vaughan-core live_quote_usdc_pulse_to_base
+          -- --ignored --nocapture
+
+      - name: SquirrelSwap Brain quote + prepare (no sign)
+        run: >
+          cargo test -p vaughan-core
+          live_preview_quote_pls_to_plsx live_prepare_swap_inspect_pls_to_plsx
+          -- --ignored --nocapture
+
+      - name: Piteas public quote
+        run: >
+          cargo test -p vaughan-core live_public_quote_pls_to_dai
+          -- --ignored --nocapture
+
+      - name: wiz4rd pool + quote on Pulse testnet 943
+        run: >
+          cargo test -p vaughan-agent wiz4rd_get_pool_and_quote_on_943
+          -- --ignored --nocapture

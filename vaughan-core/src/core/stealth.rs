@@ -89,7 +89,7 @@ impl WalletState {
         let announce_tx = self.send_transaction(announce_tx).await?;
         Ok(StealthSendResult {
             stealth_address: announcement.stealth_address,
-            pay_tx,
+            pay_tx: TxHash(pay_tx.hash),
             announce_tx,
         })
     }

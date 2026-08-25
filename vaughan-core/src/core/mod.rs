@@ -4,6 +4,7 @@
 pub mod account;
 pub mod aggregator;
 pub mod bridge;
+pub mod broadcasts;
 pub mod dex_routers;
 pub mod mcp_host;
 pub mod mcp_ipc;
@@ -28,6 +29,10 @@ pub use bridge::{
     assert_bridge_exec_targets, is_whitelisted_router, BridgeApproval, BridgeAsset,
     BridgeChainPreset, BridgeExecTx, BridgeFee, BridgeQuote, BridgeQuoteRequest, BridgeTokenInfo,
     LibertySwapClient, BRIDGE_CHAIN_PRESETS, LIBERTY_SWAP_V3_BASE, OFFICIAL_ROUTERS,
+};
+pub use broadcasts::{
+    mark_replaced, push_recent, BroadcastEntry, BroadcastReceipt, ReplaceKind,
+    MAX_RECENT_BROADCASTS,
 };
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
@@ -59,7 +64,9 @@ pub use proposal::{
     MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
 };
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
-pub use transaction::{format_base_units, parse_native_amount, TransactionService};
+pub use transaction::{
+    format_base_units, format_display_amount, parse_native_amount, TransactionService,
+};
 pub use wallet::{ChromeRpcSnapshot, WalletState};
 pub use wiz4rd::{
     deployment_for_chain, position_manager as wiz4rd_position_manager,

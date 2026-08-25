@@ -11,7 +11,9 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::core::proposal::ProposalQueue;
-use vaughan_core::core::{McpSessionToken, StateManager, WalletState};
+use vaughan_core::core::{
+    mark_replaced, push_recent, BroadcastEntry, McpSessionToken, StateManager, WalletState,
+};
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
@@ -90,6 +92,10 @@ pub enum KeyOutcome {
     StartJob(crate::jobs::UiJob),
     /// Open Send prefilled for an Assets row.
     SendAsset(vaughan_core::chains::Balance),
+    /// Intent macro → jump to an existing surface (optional prefills).
+    Intent(crate::intent::IntentNav),
+    /// Show a short chrome toast (copy confirmations, etc.); key is consumed.
+    Flash(String),
 }
 
 impl std::fmt::Debug for KeyOutcome {
@@ -100,6 +106,8 @@ impl std::fmt::Debug for KeyOutcome {
             Self::Navigate(s) => f.debug_tuple("Navigate").field(s).finish(),
             Self::StartJob(_) => write!(f, "StartJob(..)"),
             Self::SendAsset(_) => write!(f, "SendAsset(..)"),
+            Self::Intent(i) => f.debug_tuple("Intent").field(i).finish(),
+            Self::Flash(s) => f.debug_tuple("Flash").field(s).finish(),
         }
     }
 }
@@ -235,6 +243,8 @@ pub struct App {
     /// MCP control plane (session + loopback listener).
     mcp: McpService,
     mcp_rx: mpsc::UnboundedReceiver<McpHostRequest>,
+    /// Session-scoped broadcasts for History cancel / speed-up.
+    recent_broadcasts: Vec<BroadcastEntry>,
 }
 
 impl App {
@@ -276,6 +286,7 @@ impl App {
             },
             mcp,
             mcp_rx,
+            recent_broadcasts: Vec::new(),
         };
         app.navigate(screen);
         Ok(app)
@@ -327,6 +338,12 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.quitting {
             self.tick = self.tick.wrapping_add(1);
+            if self.chrome.flash_ticks_left > 0 {
+                self.chrome.flash_ticks_left -= 1;
+                if self.chrome.flash_ticks_left == 0 {
+                    self.chrome.flash = None;
+                }
+            }
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
@@ -352,6 +369,9 @@ impl App {
                 v.set_tick(self.tick);
             }
             if let View::Assets(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::Browser(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
             terminal.draw(|frame| crate::views::render(frame, self))?;
@@ -446,6 +466,22 @@ impl App {
                 let _ = crate::brand::cycle_theme();
                 return;
             }
+            GlobalAction::CopyAddress => {
+                if self.wallet().is_unlocked() {
+                    let addr = {
+                        let w = self.wallet();
+                        w.active_address().map(|a| a.to_string())
+                    };
+                    match addr {
+                        Ok(addr) => match crate::clipboard::copy_text(&addr) {
+                            Ok(()) => self.set_flash("F3 address copied"),
+                            Err(e) => self.set_flash(e),
+                        },
+                        Err(e) => self.set_flash(e.user_message()),
+                    }
+                }
+                return;
+            }
             GlobalAction::None => {}
         }
 
@@ -462,7 +498,40 @@ impl App {
                 }
                 self.view = View::Dashboard(DashboardView::for_asset(balance));
             }
+            KeyOutcome::Intent(nav) => self.apply_intent(nav),
+            KeyOutcome::Flash(msg) => self.set_flash(msg),
             KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
+        }
+    }
+
+    /// Chrome toast under the address (home + every unlocked screen).
+    fn set_flash(&mut self, msg: impl Into<String>) {
+        self.chrome.flash = Some(msg.into());
+        self.chrome.flash_ticks_left = 45; // ~a few seconds at UI tick rate
+    }
+
+    fn apply_intent(&mut self, nav: crate::intent::IntentNav) {
+        use crate::intent::IntentNav;
+        match nav {
+            IntentNav::Aggregator { amount, token_out } => {
+                let chain_id = self.wallet().networks().active().chain_id;
+                self.view = View::Aggregator(AgView::for_chain_prefill(
+                    chain_id,
+                    amount.as_deref(),
+                    token_out.as_deref(),
+                ));
+            }
+            IntentNav::BrowserInspect { address } => {
+                let mut browser = BrowserView::default();
+                let handle = self.handle.clone();
+                {
+                    let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    browser.browse_address(&address, &wallet, &handle);
+                }
+                self.view = View::Browser(browser);
+            }
+            IntentNav::Approvals => self.navigate(Screen::Approvals),
+            IntentNav::Receive => self.navigate(Screen::Receive),
         }
     }
 
@@ -814,6 +883,8 @@ impl App {
 
     /// Build the default view for `screen` (refreshing balance on Dashboard).
     fn navigate(&mut self, screen: Screen) {
+        self.settle_chrome_before_navigate();
+
         let view = match screen {
             Screen::Onboarding => View::Onboarding(OnboardingView::default()),
             Screen::Unlock => View::Unlock(UnlockView::default()),
@@ -861,7 +932,9 @@ impl App {
                 "Stake",
                 "Staking / liquid stake UI will land here.",
             )),
-            Screen::History => View::History(HistoryView::loading()),
+            Screen::History => {
+                View::History(HistoryView::with_broadcasts(self.recent_broadcasts.clone()))
+            }
             Screen::Approvals => View::Approvals(ApprovalsView::loading()),
             Screen::Wrap => {
                 let chain_id = self.wallet().networks().active().chain_id;
@@ -885,7 +958,9 @@ impl App {
             }
             Screen::History => {
                 self.refresh_chrome();
-                self.spawn_job(HistoryView::initial_job());
+                if let View::History(v) = &self.view {
+                    self.spawn_job(v.initial_job());
+                }
             }
             Screen::Approvals => {
                 self.refresh_chrome();
@@ -939,6 +1014,31 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// When leaving a screen, bind F3's visible account as active (no re-entry)
+    /// so Keys / signing match the status strip. Other chrome focus is cancelled.
+    fn settle_chrome_before_navigate(&mut self) {
+        match self.chrome.focus {
+            ChromeFocus::Account => {
+                if let Some(index) = self.chrome.pending_account_index {
+                    let ok = {
+                        let mut w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.set_active_account(index).is_ok()
+                    };
+                    if ok {
+                        let accounts = self.visible_accounts();
+                        self.events
+                            .publish(ProviderEvent::AccountsChanged(accounts));
+                        self.chrome.assets.clear();
+                        self.chrome.asset_idx = 0;
+                    }
+                }
+                self.cancel_chrome_focus();
+            }
+            ChromeFocus::None => {}
+            _ => self.cancel_chrome_focus(),
         }
     }
 
@@ -1156,27 +1256,15 @@ impl App {
                 }
                 UiJob::SendWithFee { to, value_wei, fee } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(
-                        handle
-                            .block_on(w.send_with_fee(&to, &value_wei, &fee))
-                            .map(|h| h.to_string()),
-                    )
+                    UiJobResult::Send(handle.block_on(w.send_with_fee(&to, &value_wei, &fee)))
                 }
                 UiJob::Send { to, value_wei } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(
-                        handle
-                            .block_on(w.send(&to, &value_wei))
-                            .map(|h| h.to_string()),
-                    )
+                    UiJobResult::Send(handle.block_on(w.send(&to, &value_wei)))
                 }
                 UiJob::SendToken { token, to, amount } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(
-                        handle
-                            .block_on(w.send_token(&token, &to, &amount))
-                            .map(|h| h.to_string()),
-                    )
+                    UiJobResult::Send(handle.block_on(w.send_token(&token, &to, &amount)))
                 }
                 UiJob::SendTokenWithFee {
                     token,
@@ -1186,9 +1274,7 @@ impl App {
                 } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Send(
-                        handle
-                            .block_on(w.send_token_with_fee(&token, &to, &amount, &fee))
-                            .map(|h| h.to_string()),
+                        handle.block_on(w.send_token_with_fee(&token, &to, &amount, &fee)),
                     )
                 }
                 UiJob::SendStealth {
@@ -1202,11 +1288,7 @@ impl App {
                 }
                 UiJob::SendEvm { tx } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(
-                        handle
-                            .block_on(w.send_transaction(tx))
-                            .map(|h| h.to_string()),
-                    )
+                    UiJobResult::Send(handle.block_on(w.broadcast(tx, "Contract")))
                 }
                 UiJob::EstimateEvmFee { tx } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
@@ -1214,11 +1296,7 @@ impl App {
                 }
                 UiJob::SendEvmWithFee { tx, fee } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(
-                        handle
-                            .block_on(w.send_evm_with_fee(tx, &fee))
-                            .map(|h| h.to_string()),
-                    )
+                    UiJobResult::Send(handle.block_on(w.send_evm_with_fee(tx, &fee)))
                 }
                 UiJob::AggQuote {
                     venue,
@@ -1331,6 +1409,32 @@ impl App {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Allowances(handle.block_on(w.list_allowances()))
                 }
+                UiJob::PollTxStatus { tx_hash } => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    UiJobResult::TxStatus(handle.block_on(w.get_tx_status(&tx_hash)))
+                }
+                UiJob::RefreshBroadcastStatuses { hashes } => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut out = Vec::with_capacity(hashes.len());
+                    let mut err = None;
+                    for h in hashes {
+                        match handle.block_on(w.get_tx_status(&h)) {
+                            Ok(s) => out.push((h, s)),
+                            Err(e) => {
+                                err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    UiJobResult::BroadcastStatuses(match err {
+                        Some(e) => Err(e),
+                        None => Ok(out),
+                    })
+                }
+                UiJob::ReplaceBroadcast { entry, kind } => {
+                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    UiJobResult::Send(handle.block_on(w.replace_broadcast(&entry, kind)))
+                }
             };
             let _ = tx.send(result);
         });
@@ -1390,10 +1494,26 @@ impl App {
                     }
                 }
                 other => {
+                    if let UiJobResult::Send(Ok(receipt)) = &other {
+                        let old = receipt.entry.replaces.clone();
+                        push_recent(&mut self.recent_broadcasts, receipt.entry.clone());
+                        if let Some(old_hash) = old.as_deref() {
+                            mark_replaced(&mut self.recent_broadcasts, old_hash, &receipt.hash);
+                        }
+                    }
+                    if let UiJobResult::BroadcastStatuses(Ok(pairs)) = &other {
+                        for (hash, status) in pairs {
+                            if let Some(e) =
+                                self.recent_broadcasts.iter_mut().find(|b| b.hash == *hash)
+                            {
+                                e.status = *status;
+                            }
+                        }
+                    }
                     let reload = match &mut self.view {
                         View::Dashboard(v) => {
                             v.apply_job_result(other);
-                            None
+                            v.followup_job()
                         }
                         View::Dex(v) => {
                             v.apply_job_result(other);
@@ -1416,6 +1536,10 @@ impl App {
                             v.reload_job()
                         }
                         View::Wrap(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::Browser(v) => {
                             v.apply_job_result(other);
                             None
                         }
@@ -1455,6 +1579,8 @@ enum GlobalAction {
     Lock,
     /// Cycle stock UI theme (boxes / footer; banner + address unchanged).
     CycleTheme,
+    /// Copy the F3-active address to the clipboard.
+    CopyAddress,
 }
 
 /// Decide global shortcuts for `key` given how the active view handled it.
@@ -1467,6 +1593,11 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
     // Ctrl+C / Ctrl+Q request quit (confirm dialog), even mid-typing.
     if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
         return GlobalAction::Quit;
+    }
+
+    // Ctrl+Y copies the chrome (F3) address from any unlocked screen.
+    if ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+        return GlobalAction::CopyAddress;
     }
 
     // Only when the active view did not consume the key (forms keep typing safe).
@@ -1499,6 +1630,7 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'f' => GlobalAction::Navigate(Screen::Bridge),
             'j' => GlobalAction::Navigate(Screen::Approvals),
             'm' => GlobalAction::Navigate(Screen::History),
+            'o' => GlobalAction::Navigate(Screen::SoonNft),
             'r' => GlobalAction::RefreshChrome,
             'h' => GlobalAction::Navigate(Screen::Dashboard),
             'l' => GlobalAction::Lock,
@@ -1588,7 +1720,7 @@ mod tests {
     #[test]
     fn other_keys_are_inert() {
         assert_eq!(
-            global_action(press('o'), &KeyOutcome::NotHandled),
+            global_action(press('p'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
         assert_eq!(
@@ -1628,6 +1760,10 @@ mod tests {
             GlobalAction::Navigate(Screen::History)
         );
         assert_eq!(
+            global_action(press('o'), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::SoonNft)
+        );
+        assert_eq!(
             global_action(press('r'), &KeyOutcome::NotHandled),
             GlobalAction::RefreshChrome
         );
@@ -1655,6 +1791,14 @@ mod tests {
         assert_eq!(
             global_action(ctrl('t'), &KeyOutcome::NotHandled),
             GlobalAction::CycleTheme
+        );
+        assert_eq!(
+            global_action(ctrl('y'), &KeyOutcome::Consumed),
+            GlobalAction::CopyAddress
+        );
+        assert_eq!(
+            global_action(ctrl('y'), &KeyOutcome::NotHandled),
+            GlobalAction::CopyAddress
         );
     }
 }

@@ -73,7 +73,7 @@ async fn mcp_resim_blocks_insufficient_funds_before_sign() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = funded_wallet(dir.path(), &anvil);
-    wallet.set_rpc_override(&anvil.url());
+    wallet.set_rpc_override(anvil.url());
 
     // Far more than the anvil-funded balance → eth_call reverts at approve.
     let huge = U256::from_str_radix("1000000000000000000000000000000", 10).unwrap();
@@ -112,7 +112,7 @@ async fn mcp_chain_mismatch_blocks_sign() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = funded_wallet(dir.path(), &anvil);
-    wallet.set_rpc_override(&anvil.url());
+    wallet.set_rpc_override(anvil.url());
 
     let recipient: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         .parse()
@@ -147,7 +147,7 @@ async fn mcp_locked_wallet_blocks_sign() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = funded_wallet(dir.path(), &anvil);
-    wallet.set_rpc_override(&anvil.url());
+    wallet.set_rpc_override(anvil.url());
     wallet.lock();
 
     let recipient: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
@@ -216,7 +216,7 @@ async fn mcp_fee_spike_blocks_sign() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = funded_wallet(dir.path(), &anvil);
-    wallet.set_rpc_override(&anvil.url());
+    wallet.set_rpc_override(anvil.url());
 
     let recipient: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         .parse()

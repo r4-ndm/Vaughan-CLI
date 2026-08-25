@@ -3,7 +3,8 @@
 //! Nothing secret is ever written here. [`EncryptedVault`] only holds the
 //! Argon2id salt, AES-GCM nonce, and ciphertext; the active network/account are
 //! plain metadata. Writes are atomic (temp file + rename) so a crash can never
-//! leave a half-written vault.
+//! leave a half-written vault. Before overwriting, the previous good file is
+//! copied to `wallet.json.bak` so a corrupt primary can still be recovered.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,13 @@ pub const CURRENT_VERSION: u32 = 1;
 
 /// Default wallet data file name.
 pub const WALLET_FILE: &str = "wallet.json";
+
+/// Last-known-good copy written beside [`WALLET_FILE`] before each overwrite.
+pub const WALLET_BACKUP_SUFFIX: &str = ".bak";
+
+fn backup_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}{WALLET_BACKUP_SUFFIX}", path.display()))
+}
 
 /// Default profile name (human adviser / savings).
 pub const DEFAULT_PROFILE: &str = "default";
@@ -271,9 +279,9 @@ impl StateManager {
 
     /// Serialize `state` to disk atomically.
     ///
-    /// On Unix the vault directory is created `0o700` and the vault (and its
-    /// temp file) are written `0o600` so other local users can never read the
-    /// ciphertext, regardless of umask.
+    /// If a previous vault exists, it is copied to `*.bak` first (best effort).
+    /// Then write `*.tmp` → fsync → rename over the primary. On Unix the vault
+    /// directory is `0o700` and vault / temp / bak are `0o600`.
     pub fn save(&self, state: &PersistedState) -> Result<(), WalletError> {
         let json = serde_json::to_string_pretty(state)?;
         let parent = self
@@ -286,6 +294,21 @@ impl StateManager {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         }
+
+        // Preserve last good vault before overwrite (ignore errors: first save).
+        if self.path.exists() {
+            let bak = backup_path(&self.path);
+            if let Err(e) = fs::copy(&self.path, &bak) {
+                tracing::warn!("could not write vault backup {}: {e}", bak.display());
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&bak, fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
+
         let tmp = PathBuf::from(format!("{}.tmp", self.path.display()));
         fs::write(&tmp, json.as_bytes())?;
         #[cfg(unix)]
@@ -303,6 +326,9 @@ impl StateManager {
     }
 
     /// Load the persisted state, or `WalletError::NotInitialized` when absent.
+    ///
+    /// If the primary file is corrupt JSON, attempts `*.bak` once and returns a
+    /// clear corruption error when both fail.
     pub fn load(&self) -> Result<PersistedState, WalletError> {
         if !self.exists() {
             return Err(WalletError::NotInitialized);
@@ -311,8 +337,43 @@ impl StateManager {
         // 0o600/0o700 rules existed (best effort; see `lockdown_permissions`).
         #[cfg(unix)]
         self.lockdown_permissions();
-        let json = fs::read_to_string(&self.path)?;
-        let state: PersistedState = serde_json::from_str(&json)?;
+
+        match self.load_from_path(&self.path) {
+            Ok(state) => Ok(state),
+            Err(primary_err) => {
+                let bak = backup_path(&self.path);
+                if !bak.exists() {
+                    return Err(primary_err);
+                }
+                tracing::warn!(
+                    "primary vault unreadable ({}); trying backup {}",
+                    primary_err,
+                    bak.display()
+                );
+                match self.load_from_path(&bak) {
+                    Ok(state) => {
+                        // Restore primary from backup so next unlock is clean.
+                        if let Err(e) = fs::copy(&bak, &self.path) {
+                            tracing::warn!("could not restore primary from backup: {e}");
+                        } else {
+                            #[cfg(unix)]
+                            self.lockdown_permissions();
+                        }
+                        Ok(state)
+                    }
+                    Err(_) => Err(WalletError::Serialization(format!(
+                        "wallet file is corrupt (and backup failed). Primary error: {primary_err}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    fn load_from_path(&self, path: &Path) -> Result<PersistedState, WalletError> {
+        let json = fs::read_to_string(path)?;
+        let state: PersistedState = serde_json::from_str(&json).map_err(|e| {
+            WalletError::Serialization(format!("corrupt wallet data at {}: {e}", path.display()))
+        })?;
         if state.version > CURRENT_VERSION {
             return Err(WalletError::Serialization(format!(
                 "wallet file version {} is newer than supported {}",
@@ -475,5 +536,49 @@ mod tests {
         assert!(is_sentient_profile(DEGEN_PROFILE));
         assert!(!is_sentient_profile(DEFAULT_PROFILE));
         assert!(!is_sentient_profile("bot1"));
+    }
+
+    #[test]
+    fn save_writes_bak_of_previous_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WALLET_FILE);
+        let bak = backup_path(&path);
+        let sm = StateManager::new(path.clone());
+
+        let first = PersistedState::new(dummy_vault(), "sepolia");
+        sm.save(&first).unwrap();
+        assert!(!bak.exists(), "first save has nothing to back up");
+
+        let second = PersistedState::new(dummy_vault(), "pulsechain");
+        sm.save(&second).unwrap();
+        assert!(bak.exists(), "second save must leave wallet.json.bak");
+
+        let bak_state: PersistedState =
+            serde_json::from_str(&fs::read_to_string(&bak).unwrap()).unwrap();
+        assert_eq!(bak_state.active_network_id, "sepolia");
+        assert_eq!(sm.load().unwrap().active_network_id, "pulsechain");
+    }
+
+    #[test]
+    fn load_recovers_from_bak_when_primary_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WALLET_FILE);
+        let bak = backup_path(&path);
+        let sm = StateManager::new(path.clone());
+
+        sm.save(&PersistedState::new(dummy_vault(), "pulsechain"))
+            .unwrap();
+        sm.save(&PersistedState::new(dummy_vault(), "sepolia"))
+            .unwrap();
+        // Bak holds pulsechain; overwrite primary with garbage.
+        fs::write(&path, "{not-json").unwrap();
+        assert!(bak.exists());
+
+        let loaded = sm.load().unwrap();
+        assert_eq!(loaded.active_network_id, "pulsechain");
+        // Primary should be restored from bak.
+        let primary: PersistedState =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(primary.active_network_id, "pulsechain");
     }
 }

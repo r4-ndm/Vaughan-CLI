@@ -19,12 +19,14 @@ use std::path::{Path, PathBuf};
 
 use alloy::signers::local::PrivateKeySigner;
 use bip39::Mnemonic;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroize;
 
 use crate::chains::evm::networks::EvmNetworkConfig;
 use crate::chains::evm::EvmAdapter;
-use crate::chains::{Balance, ChainAdapter, ChainTransaction, EvmTransaction, Fee, TxHash};
+use crate::chains::{
+    Balance, ChainAdapter, ChainTransaction, EvmTransaction, Fee, TxHash, TxStatus,
+};
 use crate::core::account::AccountManager;
 use crate::core::network::NetworkService;
 use crate::core::persistence::{
@@ -245,6 +247,12 @@ impl WalletState {
         Ok(self.require_unlocked()?.active_account().label.as_str())
     }
 
+    /// Label + address + whether imported, for the F3-active account (Keys UI).
+    pub fn active_account_export_context(&self) -> Result<(String, String, bool), WalletError> {
+        let a = self.require_unlocked()?.active_account();
+        Ok((a.label.clone(), a.address.clone(), a.is_imported))
+    }
+
     /// Display label for account `index` (F3 chrome preview).
     pub fn account_label(&self, index: u32) -> Result<String, WalletError> {
         self.require_unlocked()?
@@ -370,14 +378,27 @@ impl WalletState {
         Ok(self.require_unlocked()?.mnemonic_phrase())
     }
 
-    /// Export the active account's private key (hex) after password confirmation.
+    /// Export the active (F3) account's private key (hex) after password confirmation.
+    ///
+    /// The returned key is verified to derive the active account's address before
+    /// it leaves this method — so Keys cannot show a mismatched secret.
     pub fn export_active_private_key(
         &self,
         password: &SecretString,
     ) -> Result<SecretString, WalletError> {
         let accounts = self.require_unlocked()?;
         self.verify_password(password)?;
-        accounts.export_private_key(accounts.active_index())
+        let active = accounts.active_account();
+        let index = active.index;
+        let expected = active.address.clone();
+        let sk = accounts.export_private_key(index)?;
+        let signer = crate::core::vault_secrets::parse_private_key(sk.expose_secret())?;
+        if !format!("{}", signer.address()).eq_ignore_ascii_case(&expected) {
+            return Err(WalletError::Other(
+                "exported key does not match the F3 active account — aborting reveal".into(),
+            ));
+        }
+        Ok(sk)
     }
 
     /// Import a hex private key into the vault (password-gated rewrite).
@@ -873,7 +894,7 @@ impl WalletState {
         token: &str,
         to: &str,
         amount: &str,
-    ) -> Result<TxHash, WalletError> {
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         let (net, address) = self.active_context()?;
         let adapter = EvmAdapter::new(
             &self.effective_rpc(),
@@ -891,7 +912,7 @@ impl WalletState {
                 "expected an EVM transaction".into(),
             ));
         };
-        self.send_transaction(evm_tx).await
+        self.broadcast(evm_tx, "Token").await
     }
 
     /// ERC-20 transfer using an already-approved fee.
@@ -901,7 +922,7 @@ impl WalletState {
         to: &str,
         amount: &str,
         fee: &Fee,
-    ) -> Result<TxHash, WalletError> {
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         let (net, address) = self.active_context()?;
         let service = TransactionService::new();
         let mut tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
@@ -911,7 +932,7 @@ impl WalletState {
                 "expected an EVM transaction".into(),
             ));
         };
-        self.send_transaction(evm_tx).await
+        self.broadcast(evm_tx, "Token").await
     }
 
     /// Estimate the fee to send `value_wei` (base units) to `to`.
@@ -931,7 +952,11 @@ impl WalletState {
 
     /// Build, estimate, sign, and broadcast a native transfer. The caller (UI)
     /// must have shown the user the fee and obtained explicit approval first.
-    pub async fn send(&self, to: &str, value_wei: &str) -> Result<TxHash, WalletError> {
+    pub async fn send(
+        &self,
+        to: &str,
+        value_wei: &str,
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         let accounts = self.require_unlocked()?;
         let net = self.networks.active();
         let tx = TransactionService::new().build_native_transfer(
@@ -945,7 +970,7 @@ impl WalletState {
                 "expected an EVM transaction".to_string(),
             ));
         };
-        self.send_transaction(evm_tx).await
+        self.broadcast(evm_tx, "Send").await
     }
 
     /// Native transfer using an already-approved fee (e.g. Slow/Normal/Fast/Ape).
@@ -957,7 +982,7 @@ impl WalletState {
         to: &str,
         value_wei: &str,
         fee: &Fee,
-    ) -> Result<TxHash, WalletError> {
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         let accounts = self.require_unlocked()?;
         let net = self.networks.active();
         let service = TransactionService::new();
@@ -973,7 +998,7 @@ impl WalletState {
                 "expected an EVM transaction".to_string(),
             ));
         };
-        self.send_transaction(evm_tx).await
+        self.broadcast(evm_tx, "Send").await
     }
 
     /// Build, estimate, sign, and broadcast an arbitrary EVM transaction
@@ -981,9 +1006,62 @@ impl WalletState {
     /// gas/fee parameters are filled from a fee estimate. The caller must have
     /// shown the user the request and obtained explicit approval first.
     pub async fn send_transaction(&self, tx: EvmTransaction) -> Result<TxHash, WalletError> {
-        let (adapter, tx) = self.signed_adapter_and_tx(tx).await?;
-        let service = TransactionService::new();
-        service.send(&adapter, ChainTransaction::Evm(tx)).await
+        let receipt = self.broadcast(tx, "tx").await?;
+        Ok(TxHash(receipt.hash))
+    }
+
+    /// Like [`Self::send_transaction`], but returns a [`BroadcastReceipt`] for
+    /// History cancel / speed-up (nonce + fees captured).
+    pub async fn broadcast(
+        &self,
+        tx: EvmTransaction,
+        label: &str,
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
+        use crate::core::broadcasts::{BroadcastEntry, BroadcastReceipt};
+
+        let (adapter, mut prepared) = self.signed_adapter_and_tx(tx).await?;
+        if prepared.nonce.is_none() {
+            prepared.nonce = Some(adapter.get_pending_nonce(&prepared.from).await?);
+        }
+        let hash = TransactionService::new()
+            .send(&adapter, ChainTransaction::Evm(prepared.clone()))
+            .await?;
+        let entry = BroadcastEntry::from_prepared(&prepared, hash.0.clone(), label);
+        Ok(BroadcastReceipt {
+            hash: hash.0,
+            entry,
+        })
+    }
+
+    /// Cancel or speed-up a pending [`BroadcastEntry`] (same nonce, bumped fees).
+    pub async fn replace_broadcast(
+        &self,
+        entry: &crate::core::broadcasts::BroadcastEntry,
+        kind: crate::core::broadcasts::ReplaceKind,
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
+        if !entry.is_replaceable() {
+            return Err(WalletError::InvalidTransaction(
+                "transaction is not pending — cannot replace".into(),
+            ));
+        }
+        let net = self.networks.active();
+        if entry.chain_id != net.chain_id {
+            return Err(WalletError::InvalidTransaction(format!(
+                "broadcast is on chain {} but wallet is on {}",
+                entry.chain_id, net.chain_id
+            )));
+        }
+        let tx = entry.replacement_tx(kind)?;
+        let mut receipt = self.broadcast(tx, kind.label()).await?;
+        receipt.entry.replaces = Some(entry.hash.clone());
+        Ok(receipt)
+    }
+
+    /// Poll inclusion status for a previously broadcast hash (Pending /
+    /// Confirmed / Failed). Used by the Send Done screen.
+    pub async fn get_tx_status(&self, tx_hash: &str) -> Result<TxStatus, WalletError> {
+        let adapter = self.active_adapter().await?;
+        adapter.get_tx_status(tx_hash).await
     }
 
     /// Contract call (or native transfer) using an already-approved fee.
@@ -994,7 +1072,7 @@ impl WalletState {
         &self,
         tx: EvmTransaction,
         fee: &Fee,
-    ) -> Result<TxHash, WalletError> {
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         let service = TransactionService::new();
         let mut chain_tx = ChainTransaction::Evm(tx);
         service.apply_fee(&mut chain_tx, fee)?;
@@ -1003,7 +1081,7 @@ impl WalletState {
                 "expected an EVM transaction".to_string(),
             ));
         };
-        self.send_transaction(evm_tx).await
+        self.broadcast(evm_tx, "Contract").await
     }
 
     /// Sign an EVM transaction without broadcasting it; returns the raw signed
@@ -1206,6 +1284,27 @@ mod tests {
         let mut w = WalletState::load(path).unwrap();
         w.unlock(&password()).unwrap();
         assert_eq!(w.require_unlocked().unwrap().active_index(), 1);
+    }
+
+    #[test]
+    fn export_active_private_key_matches_f3_account() {
+        let mut w = WalletState::load(tmp_path()).unwrap();
+        w.create(&password(), mnemonic()).unwrap();
+        w.set_active_account(1).unwrap();
+        let (label, address, imported) = w.active_account_export_context().unwrap();
+        assert_eq!(label, "wallet 1");
+        assert!(!imported);
+
+        let sk = w.export_active_private_key(&password()).unwrap();
+        let signer = crate::core::vault_secrets::parse_private_key(sk.expose_secret()).unwrap();
+        assert_eq!(
+            format!("{}", signer.address()).to_lowercase(),
+            address.to_lowercase()
+        );
+
+        w.set_active_account(0).unwrap();
+        let sk0 = w.export_active_private_key(&password()).unwrap();
+        assert_ne!(sk.expose_secret(), sk0.expose_secret());
     }
 
     #[test]

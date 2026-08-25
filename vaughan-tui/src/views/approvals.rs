@@ -91,7 +91,8 @@ impl ApprovalsView {
                 self.busy = Busy::Idle;
                 self.status = e.user_message();
             }
-            UiJobResult::Send(Ok(hash)) => {
+            UiJobResult::Send(Ok(receipt)) => {
+                let hash = receipt.hash;
                 self.busy = Busy::Idle;
                 self.stage = Stage::List;
                 self.status = format!("Revoke sent ({hash}). Reloading…");

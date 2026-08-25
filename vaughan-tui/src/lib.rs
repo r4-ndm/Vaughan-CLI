@@ -7,8 +7,10 @@
 
 pub mod app;
 pub mod brand;
+pub mod clipboard;
 pub mod freedom;
 pub mod input;
+pub mod intent;
 pub mod jobs;
 pub mod mcp;
 pub mod provider;

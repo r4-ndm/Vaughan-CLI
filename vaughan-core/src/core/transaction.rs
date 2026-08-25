@@ -191,6 +191,13 @@ pub fn format_base_units(value: &str, decimals: u8) -> String {
     }
 }
 
+/// Like [`format_base_units`], then caps fractional digits (e.g. chrome F2).
+///
+/// `10.0000000` → `10`; `10.65471234` with `max_frac = 4` → `10.6547`.
+pub fn format_display_amount(value: &str, decimals: u8, max_frac: usize) -> String {
+    cap_fractional_digits(&format_base_units(value, decimals), max_frac)
+}
+
 /// Trim trailing fractional zeros (and a dangling `.`) from a decimal string.
 fn trim_trailing_zeros(s: &str) -> String {
     if s.contains('.') {
@@ -198,6 +205,18 @@ fn trim_trailing_zeros(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Keep at most `max_frac` digits after the decimal, then re-trim zeros.
+fn cap_fractional_digits(s: &str, max_frac: usize) -> String {
+    let Some((whole, frac)) = s.split_once('.') else {
+        return s.to_string();
+    };
+    if frac.len() <= max_frac {
+        return s.to_string();
+    }
+    let clipped = &frac[..max_frac];
+    trim_trailing_zeros(&format!("{whole}.{clipped}"))
 }
 
 #[cfg(test)]
@@ -223,6 +242,18 @@ mod tests {
         assert_eq!(format_base_units("0", 18), "0");
         assert_eq!(format_base_units("1000000000000000000", 18), "1");
         assert_eq!(format_base_units("not-a-number", 18), "not-a-number");
+    }
+
+    #[test]
+    fn format_display_amount_trims_and_caps() {
+        // 10 whole units (18 decimals)
+        assert_eq!(format_display_amount("10000000000000000000", 18, 4), "10");
+        // 10.654712345… → four fractional digits
+        assert_eq!(
+            format_display_amount("10654712345678901234", 18, 4),
+            "10.6547"
+        );
+        assert_eq!(format_display_amount("10500000000000000000", 18, 4), "10.5");
     }
 
     #[test]

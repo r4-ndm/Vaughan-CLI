@@ -19,8 +19,10 @@ use zeroize::Zeroize;
 
 use crate::app::{KeyOutcome, Screen};
 use crate::brand;
+use crate::clipboard;
 use crate::input::{Input, InputAction};
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
+use ratatui::layout::Constraint;
 
 /// Which step of onboarding the user is on.
 enum Stage {
@@ -76,15 +78,34 @@ impl OnboardingView {
                     .as_ref()
                     .map(|m| m.to_string())
                     .unwrap_or_default();
-                let text = vec![
-                    Line::from("Your recovery phrase. Write it down and keep it offline:"),
-                    Line::from(""),
-                    Line::from(Span::styled(phrase, Style::default().fg(Color::Yellow))),
-                    Line::from(""),
-                    Line::from("Press Enter to continue."),
-                ];
-                let inner = brand::render_faded_box(frame, content, None);
-                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+                let [head, secret_area, foot] = ratatui::layout::Layout::vertical([
+                    Constraint::Length(4),
+                    Constraint::Min(3),
+                    Constraint::Length(3),
+                ])
+                .areas(content);
+                let head_inner = brand::render_faded_box(frame, head, None);
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("Your recovery phrase — write it down offline."),
+                        Line::from("y — copy   Enter — continue"),
+                    ]),
+                    head_inner,
+                );
+                // Unbordered: mouse-select won't pick up box outline chars.
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        phrase,
+                        Style::default().fg(Color::Yellow),
+                    )))
+                    .wrap(Wrap { trim: false }),
+                    secret_area,
+                );
+                let foot_inner = brand::render_faded_box(frame, foot, None);
+                frame.render_widget(
+                    Paragraph::new(Line::from("Anyone with this phrase controls the vault.")),
+                    foot_inner,
+                );
             }
             Stage::EnterMnemonic => {
                 render_labeled_input(
@@ -138,14 +159,24 @@ impl OnboardingView {
                 }
                 _ => return KeyOutcome::NotHandled,
             },
-            Stage::ShowMnemonic => {
-                if key.code == KeyCode::Enter {
+            Stage::ShowMnemonic => match key.code {
+                KeyCode::Enter => {
                     self.input = Input::new(true, "");
                     self.stage = Stage::SetPassword;
-                } else {
-                    return KeyOutcome::NotHandled;
+                    return KeyOutcome::Consumed;
                 }
-            }
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(m) = self.mnemonic.as_ref() {
+                        let phrase = m.to_string();
+                        match clipboard::copy_text(&phrase) {
+                            Ok(()) => self.status = "Recovery phrase copied".into(),
+                            Err(e) => self.status = e,
+                        }
+                    }
+                    return KeyOutcome::Consumed;
+                }
+                _ => return KeyOutcome::NotHandled,
+            },
             Stage::EnterMnemonic => match self.input.handle_key(key) {
                 InputAction::Ignored => return KeyOutcome::NotHandled,
                 InputAction::Submitted => {

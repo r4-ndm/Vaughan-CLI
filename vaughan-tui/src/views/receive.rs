@@ -1,8 +1,11 @@
 //! Receive: public address, stealth URI, and scan/sweep of stealth notes.
+//!
+//! `y` copies the public address; `u` copies the stealth URI — both via
+//! clipboard helpers so mouse-select never grabs box borders.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
@@ -14,6 +17,7 @@ use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
 use crate::brand;
+use crate::clipboard;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -42,48 +46,72 @@ impl Default for ReceiveView {
 impl ReceiveView {
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let net = wallet.networks().active();
-        let text = match self.stage {
-            Stage::Address => self.address_lines(wallet, net.name.as_str()),
-            Stage::Notes => self.notes_lines(net.native_symbol.as_str()),
-        };
-        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(" Receive ")));
-        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+        match self.stage {
+            Stage::Address => self.render_address(frame, area, wallet, net.name.as_str()),
+            Stage::Notes => {
+                let text = self.notes_lines(net.native_symbol.as_str());
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Receive ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
+        }
     }
 
-    fn address_lines(&self, wallet: &WalletState, net_name: &str) -> Vec<Line<'static>> {
+    /// Address / URI on unbordered rows so copy/select stays clean.
+    fn render_address(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, net_name: &str) {
         let address = wallet
             .active_address()
             .ok()
             .map(|a| a.to_string())
             .unwrap_or_else(|| "(locked)".into());
         let stealth = wallet.stealth_uri().ok();
-        let mut lines = vec![
-            Line::from(format!("Network: {net_name}")),
-            Line::from(""),
-            Line::from("Public address:"),
-            Line::from(brand::colored_address_spans(&address)),
-            Line::from(""),
-            Line::from("Stealth URI (one-time payments; does not hide sender/amount):"),
-        ];
-        match stealth {
-            Some(uri) => lines.push(Line::from(Span::styled(
-                uri,
-                Style::default().fg(Color::Cyan),
-            ))),
-            None => lines.push(Line::from("(unlock to show stealth URI)")),
-        }
-        lines.push(Line::from(""));
-        lines.push(Line::from(
-            "s scan notes   Enter sweep selected   Esc dashboard",
-        ));
+
+        let [head, addr_row, mid, uri_row, foot] = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Min(2),
+            Constraint::Length(4),
+        ])
+        .areas(area);
+
+        let head_inner = brand::render_faded_box(frame, head, Some(brand::fade_line(" Receive ")));
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(format!("Network: {net_name}")),
+                Line::from("Public address (y copy) · stealth URI (u copy)"),
+            ]),
+            head_inner,
+        );
+
+        frame.render_widget(
+            Paragraph::new(Line::from(brand::colored_address_spans(&address))),
+            addr_row,
+        );
+
+        let mid_inner = brand::render_faded_box(frame, mid, None);
+        frame.render_widget(
+            Paragraph::new(Line::from("Stealth URI (one-time receive path):")),
+            mid_inner,
+        );
+
+        let uri_line = match &stealth {
+            Some(uri) => Line::from(Span::styled(uri.clone(), Style::default().fg(Color::Cyan))),
+            None => Line::from("(unlock to show stealth URI)"),
+        };
+        frame.render_widget(Paragraph::new(uri_line).wrap(Wrap { trim: false }), uri_row);
+
+        let mut foot_lines = vec![Line::from(
+            "y address · u stealth URI · s scan notes · Esc dashboard",
+        )];
         if !self.status.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
+            foot_lines.push(Line::from(Span::styled(
                 self.status.clone(),
-                Style::default().fg(Color::Red),
+                Style::default().fg(Color::Yellow),
             )));
         }
-        lines
+        let foot_inner = brand::render_faded_box(frame, foot, None);
+        frame.render_widget(Paragraph::new(foot_lines), foot_inner);
     }
 
     fn notes_lines(&self, symbol: &str) -> Vec<Line<'static>> {
@@ -127,6 +155,26 @@ impl ReceiveView {
                     self.scan(wallet, handle);
                     KeyOutcome::Consumed
                 }
+                KeyCode::Char('y') | KeyCode::Char('Y') => match wallet.active_address() {
+                    Ok(addr) => match clipboard::copy_text(addr) {
+                        Ok(()) => KeyOutcome::Flash("F3 address copied".into()),
+                        Err(e) => KeyOutcome::Flash(e),
+                    },
+                    Err(e) => {
+                        self.status = e.user_message();
+                        KeyOutcome::Consumed
+                    }
+                },
+                KeyCode::Char('u') | KeyCode::Char('U') => match wallet.stealth_uri() {
+                    Ok(uri) => match clipboard::copy_text(&uri) {
+                        Ok(()) => KeyOutcome::Flash("Stealth URI copied".into()),
+                        Err(e) => KeyOutcome::Flash(e),
+                    },
+                    Err(e) => {
+                        self.status = e.user_message();
+                        KeyOutcome::Consumed
+                    }
+                },
                 _ => KeyOutcome::NotHandled,
             },
             Stage::Notes => match key.code {

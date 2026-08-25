@@ -38,6 +38,7 @@ cargo test -p vaughan-core live_quote_usdc_pulse_to_base -- --ignored --nocaptur
 
 ## Related
 
-- Official Omnibridge = later, separate track
+- Official Omnibridge / PulseRamp (`bridge.pulsechain.com`) = **deferred** separate track
+  (claim UX + AMB validators). Use this LibertySwap screen for USDC convenience today.
 - Ag (`g`) = same-chain swap aggregators only
 - `docs/aggregator.md` — LibertyX points here

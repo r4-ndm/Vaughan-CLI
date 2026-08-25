@@ -55,9 +55,10 @@ fn assets_view_renders_detected_balances() {
         text.contains(&native.token.symbol),
         "must render the native token symbol:\\n{text}"
     );
+    let amount = vaughan_core::core::format_display_amount(&native.raw, native.token.decimals, 6);
     assert!(
-        text.contains(&native.formatted),
-        "must render the native balance amount:\\n{text}"
+        text.contains(&amount),
+        "must render the native balance amount ({amount}):\\n{text}"
     );
     assert!(
         text.contains("r refresh"),

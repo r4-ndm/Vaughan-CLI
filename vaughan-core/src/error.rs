@@ -104,8 +104,21 @@ impl WalletError {
     /// Convert an internal error into a short, user-facing message.
     pub fn user_message(&self) -> String {
         match self {
+            Self::Io(_) => "Could not read or write wallet data.".to_string(),
+            Self::Serialization(msg) if msg.contains("corrupt") => {
+                "Wallet data file is corrupt. If you have a recent wallet.json.bak, restore it or restore from backup."
+                    .to_string()
+            }
+            Self::Serialization(_) => "Could not read the wallet data file.".to_string(),
+            Self::NotInitialized => "The wallet has not been set up yet.".to_string(),
+            Self::WalletLocked => "The wallet is locked. Unlock it first.".to_string(),
+            Self::Other(msg) => msg.clone(),
             Self::NetworkError(_) => {
                 "Could not reach the network. Check your connection and RPC URL.".to_string()
+            }
+            Self::RpcError(msg) if msg.contains("all RPC") || msg.contains("all endpoints") => {
+                "All configured RPC endpoints failed. Check your connection or try another network."
+                    .to_string()
             }
             Self::RpcError(_) => {
                 "The blockchain RPC returned an error. Try again or switch networks.".to_string()
@@ -131,11 +144,6 @@ impl WalletError {
             Self::KeyDerivationFailed(_) => "Could not derive the account key.".to_string(),
             Self::AccountNotFound(_) => "The requested account was not found.".to_string(),
             Self::NetworkNotFound(_) => "The requested network is not configured.".to_string(),
-            Self::Io(_) => "Could not read or write wallet data.".to_string(),
-            Self::Serialization(_) => "Could not read the wallet data file.".to_string(),
-            Self::NotInitialized => "The wallet has not been set up yet.".to_string(),
-            Self::WalletLocked => "The wallet is locked. Unlock it first.".to_string(),
-            Self::Other(msg) => msg.clone(),
         }
     }
 }
@@ -194,6 +202,15 @@ mod tests {
         for v in variants {
             assert!(!v.user_message().is_empty());
         }
+    }
+
+    #[test]
+    fn user_message_flags_rpc_exhaustion_and_corrupt_vault() {
+        let rpc = WalletError::RpcError("all RPC endpoints failed".into());
+        assert!(rpc.user_message().contains("All configured RPC"));
+        let corrupt = WalletError::Serialization("corrupt wallet data at /tmp/x: eof".into());
+        assert!(corrupt.user_message().contains("corrupt"));
+        assert!(corrupt.user_message().contains(".bak"));
     }
 
     #[tokio::test]

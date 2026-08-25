@@ -10,7 +10,7 @@ use ratatui::{
 };
 use tokio::runtime::Handle;
 use vaughan_core::chains::Balance;
-use vaughan_core::core::WalletState;
+use vaughan_core::core::{format_display_amount, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
@@ -128,7 +128,8 @@ impl AssetsView {
                             };
                             let label = format!(
                                 "{mark} {:<12} {:>22}  ({kind})",
-                                b.token.symbol, b.formatted
+                                b.token.symbol,
+                                format_display_amount(&b.raw, b.token.decimals, 6)
                             );
                             let style = if i == self.selected {
                                 Style::default()

@@ -1,4 +1,8 @@
 # Format, lint, and test on every push and pull request.
+#
+# Foundry/Anvil is required: many vaughan-tui / vaughan-cli / vaughan-core
+# bomb-proof suites spawn `anvil`. Without it those tests panic and CI would
+# be a false green if we skipped them — so we install Foundry explicitly.
 name: CI
 
 on:
@@ -26,6 +30,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+
+      - name: Install Foundry (anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Verify anvil on PATH
+        run: anvil --version
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check

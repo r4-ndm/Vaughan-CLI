@@ -11,7 +11,7 @@ use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
 use crate::app::KeyOutcome;
-use crate::jobs::{ChromeSnapshot, UiJobResult};
+use crate::jobs::{ChromeSnapshot, UiJob, UiJobResult};
 use crate::views::send::SendView;
 
 pub struct DashboardView {
@@ -58,6 +58,11 @@ impl DashboardView {
 
     pub fn apply_job_result(&mut self, result: UiJobResult) {
         self.send.apply_job_result(result);
+    }
+
+    /// Auto-poll receipt after a successful broadcast.
+    pub fn followup_job(&mut self) -> Option<UiJob> {
+        self.send.followup_poll_status()
     }
 
     /// Keep send coin in sync with F2 chrome selection.

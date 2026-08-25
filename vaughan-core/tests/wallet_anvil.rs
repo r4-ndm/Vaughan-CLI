@@ -15,8 +15,8 @@ use alloy::primitives::{keccak256, Address};
 use secrecy::SecretString;
 use serde_json::{json, Value};
 use vaughan_core::chains::evm::tokens_for_chain;
-use vaughan_core::chains::{EvmTransaction, Fee, FeeDetails, FeeSpeed};
-use vaughan_core::core::WalletState;
+use vaughan_core::chains::{EvmTransaction, Fee, FeeDetails, FeeSpeed, TxStatus};
+use vaughan_core::core::{ReplaceKind, WalletState};
 use vaughan_core::security::hd_wallet::validate_mnemonic;
 
 const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
@@ -46,13 +46,31 @@ impl Drop for Anvil {
 
 impl Anvil {
     fn start() -> Self {
+        Self::start_with(&["--silent"])
+    }
+
+    /// Automine off so pending txs stay replaceable (cancel / speed-up).
+    fn start_no_mining() -> Self {
+        Self::start_with(&["--silent", "--no-mining"])
+    }
+
+    fn start_with(extra: &[&str]) -> Self {
         let port = TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
+        let mut args = vec![
+            "--port".to_string(),
+            port.to_string(),
+            "--chain-id".to_string(),
+            "943".to_string(),
+        ];
+        for a in extra {
+            args.push((*a).to_string());
+        }
         let child = Command::new("anvil")
-            .args(["--port", &port.to_string(), "--chain-id", "943", "--silent"])
+            .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -831,5 +849,93 @@ async fn transfer_log_is_picked_up_by_token_discovery() {
     assert!(
         found.contains(&token),
         "discovery must include the log-emitting token, got {found:?}"
+    );
+}
+
+/// Pending cancel: same nonce, 0-value self-send, higher fees; recipient never paid.
+#[tokio::test]
+async fn cancel_pending_broadcast_on_anvil() {
+    let anvil = Anvil::start_no_mining();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let amount = (10u128.pow(16)).to_string();
+    let before = wei_balance(&anvil.url, ACCOUNT_6);
+
+    let fee = wallet
+        .estimate_fee(ACCOUNT_6, &amount)
+        .await
+        .expect("estimate");
+    let pending = wallet
+        .send_with_fee(ACCOUNT_6, &amount, &fee)
+        .await
+        .expect("pending send");
+    assert_eq!(
+        wallet.get_tx_status(&pending.hash).await.expect("status"),
+        TxStatus::Pending
+    );
+    assert!(pending.entry.is_replaceable());
+
+    let cancel = wallet
+        .replace_broadcast(&pending.entry, ReplaceKind::Cancel)
+        .await
+        .expect("cancel");
+    assert_eq!(
+        cancel.entry.replaces.as_deref(),
+        Some(pending.hash.as_str())
+    );
+    assert_eq!(cancel.entry.nonce, pending.entry.nonce);
+    assert_eq!(cancel.entry.value, "0");
+
+    let _ = rpc(&anvil.url, "evm_mine", json!([]));
+    let receipt = wait_receipt(&anvil.url, &cancel.hash);
+    assert_eq!(receipt["status"].as_str().unwrap(), "0x1");
+    assert_eq!(
+        wei_balance(&anvil.url, ACCOUNT_6),
+        before,
+        "cancel must not pay the original recipient"
+    );
+    assert_eq!(
+        wallet
+            .get_tx_status(&cancel.hash)
+            .await
+            .expect("cancel status"),
+        TxStatus::Confirmed
+    );
+}
+
+/// Speed-up: same payload, bumped fees; after mine, recipient is paid.
+#[tokio::test]
+async fn speed_up_pending_broadcast_on_anvil() {
+    let anvil = Anvil::start_no_mining();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil.url);
+    let amount = 10u128.pow(16);
+    let amount_s = amount.to_string();
+    let before = wei_balance(&anvil.url, ACCOUNT_6);
+
+    let fee = wallet
+        .estimate_fee(ACCOUNT_6, &amount_s)
+        .await
+        .expect("estimate");
+    let pending = wallet
+        .send_with_fee(ACCOUNT_6, &amount_s, &fee)
+        .await
+        .expect("pending send");
+
+    let sped = wallet
+        .replace_broadcast(&pending.entry, ReplaceKind::SpeedUp)
+        .await
+        .expect("speed-up");
+    assert_eq!(sped.entry.replaces.as_deref(), Some(pending.hash.as_str()));
+    assert_eq!(sped.entry.to.to_lowercase(), ACCOUNT_6.to_lowercase());
+    assert_eq!(sped.entry.value, amount_s);
+
+    let _ = rpc(&anvil.url, "evm_mine", json!([]));
+    let receipt = wait_receipt(&anvil.url, &sped.hash);
+    assert_eq!(receipt["status"].as_str().unwrap(), "0x1");
+    assert_eq!(wei_balance(&anvil.url, ACCOUNT_6), before + amount);
+    assert_eq!(
+        wallet.get_tx_status(&sped.hash).await.expect("sped status"),
+        TxStatus::Confirmed
     );
 }

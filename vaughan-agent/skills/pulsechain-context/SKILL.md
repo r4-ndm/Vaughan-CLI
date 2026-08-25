@@ -66,5 +66,7 @@ For tHEX / other testnet tokens not listed here, ask for the token address or `i
 - **Primary (no key):** SquirrelSwap Brain — `https://api.squirrelswap.pro` (`POST /swap` → unsigned tx). Native PLS = `0x000…000`.
 - Also live: PulseSwap, Piteas public beta.
 - Listed: Switch.win (needs key), Empseal, 9mm 9X, CURV — see `docs/aggregator.md`.
-- Bridge (`f`): LibertySwap USDC cross-chain (`docs/bridge.md`) — not official Omnibridge.
-- AI Agent is on the Tab cycle (after Ag), not the `g` chip.
+- Bridge (`f`): LibertySwap USDC cross-chain (`docs/bridge.md`) — not official Omnibridge;
+  destination is async (no claim tracker in v1). Omnibridge/PulseRamp is deferred.
+- Browser (`c`) intent macros: `/swap`, `/inspect 0x…`, `/revoke`, `/stealth receive`
+  (thin jumps to Ag / browse / Approvals / Receive). Writes: `write` / `writeraw` → fee confirm.

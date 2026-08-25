@@ -79,6 +79,11 @@ fn browser_view_help_command() {
         text.contains("call <fn_name>"),
         "must list call command:\n{text}"
     );
+    assert!(
+        text.contains("write <fn>"),
+        "must list write command:\n{text}"
+    );
+    assert!(text.contains("/swap"), "must list intent macros:\n{text}");
 }
 
 #[test]
@@ -97,6 +102,38 @@ fn browser_view_esc_navigates_to_dashboard() {
     type_text(&mut view, "browse 0x123", &mut wallet, &handle, &events);
     let outcome2 = view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
     assert!(matches!(outcome2, KeyOutcome::Consumed));
+}
+
+#[test]
+fn browser_view_intent_macros_navigate() {
+    use vaughan_tui::intent::IntentNav;
+
+    let tmp = tempdir().unwrap();
+    let mut wallet = common::fresh_wallet(tmp.path());
+    let mut view = BrowserView::default();
+    let events = EventBus::new();
+    let (_rt, handle) = runtime_handle();
+
+    type_text(&mut view, "/swap 1", &mut wallet, &handle, &events);
+    let o = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(
+        matches!(
+            o,
+            KeyOutcome::Intent(IntentNav::Aggregator {
+                amount: Some(ref a),
+                token_out: None
+            }) if a == "1"
+        ),
+        "got {o:?}"
+    );
+
+    type_text(&mut view, "/revoke", &mut wallet, &handle, &events);
+    let o2 = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(matches!(o2, KeyOutcome::Intent(IntentNav::Approvals)));
+
+    type_text(&mut view, "/stealth receive", &mut wallet, &handle, &events);
+    let o3 = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(matches!(o3, KeyOutcome::Intent(IntentNav::Receive)));
 }
 
 #[test]
@@ -213,4 +250,119 @@ fn browser_view_callraw_against_planted_contract() {
         text.to_lowercase().contains("2a"),
         "planted runtime returns 0x2a:\n{text}"
     );
+}
+
+/// Gated `writeraw` → fee confirm → broadcast (WPLS deposit selector).
+#[test]
+fn browser_view_writeraw_confirm_broadcasts_on_anvil() {
+    use alloy::primitives::{address, Address, U256};
+    use std::str::FromStr;
+    use std::time::{Duration, Instant};
+    use vaughan_tui::jobs::{UiJob, UiJobResult};
+    use vaughan_tui::views::dex_calldata::{encode_balance_of_call, weth_deposit_selector};
+
+    const MOCK_WPLS: Address = address!("0xA1077a294dDE1B09bB078844df40758a5D0f9a27");
+
+    let anvil = common::Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = common::funded_wallet(dir.path(), &anvil);
+    let events = EventBus::new();
+    let (_rt, handle) = runtime_handle();
+    let mut view = BrowserView::default();
+
+    let runtime = include_str!("fixtures/mock_weth.runtime.hex")
+        .trim()
+        .trim_start_matches("0x");
+    anvil
+        .rpc(
+            "anvil_setCode",
+            json!([format!("{MOCK_WPLS:#x}"), format!("0x{runtime}")]),
+        )
+        .expect("anvil_setCode");
+
+    type_text(
+        &mut view,
+        &format!("browse {MOCK_WPLS:#x}"),
+        &mut wallet,
+        &handle,
+        &events,
+    );
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+
+    let sel = format!("0x{}", hex::encode(weth_deposit_selector()));
+    let amount = "10000000000000000"; // 0.01 PLS
+    type_text(
+        &mut view,
+        &format!("writeraw {sel} value {amount}"),
+        &mut wallet,
+        &handle,
+        &events,
+    );
+    let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    let KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx }) = outcome else {
+        panic!("expected EstimateEvmFee, got {outcome:?}");
+    };
+    assert_eq!(tx.value, amount);
+    assert_eq!(
+        tx.to.to_lowercase(),
+        format!("{MOCK_WPLS:#x}").to_lowercase()
+    );
+
+    let fee = handle
+        .block_on(wallet.estimate_transaction_fee(tx.clone()))
+        .expect("fee");
+    view.apply_job_result(UiJobResult::Fee(Ok(fee.clone())));
+
+    let text = common::render_frame(100, 30, |frame| view.render(frame, frame.area(), &wallet));
+    assert!(
+        text.contains("Confirm contract write") || text.contains("Est. fee"),
+        "must show confirm card:\n{text}"
+    );
+
+    let outcome2 = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    let KeyOutcome::StartJob(UiJob::SendEvmWithFee {
+        tx: send_tx,
+        fee: send_fee,
+    }) = outcome2
+    else {
+        panic!("expected SendEvmWithFee, got {outcome2:?}");
+    };
+    assert_eq!(send_fee.total, fee.total);
+
+    let receipt = handle
+        .block_on(wallet.send_evm_with_fee(send_tx, &send_fee))
+        .expect("broadcast");
+    let hash = receipt.hash.clone();
+    view.apply_job_result(UiJobResult::Send(Ok(receipt)));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(r) = anvil.rpc("eth_getTransactionReceipt", json!([&hash])) {
+            if !r.is_null() {
+                assert_eq!(r["status"].as_str().unwrap_or("0x0"), "0x1");
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "no receipt for {hash}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let from = wallet.active_address().unwrap();
+    let owner: Address = from.parse().unwrap();
+    let bal_hex = anvil
+        .rpc(
+            "eth_call",
+            json!([
+                {
+                    "to": format!("{MOCK_WPLS:#x}"),
+                    "data": encode_balance_of_call(owner)
+                },
+                "latest"
+            ]),
+        )
+        .expect("balanceOf");
+    let bal = U256::from_str(bal_hex.as_str().unwrap()).unwrap_or_else(|_| {
+        U256::from_str_radix(bal_hex.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+    });
+    assert_eq!(bal, U256::from_str(amount).unwrap());
 }

@@ -421,14 +421,16 @@ impl DexView {
                 self.status = e.user_message();
                 self.stage = Stage::Input;
             }
-            UiJobResult::Send(Ok(hash)) => match self.busy {
+            UiJobResult::Send(Ok(receipt)) => match self.busy {
                 Busy::Approving => {
+                    let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
                     self.status = format!("Approve sent ({hash}). Estimating swap fee…");
                     self.pending_auto_fee_estimate = true;
                 }
                 Busy::Swapping => {
+                    let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.tx_hash = Some(hash);
                     self.stage = Stage::Done;
@@ -935,9 +937,12 @@ impl DexView {
 
     fn build_approve_tx(&self, wallet: &WalletState) -> Result<EvmTransaction, String> {
         self.validate_fields()?;
-        let router = Address::from_str(self.router.value().trim()).unwrap();
-        let token_in = Address::from_str(self.token_in.value().trim()).unwrap();
-        let amount_in = U256::from_str(self.amount.value().trim()).unwrap();
+        let router = Address::from_str(self.router.value().trim())
+            .map_err(|e| format!("bad router: {e}"))?;
+        let token_in = Address::from_str(self.token_in.value().trim())
+            .map_err(|e| format!("bad token in: {e}"))?;
+        let amount_in =
+            U256::from_str(self.amount.value().trim()).map_err(|e| format!("bad amount: {e}"))?;
         let from = wallet.active_address().map_err(|e| e.user_message())?;
         let chain_id = wallet.networks().active().chain_id;
         Ok(build_approve_tx(
@@ -947,11 +952,16 @@ impl DexView {
 
     fn build_swap_tx(&self, wallet: &WalletState) -> Result<EvmTransaction, String> {
         self.validate_fields()?;
-        let router = Address::from_str(self.router.value().trim()).unwrap();
-        let token_in = Address::from_str(self.token_in.value().trim()).unwrap();
-        let token_out = Address::from_str(self.token_out.value().trim()).unwrap();
-        let amount_in = U256::from_str(self.amount.value().trim()).unwrap();
-        let min_out = U256::from_str(self.min_out.value().trim()).unwrap();
+        let router = Address::from_str(self.router.value().trim())
+            .map_err(|e| format!("bad router: {e}"))?;
+        let token_in = Address::from_str(self.token_in.value().trim())
+            .map_err(|e| format!("bad token in: {e}"))?;
+        let token_out = Address::from_str(self.token_out.value().trim())
+            .map_err(|e| format!("bad token out: {e}"))?;
+        let amount_in =
+            U256::from_str(self.amount.value().trim()).map_err(|e| format!("bad amount: {e}"))?;
+        let min_out =
+            U256::from_str(self.min_out.value().trim()).map_err(|e| format!("bad min out: {e}"))?;
         let to_addr = wallet.active_address().map_err(|e| e.user_message())?;
         let recipient = Address::from_str(to_addr).map_err(|e| format!("bad account: {e}"))?;
         let chain_id = wallet.networks().active().chain_id;
