@@ -31,6 +31,12 @@ pub struct RequestCtx {
     /// one. The trusted-host allowlist (FR-2.4) enforces this; clients that
     /// send no origin (e.g. the Freedom Browser backend) are keyed by peer.
     pub origin: Option<String>,
+    /// Page origin as attested by the Vaughan extension's service worker
+    /// (`vaughan_page_origin` on the JSON-RPC request, derived from
+    /// Chrome's `port.sender.url` — not page-supplied). Prefer this for
+    /// approve UI / connect grants. Still client-asserted for non-extension
+    /// transports (e.g. Freedom), which is acceptable for display.
+    pub page_origin: Option<String>,
 }
 
 /// Handles validated JSON-RPC requests from connected clients.
@@ -65,6 +71,7 @@ mod tests {
         let ctx = RequestCtx {
             peer: "127.0.0.1:1234".parse().unwrap(),
             origin: None,
+            page_origin: None,
         };
         let request = RpcRequest::from_json(r#"{"id":1,"method":"ping"}"#).unwrap();
         let result = handler.handle(ctx, request).await.unwrap();

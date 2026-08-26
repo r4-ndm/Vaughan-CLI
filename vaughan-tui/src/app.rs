@@ -10,6 +10,7 @@ use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
+use vaughan_core::chains::evm::networks::get_network_by_chain_id;
 use vaughan_core::core::proposal::ProposalQueue;
 use vaughan_core::core::{
     mark_replaced, push_recent, BroadcastEntry, McpSessionToken, StateManager, WalletState,
@@ -19,7 +20,7 @@ use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
 use crate::jobs::{ChromeFocus, ChromeSnapshot, UiJob, UiJobResult};
 use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
-use crate::provider::{self, ApprovalKind, HostRequest};
+use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
     AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
     DashboardView, DexView, HistoryView, KeysView, OnboardingView, PlaceholderView, ReceiveView,
@@ -158,7 +159,7 @@ impl View {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, bridge_line: &str) {
         match self {
             Self::Onboarding(v) => v.render(frame, area, wallet),
             Self::Unlock(v) => v.render(frame, area, wallet),
@@ -167,7 +168,7 @@ impl View {
             Self::Receive(v) => v.render(frame, area, wallet),
             Self::Settings(v) => v.render(frame, area, wallet),
             Self::Keys(v) => v.render(frame, area, wallet),
-            Self::Dapps(v) => v.render(frame, area, wallet),
+            Self::Dapps(v) => v.render(frame, area, wallet, bridge_line),
             Self::Assets(v) => v.render(frame, area, wallet),
             Self::Browser(v) => v.render(frame, area, wallet),
             Self::Dex(v) => v.render(frame, area, wallet),
@@ -211,11 +212,24 @@ impl View {
     }
 }
 
-/// A sign/send request waiting on the user's approve/deny decision.
+/// A sign/send/connect request waiting on the user's approve/deny decision.
 struct PendingApproval {
     kind: ApprovalKind,
-    reply: Option<oneshot::Sender<Result<String, ProviderError>>>,
+    reply: PendingReply,
+    /// When the prompt was shown (debounce + expiry).
+    shown_at: std::time::Instant,
 }
+
+enum PendingReply {
+    Sign(oneshot::Sender<Result<String, ProviderError>>),
+    Accounts(oneshot::Sender<Result<Vec<String>, ProviderError>>),
+    Switch(oneshot::Sender<Result<(), ProviderError>>),
+}
+
+/// Discard accidental keypresses for this long after an approve prompt appears.
+const APPROVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+/// Auto-deny stale prompts (dApps typically time out around 30–60s).
+const APPROVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Root application state.
 pub struct App {
@@ -245,6 +259,10 @@ pub struct App {
     mcp_rx: mpsc::UnboundedReceiver<McpHostRequest>,
     /// Session-scoped broadcasts for History cancel / speed-up.
     recent_broadcasts: Vec<BroadcastEntry>,
+    /// Local EIP-1193 bridge listen state (Freedom Connect Vaughan).
+    bridge_status: BridgeStatusHandle,
+    /// Sites granted `eth_requestAccounts` this unlock session (page/WS origin).
+    connected_sites: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -263,9 +281,17 @@ impl App {
         let (host_tx, host_rx) = mpsc::unbounded_channel();
         let (mcp_tx, mcp_rx) = mpsc::unbounded_channel();
         let (job_tx, job_rx) = mpsc::unbounded_channel();
-        let dapp_origins = wallet.trusted_dapp_origins();
-        provider::spawn_provider_server(&handle, host_tx, events.clone(), dapp_origins);
+        let bridge_status = provider::new_bridge_status();
         let profile_dir = profile_dir(wallet.path());
+        let dapp_origins = wallet.trusted_dapp_origins();
+        provider::spawn_provider_server(
+            &handle,
+            host_tx,
+            events.clone(),
+            dapp_origins,
+            bridge_status.clone(),
+            profile_dir.clone(),
+        );
         let mcp = McpService::new(&profile_dir, mcp_tx);
         let mut app = Self {
             wallet: Arc::new(Mutex::new(wallet)),
@@ -287,6 +313,15 @@ impl App {
             mcp,
             mcp_rx,
             recent_broadcasts: Vec::new(),
+            bridge_status,
+            // Grants persist across restarts (origins only, no secrets) and
+            // are cleared on explicit lock — see core::site_grants.
+            connected_sites: vaughan_core::core::site_grants::load(&profile_dir).unwrap_or_else(
+                |e| {
+                    tracing::warn!(error = %e, "site grants load failed; starting empty");
+                    std::collections::HashSet::new()
+                },
+            ),
         };
         app.navigate(screen);
         Ok(app)
@@ -320,7 +355,12 @@ impl App {
 
     pub fn render_body(&self, frame: &mut Frame, area: Rect) {
         if let Some(wallet) = self.try_wallet() {
-            self.view.render(frame, area, &wallet);
+            let bridge_line = self
+                .bridge_status
+                .lock()
+                .map(|s| s.summary_line())
+                .unwrap_or_else(|_| "Bridge: status unavailable".into());
+            self.view.render(frame, area, &wallet, &bridge_line);
         } else {
             // Job thread holds the wallet — keep painting a spinner body.
             use ratatui::widgets::Paragraph;
@@ -450,6 +490,12 @@ impl App {
             GlobalAction::Lock => {
                 if self.wallet().is_unlocked() {
                     self.mcp.on_lock();
+                    self.connected_sites.clear();
+                    if let Some(dir) = self.wallet().path().parent() {
+                        if let Err(e) = vaughan_core::core::site_grants::clear(dir) {
+                            tracing::warn!(error = %e, "site grants clear failed");
+                        }
+                    }
                     {
                         let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
                         wallet.lock();
@@ -536,36 +582,86 @@ impl App {
     }
 
     /// Drain the provider request channel, answering read queries inline and
-    /// surfacing sign/send requests as an approval prompt.
+    /// surfacing sign/send/connect requests as an approval prompt.
     fn poll_provider(&mut self) {
+        self.expire_stale_approval();
         while let Ok(request) = self.host_rx.try_recv() {
             match request {
-                HostRequest::Accounts { reply } | HostRequest::RequestAccounts { reply } => {
-                    let _ = reply.send(Ok(self.visible_accounts()));
+                HostRequest::Accounts { site, reply } => {
+                    let accounts = if self.connected_sites.contains(&site) {
+                        self.visible_accounts()
+                    } else {
+                        Vec::new()
+                    };
+                    let _ = reply.send(Ok(accounts));
+                }
+                HostRequest::RequestAccounts { site, reply } => {
+                    if !self.wallet().is_unlocked() {
+                        // 4100, not a silent `[]`: the dApp must be able to
+                        // surface "unlock Vaughan" instead of hanging on a
+                        // "Confirm connection…" modal forever.
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "wallet is locked; unlock it first".into(),
+                        )));
+                        continue;
+                    }
+                    if self.connected_sites.contains(&site) {
+                        let _ = reply.send(Ok(self.visible_accounts()));
+                        continue;
+                    }
+                    if self.pending_approval.is_some() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "another approval is pending".into(),
+                        )));
+                        continue;
+                    }
+                    let kind = ApprovalKind::Connect { site: site.clone() };
+                    let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
+                    let (title, details) = match preview {
+                        Ok(p) => p,
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                            continue;
+                        }
+                    };
+                    self.approve_return = self.screen();
+                    self.view = View::Approve(ApproveView::new(title, Some(site.clone()), details));
+                    self.pending_approval = Some(PendingApproval {
+                        kind,
+                        reply: PendingReply::Accounts(reply),
+                        shown_at: std::time::Instant::now(),
+                    });
+                    break;
                 }
                 HostRequest::ChainId { reply } => {
                     let id = self.wallet().networks().active().chain_id;
                     let _ = reply.send(Ok(format!("0x{id:x}")));
                 }
-                HostRequest::SwitchChain { chain_id, reply } => {
-                    let _ = reply.send(self.switch_chain(&chain_id));
-                }
-                HostRequest::Approval {
-                    kind,
+                HostRequest::SwitchChain {
+                    chain_id,
                     origin,
                     reply,
                 } => {
-                    // Locked wallet: reject without prompting (the execution
-                    // path guards too, but no prompt should ever appear).
                     if !self.wallet().is_unlocked() {
                         let _ = reply.send(Err(ProviderError::Unauthorized(
-                            "wallet is locked; unlock it first".to_string(),
+                            "wallet is locked; unlock it first".into(),
                         )));
                         continue;
                     }
+                    if self.pending_approval.is_some() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "another approval is pending".into(),
+                        )));
+                        continue;
+                    }
+                    let label = Self::network_label_for_chain_hex(&chain_id);
+                    let kind = ApprovalKind::SwitchChain {
+                        chain_id: chain_id.clone(),
+                        label,
+                    };
                     let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
                     let (title, details) = match preview {
-                        Ok(preview) => preview,
+                        Ok(p) => p,
                         Err(error) => {
                             let _ = reply.send(Err(error));
                             continue;
@@ -574,15 +670,82 @@ impl App {
                     self.approve_return = self.screen();
                     self.view = View::Approve(ApproveView::new(title, origin, details));
                     self.pending_approval = Some(PendingApproval {
-                        kind: *kind,
-                        reply: Some(reply),
+                        kind,
+                        reply: PendingReply::Switch(reply),
+                        shown_at: std::time::Instant::now(),
                     });
-                    // One approval on screen at a time; remaining queued
-                    // requests are served once this one resolves.
+                    break;
+                }
+                HostRequest::Approval {
+                    kind,
+                    origin,
+                    site,
+                    requires_grant,
+                    reply,
+                } => {
+                    if !self.wallet().is_unlocked() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "wallet is locked; unlock it first".to_string(),
+                        )));
+                        continue;
+                    }
+                    // Extension-path requests must hold a Connect grant first
+                    // (MetaMask parity; stops prompt-spam from sites the user
+                    // never connected). Freedom's transport is exempt.
+                    if requires_grant && !self.connected_sites.contains(&site) {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "site not connected; call eth_requestAccounts first".into(),
+                        )));
+                        continue;
+                    }
+                    let preview =
+                        provider::describe_approval_with_fee(&kind, &self.wallet(), &self.handle);
+                    let (title, details, fee) = match preview {
+                        Ok(preview) => preview,
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                            continue;
+                        }
+                    };
+                    self.approve_return = self.screen();
+                    self.view = View::Approve(match fee {
+                        Some(base_fee) => ApproveView::with_fee(title, origin, details, base_fee),
+                        None => ApproveView::new(title, origin, details),
+                    });
+                    self.pending_approval = Some(PendingApproval {
+                        kind: *kind,
+                        reply: PendingReply::Sign(reply),
+                        shown_at: std::time::Instant::now(),
+                    });
                     break;
                 }
             }
         }
+    }
+
+    fn expire_stale_approval(&mut self) {
+        let Some(pending) = self.pending_approval.as_ref() else {
+            return;
+        };
+        if pending.shown_at.elapsed() < APPROVE_TTL {
+            return;
+        }
+        let Some(pending) = self.pending_approval.take() else {
+            return;
+        };
+        match pending.reply {
+            PendingReply::Sign(reply) => {
+                let _ = reply.send(Err(ProviderError::UserRejected));
+            }
+            PendingReply::Accounts(reply) => {
+                let _ = reply.send(Err(ProviderError::UserRejected));
+            }
+            PendingReply::Switch(reply) => {
+                let _ = reply.send(Err(ProviderError::UserRejected));
+            }
+        }
+        let back = self.approve_return;
+        self.navigate(back);
     }
 
     fn poll_mcp(&mut self) {
@@ -670,7 +833,12 @@ impl App {
                         Some(format!("MCP ({source})")),
                         details,
                     ));
-                    self.pending_approval = Some(PendingApproval { kind, reply });
+                    let Some(reply) = reply else { continue };
+                    self.pending_approval = Some(PendingApproval {
+                        kind,
+                        reply: PendingReply::Sign(reply),
+                        shown_at: std::time::Instant::now(),
+                    });
                     break;
                 }
                 McpHostRequest::StealthUri { reply } => {
@@ -768,7 +936,8 @@ impl App {
                         View::Approve(ApproveView::new(title, Some("MCP stealth".into()), details));
                     self.pending_approval = Some(PendingApproval {
                         kind,
-                        reply: Some(reply),
+                        reply: PendingReply::Sign(reply),
+                        shown_at: std::time::Instant::now(),
                     });
                     break;
                 }
@@ -787,6 +956,16 @@ impl App {
             .active_address()
             .map(|a| vec![a.to_string()])
             .unwrap_or_default()
+    }
+
+    /// Write the current site grants beside the vault (best-effort: a failed
+    /// write only means the next restart asks dApps to reconnect once more).
+    fn persist_connected_sites(&self) {
+        if let Some(dir) = self.wallet().path().parent() {
+            if let Err(e) = vaughan_core::core::site_grants::save(dir, &self.connected_sites) {
+                tracing::warn!(error = %e, "site grants save failed");
+            }
+        }
     }
 
     /// `wallet_switchEthereumChain`: switch to a built-in network by chain id.
@@ -837,14 +1016,29 @@ impl App {
         }
     }
 
-    /// Resolve the on-screen approval: deny on `n`/Esc, approve on `y`/Enter.
-    /// Ctrl+C/Ctrl+Q still quit; dropping `pending_approval`'s reply channel
-    /// makes the waiting handler future observe a closed channel.
+    /// Resolve the on-screen approval: deny on `n`/Esc, approve on `y` (not bare
+    /// Enter alone after debounce — Enter still works after the debounce window).
+    /// Ctrl+C/Ctrl+Q still quit; dropping the reply channel rejects the request.
     fn handle_approval_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
             self.quit_confirm = Some(true);
             return;
+        }
+        let Some(pending) = self.pending_approval.as_ref() else {
+            return;
+        };
+        if pending.shown_at.elapsed() < APPROVE_DEBOUNCE {
+            return;
+        }
+        // Fee editor gets first crack: speed presets, custom gwei input, and
+        // vetoes on decision keys while the custom input is focused/invalid.
+        if let View::Approve(view) = &mut self.view {
+            match view.handle_fee_key(key) {
+                crate::views::approve::FeeKeyOutcome::Consumed
+                | crate::views::approve::FeeKeyOutcome::Blocked => return,
+                crate::views::approve::FeeKeyOutcome::NotHandled => {}
+            }
         }
         let approve = matches!(
             key.code,
@@ -870,15 +1064,68 @@ impl App {
                     }
                 }
             }
+            match pending.reply {
+                PendingReply::Sign(reply) => {
+                    let _ = reply.send(Err(ProviderError::UserRejected));
+                }
+                PendingReply::Accounts(reply) => {
+                    let _ = reply.send(Err(ProviderError::UserRejected));
+                }
+                PendingReply::Switch(reply) => {
+                    let _ = reply.send(Err(ProviderError::UserRejected));
+                }
+            }
+            let back = self.approve_return;
+            self.navigate(back);
+            return;
         }
-        let result = if deny {
-            Err(ProviderError::UserRejected)
-        } else {
-            provider::execute_approval_sync(&pending.kind, &self.wallet(), &self.handle)
-        };
-        let _ = pending.reply.map(|reply| reply.send(result));
+
+        match pending.reply {
+            PendingReply::Accounts(reply) => {
+                if let ApprovalKind::Connect { site } = &pending.kind {
+                    self.connected_sites.insert(site.clone());
+                    self.persist_connected_sites();
+                }
+                let _ = reply.send(Ok(self.visible_accounts()));
+            }
+            PendingReply::Switch(reply) => {
+                let result = if let ApprovalKind::SwitchChain { chain_id, .. } = &pending.kind {
+                    self.switch_chain(chain_id)
+                } else {
+                    Err(ProviderError::Internal("switch reply mismatch".into()))
+                };
+                let _ = reply.send(result);
+            }
+            PendingReply::Sign(reply) => {
+                let mut kind = pending.kind;
+                // Apply the fee the user adjusted in the prompt (if any) so
+                // what they saw is exactly what gets signed.
+                if let View::Approve(view) = &self.view {
+                    if let Some(fee) = view.adjusted_fee() {
+                        match &mut kind {
+                            ApprovalKind::SendTransaction(tx)
+                            | ApprovalKind::SignTransaction(tx) => {
+                                provider::apply_fee_override(tx, &fee)
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                let _ = reply.send(result);
+            }
+        }
         let back = self.approve_return;
         self.navigate(back);
+    }
+
+    fn network_label_for_chain_hex(chain_id_hex: &str) -> String {
+        let Ok(id) = u64::from_str_radix(chain_id_hex.trim_start_matches("0x"), 16) else {
+            return chain_id_hex.to_string();
+        };
+        get_network_by_chain_id(id)
+            .map(|n| n.name.to_string())
+            .unwrap_or_else(|| format!("chain {id}"))
     }
 
     /// Build the default view for `screen` (refreshing balance on Dashboard).
@@ -999,6 +1246,13 @@ impl App {
             KeyCode::F(3) => {
                 self.begin_chrome_focus(ChromeFocus::Account);
                 true
+            }
+            // F4/F5 are home send fields — clear F1–F3 so ↑/↓ reach the form.
+            KeyCode::F(4) | KeyCode::F(5) => {
+                if self.chrome.focus != ChromeFocus::None {
+                    self.cancel_chrome_focus();
+                }
+                false
             }
             KeyCode::Enter if self.chrome.focus != ChromeFocus::None => {
                 self.commit_chrome_focus();

@@ -363,7 +363,7 @@ fn send_view_esc_cancels_confirm() {
     assert_eq!(anvil.nonce(&sender), nonce_before);
 }
 
-/// Confirm screen lists Slow/Normal/Fast/Ape; digit keys change the shown fee.
+/// Confirm screen lists Slow/Normal/Fast/Ape/Custom; digit keys and ↑↓ change fee.
 #[test]
 fn send_view_gas_speed_presets() {
     let anvil = Anvil::start();
@@ -382,7 +382,7 @@ fn send_view_gas_speed_presets() {
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
 
     let text = render(&view, &wallet);
-    for label in ["Slow", "Normal", "Fast", "Ape"] {
+    for label in ["Slow", "Normal", "Fast", "Ape", "Custom"] {
         assert!(text.contains(label), "confirm must list {label}:\n{text}");
     }
     assert!(
@@ -397,6 +397,21 @@ fn send_view_gas_speed_presets() {
     press(&mut view, KeyCode::Char('1'), &wallet, &handle, &events);
     let slow = render(&view, &wallet);
     assert!(slow.contains("[Slow]"), "1 selects Slow:\n{slow}");
+
+    press(&mut view, KeyCode::Down, &wallet, &handle, &events);
+    let normal = render(&view, &wallet);
+    assert!(
+        normal.contains("[Normal]"),
+        "↓ from Slow → Normal:\n{normal}"
+    );
+
+    press(&mut view, KeyCode::Char('5'), &wallet, &handle, &events);
+    let custom = render(&view, &wallet);
+    assert!(custom.contains("[Custom]"), "5 selects Custom:\n{custom}");
+    assert!(
+        custom.contains("max fee (gwei)"),
+        "Custom shows gwei field:\n{custom}"
+    );
 }
 
 /// Selecting Ape on confirm broadcasts with the scaled maxFeePerGas (not a re-estimate).
@@ -469,6 +484,60 @@ fn send_view_ape_preset_broadcasts_scaled_fee() {
         on_chain, expected_max,
         "on-chain maxFeePerGas must match Ape-scaled estimate"
     );
+    assert_eq!(anvil.wei_balance(&recipient), before + 10u128.pow(16));
+}
+
+/// Custom gwei entry broadcasts with the typed maxFeePerGas.
+#[test]
+fn send_view_custom_gas_broadcasts() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let recipient = anvil_dev_address(12);
+    let before = anvil.wei_balance(&recipient);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let events = EventBus::new();
+    let mut view = SendView::default();
+
+    type_text(&mut view, &recipient, &wallet, &handle, &events);
+    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    type_text(&mut view, "0.01", &wallet, &handle, &events);
+    press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
+
+    press(&mut view, KeyCode::Char('5'), &wallet, &handle, &events);
+    // Clear prefilled gwei, type an explicit 77 gwei.
+    for _ in 0..24 {
+        press(&mut view, KeyCode::Backspace, &wallet, &handle, &events);
+    }
+    type_text(&mut view, "77", &wallet, &handle, &events);
+    let custom = render(&view, &wallet);
+    assert!(custom.contains("[Custom]"), "{custom}");
+    assert!(
+        custom.contains("77.00 gwei") || custom.contains("max 77"),
+        "{custom}"
+    );
+
+    press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
+    let done = render(&view, &wallet);
+    assert!(
+        done.contains("Transaction broadcast"),
+        "Custom confirm must broadcast:\n{done}"
+    );
+    let tx_hash = find_tx_hash(&done).expect("tx hash");
+    let tx = anvil
+        .rpc("eth_getTransactionByHash", json!([tx_hash]))
+        .unwrap();
+    let on_chain = u128::from_str_radix(
+        tx["maxFeePerGas"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )
+    .unwrap();
+    assert_eq!(on_chain, 77_000_000_000, "custom 77 gwei on-chain");
     assert_eq!(anvil.wei_balance(&recipient), before + 10u128.pow(16));
 }
 

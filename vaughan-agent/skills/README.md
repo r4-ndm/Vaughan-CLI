@@ -34,6 +34,13 @@ kind: must | guide
 | `degen-trader` | must | degen |
 | `contract-inspection` | guide | all |
 | `pulsechain-context` | guide | all |
+| `dapp-connect` | guide | all |
+
+### `dapp-connect`
+
+Per-URL connect playbooks under [`dapp-connect/sites/`](dapp-connect/sites/)
+(SquirrelSwap, LibertySwap, PulseX IPFS directory, 9inch CSP, …). Read the site
+file before changing inject/provider code for a connect bug.
 
 ## Sentient partner presets
 

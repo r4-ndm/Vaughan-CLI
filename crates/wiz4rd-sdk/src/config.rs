@@ -52,8 +52,10 @@ pub struct Config {
     /// approval prompts) instead of the standalone keystore. Keys never leave
     /// Vaughan; wiz4rd polls its own RPC for the receipt.
     pub vaughan_provider: Option<String>,
-    /// Origin header presented to Vaughan's trusted-origin allowlist (the
-    /// value must be listed in Vaughan's `VAUGHAN_PROVIDER_TRUSTED_ORIGINS`).
+    /// Origin header presented to Vaughan's trusted-origin allowlist.
+    /// Freedom uses `https://freedom.browser` (always allowlisted by Vaughan).
+    /// Other clients must send an Origin that matches env extras or use that
+    /// same Freedom Origin when talking to the local bridge.
     pub vaughan_origin: Option<String>,
 }
 

@@ -24,7 +24,7 @@ fn runtime_handle() -> (tokio::runtime::Runtime, Handle) {
     (rt, handle)
 }
 
-/// Home shows the send-to and amount fields.
+/// Home shows the send-to and amount fields with F4 / F5 chrome keys.
 #[test]
 fn dashboard_view_shows_send_to() {
     let anvil = Anvil::start();
@@ -39,6 +39,14 @@ fn dashboard_view_shows_send_to() {
     assert!(
         text.contains("Amount"),
         "home must show amount field:\n{text}"
+    );
+    assert!(
+        text.contains("F4"),
+        "home must label Send to with F4:\n{text}"
+    );
+    assert!(
+        text.contains("F5"),
+        "home must label Amount with F5:\n{text}"
     );
 }
 
@@ -62,6 +70,45 @@ fn dashboard_view_idle_defers_footer_letters() {
         );
     }
     assert!(wallet.is_unlocked(), "lock is global — view must not lock");
+}
+
+/// F4 / F5 focus Send to / Amount from idle home.
+#[test]
+fn dashboard_view_f4_f5_focus_fields() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let (_rt, handle) = runtime_handle();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    let events = EventBus::new();
+    let mut view = DashboardView::loading();
+
+    assert!(matches!(
+        view.handle_key(key(KeyCode::F(4)), &mut wallet, &handle, &events),
+        KeyOutcome::Consumed
+    ));
+    assert!(matches!(
+        view.handle_key(key(KeyCode::Char('0')), &mut wallet, &handle, &events),
+        KeyOutcome::Consumed
+    ));
+    let after_f4 = render(&view, &wallet);
+    assert!(
+        after_f4.contains('0'),
+        "F4 must focus Send to so typing lands there:\n{after_f4}"
+    );
+
+    assert!(matches!(
+        view.handle_key(key(KeyCode::F(5)), &mut wallet, &handle, &events),
+        KeyOutcome::Consumed
+    ));
+    assert!(matches!(
+        view.handle_key(key(KeyCode::Char('9')), &mut wallet, &handle, &events),
+        KeyOutcome::Consumed
+    ));
+    let after_f5 = render(&view, &wallet);
+    assert!(
+        after_f5.contains('9'),
+        "F5 must focus Amount so typing lands there:\n{after_f5}"
+    );
 }
 
 /// Enter focuses Send to; hex starts typing immediately.

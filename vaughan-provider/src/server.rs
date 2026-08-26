@@ -37,6 +37,27 @@ pub const DEFAULT_PORT: u16 = 8745;
 /// Largest accepted JSON-RPC frame (typed-data payloads can be sizable).
 const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
+/// Env: when `1`/`true`, every client must present the session token (including Freedom).
+pub const REQUIRE_TOKEN_ENV: &str = "VAUGHAN_PROVIDER_REQUIRE_TOKEN";
+
+fn require_token_for_all() -> bool {
+    std::env::var(REQUIRE_TOKEN_ENV)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 /// Canonicalized trusted-origin allowlist (FR-2.4).
 ///
 /// When empty, no origin filtering is enforced (legacy-compatible mode).
@@ -91,9 +112,18 @@ fn normalize_origin(raw: &str) -> Result<String, ProviderError> {
         ))
     })?;
     match url.origin() {
-        url::Origin::Opaque(_) => Err(ProviderError::InvalidParams(format!(
-            "invalid trusted origin `{raw}` (origin must include host)"
-        ))),
+        url::Origin::Opaque(_) => {
+            // `chrome-extension://<id>` is Opaque in `url`, but Chromium still
+            // sends it as the WebSocket Origin for extension service workers.
+            if url.scheme() == "chrome-extension" {
+                if let Some(host) = url.host_str() {
+                    return Ok(format!("chrome-extension://{}", host.to_ascii_lowercase()));
+                }
+            }
+            Err(ProviderError::InvalidParams(format!(
+                "invalid trusted origin `{raw}` (origin must include host)"
+            )))
+        }
         origin => Ok(origin.unicode_serialization()),
     }
 }
@@ -103,6 +133,9 @@ pub struct ProviderServer {
     listener: TcpListener,
     local_addr: SocketAddr,
     trusted_hosts: TrustedHosts,
+    /// When set, Chromium extension clients must present this token; Freedom
+    /// Origin may omit it unless [`REQUIRE_TOKEN_ENV`] is set.
+    session_token: Option<String>,
 }
 
 impl ProviderServer {
@@ -118,6 +151,7 @@ impl ProviderServer {
             listener,
             local_addr,
             trusted_hosts: TrustedHosts::default(),
+            session_token: None,
         })
     }
 
@@ -134,6 +168,15 @@ impl ProviderServer {
         Ok(self)
     }
 
+    /// Require clients to present this session token (query `access_token` or
+    /// `Authorization: Bearer`). Chromium extension always must; Freedom Origin
+    /// is exempt unless [`REQUIRE_TOKEN_ENV`] is set.
+    pub fn with_session_token(mut self, token: impl Into<String>) -> Self {
+        let t = token.into();
+        self.session_token = if t.is_empty() { None } else { Some(t) };
+        self
+    }
+
     /// The bound address (useful after binding port `0`).
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
@@ -142,6 +185,15 @@ impl ProviderServer {
     /// The `ws://127.0.0.1:<port>` URL clients connect to.
     pub fn url(&self) -> String {
         format!("ws://127.0.0.1:{}", self.local_addr.port())
+    }
+
+    /// URL with session token query (for the Vaughan extension / local tools).
+    pub fn url_with_token(&self, token: &str) -> String {
+        format!(
+            "ws://127.0.0.1:{}?access_token={}",
+            self.local_addr.port(),
+            token
+        )
     }
 
     /// Accept connections forever, dispatching requests to `handler` and
@@ -168,32 +220,95 @@ impl ProviderServer {
             let handler = Arc::clone(&handler);
             let events = events.clone();
             let trusted_hosts = self.trusted_hosts.clone();
+            let session_token = self.session_token.clone();
             tokio::spawn(async move {
-                handle_connection(stream, peer, handler, events, trusted_hosts).await;
+                handle_connection(stream, peer, handler, events, trusted_hosts, session_token)
+                    .await;
             });
         }
     }
 }
 
-/// Captures the `Origin` header during the WebSocket handshake.
-///
-/// The handshake callback runs synchronously inside tungstenite; we stash the
-/// value behind an `Arc` and read it once the handshake completes.
-#[derive(Clone)]
-struct CaptureOrigin(Arc<Mutex<Option<String>>>);
+/// Handshake metadata captured before the WebSocket upgrade completes.
+#[derive(Default, Clone)]
+struct HandshakeMeta {
+    origin: Option<String>,
+    /// From `Authorization: Bearer` or `?access_token=`.
+    access_token: Option<String>,
+}
 
-impl Callback for CaptureOrigin {
+/// Captures Origin + session token during the WebSocket handshake.
+#[derive(Clone)]
+struct CaptureHandshake(Arc<Mutex<HandshakeMeta>>);
+
+impl Callback for CaptureHandshake {
     fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
-        let origin = request
+        let mut meta = HandshakeMeta::default();
+        if let Some(origin) = request
             .headers()
             .get("origin")
             .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        if let Some(origin) = origin {
-            *self.0.lock().expect("origin capture mutex poisoned") = Some(origin);
+        {
+            meta.origin = Some(origin.to_string());
         }
+        if let Some(auth) = request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+        {
+            if let Some(token) = auth
+                .strip_prefix("Bearer ")
+                .or_else(|| auth.strip_prefix("bearer "))
+            {
+                let t = token.trim();
+                if !t.is_empty() {
+                    meta.access_token = Some(t.to_string());
+                }
+            }
+        }
+        if meta.access_token.is_none() {
+            if let Some(query) = request.uri().query() {
+                for pair in query.split('&') {
+                    if let Some(v) = pair.strip_prefix("access_token=") {
+                        let t = v.trim();
+                        if !t.is_empty() {
+                            meta.access_token = Some(t.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        *self.0.lock().expect("handshake mutex poisoned") = meta;
         Ok(response)
     }
+}
+
+fn token_required_for_origin(origin: Option<&str>, expected: &Option<String>) -> bool {
+    if expected.is_none() {
+        return false;
+    }
+    if require_token_for_all() {
+        return true;
+    }
+    // Chromium extension path must always prove possession of the session token
+    // (Origin alone is forgeable by any local process).
+    origin
+        .map(|o| o.starts_with("chrome-extension://"))
+        .unwrap_or(true)
+}
+
+fn session_ok(expected: &Option<String>, presented: Option<&str>, origin: Option<&str>) -> bool {
+    if !token_required_for_origin(origin, expected) {
+        return true;
+    }
+    let Some(exp) = expected.as_deref() else {
+        return true;
+    };
+    let Some(got) = presented else {
+        return false;
+    };
+    constant_time_eq(got, exp)
 }
 
 /// Serve one WebSocket connection: handshake, then a read/event loop.
@@ -206,14 +321,14 @@ async fn handle_connection(
     handler: Arc<dyn RequestHandler>,
     events: EventBus,
     trusted_hosts: TrustedHosts,
+    session_token: Option<String>,
 ) {
-    let origin = Arc::new(Mutex::new(None::<String>));
-    // `WebSocketConfig` is `#[non_exhaustive]`, so mutate the defaults.
+    let handshake = Arc::new(Mutex::new(HandshakeMeta::default()));
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_MESSAGE_SIZE);
     let ws: WebSocketStream<TcpStream> = match accept_hdr_async_with_config(
         stream,
-        CaptureOrigin(Arc::clone(&origin)),
+        CaptureHandshake(Arc::clone(&handshake)),
         Some(config),
     )
     .await
@@ -224,15 +339,29 @@ async fn handle_connection(
             return;
         }
     };
-    let origin = origin
-        .lock()
-        .expect("origin capture mutex poisoned")
-        .clone();
+    let meta = handshake.lock().expect("handshake mutex poisoned").clone();
+    let origin = meta.origin;
     if !trusted_hosts.allows(origin.as_deref()) {
         tracing::warn!(%peer, ?origin, "rejecting untrusted provider origin");
         return;
     }
-    let ctx = RequestCtx { peer, origin };
+    if !session_ok(
+        &session_token,
+        meta.access_token.as_deref(),
+        origin.as_deref(),
+    ) {
+        tracing::warn!(
+            %peer,
+            ?origin,
+            "rejecting provider connection: missing/invalid session token"
+        );
+        return;
+    }
+    let ctx = RequestCtx {
+        peer,
+        origin,
+        page_origin: None,
+    };
     let mut events_rx = events.subscribe();
     tracing::debug!(%peer, "provider client connected");
 
@@ -286,12 +415,18 @@ async fn dispatch(handler: &dyn RequestHandler, ctx: &RequestCtx, text: &str) ->
         Err(rpc_error) => return Some(RpcResponse::failure(None, rpc_error).to_json()),
     };
     let id = request.id.clone();
+    let mut req_ctx = ctx.clone();
+    if let Some(page) = request.vaughan_page_origin.clone() {
+        let page = page.trim().to_string();
+        if !page.is_empty() {
+            req_ctx.page_origin = Some(page);
+        }
+    }
     if request.is_notification() {
-        // Notifications are dispatched but never answered.
-        let _ = handler.handle(ctx.clone(), request).await;
+        let _ = handler.handle(req_ctx, request).await;
         return None;
     }
-    match handler.handle(ctx.clone(), request).await {
+    match handler.handle(req_ctx, request).await {
         Ok(result) => Some(RpcResponse::success(id, result).to_json()),
         Err(provider_error) => {
             Some(RpcResponse::failure(id, provider_error_to_rpc(provider_error)).to_json())
@@ -414,6 +549,19 @@ mod tests {
         assert!(err.is_err(), "must reject invalid origin");
         let err = err.err().unwrap();
         assert_eq!(err.code(), crate::error::codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn chrome_extension_origin_is_accepted() {
+        let normalized =
+            super::normalize_origin("chrome-extension://cneeaoilhnioopaiaidjadinahpgacpn")
+                .expect("chrome-extension origins must normalize");
+        assert_eq!(
+            normalized,
+            "chrome-extension://cneeaoilhnioopaiaidjadinahpgacpn"
+        );
+        let hosts = TrustedHosts::try_from_origins([normalized.as_str()]).unwrap();
+        assert!(hosts.allows(Some("chrome-extension://cneeaoilhnioopaiaidjadinahpgacpn")));
     }
 
     #[tokio::test]

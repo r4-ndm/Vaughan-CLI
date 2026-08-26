@@ -175,20 +175,26 @@ server already captures `Origin` during the WS handshake.
   the UI thread and nothing signs without the prompt. Core signing: EIP-191
   `personal_sign`, EIP-712 `eth_signTypedData_v4`, raw `vaughan_signTransaction`, and
   general `send_transaction`.
-  *Known gap: the prompt shows recipient/value/chain/data but not the fee (estimated at
-  execution) — TODO in `vaughan-tui/src/provider.rs`.*
-- FR-2.4 ✅ — trusted-host gate (`VAUGHAN_PROVIDER_TRUSTED_ORIGINS`); Freedom uses
-  Origin `https://freedom.browser`. Bridge does **not** start without an allowlist.
+  *Known gap: none for fee display — approve preview includes fee when gas fields
+  are present or after RPC estimate.*
+- FR-2.4 ✅ — trusted-host gate. **`https://freedom.browser` is always allowlisted**
+  (Freedom's Vaughan WS Origin) so Connect Vaughan works with no env ritual.
+  Optional extras: `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` (comma-separated) and
+  persisted dApp URL origins (for launcher bookmarks). Clients without a matching
+  `Origin` header are still rejected when the allowlist is non-empty.
 - FR-2.5 ✅ (upstream PR) — Freedom Vaughan signer backend:
   https://github.com/solardev-xyz/freedom-browser/pull/195
+  - Rebased onto `main` (coexists with OpenLV remote/phone signing)
   - Automated: `npx jest --testPathPatterns='wallet/vaughan|wallet/signers.test|identity-manager.test|connect-vaughan'`
   - Vaughan-side Origin smoke: `cargo test -p vaughan-tui --test freedom_bridge_smoke`
-  - Manual (unlocked Vaughan + Freedom): `node scripts/smoke-vaughan-bridge.js` in the
-    Freedom repo (approve prompts in the TUI)
-  - UI: wallet selector **Connect Vaughan Wallet** → detect/list/add (mirrors Ledger flow;
+  - Manual: unlock Vaughan → Freedom **Connect Vaughan Wallet** →
+    `node scripts/smoke-vaughan-bridge.js` (approve in TUI). No
+    `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` required for the happy path.
+  - UI: wallet selector **Connect Vaughan Wallet** → detect/list/add (mirrors Ledger;
     keys stay in Vaughan; approve in the Vaughan TUI)
-- Dapps launcher (user vision): TUI screen lists dApp URLs → launches Freedom Browser with
-  the provider ready.
+- Dapps launcher: TUI `w` Web screen lists dApp URLs → Enter opens Freedom;
+  bridge status line shows `ws://127.0.0.1:8745` or why disabled. Unlock Vaughan
+  before Connect Vaughan (locked vault returns empty `eth_accounts`).
 
 ---
 

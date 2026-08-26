@@ -23,7 +23,11 @@ Requirement IDs are referenced by `TASKS.md`.
 - Full smart-account UX (batching, recovery, multisig) in Phase 1.
 - ERC-20 token management and transaction history in Phase 1.
 - Hardware wallet (Ledger/Trezor) support.
-- A bundled web browser / webview.
+- A **general-purpose** open-internet browser / Chrome replacement inside Vaughan.
+  An **optional**, modular, allowlisted Chromium dApp shell (`vaughan-dapp-browser`,
+  Tauri + CEF) with CDP agent control is in scope as a side door — see FR-7.* and
+  `docs/dapp-browser-strategy.md`. It must not live in `vaughan-core`, must not
+  auto-sign, and default `vaughan-cli` builds must not require CEF.
 
 ## Functional requirements
 
@@ -111,6 +115,25 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-6.7** Testnet-first default for MCP writes; mainnet writes require `VAUGHAN_MCP_ALLOW_MAINNET=1`.
 - **FR-6.8** Threat model in `docs/mcp-threat-model.md`; zero telemetry (NFR-2).
 
+### Phase 7 — Optional Chromium dApp browser + agent control
+
+> Side door only. Strategy: `docs/dapp-browser-strategy.md`. Modular binary;
+> multi-chain EVM; never auto-sign. Default product path remains Browserless Pulse.
+
+- **FR-7.1** Optional `vaughan-dapp-browser` binary (Tauri + CEF / Chromium). CEF
+  deps must not link into `vaughan-core` / default `vaughan-cli` builds.
+- **FR-7.2** Allowlisted HTTPS navigation only; soft-launch from TUI (`w`) when
+  binary present; Freedom (or clear unavailable) when absent.
+- **FR-7.3** Thin-proxy EIP-1193 / EIP-6963 into existing `vaughan-provider`; all
+  sign/send require TUI approve (same gate as FR-2.3 / FR-6.4).
+- **FR-7.4** Multi-chain EVM: chain id from Vaughan’s active network +
+  `wallet_switchEthereumChain`; allowlist is hosts/origins, not Pulse-only.
+- **FR-7.5** Localhost CDP only when Settings “agent browser control” is on
+  (default off); MCP `browser_open` / `navigate` / `status` (B1) then snapshot /
+  click / type / wait (B2). Tools degrade if binary absent.
+- **FR-7.6** Documented kill-switch: remove/disable the crate without breaking
+  Browserless Pulse or the Freedom provider path.
+
 ## Non-functional requirements
 
 - **NFR-1** Secrets never persisted unencrypted; zeroized in memory after use.
@@ -133,4 +156,7 @@ Requirement IDs are referenced by `TASKS.md`.
   **public** address. Sender, amount, and token stay visible. Sender attaches a
   PLS stipend so the recipient need not fund the stealth address from the main
   account.
-- **C-6** PulseChain is the primary target chain.
+- **C-6** PulseChain is the primary target chain; optional dApp browser is
+  multi-chain EVM (FR-7.4), not Pulse-locked.
+- **C-8** Optional Chromium/CEF browser is a separate binary only
+  (`docs/dapp-browser-strategy.md`); never a hard dependency of `vaughan-core`.

@@ -1,7 +1,8 @@
-//! Optional web (Freedom): whitelisted origins for the EIP-1193 bridge.
+//! Optional web dApps: whitelisted origins for the EIP-1193 bridge.
 //!
 //! Not the default Browserless Pulse path — use Ag / Dex / Browse / MCP first.
-//! Enter launches Freedom only — no system-browser fallback.
+//! Enter opens **Vaughan dApp browser** when installed, else Freedom — never
+//! the system browser.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -51,7 +52,7 @@ impl Default for DappsView {
 }
 
 impl DappsView {
-    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, bridge_line: &str) {
         let [content, status_area] = body_areas(area);
         let dapps = wallet.trusted_dapps();
 
@@ -61,18 +62,25 @@ impl DappsView {
                     frame,
                     content,
                     Some(brand::fade_line(
-                        " Optional web / Freedom (↑↓ · Enter → Freedom · a add · d delete · Esc) ",
+                        " Optional web (↑↓ · Enter → browser · a add · d delete · Esc) ",
                     )),
+                );
+                let [bridge_a, list_a] =
+                    Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(bridge_line.to_string()),
+                        Line::from("Unlock Vaughan first. Enter opens Vaughan browser if installed, else Freedom."),
+                    ]),
+                    bridge_a,
                 );
                 if dapps.is_empty() {
                     frame.render_widget(
-                        Paragraph::new(
-                            "  No sites yet — press a to add one (optional Freedom path).",
-                        ),
-                        inner,
+                        Paragraph::new("  No sites yet — press a to add one (optional web path)."),
+                        list_a,
                     );
                 } else {
-                    self.render_dapp_list(frame, inner, &dapps);
+                    self.render_dapp_list(frame, list_a, &dapps);
                 }
             }
             Stage::Add => {
@@ -89,7 +97,7 @@ impl DappsView {
                         Line::from("Add a whitelisted dApp"),
                         Line::from("Tab switches fields · Enter saves · Esc cancels"),
                         Line::from(
-                            "Origins feed the provider allowlist on next Vaughan launch. Open requires Freedom Browser.",
+                            "URLs open in Vaughan dApp browser when installed, else Freedom.",
                         ),
                     ])
                     .wrap(Wrap { trim: false }),
@@ -120,11 +128,9 @@ impl DappsView {
                 Style::default()
             };
             let url_style = if selected {
-                row_style.add_modifier(Modifier::UNDERLINED)
+                row_style
             } else {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::UNDERLINED)
+                Style::default().fg(Color::Cyan)
             };
 
             let prefix = format!("{mark} {}  ", d.name);
@@ -134,8 +140,8 @@ impl DappsView {
             if prefix_w < area.width {
                 let url_x = area.x.saturating_add(prefix_w);
                 let url_w = area.width.saturating_sub(prefix_w) as usize;
-                // Defanged so terminal click ≠ system browser; Enter uses real URL.
-                let shown = freedom::display_url(&d.url);
+                // Host-only (no https://) so terminals do not auto-link / look "broken".
+                let shown = freedom::display_host(&d.url);
                 buf.set_stringn(url_x, y, &shown, url_w, url_style);
             }
         }
@@ -218,7 +224,7 @@ impl DappsView {
                         match wallet.add_trusted_dapp(self.name.value(), self.url.value()) {
                             Ok(d) => {
                                 self.status = format!(
-                                    "Added {} — restart Vaughan so the provider allowlist picks up the origin.",
+                                    "Added {} — Enter opens Vaughan browser or Freedom.",
                                     d.name
                                 );
                                 self.name.set_value("");

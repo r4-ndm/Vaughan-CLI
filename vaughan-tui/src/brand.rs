@@ -8,6 +8,10 @@
 //! **Themed** (hidden hotkey `t` / `Ctrl+t` — not shown in the footer):
 //! - Box / footer borders (faded or solid)
 //! - Chrome text (accents, labels, titles)
+//!
+//! Default for new installs (no `ui-theme` file): [`UiTheme::Navy`].
+//! Footer key glyphs and F1–F5 chrome / form labels use a fixed bright blue
+//! ([`action_key_color`]) so they stay readable across themes.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -584,7 +588,7 @@ struct ThemeInk {
     title: Color,
 }
 
-static THEME_IDX: AtomicUsize = AtomicUsize::new(UiTheme::Pulse as usize);
+static THEME_IDX: AtomicUsize = AtomicUsize::new(UiTheme::Navy as usize);
 
 /// Active stock theme.
 pub fn current_theme() -> UiTheme {
@@ -647,6 +651,13 @@ pub fn load_persisted_theme() {
 /// Accent colour for keys, values, and focus cues (theme-dependent).
 pub fn accent_color() -> Color {
     current_theme().ink().accent
+}
+
+/// Fixed bright blue for footer key glyphs and F1–F5 chrome / form labels.
+///
+/// Not theme-tinted — stays high-contrast on every stock palette.
+pub fn action_key_color() -> Color {
+    Color::Rgb(80, 200, 255)
 }
 
 /// Body / label colour for chrome text (theme-dependent).
@@ -1425,6 +1436,13 @@ mod tests {
             assert_eq!(*theme as usize, i);
             assert_eq!(theme.spec().id, THEME_CATALOG[i].id);
         }
+    }
+
+    #[test]
+    fn factory_default_theme_is_navy() {
+        // Fresh process / missing ui-theme file → Navy (THEME_IDX init).
+        assert_eq!(UiTheme::ALL[UiTheme::Navy as usize].id(), "navy");
+        assert_eq!(action_key_color(), Color::Rgb(80, 200, 255));
     }
 
     #[test]

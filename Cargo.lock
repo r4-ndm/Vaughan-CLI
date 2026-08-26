@@ -5367,6 +5367,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vaughan-dapp-browser"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dirs",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "vaughan-mcp"
 version = "0.1.0"
 dependencies = [

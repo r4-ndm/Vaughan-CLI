@@ -176,8 +176,28 @@ The OS kernel itself restricts socket access strictly to processes owned by the 
 
 ---
 
-## 4. Summary: The Verdict
+## 5. Vaughan dApp-browser status (Phase 1 hardening)
 
-With these 6 techniques:
-1. **No browser forking is required** — all code is isolated to Freedom Browser's `src/main/wallet/vaughan/` and Vaughan's `vaughan-provider`.
-2. **Security exceeds built-in C++ wallets** because private keys are held in a separate, memory-safe Rust OS process that remains protected even if Chromium suffers a full Remote Code Execution (RCE) compromise.
+Shipped toward Freedom-parity for the Chromium shell (2026-08):
+
+| Trick / control | Status |
+|---|---|
+| 1 Session token (`provider.session` 0o600) | **Yes** — required for `chrome-extension://` WS; Freedom Origin still Origin-only unless `VAUGHAN_PROVIDER_REQUIRE_TOKEN=1` |
+| Page origin on RPC (`vaughan_page_origin`) | **Yes** — derived by the service worker from Chrome-attested `port.sender.url` (page-supplied values are ignored); shown on approve; used as connect-grant key |
+| Response routing | **Yes** — service worker assigns JSON-RPC wire ids and maps them back per tab (no cross-tab id collisions / response theft) |
+| Token hygiene | **Yes** — token redacted from launcher stderr; extension bundle dir is 0700 under /tmp |
+| Approve UI sanitization | **Yes** — control chars stripped from origin/site/message text (no terminal escape injection) |
+| Connect grant (`eth_accounts` empty until `eth_requestAccounts` approved) | **Yes** — per unlock session; sign/send prompts on the extension path require a prior grant (4100 otherwise) |
+| `accountsChanged` scoping | **Yes** — service worker forwards account events only to origins that hold a grant (learned from non-empty accounts results); cleared on lock / WS close |
+| Locked wallet | **Yes** — `eth_requestAccounts` returns 4100 (no silent hang) while locked |
+| Approve debounce (400ms) + 60s auto-deny | **Yes** |
+| `wallet_switchEthereumChain` prompts | **Yes** — prompt shows requesting origin |
+| `tx.from` must match active account | **Yes** |
+| 2 HMAC origin attestation | Not yet (needs Freedom transport PR) |
+| 3 Handshake challenge | Not yet |
+| 6 Unix domain socket | Not yet |
+| Token required for https origins (Freedom) | Opt-in via `VAUGHAN_PROVIDER_REQUIRE_TOKEN=1`; default flips after Freedom reads `provider.session` |
+| In-tab navigation allowlist | Still Phase 1 gap |
+
+Extension attaches `?access_token=` automatically from `provider.session`.
+Freedom PR should read the same file and send `Authorization: Bearer`.

@@ -137,8 +137,11 @@ pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
             name: "LibertySwap".into(),
             url: "https://libertyswap.finance/".into(),
         },
+        // app.pulsex.com is a gateway *directory* (IPFS mirrors), not the DEX UI.
+        // Open a listed IPFS link from there; Vaughan dApp-browser trusts the
+        // extension Origin so mirror hosts still reach the provider.
         TrustedDapp {
-            name: "PulseX".into(),
+            name: "PulseX (pick IPFS mirror)".into(),
             url: "https://app.pulsex.com/".into(),
         },
         TrustedDapp {

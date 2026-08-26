@@ -12,7 +12,7 @@
 //! and guarantees no signing happens without the UI showing the request first.
 
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, U256};
 use alloy::providers::Provider;
@@ -30,11 +30,68 @@ use vaughan_provider::{
     Eip1193Handler, EventBus, ProviderError, ProviderServer, RequestCtx, TxParams, WalletHandle,
 };
 
-/// Comma-separated trusted origins for the provider bridge.
+/// Comma-separated trusted origins for the provider bridge (additive).
+///
+/// Freedom's Vaughan signer always sends [`FREEDOM_PROVIDER_ORIGIN`]; that
+/// origin is merged automatically. Extra env / dApp origins remain optional.
 ///
 /// Example:
-/// `VAUGHAN_PROVIDER_TRUSTED_ORIGINS="https://freedom.browser"`
+/// `VAUGHAN_PROVIDER_TRUSTED_ORIGINS="https://app.example"`
 const TRUSTED_ORIGINS_ENV: &str = "VAUGHAN_PROVIDER_TRUSTED_ORIGINS";
+
+/// Origin Freedom Browser's Vaughan WS transport sends on every connect.
+///
+/// Must stay in sync with Freedom's `DEFAULT_ORIGIN` (`https://freedom.browser`).
+pub const FREEDOM_PROVIDER_ORIGIN: &str = "https://freedom.browser";
+
+/// Origin of the Vaughan dApp-browser unpacked extension (stable manifest `key`).
+///
+/// The extension owns the WebSocket (CSP-safe). Handshake Origin is this
+/// chrome-extension URL, not the page host — required for PulseX IPFS gateways
+/// and sites that block `ws://` in `connect-src` (e.g. 9inch).
+pub const DAPP_BROWSER_PROVIDER_ORIGIN: &str =
+    "chrome-extension://cneeaoilhnioopaiaidjadinahpgacpn";
+
+/// Snapshot of the local EIP-1193 bridge for the Web (Freedom) screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum BridgeStatus {
+    /// Spawn task has not reported yet.
+    #[default]
+    Starting,
+    /// Listening on loopback (URL is `ws://127.0.0.1:<port>`).
+    Listening { url: String },
+    /// Bridge did not start (bind failure, invalid config, etc.).
+    Disabled { reason: String },
+}
+
+impl BridgeStatus {
+    /// One-line status for the Web screen.
+    pub fn summary_line(&self) -> String {
+        match self {
+            Self::Starting => "Bridge: starting…".into(),
+            Self::Listening { url } => {
+                format!(
+                    "Bridge: {url} (unlock → open dApp; green banner = inject; approve sign/send here)"
+                )
+            }
+            Self::Disabled { reason } => format!("Bridge: disabled — {reason}"),
+        }
+    }
+}
+
+/// Shared bridge status updated by [`spawn_provider_server`].
+pub type BridgeStatusHandle = Arc<Mutex<BridgeStatus>>;
+
+/// Create a shared [`BridgeStatus`] handle (starts as [`BridgeStatus::Starting`]).
+pub fn new_bridge_status() -> BridgeStatusHandle {
+    Arc::new(Mutex::new(BridgeStatus::Starting))
+}
+
+fn set_bridge_status(status: &BridgeStatusHandle, next: BridgeStatus) {
+    if let Ok(mut guard) = status.lock() {
+        *guard = next;
+    }
+}
 
 /// A signing/sending request that requires a fresh, explicit user approval.
 #[derive(Debug, Clone)]
@@ -47,6 +104,10 @@ pub enum ApprovalKind {
     SignMessage { address: String, message: String },
     /// EIP-712 typed-data signing.
     SignTypedData { address: String, typed_data: Value },
+    /// Connect gesture (`eth_requestAccounts`) for a site key.
+    Connect { site: String },
+    /// Switch the active Vaughan network.
+    SwitchChain { chain_id: String, label: String },
     /// MCP / external agent transaction proposal.
     McpProposal {
         proposal_id: String,
@@ -62,29 +123,38 @@ pub enum ApprovalKind {
 
 /// A request forwarded from the provider handler to the UI thread.
 pub enum HostRequest {
-    /// `eth_accounts`: the caller-visible account list.
+    /// `eth_accounts`: accounts only if this site already connected this session.
     Accounts {
+        site: String,
         reply: oneshot::Sender<Result<Vec<String>, ProviderError>>,
     },
-    /// `eth_requestAccounts`: connect gesture, same answer as `Accounts`.
+    /// `eth_requestAccounts`: connect gesture (may prompt).
     RequestAccounts {
+        site: String,
         reply: oneshot::Sender<Result<Vec<String>, ProviderError>>,
     },
     /// `eth_chainId`: the active chain id as `0x` hex.
     ChainId {
         reply: oneshot::Sender<Result<String, ProviderError>>,
     },
-    /// `wallet_switchEthereumChain`: switch to a built-in network.
+    /// `wallet_switchEthereumChain`: switch to a built-in network (prompts).
     SwitchChain {
         chain_id: String,
+        /// Best-effort display origin (page origin preferred) for the prompt.
+        origin: Option<String>,
         reply: oneshot::Sender<Result<(), ProviderError>>,
     },
     /// A sign/send request needing user approval.
     Approval {
-        // Boxed: `ApprovalKind` (which embeds `TxParams`) is much larger than
-        // the other variants, so boxing keeps the whole enum small.
         kind: Box<ApprovalKind>,
+        /// Best-effort display origin (page origin preferred).
         origin: Option<String>,
+        /// Site key for connect-grant checks (page origin → WS origin → peer).
+        site: String,
+        /// True for extension-originated requests, which must hold a Connect
+        /// grant before they may prompt for sign/send. Freedom's transport is
+        /// exempt: its own browser chrome is the connect gesture.
+        requires_grant: bool,
         reply: oneshot::Sender<Result<String, ProviderError>>,
     },
 }
@@ -114,7 +184,9 @@ impl ProviderHost {
         self.requests
             .send(HostRequest::Approval {
                 kind: Box::new(kind),
-                origin: ctx.origin.clone(),
+                origin: display_origin(ctx),
+                site: site_key(ctx),
+                requires_grant: is_extension_path(ctx),
                 reply,
             })
             .map_err(Self::disconnected)?;
@@ -122,20 +194,43 @@ impl ProviderHost {
     }
 }
 
+/// Prefer page origin (extension) over WebSocket Origin for UI / grants.
+pub fn display_origin(ctx: &RequestCtx) -> Option<String> {
+    ctx.page_origin.clone().or_else(|| ctx.origin.clone())
+}
+
+/// Stable site key for connect grants (page origin → WS origin → peer).
+pub fn site_key(ctx: &RequestCtx) -> String {
+    display_origin(ctx).unwrap_or_else(|| format!("peer:{}", ctx.peer))
+}
+
+/// Whether this request came in over the dApp-browser extension path (its WS
+/// Origin is the extension id, and it may carry an attested page origin).
+/// Extension-path requests must hold a Connect grant before prompting to sign.
+pub fn is_extension_path(ctx: &RequestCtx) -> bool {
+    ctx.page_origin.is_some() || ctx.origin.as_deref() == Some(DAPP_BROWSER_PROVIDER_ORIGIN)
+}
+
 #[async_trait]
 impl WalletHandle for ProviderHost {
-    async fn accounts(&self, _ctx: &RequestCtx) -> Result<Vec<String>, ProviderError> {
+    async fn accounts(&self, ctx: &RequestCtx) -> Result<Vec<String>, ProviderError> {
         let (reply, rx) = oneshot::channel();
         self.requests
-            .send(HostRequest::Accounts { reply })
+            .send(HostRequest::Accounts {
+                site: site_key(ctx),
+                reply,
+            })
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
 
-    async fn request_accounts(&self, _ctx: &RequestCtx) -> Result<Vec<String>, ProviderError> {
+    async fn request_accounts(&self, ctx: &RequestCtx) -> Result<Vec<String>, ProviderError> {
         let (reply, rx) = oneshot::channel();
         self.requests
-            .send(HostRequest::RequestAccounts { reply })
+            .send(HostRequest::RequestAccounts {
+                site: site_key(ctx),
+                reply,
+            })
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
@@ -196,11 +291,12 @@ impl WalletHandle for ProviderHost {
         .await
     }
 
-    async fn switch_chain(&self, _ctx: &RequestCtx, chain_id: &str) -> Result<(), ProviderError> {
+    async fn switch_chain(&self, ctx: &RequestCtx, chain_id: &str) -> Result<(), ProviderError> {
         let (reply, rx) = oneshot::channel();
         self.requests
             .send(HostRequest::SwitchChain {
                 chain_id: chain_id.to_string(),
+                origin: display_origin(ctx),
                 reply,
             })
             .map_err(Self::disconnected)?;
@@ -215,62 +311,101 @@ impl WalletHandle for ProviderHost {
 /// failure (e.g. port already in use) is logged, not fatal — the wallet still
 /// works without the dApp bridge.
 ///
-/// **Fail-loud (FR-2.4):** the bridge only starts when a trusted-origin
-/// allowlist is non-empty after merging [`TRUSTED_ORIGINS_ENV`] with
-/// `extra_origins` (persisted dApp whitelist). Without any origins, the bridge
-/// does **not** start — there is no permissive "accept any loopback client"
-/// mode. The wallet itself is unaffected.
+/// **Fail-loud (FR-2.4):** the bridge always includes [`FREEDOM_PROVIDER_ORIGIN`]
+/// and [`DAPP_BROWSER_PROVIDER_ORIGIN`] so Freedom and the Vaughan Chromium
+/// extension can connect without an env ritual. Env vars and persisted dApp
+/// origins are merged on top. Invalid origins disable the bridge (no permissive
+/// "accept any loopback client" mode). The wallet itself is unaffected when the
+/// bridge is down.
 pub fn spawn_provider_server(
     handle: &Handle,
     requests: mpsc::UnboundedSender<HostRequest>,
     events: EventBus,
     extra_origins: Vec<String>,
+    status: BridgeStatusHandle,
+    profile_dir: std::path::PathBuf,
 ) {
     handle.spawn(async move {
-        let trusted_origins =
-            match bridge_decision(env::var(TRUSTED_ORIGINS_ENV).ok().as_deref(), &extra_origins) {
-                Some(origins) => origins,
-                None => {
-                    tracing::debug!(
-                        env = TRUSTED_ORIGINS_ENV,
-                        "provider trusted-origin allowlist not configured (or invalid); dApp bridge disabled"
-                    );
-                    return;
-                }
-            };
+        let trusted_origins = match bridge_decision(
+            env::var(TRUSTED_ORIGINS_ENV).ok().as_deref(),
+            &extra_origins,
+        ) {
+            Some(origins) => origins,
+            None => {
+                let reason = "trusted-origin allowlist invalid".to_string();
+                tracing::warn!(
+                    env = TRUSTED_ORIGINS_ENV,
+                    "provider trusted-origin allowlist invalid; dApp bridge disabled"
+                );
+                set_bridge_status(&status, BridgeStatus::Disabled { reason });
+                return;
+            }
+        };
+        let session = vaughan_core::core::ProviderSessionToken::generate();
+        if let Err(e) = session.write(&profile_dir) {
+            tracing::warn!(error = %e, "provider session token write failed; bridge disabled");
+            set_bridge_status(
+                &status,
+                BridgeStatus::Disabled {
+                    reason: format!("session token write failed ({e})"),
+                },
+            );
+            return;
+        }
         let server = match ProviderServer::bind(DEFAULT_PORT).await {
             Ok(server) => server,
             Err(e) => {
+                let reason = format!("bind failed ({e})");
                 tracing::warn!(error = %e, "provider server failed to bind; dApp bridge disabled");
+                set_bridge_status(&status, BridgeStatus::Disabled { reason });
                 return;
             }
         };
         let server = match configure_server_trusted_origins(server, &trusted_origins) {
-            Ok(server) => server,
+            Ok(server) => server.with_session_token(session.as_str()),
             Err(e) => {
+                let reason = format!("origin config invalid ({e})");
                 tracing::warn!(
                     error = %e,
                     env = TRUSTED_ORIGINS_ENV,
                     "provider trusted-origin config invalid; bridge disabled"
                 );
+                set_bridge_status(&status, BridgeStatus::Disabled { reason });
                 return;
             }
         };
-        tracing::info!(url = %server.url(), "provider server listening");
+        let url = server.url();
+        tracing::info!(%url, "provider server listening (session token required for chrome-extension)");
+        set_bridge_status(&status, BridgeStatus::Listening { url });
         let handler = Arc::new(Eip1193Handler::new(Arc::new(ProviderHost::new(requests))));
         if let Err(e) = server.serve(handler, events).await {
             tracing::warn!(error = %e, "provider server stopped");
+            let _ = vaughan_core::core::ProviderSessionToken::invalidate(&profile_dir);
+            set_bridge_status(
+                &status,
+                BridgeStatus::Disabled {
+                    reason: format!("server stopped ({e})"),
+                },
+            );
         }
     });
 }
 
 /// The trusted-origin decision for the provider bridge (testable, pure).
 ///
-/// `Some(origins)` = start the bridge with this allowlist. `None` = do not
-/// start (env + extras empty, or invalid — all fail loud).
+/// Always includes [`FREEDOM_PROVIDER_ORIGIN`] and
+/// [`DAPP_BROWSER_PROVIDER_ORIGIN`]. Merges env CSV + `extra_origins`
+/// (persisted dApp whitelist). `None` only when validation fails (e.g. a bad
+/// env entry) — an empty env/extras list still starts the bridge.
 fn bridge_decision(raw_env: Option<&str>, extra_origins: &[String]) -> Option<Vec<String>> {
-    let mut origins = parse_trusted_origins(raw_env);
-    for o in extra_origins {
+    let mut origins = vec![
+        FREEDOM_PROVIDER_ORIGIN.to_string(),
+        DAPP_BROWSER_PROVIDER_ORIGIN.to_string(),
+    ];
+    for o in parse_trusted_origins(raw_env)
+        .into_iter()
+        .chain(extra_origins.iter().cloned())
+    {
         let o = o.trim();
         if o.is_empty() {
             continue;
@@ -278,9 +413,6 @@ fn bridge_decision(raw_env: Option<&str>, extra_origins: &[String]) -> Option<Ve
         if !origins.iter().any(|e| e.eq_ignore_ascii_case(o)) {
             origins.push(o.to_string());
         }
-    }
-    if origins.is_empty() {
-        return None;
     }
     // Validate now so a typo disables the bridge loudly instead of crashing at
     // serve time; `with_trusted_origins` is what actually canonicalizes.
@@ -298,7 +430,10 @@ fn validate_origins(origins: &[String]) -> Result<(), ProviderError> {
         let url = url::Url::parse(origin).map_err(|_| {
             ProviderError::InvalidParams(format!("invalid trusted origin `{origin}`"))
         })?;
-        if matches!(url.origin(), url::Origin::Opaque(_)) {
+        if let url::Origin::Opaque(_) = url.origin() {
+            if url.scheme() == "chrome-extension" && url.host_str().is_some() {
+                continue;
+            }
             return Err(ProviderError::InvalidParams(format!(
                 "invalid trusted origin `{origin}` (origin must include host)"
             )));
@@ -338,21 +473,41 @@ pub fn describe_approval(
     wallet: &WalletState,
     handle: &Handle,
 ) -> Result<(String, Vec<String>), ProviderError> {
+    let (title, details, _) = describe_approval_with_fee(kind, wallet, handle)?;
+    Ok((title, details))
+}
+
+/// [`describe_approval`] plus the base [`Fee`] for transaction kinds, so the
+/// approve view can offer speed presets / custom gas before signing.
+pub fn describe_approval_with_fee(
+    kind: &ApprovalKind,
+    wallet: &WalletState,
+    handle: &Handle,
+) -> Result<(String, Vec<String>, Option<Fee>), ProviderError> {
     match kind {
-        ApprovalKind::SendTransaction(tx) => Ok((
-            "Sign & broadcast transaction".into(),
-            describe_tx(tx, wallet, tx_fee_for_prompt(tx, wallet, handle)?),
-        )),
-        ApprovalKind::SignTransaction(tx) => Ok((
-            "Sign transaction (no broadcast)".into(),
-            describe_tx(tx, wallet, tx_fee_for_prompt(tx, wallet, handle)?),
-        )),
+        ApprovalKind::SendTransaction(tx) => {
+            let fee = tx_fee_for_prompt(tx, wallet, handle)?;
+            Ok((
+                "Sign & broadcast transaction".into(),
+                describe_tx(tx, wallet, fee.clone()),
+                Some(fee),
+            ))
+        }
+        ApprovalKind::SignTransaction(tx) => {
+            let fee = tx_fee_for_prompt(tx, wallet, handle)?;
+            Ok((
+                "Sign transaction (no broadcast)".into(),
+                describe_tx(tx, wallet, fee.clone()),
+                Some(fee),
+            ))
+        }
         ApprovalKind::SignMessage { message, .. } => Ok((
             "Sign message (personal_sign)".into(),
             vec![
                 "Method:  personal_sign".to_string(),
                 format!("Message: {message}"),
             ],
+            None,
         )),
         ApprovalKind::SignTypedData { typed_data, .. } => {
             let primary = typed_data["primaryType"].as_str().unwrap_or("?");
@@ -364,8 +519,23 @@ pub fn describe_approval(
                     format!("Domain:  {domain}"),
                     format!("Type:    {primary}"),
                 ],
+                None,
             ))
         }
+        ApprovalKind::Connect { site } => Ok((
+            "Connect dApp (eth_requestAccounts)".into(),
+            vec![
+                format!("Site:    {site}"),
+                "Grants this site your active account until you lock the wallet.".into(),
+                "Sign/send still requires a separate approval.".into(),
+            ],
+            None,
+        )),
+        ApprovalKind::SwitchChain { chain_id, label } => Ok((
+            "Switch network".into(),
+            vec![format!("Chain:   {label}"), format!("Id:      {chain_id}")],
+            None,
+        )),
         ApprovalKind::McpProposal {
             proposal, source, ..
         } => {
@@ -398,7 +568,7 @@ pub fn describe_approval(
             if let Some(d) = data {
                 lines.push(format!("Data:    {d}"));
             }
-            Ok(("MCP transaction proposal".into(), lines))
+            Ok(("MCP transaction proposal".into(), lines, None))
         }
         ApprovalKind::StealthSweep {
             stealth_address,
@@ -414,8 +584,36 @@ pub fn describe_approval(
                     format!("Network: {}{testnet}", net.name),
                     "Moves funds to your active public account.".into(),
                 ],
+                None,
             ))
         }
+    }
+}
+
+/// Apply a user-adjusted prompt fee to a transaction's gas fields.
+///
+/// The fee type follows the transaction's original shape: legacy `gasPrice`
+/// transactions keep a legacy price (adjusted max becomes the price), and
+/// EIP-1559 transactions get the adjusted max/tip pair. Gas limit is pinned
+/// to the prompt's value so signing does not silently re-estimate a
+/// different number than the user approved.
+pub fn apply_fee_override(tx: &mut TxParams, fee: &Fee) {
+    let vaughan_core::chains::FeeDetails::Evm {
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+    } = &fee.details
+    else {
+        return;
+    };
+    tx.gas = Some(gas_limit.to_string());
+    if tx.gas_price.is_some() {
+        // Legacy-shaped tx: the adjusted max becomes the legacy gas price.
+        tx.gas_price = max_fee_per_gas.clone();
+    } else {
+        tx.max_fee_per_gas = max_fee_per_gas.clone();
+        tx.max_priority_fee_per_gas = max_priority_fee_per_gas.clone();
+        tx.gas_price = None;
     }
 }
 
@@ -513,16 +711,26 @@ pub async fn execute_approval(
             wallet.sign_typed_data(typed_data).map_err(map_wallet_error)
         }
         ApprovalKind::SignTransaction(tx) => {
+            if let Some(from) = tx.from.as_deref() {
+                verify_address(from, wallet)?;
+            }
             let evm = to_evm_transaction(tx, wallet)?;
             wallet.sign_transaction(evm).await.map_err(map_wallet_error)
         }
         ApprovalKind::SendTransaction(tx) => {
+            if let Some(from) = tx.from.as_deref() {
+                verify_address(from, wallet)?;
+            }
             let evm = to_evm_transaction(tx, wallet)?;
             wallet
                 .send_transaction(evm)
                 .await
                 .map(|hash| hash.to_string())
                 .map_err(map_wallet_error)
+        }
+        ApprovalKind::Connect { .. } | ApprovalKind::SwitchChain { .. } => {
+            // Handled in `App::handle_approval_key` (grants / network switch).
+            Ok("ok".into())
         }
         ApprovalKind::McpProposal {
             proposal_id,
@@ -794,6 +1002,74 @@ mod tests {
         assert!(parse_optional_u64(Some("abc"), "gas").is_err());
     }
 
+    fn tx_params_with_gas(
+        gas_price: Option<&str>,
+        max_fee: Option<&str>,
+        tip: Option<&str>,
+    ) -> TxParams {
+        TxParams {
+            from: None,
+            to: Some("0xabc".into()),
+            data: None,
+            value: None,
+            gas: Some("21000".into()),
+            gas_price: gas_price.map(Into::into),
+            max_fee_per_gas: max_fee.map(Into::into),
+            max_priority_fee_per_gas: tip.map(Into::into),
+            nonce: None,
+            chain_id: None,
+        }
+    }
+
+    fn evm_fee(gas_limit: u64, max_fee: &str, tip: Option<&str>) -> Fee {
+        Fee {
+            total: "x".into(),
+            currency: "tPLS".into(),
+            details: vaughan_core::chains::FeeDetails::Evm {
+                gas_limit,
+                max_fee_per_gas: Some(max_fee.into()),
+                max_priority_fee_per_gas: tip.map(Into::into),
+            },
+        }
+    }
+
+    #[test]
+    fn apply_fee_override_preserves_legacy_shape() {
+        let mut tx = tx_params_with_gas(Some("100"), None, None);
+        apply_fee_override(&mut tx, &evm_fee(30_000, "250", Some("5")));
+        // Legacy tx keeps a legacy price; the adjusted max becomes the price.
+        assert_eq!(tx.gas_price.as_deref(), Some("250"));
+        assert_eq!(tx.gas.as_deref(), Some("30000"));
+        assert!(tx.max_fee_per_gas.is_none());
+        assert!(tx.max_priority_fee_per_gas.is_none());
+    }
+
+    #[test]
+    fn apply_fee_override_sets_eip1559_fields() {
+        let mut tx = tx_params_with_gas(None, Some("100"), Some("2"));
+        apply_fee_override(&mut tx, &evm_fee(30_000, "250", Some("5")));
+        assert_eq!(tx.max_fee_per_gas.as_deref(), Some("250"));
+        assert_eq!(tx.max_priority_fee_per_gas.as_deref(), Some("5"));
+        assert_eq!(tx.gas.as_deref(), Some("30000"));
+        assert!(tx.gas_price.is_none());
+    }
+
+    #[test]
+    fn apply_fee_override_ignores_non_evm_fee() {
+        let mut tx = tx_params_with_gas(Some("100"), None, None);
+        let fee = Fee {
+            total: "x".into(),
+            currency: "BTC".into(),
+            details: vaughan_core::chains::FeeDetails::Bitcoin {
+                fee_rate_sat_per_vbyte: "1".into(),
+                estimated_vsize: 250,
+            },
+        };
+        apply_fee_override(&mut tx, &fee);
+        assert_eq!(tx.gas_price.as_deref(), Some("100"));
+        assert_eq!(tx.gas.as_deref(), Some("21000"));
+    }
+
     #[test]
     fn to_evm_transaction_requires_to() {
         // Needs an unlocked wallet only for the active context; a locked wallet
@@ -883,31 +1159,41 @@ mod tests {
     }
 
     #[test]
-    fn bridge_decision_fails_loud_without_valid_allowlist() {
+    fn bridge_decision_always_includes_freedom_and_dapp_browser_origins() {
         let none: &[String] = &[];
-        // Unset / empty / whitespace-only env -> bridge does not start.
-        assert!(bridge_decision(None, none).is_none());
-        assert!(bridge_decision(Some(""), none).is_none());
-        assert!(bridge_decision(Some(" ,  "), none).is_none());
-        // Invalid origin (no scheme) -> bridge does not start.
+        let base = vec![
+            FREEDOM_PROVIDER_ORIGIN.to_string(),
+            DAPP_BROWSER_PROVIDER_ORIGIN.to_string(),
+        ];
+        // Empty env + no dApps → Freedom + dApp-browser extension Origins.
+        assert_eq!(bridge_decision(None, none).expect("bridge starts"), base);
+        assert_eq!(bridge_decision(Some(""), none).unwrap(), base);
+        assert_eq!(bridge_decision(Some(" ,  "), none).unwrap(), base);
+        // Invalid extra origin (no scheme) → bridge does not start.
         assert!(bridge_decision(Some("not-an-origin"), none).is_none());
-        // Valid allowlist -> bridge starts with exactly those origins.
-        let origins = bridge_decision(
-            Some("https://app.example, https://wallet.freedom.local"),
-            none,
-        )
-        .expect("valid allowlist starts the bridge");
+        // Valid env origins merge after the built-ins (no duplicate Freedom).
+        let origins = bridge_decision(Some("https://app.example, https://freedom.browser"), none)
+            .expect("valid allowlist starts the bridge");
         assert_eq!(
             origins,
             vec![
+                FREEDOM_PROVIDER_ORIGIN.to_string(),
+                DAPP_BROWSER_PROVIDER_ORIGIN.to_string(),
                 "https://app.example".to_string(),
-                "https://wallet.freedom.local".to_string()
             ]
         );
-        // Persisted dApp origins alone are enough to start the bridge.
+        // Persisted dApp origins merge after the built-ins.
         let from_dapps = bridge_decision(None, &["https://app.pulsex.com".into()])
-            .expect("dApp whitelist starts the bridge");
-        assert_eq!(from_dapps, vec!["https://app.pulsex.com".to_string()]);
+            .expect("dApp whitelist merges with built-ins");
+        assert_eq!(
+            from_dapps,
+            vec![
+                FREEDOM_PROVIDER_ORIGIN.to_string(),
+                DAPP_BROWSER_PROVIDER_ORIGIN.to_string(),
+                "https://app.pulsex.com".to_string()
+            ]
+        );
+        assert!(DAPP_BROWSER_PROVIDER_ORIGIN.starts_with("chrome-extension://"));
     }
 
     #[tokio::test]

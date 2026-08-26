@@ -570,6 +570,7 @@ mod tests {
         RequestCtx {
             peer: "127.0.0.1:9999".parse().unwrap(),
             origin: None,
+            page_origin: None,
         }
     }
 

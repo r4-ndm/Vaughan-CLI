@@ -25,6 +25,10 @@ pub struct RpcRequest {
     /// Method parameters; defaults to JSON `null` when omitted.
     #[serde(default)]
     pub params: Value,
+    /// Optional page origin from the Vaughan dApp-browser inject (not required
+    /// for Freedom, which already gates by Electron tab origin).
+    #[serde(default)]
+    pub vaughan_page_origin: Option<String>,
 }
 
 impl RpcRequest {

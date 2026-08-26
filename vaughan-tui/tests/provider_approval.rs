@@ -90,6 +90,8 @@ async fn run_approval_consumer(
                     ApprovalKind::SignTypedData { .. } => "typed".to_string(),
                     ApprovalKind::McpProposal { .. } => "mcp".to_string(),
                     ApprovalKind::StealthSweep { .. } => "stealth_sweep".to_string(),
+                    ApprovalKind::Connect { .. } => "connect".to_string(),
+                    ApprovalKind::SwitchChain { .. } => "switch".to_string(),
                 };
                 seen.lock().unwrap().push(summary.clone());
                 let result = match decide(&kind) {
@@ -98,7 +100,7 @@ async fn run_approval_consumer(
                 };
                 let _ = reply.send(result);
             }
-            HostRequest::Accounts { reply } => {
+            HostRequest::Accounts { reply, .. } => {
                 // WalletHandle contract: `[]` when locked (see methods.rs).
                 let accounts = if wallet.is_unlocked() {
                     wallet
@@ -110,7 +112,7 @@ async fn run_approval_consumer(
                 };
                 let _ = reply.send(Ok(accounts));
             }
-            HostRequest::RequestAccounts { reply } => {
+            HostRequest::RequestAccounts { reply, .. } => {
                 let accounts = if wallet.is_unlocked() {
                     wallet
                         .active_address()
@@ -125,7 +127,9 @@ async fn run_approval_consumer(
                 let id = wallet.networks().active().chain_id;
                 let _ = reply.send(Ok(format!("0x{id:x}")));
             }
-            HostRequest::SwitchChain { chain_id, reply } => {
+            HostRequest::SwitchChain {
+                chain_id, reply, ..
+            } => {
                 // Mirror the app: switch to a built-in network by chain id.
                 let id: u64 = match chain_id.parse() {
                     Ok(id) => id,
@@ -755,6 +759,97 @@ async fn approve_send_preserves_explicit_eip1559_fees() {
     assert!(
         seen.lock().unwrap().iter().any(|s| s.starts_with("send:")),
         "approval prompt must have been shown"
+    );
+
+    consumer.abort();
+    task.abort();
+}
+
+/// Fee-editor override: the dApp sends a legacy-priced tx; the user bumps the
+/// fee in the prompt; the signed tx must carry the adjusted price on-chain.
+#[tokio::test(flavor = "multi_thread")]
+async fn approve_send_with_fee_override_signs_adjusted_gas_price() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let sender = wallet.active_address().unwrap().to_string();
+    let recipient = anvil_dev_address(4);
+    let before = anvil.wei_balance(&recipient);
+    let value_wei = 10u128.pow(15); // 0.001
+    let dapp_price = 1_000_000_000u128; // 1 gwei legacy gasPrice
+    let override_max = 55_000_000_000u128; // 55 gwei — distinctive
+
+    let (task, url, mut rx) = spawn_provider_stack().await;
+
+    // Simulated UI thread with a fee override applied between prompt and sign,
+    // mirroring App::handle_approval_key + ApproveView::adjusted_fee.
+    let consumer = tokio::spawn(async move {
+        while let Some(request) = rx.recv().await {
+            if let HostRequest::Approval { kind, reply, .. } = request {
+                let result = match *kind {
+                    ApprovalKind::SendTransaction(mut tx) => {
+                        let fee = vaughan_core::chains::Fee {
+                            total: String::new(),
+                            currency: "ETH".into(),
+                            details: vaughan_core::chains::FeeDetails::Evm {
+                                gas_limit: 21_000,
+                                max_fee_per_gas: Some(override_max.to_string()),
+                                max_priority_fee_per_gas: None,
+                            },
+                        };
+                        vaughan_tui::provider::apply_fee_override(&mut tx, &fee);
+                        vaughan_tui::provider::execute_approval(
+                            &ApprovalKind::SendTransaction(tx),
+                            &wallet,
+                        )
+                        .await
+                    }
+                    other => vaughan_tui::provider::execute_approval(&other, &wallet).await,
+                };
+                let _ = reply.send(result);
+            }
+        }
+    });
+
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+    let reply = rpc_call(
+        &mut ws,
+        1,
+        "eth_sendTransaction",
+        json!([{
+            "from": sender,
+            "to": recipient,
+            "value": format!("{value_wei:#x}"),
+            "gas": "0x5208",
+            "gasPrice": format!("{dapp_price:#x}"),
+        }]),
+    )
+    .await;
+    if reply["error"].is_object() {
+        panic!("eth_sendTransaction error: {}", reply["error"]);
+    }
+    let tx_hash = reply["result"].as_str().expect("tx hash").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if anvil.wei_balance(&recipient) == before + value_wei {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(anvil.wei_balance(&recipient), before + value_wei);
+
+    let tx = anvil
+        .rpc("eth_getTransactionByHash", json!([tx_hash]))
+        .unwrap();
+    let on_price = u128::from_str_radix(
+        tx["gasPrice"].as_str().unwrap().trim_start_matches("0x"),
+        16,
+    )
+    .unwrap();
+    assert_eq!(
+        on_price, override_max,
+        "fee-editor override must replace the dApp's legacy gasPrice"
     );
 
     consumer.abort();

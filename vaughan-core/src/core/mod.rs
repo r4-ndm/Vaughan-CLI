@@ -13,6 +13,8 @@ pub mod persistence;
 pub mod piteas;
 pub mod profile;
 pub mod proposal;
+pub mod provider_session;
+pub mod site_grants;
 pub mod stealth;
 pub mod transaction;
 pub mod vault_secrets;
@@ -63,6 +65,7 @@ pub use proposal::{
     MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT, MCP_ENQUEUE_RATE_WINDOW_SECS,
     MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
 };
+pub use provider_session::{ProviderSessionToken, PROVIDER_SESSION_FILE};
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,

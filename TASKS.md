@@ -38,7 +38,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] `vaughan-provider` crate: local EIP-1193 WebSocket server (loopback) (FR-2.1)
 - [x] Implement provider methods: accounts, chainId, sendTransaction, sign, signTypedData_v4, switchEthereumChain + `vaughan_signTransaction` (FR-2.2)
 - [x] TUI approval flow: approve/deny prompts for sign/send (FR-2.3). `ProviderHost` (a `WalletHandle` impl) forwards every provider request to the UI thread over an MPSC channel; sign/send requests surface as a full-screen approve/deny prompt, and the provider server auto-starts on app launch. Core gained `personal_sign` (EIP-191), `eth_signTypedData_v4` (EIP-712), `vaughan_signTransaction` (raw signed tx), and general `send_transaction`. Approval details now include fee before user consent (from explicit gas/fee fields when present, otherwise pre-estimated over RPC).
-- [x] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4). `ProviderServer::with_trusted_origins` now enforces a canonicalized `Origin` allowlist (missing/untrusted origins are rejected at connection time); `vaughan-tui` enables it from `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` (comma-separated origins).
+- [x] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4). `ProviderServer::with_trusted_origins` now enforces a canonicalized `Origin` allowlist (missing/untrusted origins are rejected at connection time); Vaughan always merges Freedom's Origin `https://freedom.browser`, plus optional `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` and persisted dApp origins.
 - [x] Trusted-host startup validation path: TUI tests now cover env-derived origin parsing and startup-time server wiring with allowlist enforcement (missing-origin clients are rejected; trusted-origin clients are served).
 - [x] Account/chain change event push to clients (`EventBus` → JSON-RPC notifications) (FR-2.2)
 - [x] Freedom Browser signer backend PR (out-of-repo) (FR-2.5) — opened upstream: https://github.com/solardev-xyz/freedom-browser/pull/195 (`feat/vaughan-signer-backend`: Vaughan WS signer + account discovery IPC; rebased onto `main` 2026-08-20; Jest 48 green; Vaughan `freedom_bridge_smoke` covers Origin + Freedom RPC methods)
@@ -101,7 +101,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Import custom ERC-20s (meme coins) into Assets (`i`); persist in vault JSON; show even at zero balance
 - [x] ERC-20 send from Assets (↑↓ select, Enter → Send with token transfer)
 - [x] Trusted dApp whitelist TUI (`w` / Settings): add/remove URLs, Enter opens Freedom (or system browser); origins merge into provider allowlist on launch
-- [ ] Freedom auto-connect on launch (later) — optional side door; primary product push is **Browserless Pulse** (below)
+- [x] Freedom bridge smooth path: always allowlist `https://freedom.browser`; Web (`w`) shows bridge listen status; unlock-before-connect copy; Freedom PR #195 rebased onto main (OpenLV coexistence). Manual Connect Vaughan smoke still recommended when testing a local Freedom checkout.
+- [ ] Freedom auto-connect on launch (later) — deeper than default Origin; optional side door; primary product push is **Browserless Pulse** (below)
 
 ### Known facts (verified 2026-08-18)
 - PulseX Router `0x165C…552d9` → Factory `0x29eA…C523`, PLSX `0x95B3…90ab`, 186,244 pairs
@@ -146,6 +147,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] ⚠️ Behavior fix: locked wallet no longer prompts — `execute_approval` (shared by TUI + tests) rejects early with `Unauthorized`; the app loop skips the prompt entirely (previously a locked wallet showed a prompt that would fail at execution)
 - [x] `execute_approval` is now truly async (shared by the TUI's sync wrapper and async callers)
 - [x] 145 tests green workspace-wide (incl. 8 anvil integration tests); no new clippy warnings
+- [x] Fee editor in the dApp approval prompt (added 2026-08-26): transaction prompts (send / sign-only) now carry the Send view's speed presets — `1`–`5` Slow/Normal/Fast/Ape/Custom (↑↓ cycle, Tab focuses the custom gwei input) — with the `Fee:` line updating live. On approve, `apply_fee_override` pins the adjusted gas fields onto the tx (legacy `gasPrice` shape preserved; EIP-1559 max/tip otherwise) so what was shown is what gets signed. Custom input validates on Enter and blocks approval while invalid/focused. Anvil test: legacy-priced dApp tx + prompt override → on-chain `gasPrice` matches the override.
+- [x] Persistent site grants (added 2026-08-26): `eth_requestAccounts` grants survive TUI restarts via `site-grants.json` (origins only, `0o600` beside the vault; new `core::site_grants` mirroring `ProviderSessionToken`). Explicit wallet lock still clears all grants; per-request sign/send approval is unchanged. Fixes dApps throwing 4100 after every TUI restart.
+- [x] Manual validation (2026-08-26, Freedom Browser + PulseX on PulseChain testnet v4): dApp swap → TUI prompt → custom gwei override (network suggestion was ~6 tPLS vs a 4 tPLS balance) → broadcast + confirmed. Also flushed out and fixed a decision-key trap: `y`/`n` now always work while the custom gwei input is focused (approve validates first).
 
 ### Sign + switch methods — anvil integration tests (added 2026-08-18) — done
 
@@ -281,8 +285,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > Exit demo (no browser window): unlock → Ag swap → contract probe → MCP propose
 > → stealth receive.
 >
-> Related: `docs/browserless-pulse.md`, `docs/aggregator.md`, `docs/mcp.md`,
-> Phase 4 Dex/Ag scaffolds, Phase 6 MCP.
+> Related: `docs/browserless-pulse.md`, `docs/dapp-browser-strategy.md`,
+> `docs/aggregator.md`, `docs/mcp.md`, Phase 4 Dex/Ag scaffolds, Phase 6 MCP,
+> Phase 7 optional Chromium agent browser.
 
 ### Degen session policy (guardrails the user owns)
 
@@ -349,11 +354,47 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame)
 
 ### Explicitly out of scope for this thesis
-- Building a general-purpose dApp browser inside Vaughan
+- Making a webview the **default** wallet identity (Browserless Pulse stays primary)
+- Open-internet general browsing / Chrome replacement / extensions
 - WalletConnect-as-default identity (keeps users married to websites)
 - 1:1 clones of every Pulse website — prefer verbs: swap, inspect, revoke, send, stealth
 - Hosted multi-tenant / cloud fire-and-forget signing (see [`docs/sentient-ops.md`](docs/sentient-ops.md))
 - Full `rmcp` MCP rewrite — **not needed now**; deferred until revisit triggers in [`docs/mcp-transport.md`](docs/mcp-transport.md) (prefer smallest hand-rolled fix first)
+- CEF / Chromium linked into `vaughan-core` (optional browser is a separate binary — see Phase 7)
+
+## Phase 7 — Optional Chromium dApp browser + agent control
+
+> Strategy: [`docs/dapp-browser-strategy.md`](docs/dapp-browser-strategy.md).
+> Modular Tauri+CEF side door; multi-chain EVM; CDP agents; never auto-sign.
+> Freedom remains interim Chromium until the owned shell is usable.
+
+### Phase 0 — Docs
+- [x] `docs/dapp-browser-strategy.md` (CEF, modularity, multi-chain, CDP, kill-switch)
+- [x] `docs/browserless-pulse.md` + REQUIREMENTS FR-7.* + this TASKS section
+
+### Phase 0.5 — CEF spike (gate)
+- [x] crates.io survey: `cef` published; `tauri-runtime-cef` not on crates.io (git/wrymium required)
+- [x] Localhost CDP interactive refs smoke (`docs/spikes/cef-tauri` `cdp_ax_smoke`) — agent path proven
+- [x] Confirm default `cargo build -p vaughan-cli` still does not fetch CEF
+- [ ] Linux: Tauri + `tauri-runtime-cef` from git (or wrymium) loads allowlisted HTTPS — **moved to Phase 1** (runtime git-only)
+
+### Phase 1 — Modular shell + wallet (FR-7.1–7.4)
+- [x] Workspace member `vaughan-dapp-browser` (Chromium/CDP deps only here — CEF embed still deferred)
+- [x] Soft-launch from `w` when binary on PATH/config; Freedom fallback when missing
+- [x] Host allowlist + EIP-1193 page inject → `vaughan-provider` → TUI approve
+- [x] CDP export only with `--cdp-port` / `VAUGHAN_DAPP_BROWSER_CDP_PORT` (default off)
+- [x] Anvil smoke: dApp page Origin + extension Origin → connect + send + multi-chain switch (`vaughan-tui/tests/dapp_browser_bridge_smoke.rs`)
+- [x] Manual smoke: Pulse / 9inch / Squirrel / Liberty headed Chromium (CSP-safe extension; PulseX via IPFS mirror)
+- [ ] Navigation allowlist enforcement after first load (Phase 1 gap: initial `--url` only)
+- [ ] Tauri + CEF embed (replace system Chromium) — still gated on git `tauri-runtime-cef`
+
+### Phase 2 — MCP B1 (FR-7.5)
+- [ ] `browser_open` / `browser_navigate` / `browser_status` (allowlisted; unlocked + child alive)
+- [ ] Structured unavailable when binary/child absent; document in `docs/mcp.md`
+
+### Phase 3 — MCP B2 (FR-7.5)
+- [ ] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP AX tree
+- [ ] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6)
 
 ## Later — DeFi AI king / Coinbase compete (deferred)
 

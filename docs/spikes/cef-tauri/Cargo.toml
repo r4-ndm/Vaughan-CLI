@@ -1,0 +1,24 @@
+# Disposable CEF / CDP spike — NOT a Vaughan workspace member.
+# Build only from this directory. `cargo build -p vaughan-cli` must never touch this.
+
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "vaughan-cef-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Phase 0.5: prove localhost CDP accessibility snapshot (agent path)"
+
+[[bin]]
+name = "cdp_ax_smoke"
+path = "src/bin/cdp_ax_smoke.rs"
+
+[dependencies]
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+serde_json = "1"

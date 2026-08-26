@@ -1,9 +1,11 @@
 //! View layer: shared chrome plus per-screen views.
 //!
 //! Layout: logo → blank → address (orange mid under AUGHA) → blank →
-//! three status boxes (F1 network · F2 coin · F3 account) → view body → action footer.
+//! three status boxes (F1 network · F2 coin · F3 account) → blank →
+//! view body → action footer.
 //!
 //! F1–F3: press the key to focus, ↑/↓ to preview, Enter to set, Esc to cancel.
+//! Home send body: F4 focuses recipient, F5 focuses amount.
 
 pub mod aa_send;
 pub mod ag;
@@ -95,20 +97,22 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     }
 
-    // Status boxes + three rows of footer key chips when unlocked (no row gap).
+    // Status boxes + blank gap + three rows of footer key chips when unlocked.
     let status_h = 3u16;
     let footer_h = 9u16;
 
-    let [logo, _gap_above, addr_row, flash_row, status_bar, body, footer] = Layout::vertical([
-        Constraint::Length(1), // VAUGHAN banner
-        Constraint::Length(1), // blank above address
-        Constraint::Length(1), // colour-coded address
-        Constraint::Length(1), // copy toast / blank
-        Constraint::Length(status_h),
-        Constraint::Min(0),
-        Constraint::Length(footer_h),
-    ])
-    .areas(area);
+    let [logo, _gap_above, addr_row, flash_row, status_bar, _gap_below_status, body, footer] =
+        Layout::vertical([
+            Constraint::Length(1), // VAUGHAN banner
+            Constraint::Length(1), // blank above address
+            Constraint::Length(1), // colour-coded address
+            Constraint::Length(1), // copy toast / blank
+            Constraint::Length(status_h),
+            Constraint::Length(1), // blank under F1–F3
+            Constraint::Min(0),
+            Constraint::Length(footer_h),
+        ])
+        .areas(area);
 
     frame.render_widget(Paragraph::new(brand::logo_banner(logo.width)), logo);
     render_address_under_augha(frame, addr_row, app);
@@ -241,19 +245,16 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
     );
 }
 
-/// One faded square panel: themed title + centred value (accent ink).
-/// When `focused`, title + value use reverse video so F1/F2/F3 are obvious.
+/// One faded square panel: bright-blue F1/F2/F3 title + centred value (accent ink).
+/// When `focused`, title + value use reverse video so focus is obvious.
 fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focused: bool) {
-    let title_line = if focused {
-        Line::from(Span::styled(
-            title.to_string(),
-            Style::default()
-                .fg(brand::accent_color())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-        ))
-    } else {
-        brand::fade_line(title)
-    };
+    let mut title_style = Style::default()
+        .fg(brand::action_key_color())
+        .add_modifier(Modifier::BOLD);
+    if focused {
+        title_style = title_style.add_modifier(Modifier::REVERSED);
+    }
+    let title_line = Line::from(Span::styled(title.to_string(), title_style));
     let inner = brand::render_faded_box(frame, area, Some(title_line));
     let value_style = if focused {
         Style::default()
@@ -336,7 +337,7 @@ fn render_key_chip(frame: &mut Frame, area: Rect, key: &str, label: &str) {
         Span::styled(
             key.to_string(),
             Style::default()
-                .fg(brand::accent_color())
+                .fg(brand::action_key_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -453,6 +454,38 @@ fn fit_raw(address: &str, budget: usize) -> String {
             .rev(),
     );
     out
+}
+
+/// Render a labelled text input with a bright-blue Fn key in the title (F4 / F5).
+///
+/// Matches chrome F1–F3 key colour so home send fields read as hotkeyed boxes.
+pub(crate) fn render_fkey_labeled_input(
+    frame: &mut Frame,
+    area: Rect,
+    fkey: &str,
+    label: &str,
+    input: &Input,
+    focused: bool,
+) {
+    let mut key_style = Style::default()
+        .fg(brand::action_key_color())
+        .add_modifier(Modifier::BOLD);
+    let mut label_style = Style::default().fg(brand::body_color());
+    if focused {
+        key_style = key_style.add_modifier(Modifier::REVERSED);
+        label_style = Style::default()
+            .fg(brand::accent_color())
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    }
+    let title = Line::from(vec![
+        Span::styled(format!(" {fkey} "), key_style),
+        Span::styled(format!("{label} "), label_style),
+    ]);
+    let inner = brand::render_faded_box(frame, area, Some(title));
+    if !focused && input.value().is_empty() {
+        return;
+    }
+    frame.render_widget(Paragraph::new(input.line()), inner);
 }
 
 /// Render a labelled text input inside a faded square box (yellow title when focused).

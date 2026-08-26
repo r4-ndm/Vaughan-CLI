@@ -51,6 +51,7 @@ async fn run_approval_consumer(
     mut rx: mpsc::UnboundedReceiver<HostRequest>,
     mut wallet: WalletState,
 ) {
+    let mut connected = std::collections::HashSet::<String>::new();
     while let Some(request) = rx.recv().await {
         match request {
             HostRequest::Approval { kind, reply, .. } => {
@@ -63,8 +64,8 @@ async fn run_approval_consumer(
                 let result = vaughan_tui::provider::execute_approval(&kind, &wallet).await;
                 let _ = reply.send(result);
             }
-            HostRequest::Accounts { reply } => {
-                let accounts = if wallet.is_unlocked() {
+            HostRequest::Accounts { site, reply } => {
+                let accounts = if wallet.is_unlocked() && connected.contains(&site) {
                     wallet
                         .active_address()
                         .map(|a| vec![a.to_string()])
@@ -74,8 +75,9 @@ async fn run_approval_consumer(
                 };
                 let _ = reply.send(Ok(accounts));
             }
-            HostRequest::RequestAccounts { reply } => {
+            HostRequest::RequestAccounts { site, reply } => {
                 let accounts = if wallet.is_unlocked() {
+                    connected.insert(site);
                     wallet
                         .active_address()
                         .map(|a| vec![a.to_string()])
@@ -89,7 +91,9 @@ async fn run_approval_consumer(
                 let id = wallet.networks().active().chain_id;
                 let _ = reply.send(Ok(format!("0x{id:x}")));
             }
-            HostRequest::SwitchChain { chain_id, reply } => {
+            HostRequest::SwitchChain {
+                chain_id, reply, ..
+            } => {
                 let id: u64 = match chain_id.parse() {
                     Ok(id) => id,
                     Err(_) => {

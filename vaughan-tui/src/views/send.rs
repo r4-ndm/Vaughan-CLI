@@ -5,6 +5,7 @@
 //! app never mounts a separate Send screen.
 //!
 //! Network / coin / from-account come from the F1 / F2 / F3 chrome boxes.
+//! F4 focuses recipient ("Send to"); F5 focuses amount.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -16,7 +17,7 @@ use ratatui::{
 };
 use tokio::runtime::Handle;
 use vaughan_core::chains::{Balance, Fee, FeeSpeed};
-use vaughan_core::core::{parse_native_amount, WalletState};
+use vaughan_core::core::{format_base_units, parse_native_amount, WalletState};
 use vaughan_core::security::stealth::{StealthAnnouncement, StealthMetaAddress};
 use vaughan_provider::EventBus;
 
@@ -24,7 +25,7 @@ use crate::app::{KeyOutcome, Screen};
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, ChromeSnapshot, UiJob, UiJobResult};
-use crate::views::{body_areas, render_labeled_input, status_paragraph};
+use crate::views::{body_areas, render_fkey_labeled_input, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -41,6 +42,13 @@ enum Focus {
     Amount,
 }
 
+/// Confirm-stage focus: speed list vs custom gwei field.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfirmFocus {
+    Speed,
+    CustomGas,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Busy {
     Idle,
@@ -52,8 +60,11 @@ enum Busy {
 pub struct SendView {
     stage: Stage,
     focus: Focus,
+    confirm_focus: ConfirmFocus,
     recipient: Input,
     amount: Input,
+    /// Custom max fee in gwei (only when [`FeeSpeed::Custom`] is selected).
+    custom_gas: Input,
     /// When set, send ERC-20 `transfer` instead of native.
     token: Option<TokenCtx>,
     /// Unscaled Alloy/network fee estimate.
@@ -82,8 +93,10 @@ impl Default for SendView {
         Self {
             stage: Stage::Input,
             focus: Focus::Recipient,
+            confirm_focus: ConfirmFocus::Speed,
             recipient: Input::new(false, "0x… or st:…"),
             amount: Input::new(false, "0.0"),
+            custom_gas: Input::new(false, "gwei"),
             token: None,
             base_fee: None,
             speed: FeeSpeed::Normal,
@@ -149,7 +162,26 @@ impl SendView {
     }
 
     fn selected_fee(&self) -> Option<Fee> {
-        self.base_fee.as_ref().map(|fee| fee.with_speed(self.speed))
+        let base = self.base_fee.as_ref()?;
+        match self.speed {
+            FeeSpeed::Custom => base.with_custom_max_fee_gwei(self.custom_gas.value()).ok(),
+            speed => Some(base.with_speed(speed)),
+        }
+    }
+
+    /// Prefill custom gwei from the base estimate when entering Custom.
+    fn select_speed(&mut self, speed: FeeSpeed) {
+        self.speed = speed;
+        if speed == FeeSpeed::Custom {
+            if self.custom_gas.value().is_empty() {
+                if let Some(gwei) = self.base_fee.as_ref().and_then(max_fee_gwei_display) {
+                    self.custom_gas.set_value(gwei);
+                }
+            }
+            self.confirm_focus = ConfirmFocus::CustomGas;
+        } else {
+            self.confirm_focus = ConfirmFocus::Speed;
+        }
     }
 
     fn recipient_label(&self) -> &'static str {
@@ -169,6 +201,8 @@ impl SendView {
             UiJobResult::Fee(Ok(fee)) => {
                 self.base_fee = Some(fee);
                 self.speed = FeeSpeed::Normal;
+                self.confirm_focus = ConfirmFocus::Speed;
+                self.custom_gas.set_value("");
                 self.status.clear();
                 self.busy = Busy::Idle;
                 self.stage = Stage::Confirm;
@@ -267,12 +301,17 @@ impl SendView {
 
         match self.stage {
             Stage::Input => {
-                let [to_area, amount_area] =
-                    Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(content);
+                let [to_area, _gap, amount_area] = Layout::vertical([
+                    Constraint::Length(3),
+                    Constraint::Length(1), // blank between F4 Send to and F5 Amount
+                    Constraint::Length(3),
+                ])
+                .areas(content);
 
-                render_labeled_input(
+                render_fkey_labeled_input(
                     frame,
                     to_area,
+                    "F4",
                     self.recipient_label(),
                     &self.recipient,
                     self.focus == Focus::Recipient,
@@ -284,9 +323,10 @@ impl SendView {
                         .map(|t| t.symbol.as_str())
                         .unwrap_or(net.native_symbol.as_str())
                 );
-                render_labeled_input(
+                render_fkey_labeled_input(
                     frame,
                     amount_area,
+                    "F5",
                     &amount_label,
                     &self.amount,
                     self.focus == Focus::Amount,
@@ -338,6 +378,28 @@ impl SendView {
                     ))
                 };
 
+                let custom_editing =
+                    self.speed == FeeSpeed::Custom && self.confirm_focus == ConfirmFocus::CustomGas;
+                let custom_hint = if self.speed == FeeSpeed::Custom {
+                    let mut spans = vec![Span::raw("    max fee (gwei): ")];
+                    if custom_editing {
+                        spans.extend(self.custom_gas.line().spans);
+                    } else {
+                        let shown = if self.custom_gas.value().is_empty() {
+                            "—"
+                        } else {
+                            self.custom_gas.value()
+                        };
+                        spans.push(Span::styled(
+                            shown.to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    Line::from(spans)
+                } else {
+                    Line::from("")
+                };
+
                 let text = vec![
                     Line::from(format!(
                         "Send {} {} to:",
@@ -358,17 +420,27 @@ impl SendView {
                     Line::from(""),
                     Line::from(format!("From:     {from_label}")),
                     Line::from(format!("Network:  {}{testnet}", net.name)),
-                    Line::from(format!("Fee:      {fee_total}  [{}]", self.speed.label())),
+                    Line::from(format!(
+                        "Fee:      {}  [{}]",
+                        if fee_total.is_empty() {
+                            "—"
+                        } else {
+                            fee_total.as_str()
+                        },
+                        self.speed.label()
+                    )),
                     Line::from(format!(
                         "          {}",
                         fee_detail.as_deref().unwrap_or("—")
                     )),
                     Line::from(""),
-                    Line::from("Gas speed (Alloy estimate × preset):"),
+                    Line::from("Gas speed (↑↓ or 1–5):"),
                     speed_line('1', FeeSpeed::Slow),
                     speed_line('2', FeeSpeed::Normal),
                     speed_line('3', FeeSpeed::Fast),
                     speed_line('4', FeeSpeed::Ape),
+                    speed_line('5', FeeSpeed::Custom),
+                    custom_hint,
                     Line::from(""),
                     Line::from("Enter — broadcast   Esc — cancel"),
                 ];
@@ -421,72 +493,184 @@ impl SendView {
             return KeyOutcome::Consumed;
         }
         match self.stage {
-            Stage::Input => match self.focus {
-                Focus::Idle => match key.code {
-                    KeyCode::Enter | KeyCode::Char(' ') => {
-                        self.focus = Focus::Recipient;
-                        KeyOutcome::Consumed
-                    }
-                    _ => KeyOutcome::NotHandled,
-                },
-                Focus::Recipient => {
-                    if key.code == KeyCode::Esc {
-                        return if self.home_mode {
-                            self.focus = Focus::Idle;
-                            KeyOutcome::Consumed
-                        } else {
-                            KeyOutcome::Navigate(Screen::Dashboard)
-                        };
-                    }
-                    if key.code == KeyCode::Tab {
-                        self.focus = Focus::Amount;
-                        return KeyOutcome::Consumed;
-                    }
-                    match self.recipient.handle_key(key) {
-                        InputAction::Ignored => KeyOutcome::NotHandled,
-                        InputAction::Submitted => {
-                            self.focus = Focus::Amount;
+            Stage::Input => {
+                // F4 / F5 jump to recipient / amount from any input focus (incl. Idle).
+                if let KeyCode::F(4) = key.code {
+                    self.focus = Focus::Recipient;
+                    return KeyOutcome::Consumed;
+                }
+                if let KeyCode::F(5) = key.code {
+                    self.focus = Focus::Amount;
+                    return KeyOutcome::Consumed;
+                }
+                match self.focus {
+                    Focus::Idle => match key.code {
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            self.focus = Focus::Recipient;
                             KeyOutcome::Consumed
                         }
-                        InputAction::Consumed => KeyOutcome::Consumed,
+                        _ => KeyOutcome::NotHandled,
+                    },
+                    Focus::Recipient => {
+                        if key.code == KeyCode::Esc {
+                            return if self.home_mode {
+                                self.focus = Focus::Idle;
+                                KeyOutcome::Consumed
+                            } else {
+                                KeyOutcome::Navigate(Screen::Dashboard)
+                            };
+                        }
+                        if key.code == KeyCode::Tab {
+                            self.focus = Focus::Amount;
+                            return KeyOutcome::Consumed;
+                        }
+                        match self.recipient.handle_key(key) {
+                            InputAction::Ignored => KeyOutcome::NotHandled,
+                            InputAction::Submitted => {
+                                self.focus = Focus::Amount;
+                                KeyOutcome::Consumed
+                            }
+                            InputAction::Consumed => KeyOutcome::Consumed,
+                        }
+                    }
+                    Focus::Amount => {
+                        if key.code == KeyCode::Esc {
+                            self.focus = if self.home_mode {
+                                Focus::Idle
+                            } else {
+                                Focus::Recipient
+                            };
+                            return KeyOutcome::Consumed;
+                        }
+                        if key.code == KeyCode::Tab {
+                            self.focus = Focus::Recipient;
+                            return KeyOutcome::Consumed;
+                        }
+                        match self.amount.handle_key(key) {
+                            InputAction::Ignored => KeyOutcome::NotHandled,
+                            InputAction::Submitted => self.begin_estimate(wallet),
+                            InputAction::Consumed => KeyOutcome::Consumed,
+                        }
                     }
                 }
-                Focus::Amount => {
-                    if key.code == KeyCode::Esc {
-                        self.focus = if self.home_mode {
-                            Focus::Idle
-                        } else {
-                            Focus::Recipient
-                        };
-                        return KeyOutcome::Consumed;
-                    }
-                    if key.code == KeyCode::Tab {
-                        self.focus = Focus::Recipient;
-                        return KeyOutcome::Consumed;
-                    }
-                    match self.amount.handle_key(key) {
-                        InputAction::Ignored => KeyOutcome::NotHandled,
-                        InputAction::Submitted => self.begin_estimate(wallet),
-                        InputAction::Consumed => KeyOutcome::Consumed,
-                    }
-                }
-            },
-            Stage::Confirm => match key.code {
-                KeyCode::Esc => {
+            }
+            Stage::Confirm => {
+                if let KeyCode::F(4) = key.code {
                     self.stage = Stage::Input;
+                    self.focus = Focus::Recipient;
+                    self.confirm_focus = ConfirmFocus::Speed;
+                    return KeyOutcome::Consumed;
+                }
+                if let KeyCode::F(5) = key.code {
+                    self.stage = Stage::Input;
+                    self.focus = Focus::Amount;
+                    self.confirm_focus = ConfirmFocus::Speed;
+                    return KeyOutcome::Consumed;
+                }
+                match key.code {
+                    KeyCode::Esc => {
+                        if self.confirm_focus == ConfirmFocus::CustomGas {
+                            self.confirm_focus = ConfirmFocus::Speed;
+                            return KeyOutcome::Consumed;
+                        }
+                        self.stage = Stage::Input;
+                        if self.home_mode {
+                            self.focus = Focus::Idle;
+                        }
+                        KeyOutcome::Consumed
+                    }
+                    KeyCode::Up => {
+                        self.select_speed(self.speed.prev());
+                        KeyOutcome::Consumed
+                    }
+                    KeyCode::Down => {
+                        self.select_speed(self.speed.next());
+                        KeyOutcome::Consumed
+                    }
+                    KeyCode::Char(c)
+                        if FeeSpeed::from_digit(c).is_some()
+                            && self.confirm_focus != ConfirmFocus::CustomGas =>
+                    {
+                        self.select_speed(FeeSpeed::from_digit(c).unwrap());
+                        KeyOutcome::Consumed
+                    }
+                    KeyCode::Tab if self.speed == FeeSpeed::Custom => {
+                        self.confirm_focus = match self.confirm_focus {
+                            ConfirmFocus::Speed => ConfirmFocus::CustomGas,
+                            ConfirmFocus::CustomGas => ConfirmFocus::Speed,
+                        };
+                        KeyOutcome::Consumed
+                    }
+                    KeyCode::Enter => {
+                        if self.speed == FeeSpeed::Custom {
+                            match self
+                                .base_fee
+                                .as_ref()
+                                .map(|f| f.with_custom_max_fee_gwei(self.custom_gas.value()))
+                            {
+                                Some(Ok(_)) => self.begin_send(wallet),
+                                Some(Err(e)) => {
+                                    self.status = e;
+                                    self.confirm_focus = ConfirmFocus::CustomGas;
+                                    KeyOutcome::Consumed
+                                }
+                                None => {
+                                    self.status = "fee estimate missing".into();
+                                    KeyOutcome::Consumed
+                                }
+                            }
+                        } else {
+                            self.begin_send(wallet)
+                        }
+                    }
+                    _ if self.confirm_focus == ConfirmFocus::CustomGas => {
+                        match self.custom_gas.handle_key(key) {
+                            InputAction::Ignored => KeyOutcome::NotHandled,
+                            InputAction::Submitted => {
+                                // Enter already handled above; treat as broadcast attempt.
+                                match self
+                                    .base_fee
+                                    .as_ref()
+                                    .map(|f| f.with_custom_max_fee_gwei(self.custom_gas.value()))
+                                {
+                                    Some(Ok(_)) => self.begin_send(wallet),
+                                    Some(Err(e)) => {
+                                        self.status = e;
+                                        KeyOutcome::Consumed
+                                    }
+                                    None => KeyOutcome::Consumed,
+                                }
+                            }
+                            InputAction::Consumed => {
+                                self.status.clear();
+                                KeyOutcome::Consumed
+                            }
+                        }
+                    }
+                    _ => KeyOutcome::NotHandled,
+                }
+            }
+            Stage::Done => match key.code {
+                KeyCode::F(4) => {
                     if self.home_mode {
-                        self.focus = Focus::Idle;
+                        *self = Self::home();
+                        self.focus = Focus::Recipient;
+                    } else {
+                        self.stage = Stage::Input;
+                        self.focus = Focus::Recipient;
                     }
                     KeyOutcome::Consumed
                 }
-                KeyCode::Char(c) if FeeSpeed::from_digit(c).is_some() => {
-                    self.speed = FeeSpeed::from_digit(c).unwrap();
+                KeyCode::F(5) => {
+                    if self.home_mode {
+                        *self = Self::home();
+                        self.focus = Focus::Amount;
+                    } else {
+                        self.stage = Stage::Input;
+                        self.focus = Focus::Amount;
+                    }
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter => self.begin_send(wallet),
-                _ => KeyOutcome::NotHandled,
-            },
-            Stage::Done => match key.code {
                 KeyCode::Char('r') | KeyCode::Char('R') => self.begin_poll_status(),
                 KeyCode::Enter | KeyCode::Esc => {
                     if self.home_mode {
@@ -600,5 +784,23 @@ impl SendView {
             self.stealth = None;
             Ok(raw.to_string())
         }
+    }
+}
+
+/// Base estimate max fee formatted as gwei for the Custom field prefill.
+fn max_fee_gwei_display(fee: &Fee) -> Option<String> {
+    match &fee.details {
+        vaughan_core::chains::FeeDetails::Evm {
+            max_fee_per_gas: Some(wei),
+            ..
+        } => {
+            let s = format_base_units(wei, 9);
+            if s.is_empty() || s == "0" {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        _ => None,
     }
 }

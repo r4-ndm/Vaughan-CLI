@@ -138,6 +138,7 @@ pub struct PolkadotTransaction {
 /// Base fees come from Alloy's `estimate_eip1559_fees` (feeHistory percentiles,
 /// same family of algorithm MetaMask/ethers use). Presets only scale that
 /// suggestion — we do not pull Ambire or other wallet source for this.
+/// [`FeeSpeed::Custom`] skips scaling; the TUI supplies an explicit max fee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FeeSpeed {
     /// Lower tip / headroom — may wait longer in the mempool.
@@ -149,37 +150,65 @@ pub enum FeeSpeed {
     Fast,
     /// Aggressive tip for congested moments ("ape").
     Ape,
+    /// User-entered max fee (gwei); not a scale of the Alloy suggestion.
+    Custom,
 }
 
 impl FeeSpeed {
+    /// Digits `1`–`5` / ↑↓ cycle order.
+    pub const ALL: [Self; 5] = [
+        Self::Slow,
+        Self::Normal,
+        Self::Fast,
+        Self::Ape,
+        Self::Custom,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Slow => "Slow",
             Self::Normal => "Normal",
             Self::Fast => "Fast",
             Self::Ape => "Ape",
+            Self::Custom => "Custom",
         }
     }
 
-    /// `1` Slow · `2` Normal · `3` Fast · `4` Ape.
+    /// `1` Slow · `2` Normal · `3` Fast · `4` Ape · `5` Custom.
     pub fn from_digit(c: char) -> Option<Self> {
         match c {
             '1' => Some(Self::Slow),
             '2' => Some(Self::Normal),
             '3' => Some(Self::Fast),
             '4' => Some(Self::Ape),
+            '5' => Some(Self::Custom),
             _ => None,
         }
     }
 
+    /// Next preset in [`Self::ALL`] (wraps).
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&s| s == self).unwrap_or(1);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// Previous preset in [`Self::ALL`] (wraps).
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|&s| s == self).unwrap_or(1);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
     /// `(max_fee_bps, priority_fee_bps)` relative to the base estimate (10_000 = 100%).
-    fn scale_bps(self) -> (u32, u32) {
-        match self {
+    ///
+    /// `None` for [`Self::Custom`] — callers must set an absolute max fee.
+    fn scale_bps(self) -> Option<(u32, u32)> {
+        Some(match self {
             Self::Slow => (9_000, 7_000),
             Self::Normal => (10_000, 10_000),
             Self::Fast => (12_500, 15_000),
             Self::Ape => (20_000, 25_000),
-        }
+            Self::Custom => return None,
+        })
     }
 }
 
@@ -197,6 +226,8 @@ pub struct Fee {
 impl Fee {
     /// Scale EIP-1559 max/priority fees for a speed preset; gas limit unchanged.
     ///
+    /// [`FeeSpeed::Custom`] returns `self` unchanged — use
+    /// [`Self::with_custom_max_fee_gwei`] for an absolute max fee.
     /// Non-EVM fee details are returned unchanged.
     pub fn with_speed(&self, speed: FeeSpeed) -> Self {
         let FeeDetails::Evm {
@@ -208,7 +239,9 @@ impl Fee {
             return self.clone();
         };
 
-        let (max_bps, tip_bps) = speed.scale_bps();
+        let Some((max_bps, tip_bps)) = speed.scale_bps() else {
+            return self.clone();
+        };
         let scale = |raw: &Option<String>, bps: u32| -> Option<String> {
             let s = raw.as_deref()?;
             let v = U256::from_str(s).ok()?;
@@ -225,11 +258,52 @@ impl Fee {
             }
         }
 
-        let per_gas = new_max
+        self.with_evm_fees(*gas_limit, new_max, new_tip)
+    }
+
+    /// Replace max fee with an absolute gwei value; tip stays the base tip
+    /// (clamped so tip ≤ max). Gas limit unchanged.
+    pub fn with_custom_max_fee_gwei(&self, gwei: &str) -> Result<Self, String> {
+        let FeeDetails::Evm {
+            gas_limit,
+            max_priority_fee_per_gas,
+            ..
+        } = &self.details
+        else {
+            return Err("custom gas is only supported for EVM fees".into());
+        };
+        let trimmed = gwei.trim();
+        if trimmed.is_empty() {
+            return Err("enter a max fee in gwei".into());
+        }
+        let units = alloy::primitives::utils::parse_units(trimmed, 9)
+            .map_err(|_| format!("invalid gwei amount: {trimmed}"))?;
+        if units.is_negative() {
+            return Err(format!("gwei must be positive: {trimmed}"));
+        }
+        let max_wei: U256 = units.into();
+        if max_wei.is_zero() {
+            return Err("max fee must be greater than zero".into());
+        }
+        let tip = max_priority_fee_per_gas
+            .as_deref()
+            .and_then(|s| U256::from_str(s).ok())
+            .unwrap_or_default()
+            .min(max_wei);
+        Ok(self.with_evm_fees(*gas_limit, Some(max_wei.to_string()), Some(tip.to_string())))
+    }
+
+    fn with_evm_fees(
+        &self,
+        gas_limit: u64,
+        max_fee_per_gas: Option<String>,
+        max_priority_fee_per_gas: Option<String>,
+    ) -> Self {
+        let per_gas = max_fee_per_gas
             .as_deref()
             .and_then(|s| U256::from_str(s).ok())
             .unwrap_or_default();
-        let total_wei = per_gas.saturating_mul(U256::from(*gas_limit));
+        let total_wei = per_gas.saturating_mul(U256::from(gas_limit));
         // Display uses 18 decimals as a safe default for native EVM amounts;
         // the currency symbol is preserved from the base estimate.
         let total_formatted = format_units(total_wei, 18).unwrap_or_else(|_| "0.0".to_string());
@@ -239,9 +313,9 @@ impl Fee {
             total,
             currency: self.currency.clone(),
             details: FeeDetails::Evm {
-                gas_limit: *gas_limit,
-                max_fee_per_gas: new_max,
-                max_priority_fee_per_gas: new_tip,
+                gas_limit,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
             },
         }
     }
@@ -436,5 +510,25 @@ mod tests {
             }
         );
         assert_eq!(FeeSpeed::from_digit('3'), Some(FeeSpeed::Fast));
+        assert_eq!(FeeSpeed::from_digit('5'), Some(FeeSpeed::Custom));
+        assert_eq!(FeeSpeed::Normal.next(), FeeSpeed::Fast);
+        assert_eq!(FeeSpeed::Custom.next(), FeeSpeed::Slow);
+        assert_eq!(FeeSpeed::Slow.prev(), FeeSpeed::Custom);
+        assert_eq!(base.with_speed(FeeSpeed::Custom).details, base.details);
+
+        let custom = base.with_custom_max_fee_gwei("50").unwrap();
+        let FeeDetails::Evm {
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            ..
+        } = &custom.details
+        else {
+            panic!("expected EVM fee");
+        };
+        assert_eq!(max_fee_per_gas.as_deref(), Some("50000000000"));
+        // Base tip 1 gwei stays (below custom max).
+        assert_eq!(max_priority_fee_per_gas.as_deref(), Some("1000000000"));
+        assert!(base.with_custom_max_fee_gwei("").is_err());
+        assert!(base.with_custom_max_fee_gwei("0").is_err());
     }
 }
