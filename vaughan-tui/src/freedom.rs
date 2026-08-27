@@ -47,6 +47,19 @@ pub fn display_host(url: &str) -> String {
 
 /// Open `url` in Vaughan dApp browser if present, else Freedom (never `xdg-open`).
 pub fn open_dapp_url(url: &str) -> Result<String, String> {
+    open_dapp_url_with_cmds(
+        url,
+        env::var(dapp_browser::DAPP_BROWSER_CMD_ENV).ok().as_deref(),
+        env::var("VAUGHAN_FREEDOM_CMD").ok().as_deref(),
+    )
+}
+
+/// [`open_dapp_url`] with explicit command overrides (tests; `None` = probe).
+fn open_dapp_url_with_cmds(
+    url: &str,
+    dapp_browser_cmd: Option<&str>,
+    freedom_cmd: Option<&str>,
+) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("empty URL".into());
@@ -56,15 +69,15 @@ pub fn open_dapp_url(url: &str) -> Result<String, String> {
         return Err("URL must be http or https".into());
     }
 
-    match dapp_browser::try_open(url) {
+    match dapp_browser::try_open_with_cmd(url, dapp_browser_cmd) {
         Ok(msg) => return Ok(msg),
         Err(e) => {
             tracing::debug!(error = %e, "vaughan-dapp-browser unavailable; trying Freedom");
         }
     }
 
-    if let Ok(raw) = env::var("VAUGHAN_FREEDOM_CMD") {
-        return spawn_freedom_cmd(&raw, url);
+    if let Some(raw) = freedom_cmd {
+        return spawn_freedom_cmd(raw, url);
     }
 
     for bin in ["freedom-browser", "Freedom", "freedom"] {
@@ -155,25 +168,17 @@ mod tests {
 
     #[test]
     fn missing_browsers_prompts_install() {
-        // Force both soft-launch paths to fail (workspace may have built the binary).
-        unsafe {
-            env::set_var(
-                "VAUGHAN_DAPP_BROWSER_CMD",
-                "vaughan-dapp-browser-not-installed-for-tests",
-            );
-            env::set_var(
-                "VAUGHAN_FREEDOM_CMD",
-                "vaughan-freedom-not-installed-for-tests",
-            );
-        }
-        let err = open_dapp_url("https://app.pulsex.com/").unwrap_err();
+        // Explicit bogus commands force both soft-launch paths to fail —
+        // no env mutation (process-global, unsafe on edition 2024).
+        let err = open_dapp_url_with_cmds(
+            "https://app.pulsex.com/",
+            Some("vaughan-dapp-browser-not-installed-for-tests"),
+            Some("vaughan-freedom-not-installed-for-tests"),
+        )
+        .unwrap_err();
         assert!(
             err.contains("Install") || err.contains("VAUGHAN_FREEDOM_CMD"),
             "expected install prompt, got: {err}"
         );
-        unsafe {
-            env::remove_var("VAUGHAN_DAPP_BROWSER_CMD");
-            env::remove_var("VAUGHAN_FREEDOM_CMD");
-        }
     }
 }

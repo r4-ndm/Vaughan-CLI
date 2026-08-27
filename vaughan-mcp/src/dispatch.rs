@@ -208,7 +208,7 @@ impl McpDispatcher {
         args: Value,
         ctx: &McpContext,
     ) -> Result<Value, String> {
-        guard_mainnet_write(ctx.chain_id, ctx.is_testnet).map_err(|e| e.to_string())?;
+        guard_mainnet_write(ctx.is_testnet).map_err(|e| e.to_string())?;
 
         let tool_ctx = ToolContext {
             rpc_url: ctx.rpc_url.clone(),

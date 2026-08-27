@@ -129,7 +129,7 @@ fn settings_view_enter_switches_network_and_publishes_event() {
 
     // Connected dApps are notified with the new chain id.
     let notification = rx.try_recv().expect("chainChanged event must fire");
-    let value: Value = serde_json::from_str(&notification).unwrap();
+    let value: Value = serde_json::from_str(&notification.to_notification()).unwrap();
     assert_eq!(value["method"], "chainChanged");
     assert_eq!(value["params"], "0x171");
 }

@@ -54,9 +54,12 @@ const EVENT_CAPACITY: usize = 64;
 ///
 /// The server holds a reference and subscribes per connection; the host
 /// keeps a handle and calls [`EventBus::publish`] on account/chain changes.
+/// Events travel as values (not pre-serialized) so the server can filter
+/// per connection — e.g. non-empty `accountsChanged` only reaches clients
+/// whose origin holds a Connect grant.
 #[derive(Clone)]
 pub struct EventBus {
-    tx: broadcast::Sender<String>,
+    tx: broadcast::Sender<ProviderEvent>,
 }
 
 impl Default for EventBus {
@@ -74,13 +77,12 @@ impl EventBus {
 
     /// Publish an event to all connected clients.
     pub fn publish(&self, event: ProviderEvent) {
-        let notification = event.to_notification();
         // Ignore the send error: with zero receivers there is nothing to do.
-        let _ = self.tx.send(notification);
+        let _ = self.tx.send(event);
     }
 
     /// Subscribe to the event stream (used by the server per connection).
-    pub fn subscribe(&self) -> broadcast::Receiver<String> {
+    pub fn subscribe(&self) -> broadcast::Receiver<ProviderEvent> {
         self.tx.subscribe()
     }
 }
@@ -110,7 +112,9 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
         bus.publish(ProviderEvent::ChainChanged("0x1".into()));
-        let notification = rx.recv().await.unwrap();
-        assert!(notification.contains("\"method\":\"chainChanged\""));
+        let event = rx.recv().await.unwrap();
+        assert!(event
+            .to_notification()
+            .contains("\"method\":\"chainChanged\""));
     }
 }

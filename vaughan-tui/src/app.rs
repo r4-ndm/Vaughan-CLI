@@ -230,6 +230,9 @@ enum PendingReply {
 const APPROVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 /// Auto-deny stale prompts (dApps typically time out around 30–60s).
 const APPROVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Bound on queues into the UI thread (provider requests, MCP requests, job
+/// results) — a flooding client gets backpressure instead of unbounded growth.
+const UI_QUEUE_CAPACITY: usize = 256;
 
 /// Root application state.
 pub struct App {
@@ -242,10 +245,10 @@ pub struct App {
     /// Provider events published to connected dApps (chain/account changes).
     events: EventBus,
     /// Requests forwarded from the provider server; drained on the UI thread.
-    host_rx: mpsc::UnboundedReceiver<HostRequest>,
+    host_rx: mpsc::Receiver<HostRequest>,
     /// Background job results (balance / fee / send).
-    job_tx: mpsc::UnboundedSender<UiJobResult>,
-    job_rx: mpsc::UnboundedReceiver<UiJobResult>,
+    job_tx: mpsc::Sender<UiJobResult>,
+    job_rx: mpsc::Receiver<UiJobResult>,
     /// Animation tick for spinners.
     tick: u64,
     /// The approval currently on screen, if any.
@@ -256,13 +259,18 @@ pub struct App {
     chrome: ChromeSnapshot,
     /// MCP control plane (session + loopback listener).
     mcp: McpService,
-    mcp_rx: mpsc::UnboundedReceiver<McpHostRequest>,
+    mcp_rx: mpsc::Receiver<McpHostRequest>,
     /// Session-scoped broadcasts for History cancel / speed-up.
     recent_broadcasts: Vec<BroadcastEntry>,
     /// Local EIP-1193 bridge listen state (Freedom Connect Vaughan).
     bridge_status: BridgeStatusHandle,
     /// Sites granted `eth_requestAccounts` this unlock session (page/WS origin).
-    connected_sites: std::collections::HashSet<String>,
+    /// Shared with the provider server so `accountsChanged` is relayed only to
+    /// granted origins.
+    connected_sites: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    /// Session-scoped circuit breaker for sentient auto-exec (created lazily,
+    /// dropped on lock so tripwires reset with the session).
+    sentient_breaker: Option<vaughan_agent::CircuitBreaker>,
 }
 
 impl App {
@@ -278,12 +286,22 @@ impl App {
             Screen::Dashboard
         };
         let events = EventBus::new();
-        let (host_tx, host_rx) = mpsc::unbounded_channel();
-        let (mcp_tx, mcp_rx) = mpsc::unbounded_channel();
-        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        // Bounded queues into the UI thread: a flooding client gets
+        // backpressure/an error instead of growing memory unboundedly.
+        let (host_tx, host_rx) = mpsc::channel(UI_QUEUE_CAPACITY);
+        let (mcp_tx, mcp_rx) = mpsc::channel(UI_QUEUE_CAPACITY);
+        let (job_tx, job_rx) = mpsc::channel(UI_QUEUE_CAPACITY);
         let bridge_status = provider::new_bridge_status();
         let profile_dir = profile_dir(wallet.path());
         let dapp_origins = wallet.trusted_dapp_origins();
+        // Grants persist across restarts (origins only, no secrets) and
+        // are cleared on explicit lock — see core::site_grants.
+        let connected_sites = std::sync::Arc::new(std::sync::RwLock::new(
+            vaughan_core::core::site_grants::load(&profile_dir).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "site grants load failed; starting empty");
+                std::collections::HashSet::new()
+            }),
+        ));
         provider::spawn_provider_server(
             &handle,
             host_tx,
@@ -291,6 +309,7 @@ impl App {
             dapp_origins,
             bridge_status.clone(),
             profile_dir.clone(),
+            connected_sites.clone(),
         );
         let mcp = McpService::new(&profile_dir, mcp_tx);
         let mut app = Self {
@@ -314,17 +333,23 @@ impl App {
             mcp_rx,
             recent_broadcasts: Vec::new(),
             bridge_status,
-            // Grants persist across restarts (origins only, no secrets) and
-            // are cleared on explicit lock — see core::site_grants.
-            connected_sites: vaughan_core::core::site_grants::load(&profile_dir).unwrap_or_else(
-                |e| {
-                    tracing::warn!(error = %e, "site grants load failed; starting empty");
-                    std::collections::HashSet::new()
-                },
-            ),
+            connected_sites,
+            sentient_breaker: None,
         };
         app.navigate(screen);
         Ok(app)
+    }
+
+    /// Lazily create the session circuit breaker for sentient auto-exec.
+    fn sentient_breaker(&mut self) -> Result<vaughan_agent::CircuitBreaker, ProviderError> {
+        if self.sentient_breaker.is_none() {
+            let breaker = {
+                let wallet = self.wallet();
+                crate::sentient_mcp::new_session_breaker(&wallet)?
+            };
+            self.sentient_breaker = Some(breaker);
+        }
+        Ok(self.sentient_breaker.as_ref().unwrap().clone())
     }
 
     pub fn wallet(&self) -> std::sync::MutexGuard<'_, WalletState> {
@@ -490,7 +515,8 @@ impl App {
             GlobalAction::Lock => {
                 if self.wallet().is_unlocked() {
                     self.mcp.on_lock();
-                    self.connected_sites.clear();
+                    self.connected_sites.write().unwrap().clear();
+                    self.sentient_breaker = None;
                     if let Some(dir) = self.wallet().path().parent() {
                         if let Err(e) = vaughan_core::core::site_grants::clear(dir) {
                             tracing::warn!(error = %e, "site grants clear failed");
@@ -588,7 +614,7 @@ impl App {
         while let Ok(request) = self.host_rx.try_recv() {
             match request {
                 HostRequest::Accounts { site, reply } => {
-                    let accounts = if self.connected_sites.contains(&site) {
+                    let accounts = if self.connected_sites.read().unwrap().contains(&site) {
                         self.visible_accounts()
                     } else {
                         Vec::new()
@@ -605,7 +631,7 @@ impl App {
                         )));
                         continue;
                     }
-                    if self.connected_sites.contains(&site) {
+                    if self.connected_sites.read().unwrap().contains(&site) {
                         let _ = reply.send(Ok(self.visible_accounts()));
                         continue;
                     }
@@ -692,7 +718,7 @@ impl App {
                     // Extension-path requests must hold a Connect grant first
                     // (MetaMask parity; stops prompt-spam from sites the user
                     // never connected). Freedom's transport is exempt.
-                    if requires_grant && !self.connected_sites.contains(&site) {
+                    if requires_grant && !self.connected_sites.read().unwrap().contains(&site) {
                         let _ = reply.send(Err(ProviderError::Unauthorized(
                             "site not connected; call eth_requestAccounts first".into(),
                         )));
@@ -798,11 +824,15 @@ impl App {
                             source = %source,
                             "sentient auto-exec MCP proposal"
                         );
-                        let result = crate::sentient_mcp::auto_exec_mcp_proposal(
-                            &self.wallet(),
-                            &self.handle,
-                            &kind,
-                        );
+                        let result = match self.sentient_breaker() {
+                            Ok(breaker) => crate::sentient_mcp::auto_exec_mcp_proposal(
+                                &self.wallet(),
+                                &self.handle,
+                                &breaker,
+                                &kind,
+                            ),
+                            Err(e) => Err(e),
+                        };
                         if let Some(r) = reply {
                             let _ = r.send(result);
                         }
@@ -912,8 +942,15 @@ impl App {
                         balance_display: note.balance_formatted.clone(),
                     };
                     if crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name()) {
-                        let result =
-                            provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                        let result = match self.sentient_breaker() {
+                            Ok(breaker) => crate::sentient_mcp::auto_exec_stealth_sweep(
+                                &self.wallet(),
+                                &self.handle,
+                                &breaker,
+                                &kind,
+                            ),
+                            Err(e) => Err(e),
+                        };
                         let _ = reply.send(result);
                         continue;
                     }
@@ -962,7 +999,9 @@ impl App {
     /// write only means the next restart asks dApps to reconnect once more).
     fn persist_connected_sites(&self) {
         if let Some(dir) = self.wallet().path().parent() {
-            if let Err(e) = vaughan_core::core::site_grants::save(dir, &self.connected_sites) {
+            if let Err(e) =
+                vaughan_core::core::site_grants::save(dir, &self.connected_sites.read().unwrap())
+            {
                 tracing::warn!(error = %e, "site grants save failed");
             }
         }
@@ -1083,7 +1122,7 @@ impl App {
         match pending.reply {
             PendingReply::Accounts(reply) => {
                 if let ApprovalKind::Connect { site } = &pending.kind {
-                    self.connected_sites.insert(site.clone());
+                    self.connected_sites.write().unwrap().insert(site.clone());
                     self.persist_connected_sites();
                 }
                 let _ = reply.send(Ok(self.visible_accounts()));
@@ -1690,7 +1729,9 @@ impl App {
                     UiJobResult::Send(handle.block_on(w.replace_broadcast(&entry, kind)))
                 }
             };
-            let _ = tx.send(result);
+            // Plain std thread: blocking_send applies backpressure if the UI
+            // queue is full; Err means the UI is gone, result is droppable.
+            let _ = tx.blocking_send(result);
         });
     }
 

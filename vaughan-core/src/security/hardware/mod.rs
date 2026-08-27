@@ -7,6 +7,12 @@
 //! - [`ledger`] — Ledger HID (Phase 1)
 //! - [`mock`] — Anvil/CI stand-in (no USB)
 //! - [`profiles`] — per-family encode/sign helpers (EVM first)
+//!
+//! Layering note: this module imports `crate::chains::EvmTransaction` — a
+//! deliberate, types-only exception to the chains/security split. The signer
+//! consumes the transaction *description* (a plain serde struct from
+//! `chains::types`), never chain behaviour; the dependency is one-directional
+//! (`chains` never imports `security`).
 
 pub mod backend;
 pub mod ledger;

@@ -5,7 +5,7 @@
 //! Secrets are zeroized after encrypt/decrypt; never log this plaintext.
 
 use alloy::signers::local::PrivateKeySigner;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use zeroize::Zeroize;
@@ -13,7 +13,10 @@ use zeroize::Zeroize;
 use crate::error::WalletError;
 
 /// Versioned secrets payload stored inside [`EncryptedVault`] ciphertext.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Deliberately **not** `Debug` (would print the mnemonic) or `Clone`
+/// (untracked copies of secret material) — see the security guardrails.
+#[derive(Serialize, Deserialize)]
 pub struct VaultSecrets {
     pub mnemonic: String,
     #[serde(default)]
@@ -21,7 +24,9 @@ pub struct VaultSecrets {
 }
 
 /// One imported EOA private key (hex), kept only inside the encrypted vault.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// No `Debug`/`Clone` for the same reason as [`VaultSecrets`].
+#[derive(Serialize, Deserialize)]
 pub struct ImportedKeyRecord {
     pub label: String,
     /// Hex private key (`0x`-optional). Zeroized when the parent payload is.
@@ -93,19 +98,6 @@ pub fn private_key_hex(signer: &PrivateKeySigner) -> SecretString {
     let bytes = signer.to_bytes();
     let hex = format!("0x{}", hex::encode(bytes));
     SecretString::new(hex)
-}
-
-/// Validate that `password` decrypts the current vault (wrong password → error).
-pub fn assert_password(
-    vault: &crate::security::encryption::EncryptedVault,
-    password: &SecretString,
-) -> Result<(), WalletError> {
-    let mut plaintext = crate::security::encryption::decrypt(vault, password)?;
-    // Touch the bytes so a wrong password still fails the same path.
-    let _ = plaintext.first();
-    plaintext.zeroize();
-    let _ = password.expose_secret();
-    Ok(())
 }
 
 #[cfg(test)]

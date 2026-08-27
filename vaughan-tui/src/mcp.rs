@@ -69,13 +69,13 @@ pub struct McpService {
     profile_dir: std::path::PathBuf,
     session: Option<McpSessionToken>,
     listener: ListenerState,
-    requests: mpsc::UnboundedSender<McpHostRequest>,
+    requests: mpsc::Sender<McpHostRequest>,
     surfaced: HashSet<String>,
     snapshot: Arc<RwLock<McpSessionSnapshot>>,
 }
 
 impl McpService {
-    pub fn new(profile_dir: &Path, requests: mpsc::UnboundedSender<McpHostRequest>) -> Self {
+    pub fn new(profile_dir: &Path, requests: mpsc::Sender<McpHostRequest>) -> Self {
         Self {
             profile_dir: profile_dir.to_path_buf(),
             session: None,
@@ -155,18 +155,20 @@ impl McpService {
                 continue;
             }
             self.surfaced.insert(id.clone());
-            let _ = self.requests.send(McpHostRequest::Propose {
+            if let Err(e) = self.requests.try_send(McpHostRequest::Propose {
                 proposal: Box::new(queued.proposal),
                 source: queued.source,
                 reply: None,
-            });
+            }) {
+                tracing::warn!(target: "vaughan_tui::mcp", "UI queue full, dropping queued proposal: {e}");
+            }
             break;
         }
     }
 }
 
 struct TuiMcpBackend {
-    ui_tx: mpsc::UnboundedSender<McpHostRequest>,
+    ui_tx: mpsc::Sender<McpHostRequest>,
     snapshot: Arc<RwLock<McpSessionSnapshot>>,
 }
 
@@ -208,7 +210,7 @@ impl McpHostBackend for TuiMcpBackend {
         };
         let net = get_network_by_id(&network_id)
             .ok_or_else(|| format!("unknown network: {network_id}"))?;
-        guard_mainnet_write(proposal.chain_id, net.is_testnet).map_err(|e| e.to_string())?;
+        guard_mainnet_write(net.is_testnet).map_err(|e| e.to_string())?;
         if proposal.chain_id != 0 && proposal.chain_id != chain_id {
             return Err(format!(
                 "network_mismatch: proposal chain_id {} != active {chain_id}",
@@ -223,6 +225,7 @@ impl McpHostBackend for TuiMcpBackend {
                 source: source.to_string(),
                 reply: Some(reply_tx),
             })
+            .await
             .map_err(|_| "wallet UI is closed".to_string())?;
         match reply_rx.await {
             Ok(Ok(tx_hash)) => Ok(McpProposeOutcome::Approved { tx_hash }),
@@ -237,6 +240,7 @@ impl McpHostBackend for TuiMcpBackend {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.ui_tx
             .send(McpHostRequest::StealthUri { reply: reply_tx })
+            .await
             .map_err(|_| "wallet UI is closed".to_string())?;
         match reply_rx.await {
             Ok(Ok(uri)) => Ok(uri),
@@ -249,6 +253,7 @@ impl McpHostBackend for TuiMcpBackend {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.ui_tx
             .send(McpHostRequest::StealthScan { reply: reply_tx })
+            .await
             .map_err(|_| "wallet UI is closed".to_string())?;
         match reply_rx.await {
             Ok(Ok(data)) => Ok(data),
@@ -264,6 +269,7 @@ impl McpHostBackend for TuiMcpBackend {
                 stealth_address: stealth_address.to_string(),
                 reply: reply_tx,
             })
+            .await
             .map_err(|_| "wallet UI is closed".to_string())?;
         match reply_rx.await {
             Ok(Ok(tx_hash)) => Ok(tx_hash),
@@ -275,7 +281,7 @@ impl McpHostBackend for TuiMcpBackend {
 
 async fn run_listener(
     stop: Arc<AtomicBool>,
-    ui_tx: mpsc::UnboundedSender<McpHostRequest>,
+    ui_tx: mpsc::Sender<McpHostRequest>,
     session_token: String,
     profile_dir: std::path::PathBuf,
     snapshot: Arc<RwLock<McpSessionSnapshot>>,

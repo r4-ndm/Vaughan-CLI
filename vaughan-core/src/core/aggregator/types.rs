@@ -28,20 +28,6 @@ pub struct AggQuoteRequest {
     pub account: Option<Address>,
 }
 
-impl AggQuoteRequest {
-    pub fn erc20(token_in: Address, token_out: Address, amount_in: U256) -> Self {
-        Self {
-            token_in,
-            token_out,
-            token_in_is_native: false,
-            token_out_is_native: false,
-            amount_in,
-            slippage_percent: 0.5,
-            account: None,
-        }
-    }
-}
-
 /// Calldata ready for the wallet’s approve → send path.
 #[derive(Debug, Clone)]
 pub struct AggExecTx {

@@ -209,12 +209,6 @@ impl WalletState {
         })
     }
 
-    /// Load wallet state for a named profile (e.g. "default", "sentient").
-    pub fn load_profile(profile_name: &str, mode: OperatingMode) -> Result<Self, WalletError> {
-        let path = StateManager::profile_path(profile_name)?;
-        Self::load_with_session(path, mode, profile_name)
-    }
-
     /// The active operating mode for this session.
     pub fn operating_mode(&self) -> OperatingMode {
         self.session_mode

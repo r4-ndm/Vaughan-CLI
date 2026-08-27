@@ -725,11 +725,6 @@ fn lerp_stops(stops: &[(f64, Rgb)], t: f64) -> Color {
     )
 }
 
-/// Colour at normalised position `t` ∈ [0, 1] along the box fade.
-pub fn fade_color(t: f64) -> Color {
-    fade_color_with(FadePalette::Box, t)
-}
-
 /// Colour at normalised position `t` ∈ [0, 1] along `palette`.
 pub fn fade_color_with(palette: FadePalette, t: f64) -> Color {
     match palette {
@@ -871,11 +866,6 @@ pub fn fade_line(text: &str) -> Line<'static> {
 /// One [`Line`] faded with the given palette.
 pub fn fade_line_with(text: &str, palette: FadePalette) -> Line<'static> {
     Line::from(fade_spans_with(text, palette))
-}
-
-/// One styled span per character, colour lerped along the box fade.
-pub fn fade_spans(text: &str) -> Vec<Span<'static>> {
-    fade_spans_with(text, FadePalette::Box)
 }
 
 /// One styled span per character along `palette`.

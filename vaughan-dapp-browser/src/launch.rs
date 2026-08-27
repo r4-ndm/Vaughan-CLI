@@ -247,15 +247,29 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     let profile = base.join("profile");
     let ext = base.join("ext");
     let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&profile).map_err(|e| format!("profile: {e}"))?;
-    // The extension bundle embeds the provider session token; /tmp is shared,
-    // so the session dir must be owner-only (matches provider.session 0o600).
+    // Create the session dir atomically and owner-only. The extension bundle
+    // embeds the provider session token and $TMPDIR is shared: a plain
+    // create_dir_all between the remove and create would follow a symlink
+    // planted by another local user, leaking the token into their directory.
+    // `create` fails if anything appears in between, so races fail closed.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("session dir permissions: {e}"))?;
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&base)
+            .map_err(|e| format!("session dir: {e}"))?;
     }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(&base).map_err(|e| format!("session dir: {e}"))?;
+    }
+    // Defense in depth: never write the token-bearing bundle through a link.
+    let meta = std::fs::symlink_metadata(&base).map_err(|e| format!("session dir stat: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err("session dir is not a real directory".into());
+    }
+    std::fs::create_dir_all(&profile).map_err(|e| format!("profile: {e}"))?;
     write_inject_extension(&ext, &opts.provider_ws)?;
 
     eprintln!("vaughan-dapp-browser: chrome={chrome}");

@@ -34,8 +34,9 @@ pub struct RequestCtx {
     /// Page origin as attested by the Vaughan extension's service worker
     /// (`vaughan_page_origin` on the JSON-RPC request, derived from
     /// Chrome's `port.sender.url` — not page-supplied). Prefer this for
-    /// approve UI / connect grants. Still client-asserted for non-extension
-    /// transports (e.g. Freedom), which is acceptable for display.
+    /// approve UI / connect grants. The server only propagates it from
+    /// handshake origins configured via
+    /// [`crate::server::ProviderServer::with_page_origin_issuers`].
     pub page_origin: Option<String>,
 }
 

@@ -201,28 +201,6 @@ impl AgentSessionPolicy {
             enforcement: self.enforcement,
         })
     }
-
-    /// Human-readable summary for `/policy` and system banners.
-    pub fn summary_lines(&self) -> Vec<String> {
-        let unsafe_note = if self.enforcement == EnforcementMode::Disabled {
-            " ⚠ UNSAFE — breakers off (Esc still stops)"
-        } else {
-            ""
-        };
-        vec![
-            format!("enforcement: {}{}", self.enforcement.as_str(), unsafe_note),
-            format!("max_position_pct: {}%", self.max_position_pct),
-            format!(
-                "max_slippage_bps: {} ({}%)",
-                self.max_slippage_bps,
-                self.max_slippage_bps as f64 / 100.0
-            ),
-            format!("max_session_gas_wei: {}", self.max_session_gas_wei),
-            format!("max_consecutive_errors: {}", self.max_consecutive_errors),
-            format!("required_rpc_quorum: {}", self.required_rpc_quorum),
-            format!("acknowledge_unsafe: {}", self.acknowledge_unsafe),
-        ]
-    }
 }
 
 /// AI-proposed policy change awaiting human `[a]` / `[d]` (does not sign txs).
@@ -236,23 +214,6 @@ pub struct PolicyProposal {
     pub after: AgentSessionPolicy,
     /// Human-readable diff lines (`max_slippage_bps: 100 → 500`).
     pub changes: Vec<String>,
-}
-
-impl PolicyProposal {
-    pub fn summary_card(&self) -> Vec<String> {
-        let mut lines = vec![
-            format!("Policy proposal {}", self.proposal_id),
-            self.llm_explanation.clone(),
-            String::new(),
-            "Changes:".into(),
-        ];
-        lines.extend(self.changes.iter().cloned());
-        if self.after.enforcement == EnforcementMode::Disabled {
-            lines.push(String::new());
-            lines.push("⚠ Would DISABLE breakers (Esc still emergency-stops).".into());
-        }
-        lines
-    }
 }
 
 /// Build a [`PolicyProposal`] from a list of key/value patches on `before`.

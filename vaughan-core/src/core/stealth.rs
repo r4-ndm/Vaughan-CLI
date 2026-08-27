@@ -9,7 +9,6 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
 
 use crate::chains::evm::adapter::EvmAdapter;
-use crate::chains::evm::networks::eip3770_short_name;
 use crate::chains::{ChainAdapter, ChainTransaction, Fee, FeeDetails, TxHash};
 use crate::core::transaction::TransactionService;
 use crate::core::wallet::WalletState;
@@ -274,11 +273,6 @@ fn stealth_gas_cost_wei(fee: &Fee) -> Result<U256, WalletError> {
 /// Re-export for TUI matching of recipient fields.
 pub fn looks_like_stealth_uri(s: &str) -> bool {
     StealthMetaAddress::looks_like_uri(s)
-}
-
-/// `st:<short>:` prefix for the given chain id.
-pub fn chain_stealth_prefix(chain_id: u64) -> String {
-    format!("st:{}:", eip3770_short_name(chain_id))
 }
 
 #[cfg(test)]

@@ -73,6 +73,19 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
     });
 
     let session = token.as_str().to_string();
+    // Session-scoped circuit breaker: shared across connections so cumulative
+    // gas and consecutive-error tripwires accumulate for the whole serve run.
+    let breaker = if mcp_auto_exec_enabled(&profile) {
+        let w = wallet
+            .lock()
+            .map_err(|_| anyhow::anyhow!("wallet lock poisoned"))?;
+        Some(
+            sentient_mcp::new_session_breaker(&w)
+                .map_err(|e| anyhow::anyhow!("sentient policy: {e}"))?,
+        )
+    } else {
+        None
+    };
     while !stop.load(Ordering::SeqCst) {
         let accept =
             tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept()).await;
@@ -85,6 +98,7 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
             profile_dir: profile_dir.clone(),
             profile_name: profile.clone(),
             session_token: session.clone(),
+            breaker: breaker.clone(),
         };
         let token = session.clone();
         let dir = profile_dir.clone();
@@ -112,6 +126,7 @@ struct ServeMcpBackend {
     profile_dir: PathBuf,
     profile_name: String,
     session_token: String,
+    breaker: Option<vaughan_agent::CircuitBreaker>,
 }
 
 #[async_trait]
@@ -136,15 +151,20 @@ impl McpHostBackend for ServeMcpBackend {
         source: &str,
         proposal: TxProposal,
     ) -> Result<McpProposeOutcome, String> {
-        execute_propose(
-            &self.wallet,
-            &self.handle,
-            &self.profile_dir,
-            &self.profile_name,
-            source,
-            proposal,
-            &self.session_token,
-        )
+        // block_in_place: execute_propose drives Handle::block_on internally,
+        // which panics if called directly on a runtime worker thread.
+        tokio::task::block_in_place(|| {
+            execute_propose(
+                &self.wallet,
+                &self.handle,
+                &self.profile_dir,
+                &self.profile_name,
+                source,
+                proposal,
+                &self.session_token,
+                self.breaker.as_ref(),
+            )
+        })
     }
 
     async fn stealth_uri(&self) -> Result<String, String> {
@@ -153,12 +173,12 @@ impl McpHostBackend for ServeMcpBackend {
     }
 
     async fn stealth_scan(&self) -> Result<Value, String> {
-        let notes = {
+        let notes = tokio::task::block_in_place(|| {
             let w = self.wallet.lock().map_err(|_| "wallet lock poisoned")?;
             self.handle
                 .block_on(w.scan_stealth_notes())
-                .map_err(|e| e.to_string())?
-        };
+                .map_err(|e| e.to_string())
+        })?;
         let rows: Vec<_> = notes
             .iter()
             .map(|n| {
@@ -181,28 +201,31 @@ impl McpHostBackend for ServeMcpBackend {
                     .into(),
             );
         }
-        let w = self
-            .wallet
-            .lock()
-            .map_err(|_| "wallet lock poisoned".to_string())?;
-        let notes = self
-            .handle
-            .block_on(w.scan_stealth_notes())
-            .map_err(|e| e.to_string())?;
-        let note = notes
-            .into_iter()
-            .find(|n| {
-                format!("{:#x}", n.announcement.stealth_address)
-                    .eq_ignore_ascii_case(stealth_address)
-            })
-            .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
-        self.handle
-            .block_on(w.sweep_stealth_note(&note))
-            .map(|h| h.to_string())
-            .map_err(|e| e.to_string())
+        tokio::task::block_in_place(|| {
+            let w = self
+                .wallet
+                .lock()
+                .map_err(|_| "wallet lock poisoned".to_string())?;
+            let notes = self
+                .handle
+                .block_on(w.scan_stealth_notes())
+                .map_err(|e| e.to_string())?;
+            let note = notes
+                .into_iter()
+                .find(|n| {
+                    format!("{:#x}", n.announcement.stealth_address)
+                        .eq_ignore_ascii_case(stealth_address)
+                })
+                .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
+            self.handle
+                .block_on(w.sweep_stealth_note(&note))
+                .map(|h| h.to_string())
+                .map_err(|e| e.to_string())
+        })
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_propose(
     wallet: &Arc<Mutex<WalletState>>,
     handle: &Handle,
@@ -211,11 +234,12 @@ fn execute_propose(
     source: &str,
     proposal: TxProposal,
     session_token: &str,
+    breaker: Option<&vaughan_agent::CircuitBreaker>,
 ) -> Result<McpProposeOutcome, String> {
     {
         let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
         let net = w.networks().active();
-        guard_mainnet_write(proposal.chain_id, net.is_testnet).map_err(|e| e.to_string())?;
+        guard_mainnet_write(net.is_testnet).map_err(|e| e.to_string())?;
         if proposal.chain_id != 0 && proposal.chain_id != net.chain_id {
             return Err(format!(
                 "network_mismatch: proposal chain_id {} != active {}",
@@ -232,9 +256,10 @@ fn execute_propose(
     };
 
     if mcp_auto_exec_enabled(profile_name) {
+        let breaker = breaker.ok_or_else(|| "sentient circuit breaker unavailable".to_string())?;
         let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
-        let hash =
-            sentient_mcp::auto_exec_mcp_proposal(&w, handle, &kind).map_err(|e| e.to_string())?;
+        let hash = sentient_mcp::auto_exec_mcp_proposal(&w, handle, breaker, &kind)
+            .map_err(|e| e.to_string())?;
         return Ok(McpProposeOutcome::Approved { tx_hash: hash });
     }
 

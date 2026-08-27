@@ -42,15 +42,6 @@ impl OperatingMode {
             Self::DegenTrader => "Degen Bot (Autonomous Trader)",
         }
     }
-
-    /// Short mode tag for header badges.
-    pub fn badge(&self) -> &'static str {
-        match self {
-            Self::HumanOnly => "HUMAN",
-            Self::AiAssisted => "AI-ASSIST",
-            Self::DegenTrader => "DEGEN-BOT",
-        }
-    }
 }
 
 impl fmt::Display for OperatingMode {

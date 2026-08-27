@@ -16,7 +16,6 @@ use vaughan_core::chains::{TxRecord, TxStatus};
 use vaughan_core::core::{
     format_base_units, mark_replaced, push_recent, BroadcastEntry, ReplaceKind, WalletState,
 };
-use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -162,10 +161,6 @@ impl HistoryView {
             }
             _ => {}
         }
-    }
-
-    pub fn apply_activity(&mut self, result: Result<Vec<TxRecord>, WalletError>) {
-        self.apply_job_result(UiJobResult::Activity(result));
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {

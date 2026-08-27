@@ -31,14 +31,6 @@ impl DashboardView {
         }
     }
 
-    pub fn with_balance(result: Result<Balance, WalletError>) -> Self {
-        let mut v = Self::loading();
-        if let Err(e) = result {
-            v.send.status = e.user_message();
-        }
-        v
-    }
-
     pub fn for_asset(balance: Balance) -> Self {
         Self {
             send: SendView::for_asset(balance),

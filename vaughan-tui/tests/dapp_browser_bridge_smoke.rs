@@ -39,9 +39,9 @@ async fn spawn_dapp_provider_stack(
 ) -> (
     tokio::task::JoinHandle<Result<(), ProviderError>>,
     String,
-    mpsc::UnboundedReceiver<HostRequest>,
+    mpsc::Receiver<HostRequest>,
 ) {
-    let (requests, rx) = mpsc::unbounded_channel();
+    let (requests, rx) = mpsc::channel(16);
     let host = ProviderHost::new(requests);
     let handler = Eip1193Handler::new(Arc::new(host));
     let server = vaughan_provider::ProviderServer::bind(0)
@@ -55,10 +55,7 @@ async fn spawn_dapp_provider_stack(
     (task, url, rx)
 }
 
-async fn run_approval_consumer(
-    mut rx: mpsc::UnboundedReceiver<HostRequest>,
-    mut wallet: WalletState,
-) {
+async fn run_approval_consumer(mut rx: mpsc::Receiver<HostRequest>, mut wallet: WalletState) {
     let mut connected = std::collections::HashSet::<String>::new();
     while let Some(request) = rx.recv().await {
         match request {

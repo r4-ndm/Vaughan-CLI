@@ -51,11 +51,6 @@ impl DegenTrader {
         self
     }
 
-    /// Toggle dry-run without rebuilding the trader (habit: paper then live).
-    pub fn set_dry_run(&mut self, dry_run: bool) {
-        self.dry_run = dry_run;
-    }
-
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
     }
@@ -68,16 +63,6 @@ impl DegenTrader {
     /// Access the circuit breaker state.
     pub fn circuit_breaker(&self) -> &CircuitBreaker {
         &self.circuit_breaker
-    }
-
-    /// Hot-reload breaker limits from a session policy (does not clear Esc trip).
-    pub fn apply_breaker_config(&self, config: CircuitBreakerConfig) {
-        self.circuit_breaker.replace_config(config);
-    }
-
-    /// Trigger immediate emergency stop.
-    pub fn emergency_stop(&self, reason: impl Into<String>) {
-        self.circuit_breaker.trip(reason);
     }
 
     /// Execute a DEX swap autonomously with multi-RPC quorum validation and circuit breakers.

@@ -80,10 +80,6 @@ impl AssetsView {
         }
     }
 
-    pub fn selected_balance(&self) -> Option<&Balance> {
-        self.assets.get(self.selected)
-    }
-
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         let [content, status_area] = body_areas(area);
         let net = wallet.networks().active();

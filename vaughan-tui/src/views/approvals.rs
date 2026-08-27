@@ -15,7 +15,6 @@ use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_core::chains::AllowanceEntry;
 use vaughan_core::core::{format_base_units, WalletState};
-use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -105,10 +104,6 @@ impl ApprovalsView {
             }
             _ => {}
         }
-    }
-
-    pub fn apply_allowances(&mut self, result: Result<Vec<AllowanceEntry>, WalletError>) {
-        self.apply_job_result(UiJobResult::Allowances(result));
     }
 
     pub fn needs_reload_after_send(&self) -> bool {

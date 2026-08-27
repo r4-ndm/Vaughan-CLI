@@ -14,6 +14,11 @@ pub const DAPP_BROWSER_CDP_ENV: &str = "VAUGHAN_DAPP_BROWSER_CDP_PORT";
 
 /// Try to open `url` in `vaughan-dapp-browser`. `Err` if binary missing/fails.
 pub fn try_open(url: &str) -> Result<String, String> {
+    try_open_with_cmd(url, env::var(DAPP_BROWSER_CMD_ENV).ok().as_deref())
+}
+
+/// [`try_open`] with an explicit command override (tests; `None` = PATH probe).
+pub(crate) fn try_open_with_cmd(url: &str, cmd_override: Option<&str>) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("empty URL".into());
@@ -28,8 +33,8 @@ pub fn try_open(url: &str) -> Result<String, String> {
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|p| *p != 0);
 
-    if let Ok(raw) = env::var(DAPP_BROWSER_CMD_ENV) {
-        return spawn_cmd(&raw, url, cdp_port);
+    if let Some(raw) = cmd_override {
+        return spawn_cmd(raw, url, cdp_port);
     }
 
     for bin in ["vaughan-dapp-browser"] {

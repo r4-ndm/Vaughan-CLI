@@ -1,6 +1,6 @@
 //! Live end-to-end: Freedom Browser's real `transport.js` (Node) against a
-//! real Vaughan `ProviderServer` with the session-token gate enforced for
-//! every origin (`VAUGHAN_PROVIDER_REQUIRE_TOKEN=1`).
+//! real Vaughan `ProviderServer` with the session-token gate (required for
+//! every origin by default).
 //!
 //! Proves the parity PR contract both ways:
 //!   * token file under `$XDG_DATA_HOME/vaughan-cli/provider.session` →
@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use vaughan_core::core::ProviderSessionToken;
-use vaughan_provider::server::REQUIRE_TOKEN_ENV;
 use vaughan_provider::{Eip1193Handler, ProviderError};
 use vaughan_tui::provider::{HostRequest, ProviderHost};
 
@@ -47,7 +46,7 @@ fn freedom_repo() -> Option<String> {
 async fn spawn_token_gated_provider(
     token: &ProviderSessionToken,
 ) -> (tokio::task::JoinHandle<Result<(), ProviderError>>, String) {
-    let (requests, mut rx) = mpsc::unbounded_channel::<HostRequest>();
+    let (requests, mut rx) = mpsc::channel::<HostRequest>(16);
     let host = ProviderHost::new(requests);
     let handler = Eip1193Handler::new(Arc::new(host));
     let server = vaughan_provider::ProviderServer::bind(0)
@@ -114,8 +113,6 @@ async fn freedom_transport_session_token_end_to_end() {
         eprintln!("skipping: set FREEDOM_REPO to a Freedom Browser checkout");
         return;
     };
-    std::env::set_var(REQUIRE_TOKEN_ENV, "1");
-
     let data_dir = tempfile::tempdir().unwrap();
     let profile_dir = data_dir.path().join("vaughan-cli");
     let token = ProviderSessionToken::generate();

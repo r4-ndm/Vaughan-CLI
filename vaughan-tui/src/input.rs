@@ -12,6 +12,17 @@ use ratatui::{
     text::{Line, Span},
 };
 use secrecy::SecretString;
+use zeroize::Zeroize;
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        // Abandoned password/mnemonic fields must not leave keystrokes in
+        // freed heap. Unmasked inputs hold public data (addresses, amounts).
+        if self.masked {
+            self.buffer.zeroize();
+        }
+    }
+}
 
 /// What the input did with a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +59,11 @@ impl Input {
     }
 
     pub fn set_value(&mut self, text: impl Into<String>) {
+        // Masked inputs hold in-flight secrets: zero the old contents before
+        // the assignment can release or reuse the allocation.
+        if self.masked {
+            self.buffer.zeroize();
+        }
         self.buffer = text.into();
         self.cursor = self.buffer.len();
     }

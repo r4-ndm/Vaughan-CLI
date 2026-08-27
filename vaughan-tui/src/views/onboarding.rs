@@ -167,9 +167,16 @@ impl OnboardingView {
                 }
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if let Some(m) = self.mnemonic.as_ref() {
-                        let phrase = m.to_string();
-                        match clipboard::copy_text(&phrase) {
-                            Ok(()) => self.status = "Recovery phrase copied".into(),
+                        // Clipboard managers persist history — zero the source
+                        // copy right after the handoff and tell the user.
+                        let mut phrase = m.to_string();
+                        let copied = clipboard::copy_text(&phrase);
+                        phrase.zeroize();
+                        match copied {
+                            Ok(()) => {
+                                self.status =
+                                    "Recovery phrase copied — clear your clipboard after use".into()
+                            }
                             Err(e) => self.status = e,
                         }
                     }

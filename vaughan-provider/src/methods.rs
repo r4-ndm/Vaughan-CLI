@@ -731,11 +731,25 @@ mod tests {
         // Full stack: real WS socket → Eip1193Handler dispatch → WalletHandle.
         let handler = Eip1193Handler::new(Arc::new(fake_wallet()));
         let server = ProviderServer::bind(0).await.unwrap();
+        // Grant the test origin so non-empty accountsChanged is relayed.
+        let grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>> =
+            Default::default();
+        grants
+            .write()
+            .unwrap()
+            .insert("https://app.example".to_string());
+        let server = server.with_grants(grants);
         let url = server.url();
         let events = crate::events::EventBus::new();
         let task = tokio::spawn(server.serve(Arc::new(handler), events.clone()));
 
-        let (mut ws, _) = connect_async(&url).await.unwrap();
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&url)
+                .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://app.example".parse().unwrap());
+        let (mut ws, _) = connect_async(request).await.unwrap();
 
         // Read method over the wire.
         ws.send(Message::Text(

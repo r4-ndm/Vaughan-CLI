@@ -107,25 +107,43 @@ impl Drop for Anvil {
     }
 }
 
-/// A fresh vault in a temp dir, restored from the anvil mnemonic (funded).
-fn new_vault(dir: &Path) -> PathBuf {
-    let vault = dir.join("wallet.json");
-    let out = Command::new(bin())
+/// Restore a vault, piping the mnemonic via stdin (never argv — it would leak
+/// into the process list).
+fn restore_vault(vault: &Path, phrase: &str) {
+    use std::io::Write;
+    let mut child = Command::new(bin())
         .args(["--vault"])
-        .arg(&vault)
-        .args(["restore", ANVIL_MNEMONIC, "--password-env", PASSWORD_ENV])
+        .arg(vault)
+        .args(["restore", "--password-env", PASSWORD_ENV])
         .env(PASSWORD_ENV, PASSWORD)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("vaughan restore");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(phrase.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("vaughan restore");
     assert!(
         out.status.success(),
         "restore failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// A fresh vault in a temp dir, restored from the anvil mnemonic (funded).
+fn new_vault(dir: &Path) -> PathBuf {
+    let vault = dir.join("wallet.json");
+    restore_vault(&vault, ANVIL_MNEMONIC);
     vault
 }
 
-/// `vaughan send`; returns (status, stdout, stderr).
+/// `vaughan send --yes`; returns (status, stdout, stderr). `--yes` skips the
+/// interactive broadcast confirmation (stdin is closed under `.output()`).
 fn cli_send(vault: &PathBuf, anvil: &Anvil, args: &[&str]) -> (bool, String, String) {
     let out = Command::new(bin())
         .args(["--vault"])
@@ -136,6 +154,7 @@ fn cli_send(vault: &PathBuf, anvil: &Anvil, args: &[&str]) -> (bool, String, Str
             "pulsechain-testnet-v4",
             "--rpc-url",
             &anvil.url(),
+            "--yes",
         ])
         .args(args)
         .args(["--password-env", PASSWORD_ENV])
@@ -252,19 +271,10 @@ fn insufficient_funds_fails_cleanly() {
 
     // A fresh wallet restored from a DIFFERENT mnemonic — zero balance.
     let vault = dir.path().join("poor.json");
-    let out = Command::new(bin())
-        .args(["--vault"])
-        .arg(&vault)
-        .args([
-            "restore",
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-            "--password-env",
-            PASSWORD_ENV,
-        ])
-        .env(PASSWORD_ENV, PASSWORD)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+    restore_vault(
+        &vault,
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    );
 
     let recipient = anvil_dev_address(1);
     let (ok, _stdout, stderr) = cli_send(

@@ -37,14 +37,15 @@ pub const DEFAULT_PORT: u16 = 8745;
 /// Largest accepted JSON-RPC frame (typed-data payloads can be sizable).
 const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
-/// Env: when `1`/`true`, every client must present the session token (including Freedom).
-pub const REQUIRE_TOKEN_ENV: &str = "VAUGHAN_PROVIDER_REQUIRE_TOKEN";
+/// Max simultaneous WebSocket connections (loopback DoS guard).
+const MAX_CONNECTIONS: usize = 32;
 
-fn require_token_for_all() -> bool {
-    std::env::var(REQUIRE_TOKEN_ENV)
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
+/// The WebSocket handshake must complete within this window (slow-loris guard).
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Per-connection inbound frame cap per [`RATE_WINDOW`] (loopback DoS guard).
+const MAX_FRAMES_PER_WINDOW: u32 = 128;
+const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
@@ -133,9 +134,15 @@ pub struct ProviderServer {
     listener: TcpListener,
     local_addr: SocketAddr,
     trusted_hosts: TrustedHosts,
-    /// When set, Chromium extension clients must present this token; Freedom
-    /// Origin may omit it unless [`REQUIRE_TOKEN_ENV`] is set.
+    /// When set, every client must present this token — no per-origin
+    /// exemptions (Origin is forgeable by any local process).
     session_token: Option<String>,
+    /// Handshake origins allowed to assert `vaughan_page_origin` on requests
+    /// (the attested dApp-browser extension). Empty: the field is ignored.
+    page_origin_issuers: Vec<String>,
+    /// Origins currently holding a Connect grant, shared with the host so the
+    /// server can filter `accountsChanged` per connection.
+    grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
 }
 
 impl ProviderServer {
@@ -152,6 +159,8 @@ impl ProviderServer {
             local_addr,
             trusted_hosts: TrustedHosts::default(),
             session_token: None,
+            page_origin_issuers: Vec::new(),
+            grants: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashSet::new())),
         })
     }
 
@@ -169,11 +178,38 @@ impl ProviderServer {
     }
 
     /// Require clients to present this session token (query `access_token` or
-    /// `Authorization: Bearer`). Chromium extension always must; Freedom Origin
-    /// is exempt unless [`REQUIRE_TOKEN_ENV`] is set.
+    /// `Authorization: Bearer`). Required for every origin when set.
     pub fn with_session_token(mut self, token: impl Into<String>) -> Self {
         let t = token.into();
         self.session_token = if t.is_empty() { None } else { Some(t) };
+        self
+    }
+
+    /// Handshake origins permitted to assert `vaughan_page_origin` on a
+    /// request (the attested dApp-browser extension, whose page origin is
+    /// derived from Chrome's `port.sender.url`). For all other clients the
+    /// field is ignored, so a token-holding script cannot relabel a request
+    /// as coming from an arbitrary site.
+    pub fn with_page_origin_issuers<I, S>(mut self, origins: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.page_origin_issuers = origins
+            .into_iter()
+            .map(|o| o.as_ref().to_string())
+            .collect();
+        self
+    }
+
+    /// Share the host's live Connect-grant set so `accountsChanged` with a
+    /// non-empty account list is relayed only to granted origins (and to
+    /// page-origin issuers, which route per-tab themselves).
+    pub fn with_grants(
+        mut self,
+        grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    ) -> Self {
+        self.grants = grants;
         self
     }
 
@@ -187,15 +223,6 @@ impl ProviderServer {
         format!("ws://127.0.0.1:{}", self.local_addr.port())
     }
 
-    /// URL with session token query (for the Vaughan extension / local tools).
-    pub fn url_with_token(&self, token: &str) -> String {
-        format!(
-            "ws://127.0.0.1:{}?access_token={}",
-            self.local_addr.port(),
-            token
-        )
-    }
-
     /// Accept connections forever, dispatching requests to `handler` and
     /// relaying `events` to every connected client.
     ///
@@ -206,6 +233,7 @@ impl ProviderServer {
         handler: Arc<dyn RequestHandler>,
         events: EventBus,
     ) -> Result<(), ProviderError> {
+        let conn_permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
         loop {
             let (stream, peer) = match self.listener.accept().await {
                 Ok(accepted) => accepted,
@@ -217,13 +245,31 @@ impl ProviderServer {
                 drop(stream);
                 continue;
             }
+            let Ok(permit) = conn_permits.clone().try_acquire_owned() else {
+                tracing::warn!(%peer, "provider connection cap reached; dropping");
+                drop(stream);
+                continue;
+            };
             let handler = Arc::clone(&handler);
             let events = events.clone();
             let trusted_hosts = self.trusted_hosts.clone();
             let session_token = self.session_token.clone();
+            let page_origin_issuers = self.page_origin_issuers.clone();
+            let grants = self.grants.clone();
             tokio::spawn(async move {
-                handle_connection(stream, peer, handler, events, trusted_hosts, session_token)
-                    .await;
+                // Held until the connection task ends, releasing the slot.
+                let _permit = permit;
+                handle_connection(
+                    stream,
+                    peer,
+                    handler,
+                    events,
+                    trusted_hosts,
+                    session_token,
+                    page_origin_issuers,
+                    grants,
+                )
+                .await;
             });
         }
     }
@@ -235,6 +281,9 @@ struct HandshakeMeta {
     origin: Option<String>,
     /// From `Authorization: Bearer` or `?access_token=`.
     access_token: Option<String>,
+    /// `Host` header, checked against loopback names for DNS-rebinding
+    /// resistance (a rebound domain's browser sends its own Host here).
+    host: Option<String>,
 }
 
 /// Captures Origin + session token during the WebSocket handshake.
@@ -250,6 +299,13 @@ impl Callback for CaptureHandshake {
             .and_then(|value| value.to_str().ok())
         {
             meta.origin = Some(origin.to_string());
+        }
+        if let Some(host) = request
+            .headers()
+            .get("host")
+            .and_then(|value| value.to_str().ok())
+        {
+            meta.host = Some(host.to_string());
         }
         if let Some(auth) = request
             .headers()
@@ -284,24 +340,35 @@ impl Callback for CaptureHandshake {
     }
 }
 
-fn token_required_for_origin(origin: Option<&str>, expected: &Option<String>) -> bool {
-    if expected.is_none() {
+/// DNS-rebinding guard: the `Host` header must name a loopback interface.
+/// A browser pointed at a rebound domain sends that domain as Host, which
+/// fails here even if its Origin looks plausible. Missing Host fails closed
+/// (HTTP/1.1 requires it; every real WebSocket client sends it).
+fn host_is_loopback(host: Option<&str>) -> bool {
+    let Some(host) = host else {
         return false;
-    }
-    if require_token_for_all() {
-        return true;
-    }
-    // Chromium extension path must always prove possession of the session token
-    // (Origin alone is forgeable by any local process).
-    origin
-        .map(|o| o.starts_with("chrome-extension://"))
-        .unwrap_or(true)
+    };
+    let h = host.trim();
+    // Strip an optional port: "[v6]:port" or "name:port"; a value with
+    // multiple colons and no brackets is a port-less IPv6 literal.
+    let name = if let Some(rest) = h.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else if h.matches(':').count() == 1 {
+        h.split(':').next().unwrap_or("")
+    } else {
+        h
+    };
+    name.eq_ignore_ascii_case("localhost")
+        || name.to_ascii_lowercase().ends_with(".localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
-fn session_ok(expected: &Option<String>, presented: Option<&str>, origin: Option<&str>) -> bool {
-    if !token_required_for_origin(origin, expected) {
-        return true;
-    }
+/// The session token is required for **every** origin whenever the server has
+/// one: the `Origin` header is forgeable by any local process, so it cannot
+/// stand in as a credential.
+fn session_ok(expected: &Option<String>, presented: Option<&str>) -> bool {
     let Some(exp) = expected.as_deref() else {
         return true;
     };
@@ -315,6 +382,7 @@ fn session_ok(expected: &Option<String>, presented: Option<&str>, origin: Option
 ///
 /// Incoming requests are dispatched sequentially; events published on
 /// `events` are relayed to the client as JSON-RPC notifications.
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: TcpStream,
     peer: SocketAddr,
@@ -322,34 +390,43 @@ async fn handle_connection(
     events: EventBus,
     trusted_hosts: TrustedHosts,
     session_token: Option<String>,
+    page_origin_issuers: Vec<String>,
+    grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
 ) {
     let handshake = Arc::new(Mutex::new(HandshakeMeta::default()));
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_MESSAGE_SIZE);
-    let ws: WebSocketStream<TcpStream> = match accept_hdr_async_with_config(
-        stream,
-        CaptureHandshake(Arc::clone(&handshake)),
-        Some(config),
+    let ws: WebSocketStream<TcpStream> = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        accept_hdr_async_with_config(
+            stream,
+            CaptureHandshake(Arc::clone(&handshake)),
+            Some(config),
+        ),
     )
     .await
     {
-        Ok(ws) => ws,
-        Err(e) => {
+        Ok(Ok(ws)) => ws,
+        Ok(Err(e)) => {
             tracing::warn!(%peer, "websocket handshake failed: {e}");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(%peer, "websocket handshake timed out");
             return;
         }
     };
     let meta = handshake.lock().expect("handshake mutex poisoned").clone();
     let origin = meta.origin;
+    if !host_is_loopback(meta.host.as_deref()) {
+        tracing::warn!(%peer, host = ?meta.host, "rejecting provider connection: non-loopback Host");
+        return;
+    }
     if !trusted_hosts.allows(origin.as_deref()) {
         tracing::warn!(%peer, ?origin, "rejecting untrusted provider origin");
         return;
     }
-    if !session_ok(
-        &session_token,
-        meta.access_token.as_deref(),
-        origin.as_deref(),
-    ) {
+    if !session_ok(&session_token, meta.access_token.as_deref()) {
         tracing::warn!(
             %peer,
             ?origin,
@@ -357,6 +434,12 @@ async fn handle_connection(
         );
         return;
     }
+    // Only attested issuer origins may assert `vaughan_page_origin`; the
+    // session check above has already run, so every accepted connection holds
+    // the token.
+    let page_origin_allowed = origin
+        .as_deref()
+        .is_some_and(|o| page_origin_issuers.iter().any(|i| i == o));
     let ctx = RequestCtx {
         peer,
         origin,
@@ -366,13 +449,21 @@ async fn handle_connection(
     tracing::debug!(%peer, "provider client connected");
 
     let (mut sink, mut incoming) = ws.split();
+    let mut rate_window = std::time::Instant::now();
+    let mut frames_in_window: u32 = 0;
     loop {
         // Produce at most one outbound frame per iteration; the sink is only
         // borrowed after the select, so the two arms never fight over it.
         let to_send = tokio::select! {
             message = incoming.next() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    dispatch(&*handler, &ctx, &text).await.map(|reply| reply.into())
+                    if rate_limit_exceeded(&mut rate_window, &mut frames_in_window) {
+                        tracing::warn!(%peer, "provider frame rate limit exceeded; closing");
+                        break;
+                    }
+                    dispatch(&*handler, &ctx, &text, page_origin_allowed)
+                        .await
+                        .map(|reply| reply.into())
                 }
                 Some(Ok(Message::Ping(payload))) => Some(Message::Pong(payload)),
                 Some(Ok(Message::Binary(_))) => {
@@ -388,7 +479,13 @@ async fn handle_connection(
                 }
             },
             event = events_rx.recv() => match event {
-                Ok(notification) => Some(Message::Text(notification.into())),
+                Ok(event) => {
+                    if should_relay(&event, ctx.origin.as_deref(), &grants, page_origin_allowed) {
+                        Some(Message::Text(event.to_notification().into()))
+                    } else {
+                        None
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(%peer, skipped, "provider client missed events");
                     None
@@ -409,7 +506,12 @@ async fn handle_connection(
 ///
 /// Returns `None` for notifications (no reply expected) and for replies that
 /// could not be serialized (which only happens on programmer error).
-async fn dispatch(handler: &dyn RequestHandler, ctx: &RequestCtx, text: &str) -> Option<String> {
+async fn dispatch(
+    handler: &dyn RequestHandler,
+    ctx: &RequestCtx,
+    text: &str,
+    page_origin_allowed: bool,
+) -> Option<String> {
     let request = match RpcRequest::from_json(text) {
         Ok(request) => request,
         Err(rpc_error) => return Some(RpcResponse::failure(None, rpc_error).to_json()),
@@ -419,7 +521,14 @@ async fn dispatch(handler: &dyn RequestHandler, ctx: &RequestCtx, text: &str) ->
     if let Some(page) = request.vaughan_page_origin.clone() {
         let page = page.trim().to_string();
         if !page.is_empty() {
-            req_ctx.page_origin = Some(page);
+            if page_origin_allowed {
+                req_ctx.page_origin = Some(page);
+            } else {
+                tracing::warn!(
+                    origin = ?ctx.origin,
+                    "ignoring vaughan_page_origin from non-issuer origin"
+                );
+            }
         }
     }
     if request.is_notification() {
@@ -434,9 +543,53 @@ async fn dispatch(handler: &dyn RequestHandler, ctx: &RequestCtx, text: &str) ->
     }
 }
 
+/// Simple per-connection frame rate limit: returns true when the caller
+/// exceeds [`MAX_FRAMES_PER_WINDOW`] within [`RATE_WINDOW`].
+fn rate_limit_exceeded(window_start: &mut std::time::Instant, frames: &mut u32) -> bool {
+    if window_start.elapsed() >= RATE_WINDOW {
+        *window_start = std::time::Instant::now();
+        *frames = 0;
+    }
+    *frames += 1;
+    *frames > MAX_FRAMES_PER_WINDOW
+}
+
+/// Whether an event should be relayed to this connection.
+///
+/// Non-empty `accountsChanged` goes only to origins holding a Connect grant,
+/// or to a page-origin issuer (the extension multiplexes many pages over one
+/// socket and routes per-tab itself). The empty (lock/disconnect) event is
+/// broadcast to everyone so all clients clear state. `chainChanged` is not
+/// account data and is always relayed.
+fn should_relay(
+    event: &crate::events::ProviderEvent,
+    origin: Option<&str>,
+    grants: &std::sync::RwLock<std::collections::HashSet<String>>,
+    page_origin_issuer: bool,
+) -> bool {
+    match event {
+        crate::events::ProviderEvent::AccountsChanged(accounts) if !accounts.is_empty() => {
+            page_origin_issuer
+                || origin.is_some_and(|o| grants.read().map(|g| g.contains(o)).unwrap_or(false))
+        }
+        _ => true,
+    }
+}
+
 /// Convert a handler error into its wire form.
+///
+/// `Internal` detail (paths, backend errors) is logged, not sent — the wire
+/// gets a generic message; typed errors keep their messages since those are
+/// part of the EIP-1193 contract.
 fn provider_error_to_rpc(error: ProviderError) -> RpcError {
-    RpcError::new(error.code(), error.to_string(), None)
+    let code = error.code();
+    match error {
+        ProviderError::Internal(detail) => {
+            tracing::debug!("provider internal error: {detail}");
+            RpcError::new(code, "internal error".to_string(), None)
+        }
+        other => RpcError::new(other.code(), other.to_string(), None),
+    }
 }
 
 #[cfg(test)]
@@ -501,20 +654,24 @@ mod tests {
         (handler, erased)
     }
 
+    type GrantsHandle = std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>;
+
     async fn start_server(
         handler: Arc<dyn RequestHandler>,
         events: Option<EventBus>,
         trusted_origins: Option<Vec<&str>>,
-    ) -> (JoinHandle, String, EventBus) {
+    ) -> (JoinHandle, String, EventBus, GrantsHandle) {
         let server = ProviderServer::bind(0).await.unwrap();
         let server = match trusted_origins {
             Some(origins) => server.with_trusted_origins(origins).unwrap(),
             None => server,
         };
+        let grants: GrantsHandle = Default::default();
+        let server = server.with_grants(grants.clone());
         let url = server.url();
         let events = events.unwrap_or_default();
         let task = tokio::spawn(server.serve(handler, events.clone()));
-        (task, url, events)
+        (task, url, events, grants)
     }
 
     type JoinHandle = tokio::task::JoinHandle<Result<(), ProviderError>>;
@@ -567,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn answers_request_over_real_websocket() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None, None).await;
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text(
@@ -600,7 +757,7 @@ mod tests {
     #[tokio::test]
     async fn echoes_origin_header() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None, None).await;
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
 
         // Build from the URL so tungstenite fills in the handshake headers,
         // then add the Origin header the server should capture.
@@ -631,7 +788,7 @@ mod tests {
     async fn answers_errors_with_matching_id() {
         let (_, erased) =
             recording_handler(Some(ProviderError::Unauthorized("unknown origin".into())));
-        let (task, url, _events) = start_server(erased, None, None).await;
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text(
@@ -653,7 +810,7 @@ mod tests {
     #[tokio::test]
     async fn replies_to_malformed_frames_with_parse_error() {
         let (_, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None, None).await;
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text("{not json".into())).await.unwrap();
@@ -670,7 +827,7 @@ mod tests {
     #[tokio::test]
     async fn notifications_get_no_reply() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None, None).await;
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         ws.send(Message::Text(
@@ -692,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn keeps_connection_open_after_request() {
         let (_, erased) = recording_handler(None);
-        let (task, url, _events) = start_server(erased, None, None).await;
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
 
         let mut ws = connect(&url).await;
         for id in 1..=3 {
@@ -716,9 +873,18 @@ mod tests {
     #[tokio::test]
     async fn relays_events_to_connected_clients() {
         let (_, erased) = recording_handler(None);
-        let (task, url, events) = start_server(erased, None, None).await;
+        let (task, url, events, grants) = start_server(erased, None, None).await;
 
-        let mut ws = connect(&url).await;
+        // Non-empty accountsChanged requires a Connect grant for the origin.
+        grants
+            .write()
+            .unwrap()
+            .insert("https://app.example".to_string());
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://app.example".parse().unwrap());
+        let (mut ws, _) = connect_async(request).await.unwrap();
         // Publish after the connection is established.
         events.publish(ProviderEvent::AccountsChanged(vec!["0xabc".into()]));
         events.publish(ProviderEvent::ChainChanged("0x171".into()));
@@ -745,9 +911,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accounts_changed_filtered_without_grant() {
+        let (_, erased) = recording_handler(None);
+        let (task, url, events, _grants) = start_server(erased, None, None).await;
+
+        // No grant for this origin: non-empty accountsChanged is withheld,
+        // chainChanged and the empty (lock) broadcast still arrive.
+        let mut ws = connect(&url).await;
+        events.publish(ProviderEvent::AccountsChanged(vec!["0xabc".into()]));
+        events.publish(ProviderEvent::ChainChanged("0x171".into()));
+        events.publish(ProviderEvent::AccountsChanged(vec![]));
+
+        let first = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let value = parse_reply(first);
+        assert_eq!(value["method"], "chainChanged");
+
+        let second = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let value = parse_reply(second);
+        assert_eq!(value["method"], "accountsChanged");
+        assert_eq!(value["params"], serde_json::json!([]));
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn rejects_missing_origin_when_allowlist_enabled() {
         let (_, erased) = recording_handler(None);
-        let (task, url, _events) =
+        let (task, url, _events, _grants) =
             start_server(erased, None, Some(vec!["https://app.example"])).await;
 
         let mut ws = connect(&url).await;
@@ -767,7 +964,7 @@ mod tests {
     #[tokio::test]
     async fn allows_trusted_origin_when_allowlist_enabled() {
         let (handler, erased) = recording_handler(None);
-        let (task, url, _events) =
+        let (task, url, _events, _grants) =
             start_server(erased, None, Some(vec!["https://app.example"])).await;
 
         let mut request = url.into_client_request().unwrap();
@@ -795,7 +992,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_untrusted_origin_when_allowlist_enabled() {
         let (_, erased) = recording_handler(None);
-        let (task, url, _events) =
+        let (task, url, _events, _grants) =
             start_server(erased, None, Some(vec!["https://allowed.example"])).await;
 
         let mut request = url.into_client_request().unwrap();
@@ -814,5 +1011,46 @@ mod tests {
             .expect("socket closes");
         assert!(matches!(next, Ok(Message::Close(_)) | Err(_)));
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_non_loopback_host_header() {
+        let (_, erased) = recording_handler(None);
+        let (task, url, _events, _grants) = start_server(erased, None, None).await;
+
+        // DNS-rebinding: a browser driven to a rebound domain sends that
+        // domain as Host even though the socket landed on 127.0.0.1.
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Host", "rebound.example".parse().unwrap());
+        let (mut ws, _) = connect_async(request).await.unwrap();
+        ws.send(Message::Text(
+            r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let next = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .expect("socket closes");
+        assert!(matches!(next, Ok(Message::Close(_)) | Err(_)));
+        task.abort();
+    }
+
+    #[test]
+    fn host_is_loopback_check() {
+        assert!(host_is_loopback(Some("127.0.0.1:8745")));
+        assert!(host_is_loopback(Some("127.0.0.2")));
+        assert!(host_is_loopback(Some("localhost:8745")));
+        assert!(host_is_loopback(Some("foo.localhost:8745")));
+        assert!(host_is_loopback(Some("[::1]:8745")));
+        assert!(host_is_loopback(Some("::1")));
+        assert!(!host_is_loopback(Some("rebound.example")));
+        // Browser shorthand forms of 127.0.0.1 fail closed (rejected).
+        assert!(!host_is_loopback(Some("2130706433")));
+        assert!(!host_is_loopback(Some("127.1")));
+        assert!(!host_is_loopback(None));
+        assert!(!host_is_loopback(Some("")));
     }
 }

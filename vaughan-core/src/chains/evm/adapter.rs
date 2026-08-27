@@ -140,11 +140,6 @@ impl EvmAdapter {
         Ok(this)
     }
 
-    /// Set (or replace) the local signer.
-    pub fn set_signer(&mut self, signer: PrivateKeySigner) {
-        self.signer = Some(signer);
-    }
-
     /// The primary provider (first configured endpoint).
     pub fn provider(&self) -> Arc<AlloyProvider> {
         self.providers[0].clone()
@@ -477,15 +472,19 @@ impl EvmAdapter {
                 .await;
         }
 
+        // `addresses` includes persisted custom tokens (user-editable state):
+        // a malformed entry must yield a WalletError, never panic.
         let calls: Vec<IMulticall3::Call> = addresses
             .iter()
-            .map(|address| IMulticall3::Call {
-                target: parse_address(address).expect("addresses are valid"),
-                callData: IERC20Metadata::balanceOfCall { account: wallet }
-                    .abi_encode()
-                    .into(),
+            .map(|address| {
+                Ok(IMulticall3::Call {
+                    target: parse_address(address)?,
+                    callData: IERC20Metadata::balanceOfCall { account: wallet }
+                        .abi_encode()
+                        .into(),
+                })
             })
-            .collect();
+            .collect::<Result<_, WalletError>>()?;
         let req = TransactionRequest::default().to(MULTICALL3).input(
             IMulticall3::tryAggregateCall {
                 requireSuccess: false,

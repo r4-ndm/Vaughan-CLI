@@ -28,9 +28,42 @@ use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 
-/// Drop Unicode control characters (C0/C1/DEL) from display-bound text.
+/// Drop control characters (C0/C1/DEL) and Unicode *format* characters (Cf)
+/// from display-bound text. `char::is_control` covers only Cc; Cf chars —
+/// bidi overrides/isolates, zero-width spaces, tag chars — survive it and can
+/// visually reorder or hide parts of an approval prompt (origin/agent strings
+/// are attacker-influenced), so they are stripped here too.
 fn sanitize_display(raw: &str) -> String {
-    raw.chars().filter(|c| !c.is_control()).collect()
+    raw.chars()
+        .filter(|c| !c.is_control() && !is_unicode_format(*c))
+        .collect()
+}
+
+/// Unicode general-category Cf (format) code points relevant to prompt
+/// deception: bidi controls, zero-widths, invisible operators, tag chars.
+/// Ranges follow the Unicode Cf table; no new dependency for one predicate.
+fn is_unicode_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}'
+        | '\u{0600}'..='\u{0605}'
+        | '\u{061C}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{110BD}'
+        | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}')
 }
 
 /// How the fee editor answered a key: `Blocked` means the key looked like an
@@ -345,6 +378,19 @@ mod tests {
         assert!(!clean.chars().any(|c| c.is_control()));
         assert!(clean.contains("https://a.example"));
         assert!(clean.contains("fake-line"));
+    }
+
+    #[test]
+    fn sanitize_display_strips_bidi_and_zero_width() {
+        // RLO visual-reorder + ZWSP + bidi isolate + BOM must not survive;
+        // ordinary text and non-ASCII letters are kept.
+        let evil =
+            "https://trusted.example\u{202E}moc.elpmaxe\u{202C}\u{200B}\u{2066}x\u{2069}\u{FEFF}";
+        let clean = sanitize_display(evil);
+        assert!(!clean.chars().any(is_unicode_format));
+        assert!(clean.starts_with("https://trusted.example"));
+        let cyrillic = sanitize_display("пaypаl.example");
+        assert_eq!(cyrillic, "пaypаl.example");
     }
 
     #[test]

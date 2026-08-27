@@ -245,9 +245,13 @@ pub fn validate_proposal_id(id: &str) -> Result<(), ProposalError> {
 }
 
 /// True when `fresh` exceeds `proposed` by more than 10% (agent estimate stale).
+///
+/// Fail-closed: a missing or zero proposed estimate counts as a spike, so a
+/// hand-crafted proposal cannot skip the check by omitting `estimated_fee_wei`
+/// (every built-in propose tool stamps it via `attach_estimated_fee`).
 pub fn fee_spike_exceeds_threshold(proposed: Option<U256>, fresh: U256) -> bool {
     let Some(base) = proposed.filter(|v| !v.is_zero()) else {
-        return false;
+        return true;
     };
     fresh.saturating_mul(U256::from(100u64))
         > base.saturating_mul(U256::from(MCP_FEE_SPIKE_THRESHOLD_BPS / 10))
@@ -590,10 +594,6 @@ impl McpSessionToken {
         &self.token
     }
 
-    pub fn secret_bytes(&self) -> &[u8] {
-        self.token.as_bytes()
-    }
-
     pub fn write(&self, profile_dir: &Path) -> Result<(), WalletError> {
         fs::create_dir_all(profile_dir).map_err(|e| WalletError::Io(e.to_string()))?;
         let path = profile_dir.join("mcp.session");
@@ -634,13 +634,16 @@ pub fn mcp_mainnet_writes_allowed() -> bool {
 }
 
 /// Reject mainnet write proposals unless explicitly allowed.
-pub fn guard_mainnet_write(chain_id: u64, is_testnet: bool) -> Result<(), ProposalError> {
+///
+/// Gates on the **active** network's `is_testnet` flag, not the proposal's
+/// `chain_id`: execution always happens on the active chain (a `chain_id` of
+/// `0` means "active chain"), so a denylist of known mainnet ids would be
+/// bypassable by omitting the field.
+pub fn guard_mainnet_write(is_testnet: bool) -> Result<(), ProposalError> {
     if is_testnet || mcp_mainnet_writes_allowed() {
         Ok(())
-    } else if chain_id == 1 || chain_id == 369 {
-        Err(ProposalError::MainnetBlocked)
     } else {
-        Ok(())
+        Err(ProposalError::MainnetBlocked)
     }
 }
 
@@ -655,6 +658,13 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), ProposalError> {
     let tmp = path.with_extension("tmp");
     {
         let mut file = fs::File::create(&tmp).map_err(|e| ProposalError::Io(e.to_string()))?;
+        // Restrict before writing so the file is never readable between
+        // create and rename (session tokens ride this path).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+        }
         file.write_all(data)
             .map_err(|e| ProposalError::Io(e.to_string()))?;
         file.sync_all()
@@ -884,19 +894,16 @@ mod tests {
         let prev = std::env::var("VAUGHAN_MCP_ALLOW_MAINNET").ok();
 
         std::env::remove_var("VAUGHAN_MCP_ALLOW_MAINNET");
+        // Any non-testnet active network blocks writes — a proposal that omits
+        // chain_id (0 = active chain) cannot bypass the guard.
         assert!(matches!(
-            guard_mainnet_write(369, false),
+            guard_mainnet_write(false),
             Err(ProposalError::MainnetBlocked)
         ));
-        assert!(matches!(
-            guard_mainnet_write(1, false),
-            Err(ProposalError::MainnetBlocked)
-        ));
-        assert!(guard_mainnet_write(943, false).is_ok());
-        assert!(guard_mainnet_write(369, true).is_ok());
+        assert!(guard_mainnet_write(true).is_ok());
 
         std::env::set_var("VAUGHAN_MCP_ALLOW_MAINNET", "1");
-        assert!(guard_mainnet_write(369, false).is_ok());
+        assert!(guard_mainnet_write(false).is_ok());
 
         match prev {
             Some(v) => std::env::set_var("VAUGHAN_MCP_ALLOW_MAINNET", v),
@@ -1009,7 +1016,12 @@ mod tests {
             U256::from(1100u64)
         ));
         assert!(fee_spike_exceeds_threshold(Some(base), U256::from(1101u64)));
-        assert!(!fee_spike_exceeds_threshold(None, U256::from(9999u64)));
+        // Fail-closed: no agent estimate counts as a spike.
+        assert!(fee_spike_exceeds_threshold(None, U256::from(9999u64)));
+        assert!(fee_spike_exceeds_threshold(
+            Some(U256::ZERO),
+            U256::from(9999u64)
+        ));
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Provider loopback session token (native-parity Trick 1).
 //!
-//! Written `0o600` beside the profile vault. The Chromium extension must present
-//! it on the WebSocket URL (`?access_token=…`). Freedom may keep Origin-only
-//! until its transport reads this file; set
-//! `VAUGHAN_PROVIDER_REQUIRE_TOKEN=1` to require the token for every client.
+//! Written `0o600` beside the profile vault. Every provider client must present
+//! it (`?access_token=…` or `Authorization: Bearer …`) — the token is required
+//! for all origins because the `Origin` header is forgeable by any local
+//! process.
 
 use std::fs;
 use std::path::{Path, PathBuf};

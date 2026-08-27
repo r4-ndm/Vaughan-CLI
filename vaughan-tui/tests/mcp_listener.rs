@@ -50,7 +50,7 @@ async fn mcp_loopback_ping_and_session() {
     std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let mut svc = McpService::new(dir.path(), tx);
     svc.update_session(McpSessionSnapshot {
         address: Some("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".into()),
@@ -89,7 +89,7 @@ async fn mcp_loopback_rejects_bad_session_token() {
     std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(16);
     let mut svc = McpService::new(dir.path(), tx);
     svc.on_unlock(&tokio::runtime::Handle::current());
     tokio::time::sleep(Duration::from_millis(200)).await;

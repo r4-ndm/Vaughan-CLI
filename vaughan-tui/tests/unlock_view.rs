@@ -74,7 +74,7 @@ fn unlock_view_correct_password_unlocks_and_publishes_event() {
     assert_eq!(wallet.operating_mode(), OperatingMode::HumanOnly);
 
     let notification = rx.try_recv().expect("accountsChanged event must fire");
-    let value: Value = serde_json::from_str(&notification).unwrap();
+    let value: Value = serde_json::from_str(&notification.to_notification()).unwrap();
     assert_eq!(value["method"], "accountsChanged");
     assert_eq!(
         value["params"][0].as_str().unwrap().to_lowercase(),

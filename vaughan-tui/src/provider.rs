@@ -162,11 +162,11 @@ pub enum HostRequest {
 /// The [`WalletHandle`] handed to the provider server. Cheaply cloneable via
 /// the shared request channel; the UI thread is the single consumer.
 pub struct ProviderHost {
-    requests: mpsc::UnboundedSender<HostRequest>,
+    requests: mpsc::Sender<HostRequest>,
 }
 
 impl ProviderHost {
-    pub fn new(requests: mpsc::UnboundedSender<HostRequest>) -> Self {
+    pub fn new(requests: mpsc::Sender<HostRequest>) -> Self {
         Self { requests }
     }
 
@@ -189,6 +189,7 @@ impl ProviderHost {
                 requires_grant: is_extension_path(ctx),
                 reply,
             })
+            .await
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
@@ -220,6 +221,7 @@ impl WalletHandle for ProviderHost {
                 site: site_key(ctx),
                 reply,
             })
+            .await
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
@@ -231,6 +233,7 @@ impl WalletHandle for ProviderHost {
                 site: site_key(ctx),
                 reply,
             })
+            .await
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
@@ -239,6 +242,7 @@ impl WalletHandle for ProviderHost {
         let (reply, rx) = oneshot::channel();
         self.requests
             .send(HostRequest::ChainId { reply })
+            .await
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
@@ -299,6 +303,7 @@ impl WalletHandle for ProviderHost {
                 origin: display_origin(ctx),
                 reply,
             })
+            .await
             .map_err(Self::disconnected)?;
         rx.await.map_err(Self::dropped)?
     }
@@ -319,11 +324,12 @@ impl WalletHandle for ProviderHost {
 /// bridge is down.
 pub fn spawn_provider_server(
     handle: &Handle,
-    requests: mpsc::UnboundedSender<HostRequest>,
+    requests: mpsc::Sender<HostRequest>,
     events: EventBus,
     extra_origins: Vec<String>,
     status: BridgeStatusHandle,
     profile_dir: std::path::PathBuf,
+    grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
 ) {
     handle.spawn(async move {
         let trusted_origins = match bridge_decision(
@@ -352,7 +358,13 @@ pub fn spawn_provider_server(
             );
             return;
         }
-        let server = match ProviderServer::bind(DEFAULT_PORT).await {
+        // Dev/test override for the listen port (parallel instances); the
+        // packaged default stays DEFAULT_PORT.
+        let port = env::var("VAUGHAN_PROVIDER_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT);
+        let server = match ProviderServer::bind(port).await {
             Ok(server) => server,
             Err(e) => {
                 let reason = format!("bind failed ({e})");
@@ -362,7 +374,12 @@ pub fn spawn_provider_server(
             }
         };
         let server = match configure_server_trusted_origins(server, &trusted_origins) {
-            Ok(server) => server.with_session_token(session.as_str()),
+            Ok(server) => server
+                .with_session_token(session.as_str())
+                // Only the attested extension may speak for page origins.
+                .with_page_origin_issuers([DAPP_BROWSER_PROVIDER_ORIGIN])
+                // Live grant set for per-connection accountsChanged filtering.
+                .with_grants(grants),
             Err(e) => {
                 let reason = format!("origin config invalid ({e})");
                 tracing::warn!(
@@ -375,7 +392,7 @@ pub fn spawn_provider_server(
             }
         };
         let url = server.url();
-        tracing::info!(%url, "provider server listening (session token required for chrome-extension)");
+        tracing::info!(%url, "provider server listening (session token required for all origins)");
         set_bridge_status(&status, BridgeStatus::Listening { url });
         let handler = Arc::new(Eip1193Handler::new(Arc::new(ProviderHost::new(requests))));
         if let Err(e) = server.serve(handler, events).await {
@@ -463,6 +480,21 @@ fn configure_server_trusted_origins(
     server.with_trusted_origins(trusted_origins.iter().map(String::as_str))
 }
 
+/// Pretty-print a signed payload for the approval prompt, indented and capped
+/// so a huge blob cannot flood the terminal (the full bytes are still what
+/// gets signed — this is display-only).
+fn pretty_payload_lines(value: &Value) -> Vec<String> {
+    const MAX_LINES: usize = 60;
+    let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    let mut lines: Vec<String> = pretty.lines().map(|l| format!("  {l}")).collect();
+    if lines.len() > MAX_LINES {
+        let omitted = lines.len() - MAX_LINES;
+        lines.truncate(MAX_LINES);
+        lines.push(format!("  … ({omitted} more lines)"));
+    }
+    lines
+}
+
 /// Render a short, human-readable summary of `kind` for the approval prompt.
 ///
 /// Returns `(title, details)` where `details` is shown verbatim. This is the
@@ -511,16 +543,27 @@ pub fn describe_approval_with_fee(
         )),
         ApprovalKind::SignTypedData { typed_data, .. } => {
             let primary = typed_data["primaryType"].as_str().unwrap_or("?");
-            let domain = typed_data["domain"]["name"].as_str().unwrap_or("?");
-            Ok((
-                "Sign typed data (eth_signTypedData_v4)".into(),
-                vec![
-                    "Method:  eth_signTypedData_v4".to_string(),
-                    format!("Domain:  {domain}"),
-                    format!("Type:    {primary}"),
-                ],
-                None,
-            ))
+            let domain = &typed_data["domain"];
+            let domain_name = domain["name"].as_str().unwrap_or("?");
+            let mut lines = vec![
+                "Method:  eth_signTypedData_v4".to_string(),
+                format!("Domain:  {domain_name}"),
+            ];
+            // chainId + verifyingContract are what a phishing signature abuses
+            // (Permit2-style drains) — always show them when present.
+            let chain = domain["chainId"]
+                .as_u64()
+                .or_else(|| domain["chainId"].as_str()?.parse::<u64>().ok());
+            if let Some(chain) = chain {
+                lines.push(format!("Chain:   {chain}"));
+            }
+            if let Some(contract) = domain["verifyingContract"].as_str() {
+                lines.push(format!("Contract:{contract}"));
+            }
+            lines.push(format!("Type:    {primary}"));
+            lines.push("Message:".to_string());
+            lines.extend(pretty_payload_lines(&typed_data["message"]));
+            Ok(("Sign typed data (eth_signTypedData_v4)".into(), lines, None))
         }
         ApprovalKind::Connect { site } => Ok((
             "Connect dApp (eth_requestAccounts)".into(),
@@ -554,6 +597,7 @@ pub fn describe_approval_with_fee(
                 format!("Value:   {value} {}", net.native_symbol),
                 format!("Network: {}{testnet}", net.name),
                 format!("Gas:     {}", proposal.gas_limit),
+                mcp_proposal_fee_line(wallet, proposal, handle),
                 format!(
                     "Sim (agent): {}",
                     if proposal.simulation_success {
@@ -587,6 +631,42 @@ pub fn describe_approval_with_fee(
                 None,
             ))
         }
+    }
+}
+
+/// Fee line for the MCP proposal card (guardrail: the prompt must show cost).
+///
+/// Prefers a fresh estimate built from the proposal itself; falls back to the
+/// agent-stamped estimate (labeled unverified), then to "unavailable".
+/// Batch7702 drafts cannot be fee-estimated without a signature, so they show
+/// the agent-stamped Ambire self-pay estimate directly.
+fn mcp_proposal_fee_line(wallet: &WalletState, proposal: &TxProposal, handle: &Handle) -> String {
+    let net = wallet.networks().active();
+    let agent_est = proposal
+        .estimated_fee_wei
+        .filter(|v| !v.is_zero())
+        .map(|wei| {
+            format!(
+                "~{} {} (agent estimate, unverified)",
+                format_base_units(&wei.to_string(), net.decimals),
+                net.native_symbol
+            )
+        });
+    let is_batch = matches!(
+        proposal.proposal_type,
+        vaughan_core::core::proposal::ProposalType::Batch7702 { .. }
+    );
+    let fresh = if is_batch {
+        None
+    } else {
+        apply_proposal(wallet, proposal)
+            .ok()
+            .and_then(|evm| handle.block_on(wallet.estimate_transaction_fee(evm)).ok())
+    };
+    match (fresh, agent_est) {
+        (Some(fee), _) => format!("Fee:     {}", fee.total),
+        (None, Some(est)) => format!("Fee:     {est}"),
+        (None, None) => "Fee:     unavailable".to_string(),
     }
 }
 
@@ -772,8 +852,8 @@ pub async fn execute_approval(
                         fresh_wei,
                     ) {
                         return Err(ProviderError::InvalidParams(
-                            "network fee increased more than 10% since agent proposal — \
-                             deny and ask the agent to re-propose"
+                            "network fee is unverified or increased more than 10% since \
+                             the agent proposal — deny and ask the agent to re-propose"
                                 .into(),
                         ));
                     }
@@ -807,8 +887,8 @@ pub async fn execute_approval(
                         fresh_wei,
                     ) {
                         return Err(ProviderError::InvalidParams(
-                            "network fee increased more than 10% since agent proposal — \
-                             deny and ask the agent to re-propose"
+                            "network fee is unverified or increased more than 10% since \
+                             the agent proposal — deny and ask the agent to re-propose"
                                 .into(),
                         ));
                     }
@@ -1109,6 +1189,55 @@ mod tests {
         assert!(details.iter().any(|l| l.contains("hello")));
     }
 
+    fn mcp_transfer_kind(id: &str, estimated_fee_wei: Option<U256>) -> ApprovalKind {
+        let recipient = alloy::primitives::address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+        let mut proposal = TxProposal::new(
+            id,
+            vaughan_core::core::proposal::ProposalType::NativeTransfer {
+                to: recipient,
+                amount_wei: U256::from(1u64),
+            },
+            recipient,
+            U256::from(1u64),
+            alloy::primitives::Bytes::new(),
+            21_000,
+            true,
+            "test",
+        );
+        proposal.estimated_fee_wei = estimated_fee_wei;
+        ApprovalKind::McpProposal {
+            proposal_id: id.into(),
+            source: "test".into(),
+            proposal: Box::new(proposal),
+        }
+    }
+
+    #[test]
+    fn describe_mcp_proposal_shows_agent_fee_when_fresh_unavailable() {
+        // Locked wallet: fresh estimation is unavailable, so the card falls
+        // back to the agent-stamped estimate (labeled unverified).
+        let wallet = WalletState::load(tempfile::tempdir().unwrap().path().join("w.json")).unwrap();
+        let kind = mcp_transfer_kind("prop_fee", Some(U256::from(1_000_000_000_000_000u64)));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+        let (_, details) = describe_approval(&kind, &wallet, &handle).unwrap();
+        let fee = details
+            .iter()
+            .find(|l| l.starts_with("Fee:"))
+            .expect("MCP card must show a fee line");
+        assert!(fee.contains("agent estimate"));
+    }
+
+    #[test]
+    fn describe_mcp_proposal_marks_missing_fee_estimate() {
+        let wallet = WalletState::load(tempfile::tempdir().unwrap().path().join("w.json")).unwrap();
+        let kind = mcp_transfer_kind("prop_no_fee", None);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+        let (_, details) = describe_approval(&kind, &wallet, &handle).unwrap();
+        assert!(details.iter().any(|l| l == "Fee:     unavailable"));
+    }
+
     #[test]
     fn describe_transaction_includes_fee_from_explicit_fields() {
         let path = tempfile::tempdir().unwrap().path().join("w.json");
@@ -1143,6 +1272,38 @@ mod tests {
         // Sanity check the chain-id formatting used by the UI (`0x{id:x}`).
         let net = get_network_by_chain_id(369).unwrap();
         assert_eq!(format!("0x{:x}", net.chain_id), "0x171");
+    }
+
+    #[test]
+    fn describe_typed_data_shows_full_message_payload() {
+        let wallet = WalletState::load(tempfile::tempdir().unwrap().path().join("w.json")).unwrap();
+        let typed_data = serde_json::json!({
+            "primaryType": "Permit",
+            "domain": {
+                "name": "Permit2",
+                "chainId": 1,
+                "verifyingContract": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+            },
+            "message": {
+                "permitted": {"token": "0xA0b8…", "amount": "115792089237316195423570985008687907853269984665640564039457"},
+                "spender": "0xE20223c3f0aB0B1e02E4E0e3d2e5A1c5",
+                "deadline": 1893456000u64
+            }
+        });
+        let kind = ApprovalKind::SignTypedData {
+            address: "0xabc".into(),
+            typed_data,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+        let (_, details) = describe_approval(&kind, &wallet, &handle).unwrap();
+        // Domain security fields and the full message payload are visible.
+        assert!(details.iter().any(|l| l.contains("Chain:   1")));
+        assert!(details
+            .iter()
+            .any(|l| l.contains("0x000000000022D473030F116dDEE9F6B43aC78BA3")));
+        assert!(details.iter().any(|l| l.contains("\"spender\"")));
+        assert!(details.iter().any(|l| l.contains("1893456000")));
     }
 
     #[test]

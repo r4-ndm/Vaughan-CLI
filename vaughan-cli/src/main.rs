@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use alloy::primitives::Address;
 use clap::{Parser, Subcommand};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
 use vaughan_agent::paths::profile_dir;
 use vaughan_agent::tools::{default_assist_registry, ToolContext};
@@ -73,6 +73,11 @@ enum Command {
         /// Env var holding the wallet password (non-interactive).
         #[arg(long)]
         password_env: Option<String>,
+        /// Broadcast without the interactive confirmation prompt (scripts).
+        /// Without this flag the full request — recipient, value, chain, and
+        /// estimated fee — is printed and must be confirmed with `y`.
+        #[arg(long)]
+        yes: bool,
     },
     /// Show the active account's native balance.
     Balance {
@@ -108,10 +113,10 @@ enum Command {
         #[arg(long)]
         password_env: Option<String>,
     },
-    /// Restore a wallet from a mnemonic phrase.
+    /// Restore a wallet from a mnemonic phrase (entered via hidden prompt —
+    /// never on the command line, where it would leak into shell history
+    /// and the process list).
     Restore {
-        /// The 12/24-word mnemonic.
-        phrase: String,
         /// Env var holding the wallet password (non-interactive).
         #[arg(long)]
         password_env: Option<String>,
@@ -212,12 +217,14 @@ fn main() {
             vaughan_tui::run_interactive().map_err(|e| anyhow::anyhow!("{}", e))
         }
         Some(Command::Mcp { source }) => {
+            vaughan_core::logging::init_logging();
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             runtime
                 .block_on(vaughan_mcp::run_stdio_server(profile, source))
                 .map_err(|e| anyhow::anyhow!("{e}"))
         }
         Some(Command::Serve { password_env }) => {
+            vaughan_core::logging::init_logging();
             match serve::password_from_env(password_env.as_deref()) {
                 Err(e) => Err(e),
                 Ok(password) => {
@@ -234,6 +241,7 @@ fn main() {
         }
         Some(Command::Preset { action }) => run_preset(profile, json, action),
         Some(command) => {
+            vaughan_core::logging::init_logging();
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             runtime.block_on(run_cli(vault, profile, json, command))
         }
@@ -302,18 +310,20 @@ async fn run_cli(
             wallet.create(&password, mnemonic.clone())?;
             println!("wallet created at {}", wallet.path().display());
             println!("address: {}", wallet.active_address()?);
-            println!("\n⚠️  mnemonic (write this down, it is shown only once):");
-            println!("{mnemonic}");
+            // Mnemonic goes to stderr so stdout stays script-clean; it is
+            // shown once and never stored unencrypted.
+            eprintln!("\n⚠️  mnemonic (write this down on paper — shown only once, never stored unencrypted):");
+            eprintln!("{mnemonic}");
         }
-        Command::Restore {
-            phrase,
-            password_env,
-        } => {
+        Command::Restore { password_env } => {
             if wallet.is_initialized() {
                 anyhow::bail!("a wallet already exists at {}", wallet.path().display());
             }
             let password = prompt_password(password_env.as_deref())?;
-            wallet.restore(&password, &phrase)?;
+            // Hidden prompt (also reads piped stdin) — never an argv argument,
+            // which would leak into shell history and the process list.
+            let phrase = prompt_secret("recovery phrase: ")?;
+            wallet.restore(&password, phrase.expose_secret())?;
             println!("wallet restored at {}", wallet.path().display());
             println!("address: {}", wallet.active_address()?);
         }
@@ -388,6 +398,7 @@ async fn run_cli(
             network,
             rpc_url,
             password_env,
+            yes,
         } => {
             unlock(&mut wallet, password_env.as_deref())?;
             if let Some(id) = network {
@@ -419,10 +430,14 @@ async fn run_cli(
             let ChainTransaction::Evm(evm) = tx else {
                 anyhow::bail!("expected an EVM transaction");
             };
-            // The CLI prints the request; explicit user consent was the
-            // decision to run the command.
+            // Show the full request — recipient, value, chain, and fee —
+            // then require explicit confirmation unless `--yes` was passed.
+            let fee_line = match wallet.estimate_transaction_fee(evm.clone()).await {
+                Ok(fee) => format!("fee:     ~{} (est.)", fee.total),
+                Err(_) => "fee:     unavailable (estimation failed)".to_string(),
+            };
             eprintln!(
-                "network: {} (chain {})\nfrom:    {}\nto:      {}\nvalue:   {} wei{}",
+                "network: {} (chain {})\nfrom:    {}\nto:      {}\nvalue:   {} wei\n{fee_line}{}",
                 net.name,
                 net.chain_id,
                 evm.from,
@@ -433,6 +448,9 @@ async fn run_cli(
                     .map(|d| format!("\ndata:    {d}"))
                     .unwrap_or_default()
             );
+            if !yes && !confirm_broadcast()? {
+                anyhow::bail!("aborted: transaction not confirmed");
+            }
             let hash = wallet.send_transaction(evm).await?;
             println!("{hash}");
         }
@@ -616,8 +634,7 @@ async fn run_cli(
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     let proposal: TxProposal = serde_json::from_value(raw)?;
-                    guard_mainnet_write(proposal.chain_id, net.is_testnet)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    guard_mainnet_write(net.is_testnet).map_err(|e| anyhow::anyhow!("{e}"))?;
                     let prof = profile_dir(wallet.path());
                     let secret = vaughan_core::core::McpSessionToken::read(&prof)?
                         .filter(|s| !s.is_empty())
@@ -755,8 +772,37 @@ fn prompt_password(password_env: Option<&str>) -> anyhow::Result<SecretString> {
             .map_err(|_| anyhow::anyhow!("environment variable `{var}` is not set"))?;
         return Ok(SecretString::from(value));
     }
-    let value = rpassword::prompt_password("vault password: ")?;
-    Ok(SecretString::from(value))
+    prompt_secret("vault password: ")
+}
+
+/// Hidden interactive prompt; reads piped stdin verbatim when not a TTY so
+/// scripts and tests never have to put secrets on argv.
+fn prompt_secret(prompt: &str) -> anyhow::Result<SecretString> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        return Ok(SecretString::from(rpassword::prompt_password(prompt)?));
+    }
+    use std::io::Read;
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(SecretString::from(buf.trim().to_string()))
+}
+
+/// `y/N` gate before broadcasting. Fails closed: EOF (piped/closed stdin)
+/// and anything but an explicit "y"/"yes" mean "do not broadcast" — scripts
+/// must pass `--yes`.
+fn confirm_broadcast() -> anyhow::Result<bool> {
+    use std::io::Write;
+    eprint!("broadcast this transaction? [y/N] ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line)? == 0 {
+        return Ok(false);
+    }
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 #[cfg(test)]

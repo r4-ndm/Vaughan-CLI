@@ -52,9 +52,9 @@ fn verify_eip191(address: &str, decoded_message: &str, signature: &str) -> bool 
 async fn spawn_provider_stack() -> (
     tokio::task::JoinHandle<Result<(), vaughan_provider::ProviderError>>,
     String,
-    mpsc::UnboundedReceiver<HostRequest>,
+    mpsc::Receiver<HostRequest>,
 ) {
-    let (requests, rx) = mpsc::unbounded_channel();
+    let (requests, rx) = mpsc::channel(16);
     let host = ProviderHost::new(requests);
     let handler = Eip1193Handler::new(Arc::new(host));
     let server = vaughan_provider::ProviderServer::bind(0).await.unwrap();
@@ -66,7 +66,7 @@ async fn spawn_provider_stack() -> (
 
 /// Simulated UI thread: drain approval requests, apply `decide`, reply.
 async fn run_approval_consumer(
-    mut rx: mpsc::UnboundedReceiver<HostRequest>,
+    mut rx: mpsc::Receiver<HostRequest>,
     mut wallet: WalletState,
     decide: fn(&ApprovalKind) -> Result<(), ProviderError>,
     seen: Arc<std::sync::Mutex<Vec<String>>>,

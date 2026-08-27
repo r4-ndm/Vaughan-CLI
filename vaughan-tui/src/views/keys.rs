@@ -7,6 +7,10 @@
 //! in the status strip). Recovery phrase is the vault HD seed (all HD wallets).
 //! Hardware accounts cannot export keys; use option 4 to add a Ledger watch.
 
+use crate::app::{KeyOutcome, Screen};
+use crate::brand;
+use crate::input::{Input, InputAction};
+use crate::views::{body_areas, render_labeled_input, status_paragraph};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Rect},
@@ -19,12 +23,6 @@ use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
 use vaughan_provider::EventBus;
-use zeroize::Zeroize;
-
-use crate::app::{KeyOutcome, Screen};
-use crate::brand;
-use crate::input::{Input, InputAction};
-use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuItem {
@@ -52,8 +50,9 @@ pub struct KeysView {
     label: Input,
     private_key: Input,
     import_focus: usize,
-    /// Revealed secret for display only; zeroized on leave.
-    revealed: Option<String>,
+    /// Revealed secret for display only; zeroized on drop (SecretString) and
+    /// cleared on leave.
+    revealed: Option<SecretString>,
     reveal_title: String,
     status: String,
     /// Ledger Live preview: (path, address).
@@ -82,9 +81,7 @@ impl Default for KeysView {
 
 impl KeysView {
     fn clear_secret(&mut self) {
-        if let Some(ref mut s) = self.revealed {
-            s.zeroize();
-        }
+        // SecretString zeroizes on drop.
         self.revealed = None;
         self.verified_password = None;
         self.password.set_value("");
@@ -272,7 +269,11 @@ impl KeysView {
             head_inner,
         );
 
-        let secret = self.revealed.as_deref().unwrap_or("");
+        let secret = self
+            .revealed
+            .as_ref()
+            .map(|s| s.expose_secret().as_str())
+            .unwrap_or("");
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 secret.to_string(),
@@ -386,7 +387,7 @@ impl KeysView {
                                         Err(_) => "Vault recovery phrase".into(),
                                     };
                                     self.reveal_title = note;
-                                    self.revealed = Some(phrase.expose_secret().clone());
+                                    self.revealed = Some(phrase);
                                     self.stage = Stage::Reveal;
                                     self.status.clear();
                                 }
@@ -402,7 +403,7 @@ impl KeysView {
                                         Err(_) => "F3 account private key".into(),
                                     };
                                     self.reveal_title = title;
-                                    self.revealed = Some(sk.expose_secret().clone());
+                                    self.revealed = Some(sk);
                                     self.stage = Stage::Reveal;
                                     self.status.clear();
                                 }
@@ -462,8 +463,8 @@ impl KeysView {
                     self.stage = Stage::Menu;
                     KeyOutcome::Consumed
                 }
-                KeyCode::Char('y') | KeyCode::Char('Y') => match self.revealed.as_deref() {
-                    Some(secret) => match crate::clipboard::copy_text(secret) {
+                KeyCode::Char('y') | KeyCode::Char('Y') => match self.revealed.as_ref() {
+                    Some(secret) => match crate::clipboard::copy_text(secret.expose_secret()) {
                         Ok(()) => {
                             let msg = if matches!(self.menu, MenuItem::ExportKey) {
                                 "F3 private key copied"
