@@ -406,6 +406,58 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > Prompt ready: [`docs/fable-5-audit-prompt.md`](docs/fable-5-audit-prompt.md). Run after Phase 7
 > browser MCP tools stabilize or before mainnet-facing release. Not a CI gate.
 
+### Parked — Blunt.cash payments (Browserless Pulse)
+
+> **Parked** 2026-08-27. Full plan: [`docs/blunt-integration-plan.md`](docs/blunt-integration-plan.md).
+> Prototype: `/home/r4/Desktop/Blunt-vaughan`. Official API:
+> [blunt.cash/merchant/docs/reference/api](https://blunt.cash/merchant/docs/reference/api).
+> **v1 = direct wallet pay only; no VaughanPaymentRouter / protocol fees.**
+> Resume when Blunt merchant API key is obtained (Phase 0 below).
+
+#### Phase 0 — Prerequisites (human, before code)
+
+- [ ] Sign up at [blunt.cash/merchant/auth](https://blunt.cash/merchant/auth); save Secret Key + PIN
+- [ ] Dashboard → **Wallets** → register PulseChain (`pls`) payout address
+- [ ] Dashboard → **API Keys** → copy secret key (never commit)
+- [ ] Smoke-test `merchant-create-payment` + `get-payment` via curl
+- [ ] Record redacted sample JSON in `docs/blunt.md` (create when resuming)
+
+#### Phase 1 — `vaughan-core::core::blunt`
+
+- [ ] `client.rs` — official endpoints (`blunt.cash/functions/v1/*`), not Desktop `api.blunt.cash/v1`
+- [ ] `types.rs` + `chain_map.rs` (`pls` ↔ pulsechain mainnet; PLS native only)
+- [ ] `config.rs` — encrypted API key (Piteas pattern); env `BLUNT_API_KEY`
+- [ ] `resolve_payment_for_pay()` helper for existing send path
+- [ ] Mock HTTP unit tests (CI without live key)
+
+#### Phase 2 — Pay flow
+
+- [ ] Orchestrator: get-payment → validate pending → direct native transfer → poll confirmed
+- [ ] Standard TUI approve gate / CLI confirm (no auto-sign)
+
+#### Phase 3 — CLI
+
+- [ ] `vaughan blunt configure | invoice | pay | status` with `--json`
+
+#### Phase 4 — TUI
+
+- [ ] Send sub-mode: pay invoice by `payment_id`
+- [ ] Receive sub-mode: create invoice (merchant)
+- [ ] Settings: Blunt API key setup
+
+#### Phase 5 — Docs + requirements
+
+- [ ] `docs/blunt.md` (operator guide)
+- [ ] FR-8.* in REQUIREMENTS.md
+- [ ] Browserless Pulse demo step in `docs/browserless-pulse.md`
+
+#### Explicitly deferred (post-v1)
+
+- [ ] `VaughanPaymentRouter.sol` deploy + fee split
+- [ ] MCP `blunt_create_invoice` / `blunt_pay_invoice`
+- [ ] Pay-with-any-token (DEX swap before pay)
+- [ ] ASCII QR terminal (`qrcode` crate — not on allowlist yet)
+
 ## Later — DeFi AI king / Coinbase compete (deferred)
 
 > Narrative + phased roadmap: local notes under `private/` (gitignored).
