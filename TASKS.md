@@ -401,6 +401,11 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP AX tree
 - [ ] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6)
 
+### Parked — Fable 5 comprehensive audit (before release tag)
+
+> Prompt ready: [`docs/fable-5-audit-prompt.md`](docs/fable-5-audit-prompt.md). Run after Phase 7
+> browser MCP tools stabilize or before mainnet-facing release. Not a CI gate.
+
 ## Later — DeFi AI king / Coinbase compete (deferred)
 
 > Narrative + phased roadmap: local notes under `private/` (gitignored).

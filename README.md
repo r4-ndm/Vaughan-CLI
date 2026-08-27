@@ -228,6 +228,7 @@ vaughan-cli/
 
 - [docs/browserless-pulse.md](docs/browserless-pulse.md) — Product thesis (TUI-first; VB optional web)
 - [docs/freedom-browser-status.md](docs/freedom-browser-status.md) — Freedom **parked** until upstream PR #195
+- [docs/fable-5-audit-prompt.md](docs/fable-5-audit-prompt.md) — Parked comprehensive audit prompt (Fable 5; run before release)
 - [docs/wiz4rd-addresses.md](docs/wiz4rd-addresses.md) — wiz4rd V3 deploy on Pulse testnet 943
 - [docs/wiz4rd-agent-plan.md](docs/wiz4rd-agent-plan.md) — Agents + wiz4rd capability plan
 - [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
