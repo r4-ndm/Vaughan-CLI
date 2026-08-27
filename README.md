@@ -12,14 +12,17 @@
 </p>
 
 **Vaughan-CLI** is a Rust terminal wallet for **Browserless Pulse** — swap, inspect,
-and approve in the TUI without Chrome. Agents talk to Vaughan via MCP; Freedom
-Browser is an optional side door for odd dApps.
+and approve in the TUI without Chrome. Agents talk to Vaughan via MCP; **VB**
+(`vaughan-dapp-browser`) is the optional owned Chromium side door.
+**Freedom Browser is parked** until [upstream PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
+merges — see [docs/freedom-browser-status.md](docs/freedom-browser-status.md).
 
 - **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
 - **ratatui** for the terminal interface
 - **In-core ERC-5564 stealth** (Kohaku / RAILGUN deferred — see [docs/kohaku-go-no-go.md](docs/kohaku-go-no-go.md))
 - **MCP** for external agents — Cursor / Claude propose; you approve in Vaughan ([docs/mcp.md](docs/mcp.md))
-- **Freedom Browser** (optional) — EIP-1193 bridge when a website is unavoidable
+- **VB** (`vaughan-dapp-browser`) — optional allowlisted Chromium shell + CDP ([docs/dapp-browser-strategy.md](docs/dapp-browser-strategy.md))
+- **Freedom Browser** — **parked** (upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) pending); dev fallback only
 
 EVM-first and PulseChain-optimized. Thesis: [docs/browserless-pulse.md](docs/browserless-pulse.md).
 Architecture mirrors the `vaughan-core` layering from
@@ -97,12 +100,13 @@ supported but real money — treat mistakes as permanent.
 | `e` | Wrap | Wrap / unwrap WPLS |
 | `m` | History | Recent token transfers |
 | `j` | Approvals | See and revoke token allowances |
-| `w` | Web | Optional Freedom Browser side door |
+| `w` | Web | Optional VB / Freedom fallback (Freedom parked — see docs) |
 | `Tab` | — | Cycle Ag → Dex → Browse → … |
 
 **Browserless Pulse** means: swap, inspect, and revoke **without opening
-PulseX (or similar) in Chrome**. Freedom is optional for odd dApps that still
-need a website.
+PulseX (or similar) in a browser**. Prefer Ag / Dex / Browse / MCP; use **VB**
+when a whitelisted site needs a page. Freedom stays parked until upstream PR
+#195 merges.
 
 ### Hardware wallets on Linux (udev)
 
@@ -205,7 +209,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.
 - ⚡ **Ambire EIP-7702 smart accounts**: atomic batched transfers without ERC-4337 bundler overhead
 - 🤖 **MCP for external agents**: `vaughan mcp` — Cursor / Claude / Codex propose txs; TUI approves; keys never leave the wallet process
 - 🔍 **Contract browser REPL (`wiz4rd-engine`)**: bytecode inspection, ERC-20/Uniswap capability probing, dynamic ABI calls
-- 🖥️ **Optional Freedom bridge**: local EIP-1193 WebSocket for odd dApps (`w` Web) — not the default path
+- 🖥️ **VB + provider bridge**: optional allowlisted Chromium shell (`vaughan-dapp-browser`); Freedom **parked** until PR #195
 
 ## Architecture
 
@@ -222,7 +226,8 @@ vaughan-cli/
 
 ## Documentation
 
-- [docs/browserless-pulse.md](docs/browserless-pulse.md) — Product thesis (TUI-first; Freedom optional)
+- [docs/browserless-pulse.md](docs/browserless-pulse.md) — Product thesis (TUI-first; VB optional web)
+- [docs/freedom-browser-status.md](docs/freedom-browser-status.md) — Freedom **parked** until upstream PR #195
 - [docs/wiz4rd-addresses.md](docs/wiz4rd-addresses.md) — wiz4rd V3 deploy on Pulse testnet 943
 - [docs/wiz4rd-agent-plan.md](docs/wiz4rd-agent-plan.md) — Agents + wiz4rd capability plan
 - [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)

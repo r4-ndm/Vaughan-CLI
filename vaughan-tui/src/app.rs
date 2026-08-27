@@ -61,7 +61,7 @@ impl Screen {
             Self::Receive => "Receive",
             Self::Settings => "Settings",
             Self::Keys => "Keys",
-            Self::Dapps => "Web (Freedom)",
+            Self::Dapps => "Web (optional)",
             Self::Assets => "Assets",
             Self::Browser => "Contract Browser",
             Self::Dex => "DEX",
@@ -262,7 +262,7 @@ pub struct App {
     mcp_rx: mpsc::Receiver<McpHostRequest>,
     /// Session-scoped broadcasts for History cancel / speed-up.
     recent_broadcasts: Vec<BroadcastEntry>,
-    /// Local EIP-1193 bridge listen state (Freedom Connect Vaughan).
+    /// Local EIP-1193 bridge listen state (VB / Freedom fallback when parked).
     bridge_status: BridgeStatusHandle,
     /// Sites granted `eth_requestAccounts` this unlock session (page/WS origin).
     /// Shared with the provider server so `accountsChanged` is relayed only to

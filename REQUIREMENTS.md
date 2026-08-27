@@ -11,8 +11,9 @@ Requirement IDs are referenced by `TASKS.md`.
 - Self-custody wallet usable entirely from a terminal.
 - Wallet core (chains, keys, signing, RPC, tx building) built on Alloy.
 - EVM first-class; PulseChain mainnet (369) and testnet v4 (943) as the primary targets.
-- Native provider bridge so Freedom Browser (and other EIP-1193/6963 browsers) can use
-  Vaughan as the signing wallet.
+- Native EIP-1193 provider bridge (VB today; Freedom when upstream
+  [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges —
+  see `docs/freedom-browser-status.md`).
 - Smart accounts via Ambire (ERC-4337/7702 AA) reimplemented in Rust — done
   (FR-3.3, see `docs/ambire-aa.md`).
 - Privacy: ERC-5564 stealth in `vaughan-core` (no Kohaku). RAILGUN still
@@ -50,7 +51,11 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-1.10** Receive: display the active address.
 - **FR-1.11** Settings: switch the active network; selection persists.
 
-### Phase 2 — Native provider bridge (Freedom Browser)
+### Phase 2 — Native provider bridge (EIP-1193; Freedom **parked**)
+
+> Vaughan-side bridge shipped. Freedom Browser integration **parked** until
+> upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
+> merges — see [docs/freedom-browser-status.md](docs/freedom-browser-status.md).
 
 - **FR-2.1** Local EIP-1193 JSON-RPC server (WebSocket on 127.0.0.1), loopback only.
 - **FR-2.2** Implement `eth_accounts`, `eth_requestAccounts`, `eth_chainId`,
@@ -60,8 +65,10 @@ Requirement IDs are referenced by `TASKS.md`.
   the TUI. Never auto-sign.
 - **FR-2.4** Trusted-host allowlist for dApp origins (borrowed from Vaughan-Dioxus's
   `vaughan-trusted-hosts`).
-- **FR-2.5** Freedom Browser integration: a signer backend (analogous to its Ledger
-  backend) that forwards sign requests to Vaughan's local endpoint (out-of-repo PR).
+- **FR-2.5** Freedom Browser integration — **parked**: signer backend PR open at
+  [solardev-xyz/freedom-browser#195](https://github.com/solardev-xyz/freedom-browser/pull/195).
+  Vaughan forwards sign requests over the local endpoint; no further Freedom work
+  until upstream merge. Active web side door: **VB** (`vaughan-dapp-browser`).
 
 ### Phase 3 — Privacy + smart accounts
 

@@ -48,7 +48,7 @@ MCP agent → browser_* tools → localhost CDP → vaughan-dapp-browser (CEF)
 | Agent API | MCP → localhost CDP; Settings toggle default **off** |
 | Wallet | Thin-proxy → `vaughan-provider` → TUI; **no agent auto-sign** |
 | Chains | Multi-chain **EVM** (allowlist hosts; network from Vaughan) |
-| Freedom | Interim Chromium ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)) |
+| Freedom | **Parked** — upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) pending ([freedom-browser-status.md](freedom-browser-status.md)) |
 | Ladybird / Servo | Long-horizon / reject for now |
 | Vaughan-Dioxus | Architectural guide only — never copy/vendor |
 
@@ -115,11 +115,11 @@ Treat the browser as a **plugin binary**, not part of the wallet heart.
 |------|--------|
 | Separate crate | `vaughan-dapp-browser` — Tauri/CEF deps **only here** |
 | No CEF in core | `vaughan-core`, `vaughan-provider`, `vaughan-mcp` never link `libcef` |
-| Soft launch | TUI `w` / MCP discover binary via `PATH` or config; missing → Freedom or “not installed” |
+| Soft launch | TUI `w` / MCP discover binary via `PATH` or config; missing → Freedom dev fallback or “not installed” |
 | Narrow seams | (1) spawn CLI (`--url`, allowlist, provider WS) (2) EIP-1193 to Vaughan (3) optional CDP port/token for agents |
 | MCP degrade | `browser_*` tools return structured unavailable if child absent; Ag/Dex/MCP wallet tools keep working |
 | Default build | `cargo build -p vaughan-cli` must **not** require CEF download |
-| Kill-switch day | Drop/disable crate + soft-launch + MCP browser tools; Browserless Pulse + provider + Freedom remain |
+| Kill-switch day | Drop/disable crate + soft-launch + MCP browser tools; Browserless Pulse + provider remain; Freedom stays parked |
 
 ## Multi-chain (not Pulse-only)
 
@@ -152,7 +152,7 @@ Treat the browser as a **plugin binary**, not part of the wallet heart.
 6. Dual allowlist enforcement (navigation + agent navigate).
 7. Provider inject + multi-chain switch approve path on CEF.
 8. Never sneak CEF types into `vaughan-core`.
-9. Keep Freedom warm while CEF lands.
+9. Keep Freedom bridge tests warm; integration **parked** until PR #195 merges.
 
 ## Phased delivery
 

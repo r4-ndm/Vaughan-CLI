@@ -17,7 +17,7 @@ browser popup. dApps often label the provider **“Injected”** or **MetaMask**
 ## Universal checklist
 
 1. Unlock Vaughan (provider `ws://127.0.0.1:8745`).
-2. Web list → select dApp → **Enter** (opens `vaughan-dapp-browser` or Freedom).
+2. Web list → select dApp → **Enter** (opens VB; Freedom only as dev fallback — parked until PR #195).
 3. Look for green banner: **Vaughan injected**.
 4. In the dApp: Connect → Injected / Vaughan / MetaMask.
 5. If the dApp says “confirm in wallet”, switch to the **TUI** (connect is often

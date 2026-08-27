@@ -13,12 +13,12 @@ Use this to pick a path — not as a formal audit certificate.
 |-----------|-----------|-----|
 | Swap, bridge, inspect contracts, MCP agents — **no website** | **Browserless Pulse** (default) | No dApp frontend to hijack; you approve calldata in the TUI |
 | Must use a **real dApp website** (PulseX mirror, 9inch, …) | **VB** (`vaughan-dapp-browser`) | Allowlisted Chromium + extension; signing still in TUI |
-| Legacy / fallback webview | **Freedom** (parked) | Same general web risks as VB; prefer VB when installed |
+| Legacy / fallback webview | **Freedom** (parked — [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)) | Prefer VB; Freedom blocked on upstream merge ([status](freedom-browser-status.md)) |
 | MetaMask, Rabby, WalletConnect, … | *(not Vaughan)* | See “Typical browser wallets” below |
 
 **Rule of thumb:** prefer **Browserless Pulse** whenever it can do the job. Use **VB** only when you need the actual web UI.
 
-Related docs: [browserless-pulse.md](browserless-pulse.md), [dapp-browser-strategy.md](dapp-browser-strategy.md), [dapp-connection-risks.md](dapp-connection-risks.md).
+Related docs: [browserless-pulse.md](browserless-pulse.md), [dapp-browser-strategy.md](dapp-browser-strategy.md), [freedom-browser-status.md](freedom-browser-status.md), [dapp-connection-risks.md](dapp-connection-risks.md).
 
 ---
 

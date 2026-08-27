@@ -1,6 +1,8 @@
 # Achieving Native Security Parity Without Forking Freedom Browser
 
-**Document Status**: Security Architecture Specification  
+**Document Status**: Security Architecture Specification (Freedom integration **parked**
+until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges —
+see [freedom-browser-status.md](freedom-browser-status.md)).  
 **Goal**: Elevate Vaughan + Freedom Browser loopback IPC to achieve complete security parity with (and in key areas surpass) a built-in C++ native engine wallet without maintaining a browser fork.
 
 ---

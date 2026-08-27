@@ -1,6 +1,11 @@
 # Freedom Browser Integration — Research & Plan
 
-> Status: research complete (verified against `solardev-xyz/freedom-browser`, `main` branch, July 2026).
+> **Status: PARKED** — Vaughan-side bridge is shipped. Upstream signer backend
+> [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) is open and
+> **not merged**; no active Freedom integration work until it lands. Canonical status:
+> [freedom-browser-status.md](freedom-browser-status.md).
+>
+> Research complete (verified against `solardev-xyz/freedom-browser`, July 2026).
 > Companion to `TASKS.md` Phase 2 and `REQUIREMENTS.md` FR-2.x.
 > License of Freedom Browser: **MPL-2.0** — our integration is an **upstream PR**, not a fork.
 

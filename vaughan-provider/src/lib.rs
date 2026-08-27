@@ -1,11 +1,11 @@
 //! Local EIP-1193 JSON-RPC provider bridge (Phase 2, FR-2.1/FR-2.2).
 //!
 //! `vaughan-provider` is the loopback-only WebSocket endpoint that lets a
-//! dApp browser — Freedom Browser — use Vaughan as its signing wallet. It
-//! owns the transport and the JSON-RPC wire protocol but no wallet logic:
-//! requests are handed to a host-supplied [`RequestHandler`], which the TUI
-//! implements against `vaughan-core` (and which enforces the approval flow
-//! for every sign/send request).
+//! dApp browser (VB today; Freedom when upstream PR #195 merges) use Vaughan
+//! as its signing wallet. It owns the transport and the JSON-RPC wire protocol
+//! but no wallet logic: requests are handed to a host-supplied
+//! [`RequestHandler`], which the TUI implements against `vaughan-core` (and
+//! which enforces the approval flow for every sign/send request).
 //!
 //! Module layering:
 //! - `error` — EIP-1193 error codes + [`ProviderError`]

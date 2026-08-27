@@ -1,8 +1,8 @@
 //! Optional web dApps: whitelisted origins for the EIP-1193 bridge.
 //!
 //! Not the default Browserless Pulse path — use Ag / Dex / Browse / MCP first.
-//! Enter opens **Vaughan dApp browser** when installed, else Freedom — never
-//! the system browser.
+//! Enter opens **VB** when installed, else Freedom (dev fallback; integration
+//! parked until upstream PR #195) — never the system browser.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -70,7 +70,7 @@ impl DappsView {
                 frame.render_widget(
                     Paragraph::new(vec![
                         Line::from(bridge_line.to_string()),
-                        Line::from("Unlock Vaughan first. Enter opens Vaughan browser if installed, else Freedom."),
+                        Line::from("Unlock Vaughan first. Enter → VB if installed, else Freedom (parked / dev only)."),
                     ]),
                     bridge_a,
                 );
@@ -97,7 +97,7 @@ impl DappsView {
                         Line::from("Add a whitelisted dApp"),
                         Line::from("Tab switches fields · Enter saves · Esc cancels"),
                         Line::from(
-                            "URLs open in Vaughan dApp browser when installed, else Freedom.",
+                            "URLs open in VB when installed; Freedom only as dev fallback (parked until PR #195).",
                         ),
                     ])
                     .wrap(Wrap { trim: false }),
@@ -225,7 +225,7 @@ impl DappsView {
                         match wallet.add_trusted_dapp(self.name.value(), self.url.value()) {
                             Ok(d) => {
                                 self.status = format!(
-                                    "Added {} — Enter opens Vaughan browser or Freedom.",
+                                    "Added {} — Enter opens VB or Freedom fallback.",
                                     d.name
                                 );
                                 self.name.set_value("");

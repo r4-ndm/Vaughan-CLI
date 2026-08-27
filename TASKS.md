@@ -31,9 +31,12 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] `cargo fmt --check` clean
 - [x] `cargo clippy --workspace -- -D warnings` clean
 
-## Phase 2 — Native provider bridge (Freedom Browser)
+## Phase 2 — Native provider bridge (Freedom Browser — **parked**)
 
-> Integration research + browser-side plan: `docs/freedom-browser-integration.md`
+> **Parked** until upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
+> merges. Vaughan-side bridge is done; no active Freedom work until then.
+> Status: [docs/freedom-browser-status.md](docs/freedom-browser-status.md)
+> Integration research: [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md)
 
 - [x] `vaughan-provider` crate: local EIP-1193 WebSocket server (loopback) (FR-2.1)
 - [x] Implement provider methods: accounts, chainId, sendTransaction, sign, signTypedData_v4, switchEthereumChain + `vaughan_signTransaction` (FR-2.2)
@@ -41,7 +44,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Trusted-host allowlist (borrow `vaughan-trusted-hosts`) (FR-2.4). `ProviderServer::with_trusted_origins` now enforces a canonicalized `Origin` allowlist (missing/untrusted origins are rejected at connection time); Vaughan always merges Freedom's Origin `https://freedom.browser`, plus optional `VAUGHAN_PROVIDER_TRUSTED_ORIGINS` and persisted dApp origins.
 - [x] Trusted-host startup validation path: TUI tests now cover env-derived origin parsing and startup-time server wiring with allowlist enforcement (missing-origin clients are rejected; trusted-origin clients are served).
 - [x] Account/chain change event push to clients (`EventBus` → JSON-RPC notifications) (FR-2.2)
-- [x] Freedom Browser signer backend PR (out-of-repo) (FR-2.5) — opened upstream: https://github.com/solardev-xyz/freedom-browser/pull/195 (`feat/vaughan-signer-backend`: Vaughan WS signer + account discovery IPC; rebased onto `main` 2026-08-20; Jest 48 green; Vaughan `freedom_bridge_smoke` covers Origin + Freedom RPC methods)
+- [x] Freedom Browser signer backend PR (out-of-repo) (FR-2.5) — **open, parked**: https://github.com/solardev-xyz/freedom-browser/pull/195 (`feat/vaughan-signer-backend`; Vaughan `freedom_bridge_smoke` green; **no further Freedom integration until merge**)
 
 ## Phase 3 — Privacy + smart accounts
 
@@ -102,7 +105,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] ERC-20 send from Assets (↑↓ select, Enter → Send with token transfer)
 - [x] Trusted dApp whitelist TUI (`w` / Settings): add/remove URLs, Enter opens Freedom (or system browser); origins merge into provider allowlist on launch
 - [x] Freedom bridge smooth path: always allowlist `https://freedom.browser`; Web (`w`) shows bridge listen status; unlock-before-connect copy; Freedom PR #195 rebased onto main (OpenLV coexistence). Manual Connect Vaughan smoke still recommended when testing a local Freedom checkout.
-- [ ] Freedom auto-connect on launch (later) — deeper than default Origin; optional side door; primary product push is **Browserless Pulse** (below)
+- [ ] Freedom auto-connect on launch — **blocked on PR #195 merge**; primary web path is **VB** + Browserless Pulse
 
 ### Known facts (verified 2026-08-18)
 - PulseX Router `0x165C…552d9` → Factory `0x29eA…C523`, PLSX `0x95B3…90ab`, 186,244 pairs
@@ -278,9 +281,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ## Browserless Pulse (active product thesis)
 
 > **Pitch:** “The wallet that doesn’t need Chrome.” Approve calldata, not websites.
-> Primary path = Dashboard → Ag / Dex / Contract browser / MCP. Freedom
-> ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)) stays an
-> *optional* side door for odd dApps — not the default story.
+> Primary path = Dashboard → Ag / Dex / Contract browser / MCP. **Freedom is
+> parked** until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
+> merges ([docs/freedom-browser-status.md](docs/freedom-browser-status.md)).
+> **VB** is the active optional web side door.
 >
 > Exit demo (no browser window): unlock → Ag swap → contract probe → MCP propose
 > → stealth receive.
@@ -349,8 +353,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Batch7702 fee-spike: stamp via `estimate_self_pay_fee`, check at approve (same as other MCP writes)
 
 ### Positioning (UX + docs)
-- [x] Demote Dapps screen: relabel to “Optional web / Freedom” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP
-- [x] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom optional (`docs/browserless-pulse.md`)
+- [x] Demote Dapps screen: relabel to “Optional web / VB” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP
+- [x] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom parked pending PR #195 (`docs/freedom-browser-status.md`)
 - [ ] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame)
 
 ### Explicitly out of scope for this thesis
@@ -366,7 +370,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 > Strategy: [`docs/dapp-browser-strategy.md`](docs/dapp-browser-strategy.md).
 > Modular Tauri+CEF side door; multi-chain EVM; CDP agents; never auto-sign.
-> Freedom remains interim Chromium until the owned shell is usable.
+> **VB** (system Chromium today) is the active web side door; Freedom **parked**
+> until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges.
 
 ### Phase 0 — Docs
 - [x] `docs/dapp-browser-strategy.md` (CEF, modularity, multi-chain, CDP, kill-switch)

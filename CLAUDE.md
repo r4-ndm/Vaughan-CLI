@@ -11,7 +11,7 @@ authoritative for how work gets done here.
 - `vaughan-aa/` — EIP-7702 / Ambire smart accounts and batched sends
 - `vaughan-agent/` — [Phase 5] proposal engine, tool registry, Sentient circuit breakers (no LLM client)
 - `vaughan-mcp/` — [Phase 6] MCP stdio server for external agents (Cursor, Claude, …)
-- `vaughan-provider/` — [Phase 2] local EIP-1193 bridge for Freedom Browser
+- `vaughan-provider/` — [Phase 2] local EIP-1193 bridge (VB, Freedom when un-parked)
 - `vaughan-cli/` — unified `vaughan` binary (TUI by default; CLI subcommands for scripts)
 - `vaughan-tui/` — ratatui terminal frontend (library + dev `vaughan-tui` binary)
 
@@ -185,7 +185,7 @@ Key external references (do not edit unless asked; these are separate repos):
 
 - `r4-ndm/Vaughan-Dioxus` — reference guide only (layering ideas, Ambire AA approach); never a code source
 - `r4-ndm/Kohaku-rs` — privacy SDK reference only; **not** a Vaughan dependency (stealth is in-core; RAILGUN deferred)
-- `solardev-xyz/freedom-browser` — dApp browser we bridge to (Phase 2, out-of-repo PR)
+- `solardev-xyz/freedom-browser` — dApp browser bridge target (**parked** until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges; see `docs/freedom-browser-status.md`)
 - MetaMask / ethers / Alloy — approved **algorithm** references for EIP convenience UX (fees, EIP-1193); reimplement on Alloy, do not vendor their UI
 ## Workflow
 

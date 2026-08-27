@@ -10,7 +10,7 @@ Vaughan-CLI is a sovereign Rust multi-chain CLI wallet TUI:
 - **vaughan-agent** — library only: proposal engine, sensory/write tools, Sentient circuit breakers (no LLM client).
 - **ERC-5564 stealth** — spec-first in `vaughan-core` (`docs/erc-5564-stealth.md`). RAILGUN / Kohaku remain deferred (`docs/kohaku-go-no-go.md`).
 - **ratatui** — terminal UI.
-- **Freedom Browser** — dApp browser that uses Vaughan as its native signing provider.
+- **Freedom Browser** — **parked** until upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges; Vaughan-side EIP-1193 bridge is shipped ([docs/freedom-browser-status.md](docs/freedom-browser-status.md)).
 
 EVM-first, PulseChain-optimized. Architecture mirrors Vaughan-Dioxus's `vaughan-core`
 (chain adapters, core services, security, persistence).
@@ -82,9 +82,10 @@ Polkadot (Substrate) can be added later without touching the UI or services.
 Create/restore (BIP-39), password-encrypted vault, HD `m/44'/60'/0'/0/0`, balance,
 send native PLS, receive, network switching.
 
-### Phase 2 — Native provider bridge (Done)
-`vaughan-provider` local EIP-1193 server + TUI approval flow + trusted hosts, and a
-Freedom Browser signer-backend PR (out-of-repo, MPL-2.0).
+### Phase 2 — Native provider bridge (Done; Freedom **parked**)
+`vaughan-provider` local EIP-1193 server + TUI approval flow + trusted hosts.
+Freedom signer-backend [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
+is open upstream — no further Freedom work until merge ([freedom-browser-status.md](docs/freedom-browser-status.md)).
 
 ### Phase 3 — Privacy + smart accounts (AA done; stealth on 943)
 Ambire AA in Rust (see `docs/ambire-aa.md`) is **done**. ERC-5564 scheme-1 crypto,
@@ -143,7 +144,7 @@ plane; stdio MCP stays the agent client.
 
 ## Risks / open items
 
-- **Freedom Browser bridge** — transport requires a new signer backend + local socket.
+- **Freedom Browser bridge** — **parked** pending upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195); Vaughan-side transport shipped. Active web side door: **VB**.
 - **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
 - **MCP client diversity** — hand-rolled JSON-RPC subset by design; validate against Cursor / Claude Code via [`docs/mcp-smoke.md`](docs/mcp-smoke.md) + `vaughan-mcp` conformance tests. Full `rmcp` rewrite is **not scheduled** — see [`docs/mcp-transport.md`](docs/mcp-transport.md).
 - **Wallet daemon (v2)** — minimal `vaughan serve` shipped; full thin-client TUI still optional polish.
