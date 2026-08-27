@@ -152,3 +152,9 @@ Revisit 4337 only when one of those becomes a product requirement **or** a
 PulseChain EntryPoint/bundler decision is made (deploy our own vs. use an existing
 one) — until then, `build.rs`'s 4337 path stays a stub with this doc as the
 recorded rationale.
+
+### TUI path (today)
+
+Dashboard **`b`** (AA batched send) uses **EIP-7702 self-pay** only: compose native
+transfers, confirm once, broadcast via `submit_batch`. No EntryPoint/bundler in the
+default Browserless Pulse flow.

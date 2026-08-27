@@ -18,6 +18,7 @@ pub mod site_grants;
 pub mod stealth;
 pub mod transaction;
 pub mod vault_secrets;
+pub mod vb_browser;
 pub mod wallet;
 pub mod wiz4rd;
 

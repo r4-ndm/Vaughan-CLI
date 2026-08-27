@@ -105,6 +105,23 @@ Wire-format CI: `cargo test -p vaughan-mcp --test conformance`.
 | `mainnet_blocked` | Set `VAUGHAN_MCP_ALLOW_MAINNET=1` (use testnet first) |
 | MCP broken in Cursor | Ensure nothing writes to stdout except JSON-RPC (logs go to stderr) |
 
+## Browser tools (VB B1)
+
+Optional `vaughan-dapp-browser` control for agents. **Never signs** — signing stays
+in the TUI/provider.
+
+| Tool | Purpose |
+|------|---------|
+| `browser_open` | Spawn VB at allowlisted `url`; set `VAUGHAN_DAPP_BROWSER_CDP_PORT` (default `9222`) for CDP |
+| `browser_navigate` | CDP navigate to allowlisted `url` (checks `vb.session` suffixes) |
+| `browser_status` | CDP health + open page URLs |
+
+When VB is missing or CDP is down, tools return structured JSON with
+`available: false` and a `hint` (not a crash).
+
+Requires `vaughan-dapp-browser` on `PATH`. In-tab navigation is also gated inside
+the Chromium extension (MV3 allowlist).
+
 ## v2 — `vaughan serve`
 
 Minimal headless daemon (same MCP IPC wire as v1):

@@ -11,5 +11,8 @@
   "watch_quote",
   "propose_transfer",
   "propose_agg_swap",
-  "propose_batch_7702"
+  "propose_batch_7702",
+  "browser_open",
+  "browser_navigate",
+  "browser_status"
 ]

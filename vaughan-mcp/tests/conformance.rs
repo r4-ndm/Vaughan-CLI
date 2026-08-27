@@ -186,3 +186,14 @@ async fn notifications_initialized_accepted() {
     assert!(resp.error.is_none());
     assert_eq!(resp.result, Some(json!({})));
 }
+
+#[tokio::test]
+async fn browser_status_unavailable_without_vb_session() {
+    let (_dispatcher, ctx) = harness().await;
+    let body = vaughan_mcp::browser_bridge::browser_status(&ctx)
+        .await
+        .expect("browser_status should return JSON, not hard error");
+    assert_eq!(body["available"], false);
+    assert_eq!(body["reason"], "no_vb_session");
+    assert!(body["hint"].as_str().is_some());
+}

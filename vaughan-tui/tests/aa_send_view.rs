@@ -96,7 +96,7 @@ fn aa_send_view_broadcasts_batch_and_recipients_receive() {
     assert!(text.contains("0.25 tPLS"), "row 2 amount:\n{text}");
     assert!(text.contains("Fee:"), "fee must be shown:\n{text}");
     assert!(
-        text.contains("account will be delegated"),
+        text.contains("First batch: EIP-7702 delegates this EOA to AmbireAccount"),
         "bootstrap note must be shown on a fresh account:\n{text}"
     );
 

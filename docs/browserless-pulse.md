@@ -37,3 +37,5 @@ Optional side paths:
 5. Stealth receive URI  
 
 See [TASKS.md](../TASKS.md) § Browserless Pulse, [aggregator.md](aggregator.md), [mcp.md](mcp.md).
+Demo recording script: [browserless-pulse-demo.md](browserless-pulse-demo.md).
+Implementation backlog: [browserless-pulse-next-bets.md](browserless-pulse-next-bets.md).

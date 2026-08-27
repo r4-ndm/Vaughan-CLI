@@ -452,6 +452,66 @@ fn contract_call_to_deployed_code_succeeds() {
     );
 }
 
+/// `vaughan sign-typed-data --file` matches foundry reference (same vault key as anvil dev #0).
+#[test]
+fn cli_sign_typed_data_matches_foundry() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = new_vault(dir.path());
+
+    let typed_path = dir.path().join("typed.json");
+    let typed_data = json!({
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+            ],
+            "Message": [{"name": "content", "type": "string"}],
+        },
+        "primaryType": "Message",
+        "domain": {"name": "Vaughan CLI", "version": "1", "chainId": 943},
+        "message": {"content": "Hello from CLI"},
+    });
+    std::fs::write(&typed_path, typed_data.to_string()).unwrap();
+
+    let out = Command::new(bin())
+        .arg("--vault")
+        .arg(&vault)
+        .args([
+            "sign-typed-data",
+            "--file",
+            typed_path.to_str().unwrap(),
+            "--password-env",
+            PASSWORD_ENV,
+            "--yes",
+        ])
+        .env(PASSWORD_ENV, PASSWORD)
+        .output()
+        .expect("vaughan sign-typed-data");
+    assert!(
+        out.status.success(),
+        "sign-typed-data failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let signature = stdout
+        .lines()
+        .find(|l| l.starts_with("0x") && l.len() >= 66)
+        .unwrap_or_else(|| panic!("stdout must contain signature:\n{stdout}"))
+        .trim()
+        .to_string();
+
+    let cast_out = Command::new("cast")
+        .args(["wallet", "sign", "--data", "--private-key"])
+        .arg("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+        .arg(typed_data.to_string())
+        .output()
+        .expect("cast wallet sign");
+    assert!(cast_out.status.success(), "cast failed");
+    let reference = String::from_utf8_lossy(&cast_out.stdout).trim().to_string();
+    assert_eq!(signature, reference, "CLI EIP-712 must match foundry");
+}
+
 // ---- helpers ----
 
 // The vault restored from the anvil mnemonic derives the same addresses

@@ -155,3 +155,57 @@ fn anvil_erc20_approve_then_revoke_clears_allowance() {
     let cleared = eth_call_u256(&anvil, MOCK_WPLS, &encode_allowance_call(owner, SPENDER));
     assert_eq!(cleared, U256::ZERO, "allowance after revoke");
 }
+
+/// Browserless EIP-712 (no dApp): `execute_approval_sync` on `SignTypedData`
+/// must match foundry's reference signer — same path as browser `sign-typed` → Approve.
+#[test]
+fn anvil_browserless_sign_typed_data_matches_foundry() {
+    use std::process::Command;
+    use vaughan_tui::provider::{execute_approval_sync, ApprovalKind};
+
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let rt = Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let sender = wallet.active_address().unwrap().to_string();
+    let typed_data = json!({
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+            ],
+            "Message": [{"name": "content", "type": "string"}],
+        },
+        "primaryType": "Message",
+        "domain": {"name": "Vaughan Browserless", "version": "1", "chainId": 943},
+        "message": {"content": "Hello, browserless Pulse!"},
+    });
+
+    let kind = ApprovalKind::SignTypedData {
+        address: sender.clone(),
+        typed_data: typed_data.clone(),
+    };
+    let signature = execute_approval_sync(&kind, &wallet, &handle)
+        .unwrap_or_else(|e| panic!("browserless sign typed data failed: {e}"));
+    assert!(signature.starts_with("0x"));
+    assert_eq!(signature.len(), 2 + 65 * 2);
+
+    let out = Command::new("cast")
+        .args(["wallet", "sign", "--data", "--private-key", common::ANVIL_KEY0])
+        .arg(typed_data.to_string())
+        .output()
+        .expect("cast must be available");
+    assert!(
+        out.status.success(),
+        "cast wallet sign failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reference = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(
+        signature, reference,
+        "browserless EIP-712 must match foundry reference"
+    );
+}

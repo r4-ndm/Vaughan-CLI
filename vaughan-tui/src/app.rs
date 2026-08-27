@@ -95,6 +95,8 @@ pub enum KeyOutcome {
     SendAsset(vaughan_core::chains::Balance),
     /// Intent macro → jump to an existing surface (optional prefills).
     Intent(crate::intent::IntentNav),
+    /// Local EIP-712 sign (browser REPL) → Approve gate.
+    SignTypedData(serde_json::Value),
     /// Show a short chrome toast (copy confirmations, etc.); key is consumed.
     Flash(String),
 }
@@ -108,6 +110,7 @@ impl std::fmt::Debug for KeyOutcome {
             Self::StartJob(_) => write!(f, "StartJob(..)"),
             Self::SendAsset(_) => write!(f, "SendAsset(..)"),
             Self::Intent(i) => f.debug_tuple("Intent").field(i).finish(),
+            Self::SignTypedData(_) => write!(f, "SignTypedData(..)"),
             Self::Flash(s) => f.debug_tuple("Flash").field(s).finish(),
         }
     }
@@ -224,6 +227,8 @@ enum PendingReply {
     Sign(oneshot::Sender<Result<String, ProviderError>>),
     Accounts(oneshot::Sender<Result<Vec<String>, ProviderError>>),
     Switch(oneshot::Sender<Result<(), ProviderError>>),
+    /// Browserless local EIP-712 — result shown as chrome flash on approve.
+    LocalSign,
 }
 
 /// Discard accidental keypresses for this long after an approve prompt appears.
@@ -571,6 +576,7 @@ impl App {
                 self.view = View::Dashboard(DashboardView::for_asset(balance));
             }
             KeyOutcome::Intent(nav) => self.apply_intent(nav),
+            KeyOutcome::SignTypedData(data) => self.begin_local_typed_data_sign(data),
             KeyOutcome::Flash(msg) => self.set_flash(msg),
             KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
         }
@@ -781,6 +787,7 @@ impl App {
             PendingReply::Switch(reply) => {
                 let _ = reply.send(Err(ProviderError::UserRejected));
             }
+            PendingReply::LocalSign => {}
         }
         let back = self.approve_return;
         self.navigate(back);
@@ -1119,6 +1126,7 @@ impl App {
                 PendingReply::Sign(reply) => {
                     let _ = reply.send(Err(ProviderError::UserRejected));
                 }
+                PendingReply::LocalSign => {}
                 PendingReply::Accounts(reply) => {
                     let _ = reply.send(Err(ProviderError::UserRejected));
                 }
@@ -1165,9 +1173,66 @@ impl App {
                 let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
                 let _ = reply.send(result);
             }
+            PendingReply::LocalSign => {
+                let kind = pending.kind;
+                let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                match result {
+                    Ok(sig) => self.set_flash(format!("EIP-712 signature: {sig}")),
+                    Err(e) => self.set_flash(format!("Sign failed: {e}")),
+                }
+            }
         }
         let back = self.approve_return;
         self.navigate(back);
+    }
+
+    /// Browserless EIP-712: show the standard Approve card for pasted typed data.
+    fn begin_local_typed_data_sign(&mut self, typed_data: serde_json::Value) {
+        if self.pending_approval.is_some() {
+            self.set_flash("another approval is pending");
+            return;
+        }
+        if !self.wallet().is_unlocked() {
+            self.set_flash("unlock wallet first");
+            return;
+        }
+        let address = {
+            let wallet = self.wallet();
+            wallet.active_address().map(|a| a.to_string())
+        };
+        let address = match address {
+            Ok(a) => a,
+            Err(e) => {
+                self.set_flash(e.user_message());
+                return;
+            }
+        };
+        let kind = ApprovalKind::SignTypedData {
+            address,
+            typed_data,
+        };
+        let preview = {
+            let wallet = self.wallet();
+            provider::describe_approval(&kind, &wallet, &self.handle)
+        };
+        let (title, details) = match preview {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_flash(format!("{e}"));
+                return;
+            }
+        };
+        self.approve_return = self.screen();
+        self.view = View::Approve(ApproveView::new(
+            title,
+            Some("Local (browserless)".into()),
+            details,
+        ));
+        self.pending_approval = Some(PendingApproval {
+            kind,
+            reply: PendingReply::LocalSign,
+            shown_at: std::time::Instant::now(),
+        });
     }
 
     fn network_label_for_chain_hex(chain_id_hex: &str) -> String {

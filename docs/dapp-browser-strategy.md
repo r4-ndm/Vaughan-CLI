@@ -212,9 +212,10 @@ _Phase 0.5 complete (agent CDP path); Phase 1 Chromium shell landed (CEF embed s
 - **Phase 1 binary:** `vaughan-dapp-browser` — system Chromium + MV3 extension
   (background WS → `ws://127.0.0.1:8745`, CSP-safe); `--cdp-port` advertises
   agent CDP (**off** unless set). Soft-launch from TUI `w`.
-- **Phase 1 gaps:** initial-URL allowlist only (no in-tab navigation gate yet);
-  MetaMask-family `isMetaMask` convenience flag for Pulse dApp interop while
-  EIP-6963 still announces as Vaughan.
+- **Phase 1 gaps:** MetaMask-family `isMetaMask` convenience flag for Pulse dApp interop while
+  EIP-6963 still announces as Vaughan. **In-tab navigation gate:** shipped (MV3
+  `declarativeNetRequest` + `allowlist.json`); MCP validates URLs server-side via
+  `vb.session` allow suffixes (`browser_navigate`).
 - **CEF/Tauri:** still git-only; not linked. Kill-switch: remove crate + soft-launch.
 - **Modularity:** CEF not in core; Chromium shell only in this package (no
   chromiumoxide).

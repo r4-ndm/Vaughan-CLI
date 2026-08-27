@@ -210,12 +210,23 @@ impl AaSendView {
                 }
                 text.push(Line::from(""));
                 text.push(Line::from(format!("Network: {}{testnet}", net.name)));
+                if net.is_testnet {
+                    text.push(Line::from(Span::styled(
+                        "Testnet-first: exercise AA batches here before mainnet.",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                } else {
+                    text.push(Line::from(Span::styled(
+                        "Mainnet — confirm chain and batch before approving.",
+                        Style::default().fg(Color::Yellow),
+                    )));
+                }
                 if let Some(fee) = &self.fee {
                     text.push(Line::from(format!("Fee:      {fee}")));
                 }
                 if self.will_bootstrap {
                     text.push(Line::from(Span::styled(
-                        "First batch: the account will be delegated to the smart account (one-time)",
+                        "First batch: EIP-7702 delegates this EOA to AmbireAccount (one-time; permanent per EIP-7702)",
                         Style::default().fg(Color::Yellow),
                     )));
                 }

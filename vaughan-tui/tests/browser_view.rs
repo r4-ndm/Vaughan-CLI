@@ -84,6 +84,10 @@ fn browser_view_help_command() {
         "must list write command:\n{text}"
     );
     assert!(text.contains("/swap"), "must list intent macros:\n{text}");
+    assert!(
+        text.contains("sign-typed"),
+        "must list browserless EIP-712 command:\n{text}"
+    );
 }
 
 #[test]
@@ -134,6 +138,35 @@ fn browser_view_intent_macros_navigate() {
     type_text(&mut view, "/stealth receive", &mut wallet, &handle, &events);
     let o3 = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
     assert!(matches!(o3, KeyOutcome::Intent(IntentNav::Receive)));
+}
+
+#[test]
+fn browser_view_sign_typed_from_file_returns_outcome() {
+    let tmp = tempdir().unwrap();
+    let mut wallet = common::fresh_wallet(tmp.path());
+    let mut view = BrowserView::default();
+    let events = EventBus::new();
+    let (_rt, handle) = runtime_handle();
+
+    let fixture = tmp.path().join("typed.json");
+    std::fs::write(
+        &fixture,
+        r#"{"types":{"EIP712Domain":[{"name":"name","type":"string"}],"Message":[{"name":"content","type":"string"}]},"primaryType":"Message","domain":{"name":"Test"},"message":{"content":"hi"}}"#,
+    )
+    .unwrap();
+
+    type_text(
+        &mut view,
+        &format!("sign-typed @{}", fixture.display()),
+        &mut wallet,
+        &handle,
+        &events,
+    );
+    let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(
+        matches!(outcome, KeyOutcome::SignTypedData(_)),
+        "sign-typed @file must yield SignTypedData outcome, got {outcome:?}"
+    );
 }
 
 #[test]

@@ -14,6 +14,7 @@ use vaughan_core::core::proposal::{
     guard_mainnet_write, proposal_status_json, McpSessionToken, ProposalQueue, TxProposal,
 };
 
+use crate::browser_bridge::{self, browser_tool_definitions};
 use crate::client::{
     ping, try_get_session, try_proposal_status, try_propose_live, try_stealth_scan,
     try_stealth_sweep, try_stealth_uri,
@@ -69,6 +70,7 @@ impl McpDispatcher {
             }
         }
         tools.extend(session_bridge_tool_definitions());
+        tools.extend(browser_tool_definitions());
         tools
     }
 
@@ -87,6 +89,9 @@ impl McpDispatcher {
             "get_stealth_uri" => self.stealth_uri(&ctx).await,
             "scan_stealth_notes" => self.stealth_scan(&ctx).await,
             "sweep_stealth_note" => self.stealth_sweep(args, &ctx).await,
+            "browser_open" => browser_bridge::browser_open(args, &ctx).await,
+            "browser_navigate" => browser_bridge::browser_navigate(args, &ctx).await,
+            "browser_status" => browser_bridge::browser_status(&ctx).await,
             name if name.starts_with("propose_") => self.propose_tool(name, args, &ctx).await,
             name if self.sensory.definitions().iter().any(|d| d.name == name)
                 || name == "get_balance"

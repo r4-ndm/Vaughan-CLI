@@ -347,7 +347,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] LP positions (V2 balance + remove liquidity); V3 only if demand is proven
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred
-- [ ] Local EIP-712: paste/load typed-data JSON → Approve view (for protocols that insist on `eth_signTypedData_v4` without a webview)
+- [x] Local EIP-712: paste/load typed-data JSON → Approve view — `vaughan sign-typed-data`, browser `sign-typed`
 - [x] Watch mode (MCP): `watch_balance` + `watch_quote` threshold snapshots; agent owns poll loop
 - [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/sentient-ops.md`](docs/sentient-ops.md))
 - [x] Batch7702 fee-spike: stamp via `estimate_self_pay_fee`, check at approve (same as other MCP writes)
@@ -355,7 +355,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### Positioning (UX + docs)
 - [x] Demote Dapps screen: relabel to “Optional web / VB” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP
 - [x] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom parked pending PR #195 (`docs/freedom-browser-status.md`)
-- [ ] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame)
+- [x] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame) — operator script: [`docs/browserless-pulse-demo.md`](docs/browserless-pulse-demo.md)
 
 ### Explicitly out of scope for this thesis
 - Making a webview the **default** wallet identity (Browserless Pulse stays primary)
@@ -390,12 +390,13 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] CDP export only with `--cdp-port` / `VAUGHAN_DAPP_BROWSER_CDP_PORT` (default off)
 - [x] Anvil smoke: dApp page Origin + extension Origin → connect + send + multi-chain switch (`vaughan-tui/tests/dapp_browser_bridge_smoke.rs`)
 - [x] Manual smoke: Pulse / 9inch / Squirrel / Liberty headed Chromium (CSP-safe extension; PulseX via IPFS mirror)
-- [ ] Navigation allowlist enforcement after first load (Phase 1 gap: initial `--url` only)
+- [ ] Navigation allowlist enforcement after first load — **done** (extension MV3 + MCP `browser_navigate` checks `vb.session` suffixes)
 - [ ] Tauri + CEF embed (replace system Chromium) — still gated on git `tauri-runtime-cef`
 
 ### Phase 2 — MCP B1 (FR-7.5)
-- [ ] `browser_open` / `browser_navigate` / `browser_status` (allowlisted; unlocked + child alive)
-- [ ] Structured unavailable when binary/child absent; document in `docs/mcp.md`
+
+- [x] `browser_open` / `browser_navigate` / `browser_status` (allowlisted; CDP via `vb.session`)
+- [x] Structured unavailable when binary/child absent; document in `docs/mcp.md`
 
 ### Phase 3 — MCP B2 (FR-7.5)
 - [ ] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP AX tree

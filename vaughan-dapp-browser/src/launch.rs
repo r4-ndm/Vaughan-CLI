@@ -207,7 +207,7 @@ fn vb_session_path() -> Option<PathBuf> {
 
 /// Persist CDP endpoint metadata for MCP agents (`cdp_token` is session metadata;
 /// Chrome CDP itself is loopback-only — agents must present the token out-of-band).
-fn write_vb_session(cdp_port: u16, cdp_token: &str) -> Result<(), String> {
+fn write_vb_session(cdp_port: u16, cdp_token: &str, allow: &Allowlist) -> Result<(), String> {
     let path = vb_session_path().ok_or_else(|| "no data dir for vb.session".to_string())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("vb.session dir: {e}"))?;
@@ -219,6 +219,7 @@ fn write_vb_session(cdp_port: u16, cdp_token: &str) -> Result<(), String> {
     let body = serde_json::json!({
         "cdp_url": format!("http://127.0.0.1:{cdp_port}"),
         "cdp_token": cdp_token,
+        "allow_suffixes": allow.suffixes(),
         "updated_at": updated_at,
     });
     let bytes = serde_json::to_vec(&body).map_err(|e| format!("vb.session json: {e}"))?;
@@ -366,7 +367,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     );
     if export_cdp {
         let token = cdp_token.as_deref().unwrap_or("");
-        write_vb_session(cdp_port, token)?;
+        write_vb_session(cdp_port, token, &opts.allow)?;
         println!(
             "{}",
             serde_json::json!({

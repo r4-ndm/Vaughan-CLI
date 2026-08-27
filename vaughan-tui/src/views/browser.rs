@@ -536,6 +536,19 @@ impl BrowserView {
                 self.cmd_pairs(0, limit, wallet, handle);
                 KeyOutcome::Consumed
             }
+            "sign-typed" => {
+                let Some(raw) = parts.get(1) else {
+                    self.log_error("Usage: sign-typed <json> | sign-typed @/path/to/file.json");
+                    return KeyOutcome::Consumed;
+                };
+                match load_typed_data_for_repl(raw) {
+                    Ok(v) => KeyOutcome::SignTypedData(v),
+                    Err(e) => {
+                        self.log_error(&e);
+                        KeyOutcome::Consumed
+                    }
+                }
+            }
             other => {
                 self.log_error(&format!(
                     "Unknown command '{}'. Type 'help' for commands.",
@@ -590,6 +603,9 @@ impl BrowserView {
         ));
         self.logs.push(Line::from(
             "  /stealth receive           Intent → Receive (stealth URI)",
+        ));
+        self.logs.push(Line::from(
+            "  sign-typed <json|@file>    EIP-712 sign → Approve card (browserless)",
         ));
         self.logs.push(Line::from(
             "  clear                      Clear console output",
@@ -1095,4 +1111,23 @@ impl BrowserView {
             Span::styled(err.to_string(), Style::default().fg(Color::Red)),
         ]));
     }
+}
+
+fn load_typed_data_for_repl(raw: &str) -> Result<serde_json::Value, String> {
+    let text = if let Some(path) = raw.strip_prefix('@') {
+        std::fs::read_to_string(path.trim()).map_err(|e| format!("read file: {e}"))?
+    } else {
+        raw.to_string()
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(text.trim()).map_err(|e| format!("typed-data JSON: {e}"))?;
+    if !v.is_object() {
+        return Err("typed-data must be a JSON object".into());
+    }
+    for key in ["types", "domain", "primaryType", "message"] {
+        if v.get(key).is_none() {
+            return Err(format!("typed-data missing `{key}`"));
+        }
+    }
+    Ok(v)
 }

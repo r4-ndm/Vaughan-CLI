@@ -5,6 +5,7 @@
 //!
 //! Full `rmcp` / SDK rewrite is **not scheduled** — see `docs/mcp-transport.md`.
 
+pub mod browser_bridge;
 pub mod client;
 pub mod dispatch;
 pub mod server;

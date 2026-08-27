@@ -141,6 +141,21 @@ enum Command {
         #[arg(long)]
         rpc_url: Option<String>,
     },
+    /// Sign EIP-712 typed data (eth_signTypedData_v4) without a dApp — JSON from `--data` or `--file`.
+    SignTypedData {
+        /// Typed-data JSON object (types, domain, primaryType, message).
+        #[arg(long, conflicts_with = "file")]
+        data: Option<String>,
+        /// Path to a JSON file containing the typed-data payload.
+        #[arg(long, conflicts_with = "data")]
+        file: Option<PathBuf>,
+        /// Env var holding the wallet password (non-interactive).
+        #[arg(long)]
+        password_env: Option<String>,
+        /// Sign without the interactive confirmation prompt (scripts).
+        #[arg(long)]
+        yes: bool,
+    },
     /// Draft a transaction proposal (does not sign — queues for TUI approval).
     Propose {
         #[command(subcommand)]
@@ -453,6 +468,32 @@ async fn run_cli(
             }
             let hash = wallet.send_transaction(evm).await?;
             println!("{hash}");
+        }
+        Command::SignTypedData {
+            data,
+            file,
+            password_env,
+            yes,
+        } => {
+            unlock(&mut wallet, password_env.as_deref())?;
+            let typed_data = load_typed_data_json(data.as_deref(), file.as_deref())?;
+            validate_typed_data_shape(&typed_data)?;
+            let from = wallet.active_address()?.to_string();
+            let primary = typed_data["primaryType"].as_str().unwrap_or("?");
+            let domain_name = typed_data["domain"]["name"].as_str().unwrap_or("?");
+            eprintln!(
+                "method:  eth_signTypedData_v4\nfrom:    {from}\ntype:    {primary}\ndomain:  {domain_name}"
+            );
+            if !yes && !confirm_sign()? {
+                anyhow::bail!("aborted: signature not confirmed");
+            }
+            let sig = wallet.sign_typed_data(&typed_data)?;
+            let data_out = json!({
+                "signature": sig,
+                "address": from,
+                "primaryType": primary,
+            });
+            json_out::print_json_value(json_mode, &data_out, || println!("{sig}"));
         }
         Command::Browse {
             address,
@@ -786,6 +827,46 @@ fn prompt_secret(prompt: &str) -> anyhow::Result<SecretString> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
     Ok(SecretString::from(buf.trim().to_string()))
+}
+
+fn confirm_sign() -> anyhow::Result<bool> {
+    use std::io::Write;
+    eprint!("sign this typed data? [y/N] ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line)? == 0 {
+        return Ok(false);
+    }
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn load_typed_data_json(
+    data: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> anyhow::Result<serde_json::Value> {
+    let raw = match (data, file) {
+        (Some(s), None) => s.to_string(),
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("read typed-data file: {e}"))?,
+        (None, None) => anyhow::bail!("provide --data or --file"),
+        (Some(_), Some(_)) => unreachable!("clap conflicts_with"),
+    };
+    serde_json::from_str(raw.trim()).map_err(|e| anyhow::anyhow!("typed-data JSON: {e}"))
+}
+
+fn validate_typed_data_shape(v: &serde_json::Value) -> anyhow::Result<()> {
+    if !v.is_object() {
+        anyhow::bail!("typed-data must be a JSON object");
+    }
+    for key in ["types", "domain", "primaryType", "message"] {
+        if v.get(key).is_none() {
+            anyhow::bail!("typed-data missing `{key}`");
+        }
+    }
+    Ok(())
 }
 
 /// `y/N` gate before broadcasting. Fails closed: EOF (piped/closed stdin)
