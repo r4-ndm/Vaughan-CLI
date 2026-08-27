@@ -95,12 +95,12 @@ Requirement IDs are referenced by `TASKS.md`.
 
 ### Phase 5 — AI Agent Integration & Multi-Mode Security Sandbox
 
-- **FR-5.1** 3-Tier Operating Mode Selection: Decision at startup/welcome screen (`HumanOnly`, `AiAssisted`, `DegenTrader`). The selection is immutable for the lifetime of that process session (impossible to toggle mid-session).
-- **FR-5.2** Profile & Vault Physical Isolation: `DegenTrader` mode runs strictly in a dedicated isolated sub-profile directory (`~/.vaughan/profiles/degen/`) with separate seed phrases, ensuring primary funds are physically inaccessible.
+- **FR-5.1** 3-Tier Operating Mode Selection: Decision at startup/welcome screen (`HumanOnly`, `AiAssisted`, `SentientTrader`). The selection is immutable for the lifetime of that process session (impossible to toggle mid-session).
+- **FR-5.2** Profile & Vault Physical Isolation: `SentientTrader` mode runs strictly in a dedicated isolated sub-profile directory (`~/.vaughan/profiles/sentient/`; legacy `…/degen/`) with separate seed phrases, ensuring primary funds are physically inaccessible.
 - **FR-5.3** AI Agent Engine & Tool Registry (`vaughan-agent` crate): Core agent runtime with schema-driven tool calling, conversation history, and multi-turn planning.
 - **FR-5.4** Autonomous Read/Inspect Tools: Wrap `wiz4rd-engine` and `vaughan-core` for contract capability probing, balance inspection, selector reverse lookup, DEX reserves, and pre-flight call simulation without user prompts.
 - **FR-5.5** Guarded Propose-Only Write Tools (Assist Mode): Draft transfers, DEX swaps, and EIP-7702 batched calls into structured `TxProposal`s that require explicit human approval via the TUI/CLI confirmation card. Private keys are never exposed to the agent.
-- **FR-5.6** Autonomous Execution with Circuit Breakers (Degen Mode): In degen mode, automated signing is governed by hardcoded Rust circuit breakers (max position size %, gas burn rate ceiling, maximum 1.0% slippage, emergency kill-switch).
+- **FR-5.6** Autonomous Execution with Circuit Breakers (Sentient Mode): In Sentient mode, automated signing is governed by hardcoded Rust circuit breakers (max position size %, gas burn rate ceiling, maximum 1.0% slippage, emergency kill-switch).
 - **FR-5.7** ~~Multi-Model Provider Integration~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 - **FR-5.8** ~~TUI Agent Console & CLI Commands~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 

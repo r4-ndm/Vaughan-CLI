@@ -209,10 +209,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > by `vaughan mcp`. Setup: `docs/mcp.md`. Historical spec: `docs/AI-AGENT-ARCHITECTURE.md`.
 
 ### Step 1: 3-Tier Operating Mode & Profile Isolation (Done)
-- [x] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `DegenTrader` (FR-5.1)
+- [x] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `SentientTrader` (FR-5.1)
 - [x] Session-level immutability: mode is selected at startup/welcome screen and locked permanently for that process (FR-5.1)
-- [x] Profile Directory Isolation: Degen Mode runs in isolated directory `~/.vaughan/profiles/degen/` with separate keys/vault (FR-5.2)
-- [x] Dynamic dashboard badge rendering and CLI `--profile <name>` / `--mode <human|assist|degen>` flags
+- [x] Profile Directory Isolation: Sentient mode runs in isolated directory `~/.vaughan/profiles/sentient/` with separate keys/vault (FR-5.2)
+- [x] Dynamic dashboard badge rendering and CLI `--profile <name>` / `--mode <human|assist|sentient>` flags
 - [x] Unit & integration tests in `vaughan-core` and `vaughan-tui` passing (FR-5.1, FR-5.2)
 
 ### Step 2: `vaughan-agent` Workspace Crate & Provider Adapters (Done)
@@ -233,8 +233,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Proposal tools: `propose_transfer`, `propose_swap`, `propose_batch_7702`, `propose_contract_call` (FR-5.5)
 - [x] Pre-flight simulation verification and deterministic Anvil proposal integration test suite (FR-5.5)
 
-### Step 5: Degen Mode Autonomous Trader & Circuit Breakers (Done)
-- [x] Autonomous execution loop with isolated burner wallet signer (`DegenTrader`) (FR-5.6)
+### Step 5: Sentient Mode Autonomous Trader & Circuit Breakers (Done)
+- [x] Autonomous execution loop with isolated burner wallet signer (`SentientTrader`) (FR-5.6)
 - [x] Circuit breaker: position sizing limit (max % of balance per trade) (FR-5.6)
 - [x] Circuit breaker: gas burn ceiling & consecutive error tripwire (FR-5.6)
 - [x] Circuit breaker: hard slippage limit (max 1.0%) (FR-5.6)
@@ -245,23 +245,23 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### Step 6: TUI Agent View & CLI Non-Interactive Execution (Done)
 - [x] `vaughan-tui/src/views/agent.rs`: Interactive chat REPL with tool status, cold-storage human-only barrier, and confirmation cards (FR-5.8)
 - [x] Welcome screen 3-way mode selector UI & dashboard operating badges (FR-5.1)
-- [x] Welcome AI provider + API key setup after Assist/Degen selection (Ollama / Gemini / OpenAI-compatible; key encrypted with vault password into `agent.key.json`)
+- [x] Welcome AI provider + API key setup after Assist/Sentient selection (Ollama / Gemini / OpenAI-compatible; key encrypted with vault password into `agent.key.json`)
 - [x] Agent skills folder (`vaughan-agent/skills/`): mandatory rules + mode guides injected into the system prompt; user overrides via `<profile>/skills/*/SKILL.md`
 - [x] `vaughan agent "<prompt>"` non-interactive CLI subcommand with sensory & proposal tool invocation (FR-5.8)
 - [x] Token streaming: OpenAI/Ollama SSE via `LlmClient::stream`, Gemini falls back to `complete`; Assist chat turns (`run_assist_turn`) + TUI live deltas + Esc cancel; CLI free-form streams to stdout (FR-5.8)
-- [x] Unlock → AI setup screen when Assist/Degen lacks `agent.toml` or cloud API key
+- [x] Unlock → AI setup screen when Assist/Sentient lacks `agent.toml` or cloud API key
 - [x] Agent status chrome: `provider/model · skills: N must`
 - [x] In-chat `/model` picker (OpenCode-style UX) + `/provider` from Agent REPL; persists model to `agent.toml`
 - [x] LLM I/O via `genai` multi-provider client (plug Ollama / Gemini / OpenAI-compatible)
-- [x] Degen dry-run: `VAUGHAN_DEGEN_DRY_RUN` / `DegenTrader::with_dry_run` (validate + simulate, no broadcast)
+- [x] Sentient dry-run: `VAUGHAN_SENTIENT_DRY_RUN` / `SentientTrader::with_dry_run` (validate + simulate, no broadcast)
 - [x] Assist guard: refuse `propose_*` unless a sensory tool already succeeded in the same turn
 
 ### Step 7: Bomb-Proofing & Anvil Integration Tests (Done)
 - [x] `vaughan-agent/tests/agent_anvil.rs`: End-to-end tests driving the agent against local Anvil node (FR-5.9)
 - [x] Test: Agent correctly inspects Anvil-deployed token and executes read tools (FR-5.9)
 - [x] Test: Agent proposes transfer -> Human approves -> Tx confirms on Anvil (FR-5.9)
-- [x] Test: Degen Mode circuit breaker triggers and halts on excessive gas or high slippage (FR-5.9)
-- [x] Extra Anvil AI-mode suite (`ai_modes_anvil.rs`): Assist sense→propose→broadcast, propose guard (refuse / failed-sensory), `propose_swap` + `search_pairs`, Degen dry-run→live, position size, sim-revert tripwire, gas ceiling, emergency stop, multi-RPC quorum agree/diverge
+- [x] Test: Sentient mode circuit breaker triggers and halts on excessive gas or high slippage (FR-5.9)
+- [x] Extra Anvil AI-mode suite (`ai_modes_anvil.rs`): Assist sense→propose→broadcast, propose guard (refuse / failed-sensory), `propose_swap` + `search_pairs`, Sentient dry-run→live, position size, sim-revert tripwire, gas ceiling, emergency stop, multi-RPC quorum agree/diverge
 
 ### Extra local Anvil coverage (added 2026-08-19)
 - [x] `vaughan-core/tests/wallet_anvil.rs`: native send + nonce, sequential sends, fee estimate, sign-then-broadcast, HD account #1 send, planted WPLS `token_balance`/`assets`, Transfer-log discovery, Slow/Normal/Fast/Ape `send_with_fee` on-chain maxFeePerGas, plain `send()` re-estimate vs stale UI fee, tip>max clamp
@@ -289,18 +289,18 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > `docs/aggregator.md`, `docs/mcp.md`, Phase 4 Dex/Ag scaffolds, Phase 6 MCP,
 > Phase 7 optional Chromium agent browser.
 
-### Degen session policy (guardrails the user owns)
+### Sentient session policy (guardrails the user owns)
 
-> Burner/`degen` profile only. Agent may **explain** `/policy` commands; only the
-> human writes `degen-policy.toml`. Esc emergency-stop always works.
+> Burner/`sentient` profile only. Agent may **explain** `/policy` commands; only the
+> human writes `sentient-policy.toml`. Esc emergency-stop always works.
 
-- [x] `AgentSessionPolicy` + `degen-policy.toml` load/save (`vaughan-agent::degen::policy`)
+- [x] `AgentSessionPolicy` + `sentient-policy.toml` load/save (`vaughan-agent::sentient::policy`)
 - [x] Enforcement modes: `enforced` | `warn-only` | `disabled` (disabled needs `acknowledge_unsafe` / `/policy confirm-unsafe`)
-- [x] Wire policy into `CircuitBreakerConfig` + session `DegenTrader` construction
+- [x] Wire policy into `CircuitBreakerConfig` + session `SentientTrader` construction
 - [x] Agent `/policy` show · reload · set · confirm-unsafe (hot-reload live breaker)
-- [x] Skills: core-rules + degen-trader updated (assist config; never silent disable)
-- [x] Approval card: `propose_policy` tool → `[a]` apply / `[d]` deny (Degen Agent)
-- [x] CLI: `vaughan [--profile degen] policy show|set|confirm-unsafe|reload`
+- [x] Skills: core-rules + sentient-trader updated (assist config; never silent disable)
+- [x] Approval card: `propose_policy` tool → `[a]` apply / `[d]` deny (Sentient Agent)
+- [x] CLI: `vaughan [--profile sentient] policy show|set|confirm-unsafe|reload`
 
 ### P0 — Finish in-TUI trade (kills PulseX-in-Chrome)
 - [x] Ag Anvil: SquirrelSwap `/swap` fixture → mock router → native + approve/swap broadcast (`vaughan-tui/tests/ag_view.rs`)
@@ -326,7 +326,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md); EmpX + 7702 AA exec + stealth scan/sweep MCP shipped
 - [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
 - [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/sentient-presets.md`](docs/sentient-presets.md), `vaughan-agent/presets/`)
-- [x] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `degen-policy.toml`)
+- [x] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `sentient-policy.toml`)
 - [x] **`vaughan serve`** — headless unlock + MCP control plane (`--password-env`); see `docs/mcp.md`
 
 ### P2 — Replace explorer & settings tabs people open constantly
@@ -401,10 +401,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > Narrative + phased roadmap: local notes under `private/` (gitignored).
 > Do **not** start until Pulse quote/swap is demo-stable or we explicitly want MCP.
 >
-> Session policy foundation shipped under **Browserless Pulse → Degen session policy**.
+> Session policy foundation shipped under **Browserless Pulse → Sentient session policy**.
 
-- [x] P0: `AgentSessionPolicy` + wire Degen breakers + Agent `/policy` (see Browserless Pulse)
-- [x] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Degen under policy) — `vaughan mcp`, hybrid IPC, `docs/mcp.md`
+- [x] P0: `AgentSessionPolicy` + wire Sentient breakers + Agent `/policy` (see Browserless Pulse)
+- [x] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Sentient under policy) — `vaughan mcp`, hybrid IPC, `docs/mcp.md`
 - [x] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real) — `quote_swap`, `propose_agg_swap`, `propose_swap`
 - [ ] P3: x402 client (opportunistic — only with real counterparties)
 - [ ] P4: gas tank, optional hardware signer, local deny lists (never hosted TEE / KYT telemetry)

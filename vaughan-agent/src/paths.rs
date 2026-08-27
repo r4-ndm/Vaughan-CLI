@@ -1,4 +1,4 @@
-//! Profile directory helpers for agent-side files (`degen-policy.toml`, etc.).
+//! Profile directory helpers for agent-side files (`sentient-policy.toml`, etc.).
 
 use std::path::{Path, PathBuf};
 

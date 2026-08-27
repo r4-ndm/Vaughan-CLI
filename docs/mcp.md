@@ -121,7 +121,7 @@ vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
 - Reads the password from `--password-env` once, then **unsets** that env var in
   the process (still prefer a short-lived secret injection; do not leave passwords
   in shell history or shared hosts).
-- **Sentient / degen:** auto-exec under policy (same as unlocked TUI). Treat the
+- **Sentient:** auto-exec under policy (same as unlocked TUI). Treat the
   host as a **hot wallet** — any same-user process with the session token can spend.
   Unlimited ERC-20 `propose_approve` also bypasses native size breakers (zero value).
 - **Default:** queues `pending_user` for normal proposes. Stealth **sweep** still

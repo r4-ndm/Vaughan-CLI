@@ -737,14 +737,14 @@ fn run_preset(profile: String, json_mode: bool, action: PresetCmd) -> anyhow::Re
                 "preset": id,
                 "profile": profile,
                 "skills_dir": skill_dir.display().to_string(),
-                "policy": prof.join(vaughan_agent::DEGEN_POLICY_TOML).display().to_string(),
+                "policy": prof.join(vaughan_agent::SENTIENT_POLICY_TOML).display().to_string(),
             });
             json_out::print_json_value(json_mode, &data, || {
                 println!("Applied preset `{id}` to profile `{profile}`");
                 println!("  skills: {}", skill_dir.display());
                 println!(
                     "  policy: {}",
-                    prof.join(vaughan_agent::DEGEN_POLICY_TOML).display()
+                    prof.join(vaughan_agent::SENTIENT_POLICY_TOML).display()
                 );
             });
         }

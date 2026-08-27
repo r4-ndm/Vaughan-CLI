@@ -1,4 +1,4 @@
-# Copied to profile as degen-policy.toml — balanced
+# Copied to profile as sentient-policy.toml — balanced
 enforcement = "enforced"
 acknowledge_unsafe = false
 max_position_pct = 15

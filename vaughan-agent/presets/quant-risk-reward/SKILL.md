@@ -1,7 +1,7 @@
 ---
 name: quant-risk-reward
 description: Math-based sentient partner — explicit R:R, size from edge, skip bad expectancy.
-mode: degen
+mode: sentient
 kind: must
 ---
 

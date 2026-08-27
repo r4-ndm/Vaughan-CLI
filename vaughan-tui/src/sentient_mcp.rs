@@ -188,7 +188,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sentient_and_legacy_degen_auto_exec() {
+    fn legacy_degen_profile_still_enables_auto_exec() {
         assert!(mcp_auto_exec_enabled("sentient"));
         assert!(mcp_auto_exec_enabled("degen"));
         assert!(!mcp_auto_exec_enabled("default"));

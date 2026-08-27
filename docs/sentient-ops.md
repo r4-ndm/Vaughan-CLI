@@ -54,7 +54,7 @@ get_proposal_status
 |------|------|
 | `watch_balance` | Native/ERC-20 snapshot + min/max wei flags |
 | `watch_quote` | Aggregator quote snapshot + min/max out flags + `suggested_action` |
-| Circuit breakers / `degen-policy.toml` | Hard stops on size, gas, slippage (sentient) |
+| Circuit breakers / `sentient-policy.toml` | Hard stops on size, gas, slippage (sentient) |
 
 Vaughan does **not** run a background price daemon. The agent (or a cron that
 calls MCP) owns the poll interval.

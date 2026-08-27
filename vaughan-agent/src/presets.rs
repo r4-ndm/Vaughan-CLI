@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::degen::policy::DEGEN_POLICY_TOML;
 use crate::error::AgentError;
+use crate::sentient::policy::SENTIENT_POLICY_TOML;
 
 /// Ids shipped under `vaughan-agent/presets/`.
 pub const BUNDLED_PRESET_IDS: &[&str] = &[
@@ -53,7 +53,7 @@ pub fn apply_preset(preset_id: &str, profile_dir: &Path) -> Result<PathBuf, Agen
     fs::copy(&skill_src, &skill_dst)
         .map_err(|e| AgentError::ProviderError(format!("copy SKILL.md: {e}")))?;
 
-    let policy_dst = profile_dir.join(DEGEN_POLICY_TOML);
+    let policy_dst = profile_dir.join(SENTIENT_POLICY_TOML);
     fs::copy(&policy_src, &policy_dst)
         .map_err(|e| AgentError::ProviderError(format!("copy policy: {e}")))?;
 
@@ -70,6 +70,6 @@ mod tests {
         let dir = tempdir().unwrap();
         apply_preset("balanced", dir.path()).unwrap();
         assert!(dir.path().join("skills/balanced/SKILL.md").is_file());
-        assert!(dir.path().join(DEGEN_POLICY_TOML).is_file());
+        assert!(dir.path().join(SENTIENT_POLICY_TOML).is_file());
     }
 }

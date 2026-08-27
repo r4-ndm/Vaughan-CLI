@@ -1,12 +1,12 @@
-//! Hard security circuit breakers and multi-RPC quorum validation for Degen Mode.
+//! Hard security circuit breakers and multi-RPC quorum validation for Sentient Mode.
 
 use alloy::primitives::U256;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::degen::policy::EnforcementMode;
 use crate::error::AgentError;
+use crate::sentient::policy::EnforcementMode;
 
 /// Configuration defining strict risk boundaries for autonomous trading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +152,7 @@ impl CircuitBreaker {
         }
 
         for w in warnings {
-            tracing::warn!(target: "vaughan_agent::degen", "breaker warn-only: {w}");
+            tracing::warn!(target: "vaughan_agent::sentient", "breaker warn-only: {w}");
         }
 
         Ok(())
@@ -180,7 +180,7 @@ impl CircuitBreaker {
                 *total_gas, cfg.max_session_gas_wei
             );
             if cfg.enforcement == EnforcementMode::WarnOnly {
-                tracing::warn!(target: "vaughan_agent::degen", "breaker warn-only: {msg}");
+                tracing::warn!(target: "vaughan_agent::sentient", "breaker warn-only: {msg}");
                 return Ok(());
             }
             self.trip(msg);
@@ -205,7 +205,7 @@ impl CircuitBreaker {
                 cfg.max_consecutive_errors
             );
             if cfg.enforcement == EnforcementMode::WarnOnly {
-                tracing::warn!(target: "vaughan_agent::degen", "breaker warn-only: {msg}");
+                tracing::warn!(target: "vaughan_agent::sentient", "breaker warn-only: {msg}");
                 return;
             }
             self.trip(msg);

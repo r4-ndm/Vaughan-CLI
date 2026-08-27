@@ -31,7 +31,7 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
     let mut wallet = WalletState::load_with_session(
         path.clone(),
         if is_sentient_profile(&profile) {
-            OperatingMode::DegenTrader
+            OperatingMode::SentientTrader
         } else {
             OperatingMode::AiAssisted
         },
@@ -60,7 +60,7 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
     eprintln!("session token written under {}", profile_dir.display());
     if mcp_auto_exec_enabled(&profile) {
         eprintln!(
-            "WARNING: sentient/degen auto-signs over loopback IPC while unlocked — \
+            "WARNING: sentient profile auto-signs over loopback IPC while unlocked — \
              treat this host as a hot wallet; same-user processes with the session token can spend"
         );
     }

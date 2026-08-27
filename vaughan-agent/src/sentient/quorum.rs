@@ -1,4 +1,4 @@
-//! Multi-RPC Quorum Validation for Degen Mode.
+//! Multi-RPC Quorum Validation for Sentient Mode.
 //!
 //! Validates state across primary + fallback RPC endpoints concurrently
 //! to defeat rogue/compromised RPCs or stale data before executing autonomous trades.

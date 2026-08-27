@@ -13,4 +13,4 @@ See [`docs/sentient-presets.md`](../../docs/sentient-presets.md).
 | `cautious` | [`cautious/`](cautious/) |
 
 Each folder: `PRESET.md` (human blurb) + `SKILL.md` (LLM rules) + `policy.toml`
-(circuit-breaker dials → copy to `degen-policy.toml`).
+(circuit-breaker dials → copy to `sentient-policy.toml`).

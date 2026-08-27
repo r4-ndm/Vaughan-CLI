@@ -13,7 +13,7 @@ Vaughan AI Agent integration extends the sovereign wallet foundation (`vaughan-c
 The architecture strictly enforces four fundamental axioms:
 1. **The AI Agent is an Advisor by default, never a Signer without physical capital isolation.**
 2. **Unified Approval Pipeline:** AI agent proposals and dApp EIP-1193 requests pass through the exact same ground-truth verification and confirmation UI.
-3. **Multi-RPC Quorum:** Autonomous Degen circuit breakers verify pool reserves across multiple independent RPC endpoints to defeat compromised/out-of-sync nodes.
+3. **Multi-RPC Quorum:** Autonomous Sentient circuit breakers verify pool reserves across multiple independent RPC endpoints to defeat compromised/out-of-sync nodes.
 4. **Sentient profile isolation:** Agent-led execution uses the `sentient`
    profile (the agent’s own seed; legacy name `degen`). Human `default` stays
    separate unless both parties intentionally share a mnemonic (partnership).
@@ -46,7 +46,7 @@ Operating mode is chosen **once at startup / onboarding** and is **permanently i
 * **Security Model**: The agent has **zero access to private keys or signing capabilities**.
 * **Unified Approval**: Generates a typed `TxProposal` which transforms into a standard `HostRequest::Transaction`. The confirmation screen uses the identical ground-truth bytecode decoder used by the EIP-1193 dApp bridge.
 
-### 3. Mode 3: Sentient Mode (`OperatingMode::DegenTrader` — legacy enum name)
+### 3. Mode 3: Sentient Mode (`OperatingMode::SentientTrader`)
 * **Seed ownership**: Profile `sentient` (`~/.vaughan/…/profiles/sentient/`; legacy path `…/degen/`) holds **the agent’s seed**.
 * **Partnership**: A human may share that mnemonic to co-hold the same vault; otherwise keep `default` separate.
 * **Execution**: Automated signing bound by **circuit breakers**, **Multi-RPC Quorum**, and an emergency kill-switch.
@@ -89,7 +89,7 @@ Operating mode is chosen **once at startup / onboarding** and is **permanently i
 
 ### Layer 1: Architectural Air-Gap & Memory Isolation
 * When the vault is unlocked with the master password, it unseals into two strictly isolated structs:
-  1. `SignerContext` (holds derived private keys — passed **only** to the manual approval gate or degen worker).
+  1. `SignerContext` (holds derived private keys — passed **only** to the manual approval gate or Sentient worker).
   2. `AgentConfig` (holds API keys / endpoint configuration — passed to `vaughan-agent`).
 * `vaughan-agent` receives **zero memory references** to `SignerContext` or `Vault`.
 
@@ -103,14 +103,14 @@ Vault encryption uses Argon2id + AES-256-GCM with explicit production parameters
 
 ---
 
-## 4. Degen Mode Circuit Breakers & Multi-RPC Quorum
+## 4. Sentient Mode Circuit Breakers & Multi-RPC Quorum
 
-In `DegenTrader` mode, autonomous signing is governed by deterministic limits enforced in Rust:
+In `SentientTrader` mode, autonomous signing is governed by deterministic limits enforced in Rust:
 
 1. **Multi-RPC Quorum Validation**:
    - Before executing a swap or rebalance, the circuit breaker queries pool reserves and token balances across the **Primary RPC** and **Secondary RPC** in parallel.
    - If values differ by $> 0.5\%$, execution is aborted with an `RpcQuorumMismatch` error to prevent RPC spoofing.
-2. **Position Sizing Limit**: No single transaction may exceed `X%` of the active degen wallet balance (default: 20%).
+2. **Position Sizing Limit**: No single transaction may exceed `X%` of the active Sentient wallet balance (default: 20%).
 3. **Dual-Horizon Gas Ceilings**:
    - **Rolling Window**: Max `X PLS` gas spent within 10 minutes.
    - **Cumulative Session Budget**: Hard lifetime gas cap (e.g. `Y PLS`). Once reached, the agent enters a mandatory hard stop.
@@ -131,5 +131,5 @@ In `DegenTrader` mode, autonomous signing is governed by deterministic limits en
 
 * **Unified Approval Modal** (`vaughan-tui/src/views/approval.rs`): Shared confirmation view for both EIP-1193 dApp requests and AI agent proposals.
 * **TUI Agent View** (`vaughan-tui/src/views/agent.rs`): Interactive chat interface with real-time streaming tokens, tool invocation logs, and quick action shortcuts.
-* **Welcome Screen 3-Way Selector**: Initial onboarding and startup view allowing explicit selection between `[1] Pure Human`, `[2] AI Assisted`, and `[3] Degen Bot`.
+* **Welcome Screen 3-Way Selector**: Initial onboarding and startup view allowing explicit selection between `[1] Pure Human`, `[2] AI Assisted`, and `[3] Sentient Mode`.
 * **CLI Agent** (`vaughan agent "<prompt>"`): Non-interactive execution for automated terminal workflows, scripts, and CI/CD pipelines.

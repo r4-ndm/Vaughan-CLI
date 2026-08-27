@@ -62,7 +62,7 @@ wired together yet.
 1. Recorded 943 deploy: [`docs/wiz4rd-addresses.md`](wiz4rd-addresses.md) + `vaughan_core::core::wiz4rd`
 2. Dex screen venue **Wiz4rd** (default on chain 943, V3-only)
 3. MCP `get_network` returns `wiz4rd { factory, swap_router, position_manager, … }`
-4. SwapRouter allowlisted in `dex_routers` for Degen/sim gates
+4. SwapRouter allowlisted in `dex_routers` for Sentient/sim gates
 
 ### Layer 1 — Play in Vaughan (human)
 

@@ -1,7 +1,7 @@
 ---
 name: high-risk-gambler
 description: High-risk sentient partner — aggressive size, speculative Pulse trades.
-mode: degen
+mode: sentient
 kind: must
 ---
 

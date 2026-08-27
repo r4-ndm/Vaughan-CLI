@@ -3,7 +3,7 @@
 //! Provides the 3-tier operating mode hierarchy:
 //! - [`OperatingMode::HumanOnly`]: Pure sovereign manual wallet (zero AI code initialized, zero LLM network calls).
 //! - [`OperatingMode::AiAssisted`]: Advisor-only mode (propose-only, zero signing capability, unified human confirmation).
-//! - [`OperatingMode::DegenTrader`]: Autonomous execution strictly inside an isolated burner sub-profile with hard circuit breakers.
+//! - [`OperatingMode::SentientTrader`]: Autonomous execution strictly inside an isolated burner sub-profile with hard circuit breakers.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -19,19 +19,20 @@ pub enum OperatingMode {
     HumanOnly,
     /// AI Assistant Mode: AI is an Advisor only (Propose-only, zero signing capability, unified human confirmation).
     AiAssisted,
-    /// Degen Trader Mode: Autonomous trading execution strictly inside an isolated burner sub-profile with hard circuit breakers.
-    DegenTrader,
+    /// Sentient Mode: Autonomous trading execution strictly inside an isolated burner sub-profile with hard circuit breakers.
+    #[serde(alias = "DegenTrader")]
+    SentientTrader,
 }
 
 impl OperatingMode {
     /// Returns true if AI modules should be initialized.
     pub fn is_ai_enabled(&self) -> bool {
-        matches!(self, Self::AiAssisted | Self::DegenTrader)
+        matches!(self, Self::AiAssisted | Self::SentientTrader)
     }
 
-    /// Returns true if autonomous execution without manual human prompts is permitted (Degen mode only).
+    /// Returns true if autonomous execution without manual human prompts is permitted (Sentient mode only).
     pub fn is_autonomous_execution_allowed(&self) -> bool {
-        matches!(self, Self::DegenTrader)
+        matches!(self, Self::SentientTrader)
     }
 
     /// Human-readable label for status bars and confirmation modals.
@@ -39,7 +40,7 @@ impl OperatingMode {
         match self {
             Self::HumanOnly => "Human Only (Cold/Manual)",
             Self::AiAssisted => "AI Assisted (Advisor)",
-            Self::DegenTrader => "Degen Bot (Autonomous Trader)",
+            Self::SentientTrader => "Sentient Mode (Autonomous Agent)",
         }
     }
 }
@@ -68,8 +69,14 @@ mod tests {
     }
 
     #[test]
-    fn degen_trader_is_both_ai_and_autonomous() {
-        assert!(OperatingMode::DegenTrader.is_ai_enabled());
-        assert!(OperatingMode::DegenTrader.is_autonomous_execution_allowed());
+    fn sentient_trader_is_both_ai_and_autonomous() {
+        assert!(OperatingMode::SentientTrader.is_ai_enabled());
+        assert!(OperatingMode::SentientTrader.is_autonomous_execution_allowed());
+    }
+
+    #[test]
+    fn deserializes_legacy_degen_trader_variant() {
+        let mode: OperatingMode = serde_json::from_str("\"DegenTrader\"").unwrap();
+        assert_eq!(mode, OperatingMode::SentientTrader);
     }
 }

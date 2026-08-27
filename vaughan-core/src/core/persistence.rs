@@ -640,19 +640,19 @@ mod tests {
     #[test]
     fn profile_mode_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("degen_wallet.json");
+        let path = dir.path().join("sentient_wallet.json");
         let sm = StateManager::new(path);
         let state = PersistedState::with_mode_and_profile(
             dummy_vault(),
             "pulsechain-testnet-v4",
-            OperatingMode::DegenTrader,
-            "degen",
+            OperatingMode::SentientTrader,
+            SENTIENT_PROFILE,
         );
         sm.save(&state).unwrap();
 
         let loaded = sm.load().unwrap();
-        assert_eq!(loaded.operating_mode, OperatingMode::DegenTrader);
-        assert_eq!(loaded.profile_name, "degen");
+        assert_eq!(loaded.operating_mode, OperatingMode::SentientTrader);
+        assert_eq!(loaded.profile_name, SENTIENT_PROFILE);
         assert_eq!(loaded.active_network_id, "pulsechain-testnet-v4");
     }
 
@@ -661,8 +661,8 @@ mod tests {
         let default_path = StateManager::profile_path(DEFAULT_PROFILE).unwrap();
         assert!(default_path.ends_with("vaughan-cli/wallet.json"));
 
-        let degen_path = StateManager::profile_path(DEGEN_PROFILE).unwrap();
-        assert!(degen_path.ends_with("vaughan-cli/profiles/degen/wallet.json"));
+        let legacy_path = StateManager::profile_path(DEGEN_PROFILE).unwrap();
+        assert!(legacy_path.ends_with("vaughan-cli/profiles/degen/wallet.json"));
 
         let sentient_path = StateManager::profile_path(SENTIENT_PROFILE).unwrap();
         assert!(sentient_path.ends_with("vaughan-cli/profiles/sentient/wallet.json"));

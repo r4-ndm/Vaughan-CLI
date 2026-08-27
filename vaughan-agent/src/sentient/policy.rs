@@ -1,11 +1,11 @@
-//! Degen session policy — user-owned circuit-breaker dials.
+//! Sentient session policy — user-owned circuit-breaker dials.
 //!
-//! Persisted as `degen-policy.toml` beside the profile wallet. Agents may
+//! Persisted as `sentient-policy.toml` beside the profile wallet. Agents may
 //! **propose** changes; only the human (via `/policy` or a future approval
 //! card) writes the file. Safe defaults match [`CircuitBreakerConfig::default`].
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use alloy::primitives::U256;
@@ -15,7 +15,22 @@ use super::circuit_breaker::CircuitBreakerConfig;
 use crate::error::AgentError;
 
 /// Filename next to `wallet.json` / `agent.toml`.
-pub const DEGEN_POLICY_TOML: &str = "degen-policy.toml";
+pub const SENTIENT_POLICY_TOML: &str = "sentient-policy.toml";
+
+/// Legacy filename (pre-rename); still loaded when the new file is absent.
+pub const LEGACY_DEGEN_POLICY_TOML: &str = "degen-policy.toml";
+
+fn policy_file_path(dir: &Path) -> Option<PathBuf> {
+    let sentient = dir.join(SENTIENT_POLICY_TOML);
+    if sentient.is_file() {
+        return Some(sentient);
+    }
+    let legacy = dir.join(LEGACY_DEGEN_POLICY_TOML);
+    if legacy.is_file() {
+        return Some(legacy);
+    }
+    None
+}
 
 /// How hard the Rust breakers enforce limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -50,7 +65,7 @@ impl EnforcementMode {
     }
 }
 
-/// User-editable Degen guardrails (burner profile only).
+/// User-editable Sentient guardrails (burner profile only).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentSessionPolicy {
     /// Enforcement posture.
@@ -279,29 +294,34 @@ fn parse_wei(s: &str) -> Result<U256, AgentError> {
         .map_err(|_| AgentError::InvalidToolCall(format!("invalid max_session_gas_wei: {t}")))
 }
 
-/// Load policy from `dir/degen-policy.toml`, or defaults if missing.
+/// Load policy from `dir/sentient-policy.toml` (or legacy `degen-policy.toml`), or defaults if missing.
 pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
-    let path = dir.join(DEGEN_POLICY_TOML);
-    if !path.exists() {
+    let Some(path) = policy_file_path(dir) else {
         return Ok(AgentSessionPolicy::default());
-    }
+    };
     let raw = fs::read_to_string(&path).map_err(|e| {
         AgentError::ProviderError(format!("failed to read {}: {e}", path.display()))
     })?;
-    let policy: AgentSessionPolicy = toml::from_str(&raw)
-        .map_err(|e| AgentError::ProviderError(format!("invalid {DEGEN_POLICY_TOML}: {e}")))?;
+    let policy: AgentSessionPolicy = toml::from_str(&raw).map_err(|e| {
+        AgentError::ProviderError(format!(
+            "invalid {}: {e}",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("policy")
+        ))
+    })?;
     policy.validate()?;
     Ok(policy)
 }
 
-/// Atomically write `degen-policy.toml` after validation.
+/// Atomically write `sentient-policy.toml` after validation.
 pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentError> {
     policy.validate()?;
     fs::create_dir_all(dir).map_err(|e| {
         AgentError::ProviderError(format!("failed to create {}: {e}", dir.display()))
     })?;
-    let path = dir.join(DEGEN_POLICY_TOML);
-    let tmp = dir.join(format!(".{DEGEN_POLICY_TOML}.tmp"));
+    let path = dir.join(SENTIENT_POLICY_TOML);
+    let tmp = dir.join(format!(".{SENTIENT_POLICY_TOML}.tmp"));
     let body = toml::to_string_pretty(policy)
         .map_err(|e| AgentError::ProviderError(format!("serialize policy: {e}")))?;
     fs::write(&tmp, body).map_err(|e| {
@@ -409,6 +429,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prop.after.enforcement, EnforcementMode::Disabled);
+    }
+
+    #[test]
+    fn loads_legacy_degen_policy_toml_when_sentient_missing() {
+        let dir = tempdir().unwrap();
+        let legacy = dir.path().join(LEGACY_DEGEN_POLICY_TOML);
+        std::fs::write(&legacy, "max_slippage_bps = 250\n").unwrap();
+        let loaded = load_policy(dir.path()).unwrap();
+        assert_eq!(loaded.max_slippage_bps, 250);
+    }
+
+    #[test]
+    fn sentient_policy_takes_precedence_over_legacy_degen_policy() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(LEGACY_DEGEN_POLICY_TOML),
+            "max_slippage_bps = 250\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(SENTIENT_POLICY_TOML),
+            "max_slippage_bps = 100\n",
+        )
+        .unwrap();
+        assert_eq!(load_policy(dir.path()).unwrap().max_slippage_bps, 100);
     }
 
     #[test]

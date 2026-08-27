@@ -25,7 +25,7 @@ Hardware watch accounts + Ledger signing live under `vaughan-core::security::har
 | **AA / 7702** | `active_signer` + `sign_hash_sync` / SCW envelope | `aa_send` view; `vaughan-aa/{sign,adapter,build}.rs`; provider `Batch7702` |
 | **Stealth** | Pay via EOA funnel; sweep via ephemeral local signer from mnemonic meta-keys | `core/stealth.rs`; `security/stealth.rs`; MCP `sweep_stealth_note` |
 | **Keys export / import** | Assumes seed or hex exists | `account.rs` / `wallet.rs` export; `vault_secrets.rs`; Keys view |
-| **DegenTrader** | Isolated burner `PrivateKeySigner` (not main vault) | `vaughan-agent/src/degen/trader.rs` |
+| **SentientTrader** | Isolated burner `PrivateKeySigner` (not main vault) | `vaughan-agent/src/sentient/trader.rs` |
 | **MCP tools** | Propose / read only — no HID, no direct sign | `vaughan-mcp/`, agent `propose_*` |
 
 **Account model today:** HD (`0..N`) + imported (`IMPORTED_INDEX_BASE = 1_000_000`). `Account.is_imported` only — no `AccountKind`, no hardware records. `VaultSecrets` = `{ mnemonic, imported[] }` only.
@@ -43,14 +43,14 @@ Hardware watch accounts + Ledger signing live under `vaughan-core::security::har
 7. Export / stealth meta-keys / AA: refuse HW with `WalletError::HardwareUnsupported` even before devices exist.
 8. Tests: vault roundtrip `hardware: []`; Anvil local paths green; TASKS “HW Phase 0”.
 
-**Leave alone in Phase 0:** fee/RPC/caches; MCP propose registry; DegenTrader; Ambire digest math; stealth ERC-5564 crypto; Alloy features / HID; TUI “Confirm on device…” chrome; Freedom upstream; Bitcoin/Polkadot profile bodies.
+**Leave alone in Phase 0:** fee/RPC/caches; MCP propose registry; SentientTrader; Ambire digest math; stealth ERC-5564 crypto; Alloy features / HID; TUI “Confirm on device…” chrome; Freedom upstream; Bitcoin/Polkadot profile bodies.
 
 ### C. Phase 0 exit checklist
 
 - [ ] Modular `security/hardware/` + serde (`hardware: []`, `family: Evm`) without breaking unlock of legacy vaults
 - [ ] Local backend parity for EVM personal / typed / EIP-1559 sign+broadcast via `SignRequest`
 - [ ] Core trait has **no** EVM-only method names (helpers may wrap)
-- [ ] Export + AA + stealth + Degen/HW policy guards stubbed
+- [ ] Export + AA + stealth + Sentient/HW policy guards stubbed
 - [ ] `cargo test --workspace` / Anvil suites green
 - [ ] No new allowlisted crates
 
@@ -78,7 +78,7 @@ Hardware watch accounts + Ledger signing live under `vaughan-core::security::har
 | AA / EIP-7702 Ambire | Software EOAs only; HW → refuse |
 | Stealth (ERC-5564) | HD vault only; HW → refuse |
 | MCP / agents | Never talk to HID |
-| DegenTrader | No HW auto-sign; local burner only |
+| SentientTrader | No HW auto-sign; local burner only |
 | Bluetooth / Speculos-as-prod / multisig-as-HW / hosted TEE | Still out |
 
 ### G. Top 5 risks before any HW code
@@ -315,7 +315,7 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 - [ ] Multiple devices / re-verify address on every unlock session
 - [ ] Blind-signing policy (reject oversized typed data / unknown contracts until allowlisted)
 - [ ] Freedom Browser: no change if EIP-1193 still goes through Vaughan approve
-- [ ] Explicit **no** for: MCP→device, Degen auto-sign on HW, stealth meta-keys on device (until redesigned)
+- [ ] Explicit **no** for: MCP→device, Sentient auto-sign on HW, stealth meta-keys on device (until redesigned)
 
 ---
 

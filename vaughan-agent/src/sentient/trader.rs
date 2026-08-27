@@ -6,9 +6,9 @@ use alloy::rpc::types::eth::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use url::Url;
 
-use crate::degen::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use crate::degen::quorum::QuorumValidator;
 use crate::error::AgentError;
+use crate::sentient::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use crate::sentient::quorum::QuorumValidator;
 
 /// Result of an autonomous swap attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub struct SwapExecution {
 }
 
 /// Autonomous trader running inside an isolated burner wallet profile.
-pub struct DegenTrader {
+pub struct SentientTrader {
     signer: PrivateKeySigner,
     circuit_breaker: CircuitBreaker,
     rpc_urls: Vec<String>,
@@ -29,7 +29,7 @@ pub struct DegenTrader {
     dry_run: bool,
 }
 
-impl DegenTrader {
+impl SentientTrader {
     pub fn new(
         signer: PrivateKeySigner,
         rpc_urls: Vec<String>,
@@ -215,13 +215,17 @@ impl DegenTrader {
     }
 }
 
-/// `VAUGHAN_DEGEN_DRY_RUN=1|true` enables paper trading (no broadcast).
+/// `VAUGHAN_SENTIENT_DRY_RUN=1|true` enables paper trading (no broadcast).
+/// Legacy env `VAUGHAN_DEGEN_DRY_RUN` is still accepted.
 pub fn dry_run_from_env() -> bool {
-    match std::env::var("VAUGHAN_DEGEN_DRY_RUN") {
-        Ok(v) => {
-            let v = v.trim();
-            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+    fn truthy(key: &str) -> bool {
+        match std::env::var(key) {
+            Ok(v) => {
+                let v = v.trim();
+                v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+            }
+            Err(_) => false,
         }
-        Err(_) => false,
     }
+    truthy("VAUGHAN_SENTIENT_DRY_RUN") || truthy("VAUGHAN_DEGEN_DRY_RUN")
 }

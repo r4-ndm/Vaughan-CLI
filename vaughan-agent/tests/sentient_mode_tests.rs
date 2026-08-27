@@ -1,7 +1,7 @@
-//! Deterministic circuit breaker and multi-RPC quorum tests for Degen Mode.
+//! Deterministic circuit breaker and multi-RPC quorum tests for Sentient Mode.
 
 use alloy::primitives::U256;
-use vaughan_agent::degen::{CircuitBreaker, CircuitBreakerConfig};
+use vaughan_agent::sentient::{CircuitBreaker, CircuitBreakerConfig};
 
 #[test]
 fn test_circuit_breaker_position_sizing() {

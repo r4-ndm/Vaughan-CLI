@@ -829,7 +829,7 @@ impl App {
                         proposal,
                     };
 
-                    // Sentient / legacy degen: auto re-sim → policy → sign (no card).
+                    // Sentient profile: auto re-sim → policy → sign (no card).
                     if crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name()) {
                         tracing::info!(
                             target: "vaughan_tui::mcp",
@@ -1525,7 +1525,7 @@ impl App {
         let wallet = self.wallet.clone();
         std::thread::spawn(move || {
             // Never hold the wallet mutex across RPC / signing awaits — that freezes the
-            // TUI on `[busy]` / `(busy)` (seen after unlock → Degen → Dashboard chrome refresh).
+            // TUI on `[busy]` / `(busy)` (seen after unlock → Sentient → Dashboard chrome refresh).
             let result = match job {
                 UiJob::RefreshChrome => {
                     let snap = {

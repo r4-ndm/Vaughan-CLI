@@ -1,7 +1,7 @@
 ---
 name: cautious
 description: Conservative sentient partner — small size, prefer skip, capital first.
-mode: degen
+mode: sentient
 kind: must
 ---
 

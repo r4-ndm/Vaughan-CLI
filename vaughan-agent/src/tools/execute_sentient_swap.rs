@@ -1,7 +1,7 @@
-//! Degen-mode write tool: execute a DEX swap via [`DegenTrader`] circuit breakers.
+//! Sentient-mode write tool: execute a DEX swap via [`SentientTrader`] circuit breakers.
 //!
 //! Unlike `propose_swap`, this path may sign and broadcast on the isolated
-//! burner wallet — only when registered in Degen mode.
+//! burner wallet — only when registered in Sentient mode.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -12,8 +12,8 @@ use alloy::sol_types::SolCall;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::degen::DegenTrader;
 use crate::error::AgentError;
+use crate::sentient::SentientTrader;
 use crate::tools::{Tool, ToolContext};
 
 sol! {
@@ -35,29 +35,29 @@ sol! {
     }
 }
 
-/// Autonomous swap execution bound to a session [`DegenTrader`].
-pub struct ExecuteDegenSwapTool {
-    trader: Arc<DegenTrader>,
+/// Autonomous swap execution bound to a session [`SentientTrader`].
+pub struct ExecuteSentientSwapTool {
+    trader: Arc<SentientTrader>,
 }
 
-impl ExecuteDegenSwapTool {
+impl ExecuteSentientSwapTool {
     /// Bind this tool to the session burner trader (keys stay inside the trader).
-    pub fn new(trader: Arc<DegenTrader>) -> Self {
+    pub fn new(trader: Arc<SentientTrader>) -> Self {
         Self { trader }
     }
 }
 
 #[async_trait]
-impl Tool for ExecuteDegenSwapTool {
+impl Tool for ExecuteSentientSwapTool {
     fn name(&self) -> &str {
-        "execute_degen_swap"
+        "execute_sentient_swap"
     }
 
     fn description(&self) -> &str {
-        "Degen Bot only: execute a Uniswap V2 / PulseX swap on the burner wallet \
+        "Sentient mode only: execute a Uniswap V2 / PulseX swap on the burner wallet \
          through Rust circuit breakers (position size, slippage, gas, quorum). \
          Prefer after get_balance / search_pairs / get_dex_reserves. \
-         Returns tx_hash (or dry_run=true when VAUGHAN_DEGEN_DRY_RUN is set)."
+         Returns tx_hash (or dry_run=true when VAUGHAN_SENTIENT_DRY_RUN is set)."
     }
 
     fn parameters(&self) -> Value {

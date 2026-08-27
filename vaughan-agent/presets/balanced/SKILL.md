@@ -1,7 +1,7 @@
 ---
 name: balanced
 description: Default sentient partner — moderate size, no revenge trading.
-mode: degen
+mode: sentient
 kind: must
 ---
 

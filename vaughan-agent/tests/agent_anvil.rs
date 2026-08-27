@@ -9,8 +9,8 @@ use std::process::{Child, Command};
 use std::time::Duration;
 use url::Url;
 
-use vaughan_agent::degen::{CircuitBreakerConfig, DegenTrader};
 use vaughan_agent::proposal::TxProposal;
+use vaughan_agent::sentient::{CircuitBreakerConfig, SentientTrader};
 use vaughan_agent::tools::{default_assist_registry, default_sensory_registry, ToolContext};
 
 struct AnvilGuard {
@@ -156,7 +156,7 @@ async fn test_agent_proposal_to_human_approval_to_broadcast_flow() {
 }
 
 #[tokio::test]
-async fn test_degen_mode_circuit_breaker_soft_rejects_slippage() {
+async fn test_sentient_mode_circuit_breaker_soft_rejects_slippage() {
     let anvil = AnvilGuard::spawn(8560);
     let rpc_url = anvil.rpc_url.clone();
 
@@ -165,7 +165,7 @@ async fn test_degen_mode_circuit_breaker_soft_rejects_slippage() {
             .parse()
             .unwrap();
 
-    let trader = DegenTrader::new(
+    let trader = SentientTrader::new(
         burner,
         vec![rpc_url],
         31337,

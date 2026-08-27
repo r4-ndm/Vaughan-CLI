@@ -26,9 +26,21 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Register an alternate name for an already constructed tool (legacy aliases).
+    pub fn register_alias(&mut self, alias: &str, tool: Arc<dyn Tool>) {
+        self.tools.insert(alias.to_string(), tool);
+    }
+
     /// Retrieve all tool definitions formatted for LLM schema declarations.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|t| t.definition()).collect()
+        self.tools
+            .iter()
+            .map(|(registered_name, tool)| {
+                let mut def = tool.definition();
+                def.name = registered_name.clone();
+                def
+            })
+            .collect()
     }
 
     /// Dispatch and execute a tool call by name.

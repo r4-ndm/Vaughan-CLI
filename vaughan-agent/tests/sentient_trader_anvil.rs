@@ -5,7 +5,7 @@ use alloy::signers::local::PrivateKeySigner;
 use std::process::{Child, Command};
 use std::time::Duration;
 
-use vaughan_agent::degen::{CircuitBreakerConfig, DegenTrader};
+use vaughan_agent::sentient::{CircuitBreakerConfig, SentientTrader};
 
 struct AnvilGuard {
     child: Child,
@@ -32,7 +32,7 @@ impl Drop for AnvilGuard {
 }
 
 #[tokio::test]
-async fn test_degen_trader_autonomous_execution_with_anvil() {
+async fn test_sentient_trader_autonomous_execution_with_anvil() {
     let anvil = AnvilGuard::spawn(8557);
     let rpc_url = anvil.rpc_url.clone();
 
@@ -43,7 +43,7 @@ async fn test_degen_trader_autonomous_execution_with_anvil() {
 
     let burner_addr = burner_signer.address();
 
-    let trader = DegenTrader::new(
+    let trader = SentientTrader::new(
         burner_signer,
         vec![rpc_url.clone()],
         31337,
@@ -79,7 +79,7 @@ async fn test_degen_trader_autonomous_execution_with_anvil() {
 }
 
 #[tokio::test]
-async fn test_degen_trader_dry_run_skips_broadcast() {
+async fn test_sentient_trader_dry_run_skips_broadcast() {
     let anvil = AnvilGuard::spawn(8558);
     let rpc_url = anvil.rpc_url.clone();
 
@@ -88,7 +88,7 @@ async fn test_degen_trader_dry_run_skips_broadcast() {
             .parse()
             .unwrap();
 
-    let trader = DegenTrader::new(
+    let trader = SentientTrader::new(
         burner_signer,
         vec![rpc_url],
         31337,

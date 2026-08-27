@@ -1,4 +1,4 @@
-//! Propose a Degen session-policy change for human `[a]` / `[d]` approval.
+//! Propose a Sentient session-policy change for human `[a]` / `[d]` approval.
 //!
 //! Does not sign or broadcast. The TUI applies [`PolicyProposal::after`] only
 //! after the user accepts the card.
@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::degen::policy::{
+use crate::error::AgentError;
+use crate::sentient::policy::{
     build_policy_proposal, load_policy, AgentSessionPolicy, PolicyProposal,
 };
-use crate::error::AgentError;
 use crate::tools::{Tool, ToolContext};
 
 /// Draft a policy patch from the LLM; human must approve before disk/session update.
@@ -38,7 +38,7 @@ impl Tool for ProposePolicyTool {
     }
 
     fn description(&self) -> &str {
-        "Propose a Degen guardrail change for the human to approve ([a]/[d] card). \
+        "Propose a Sentient guardrail change for the human to approve ([a]/[d] card). \
          Use when the user asks to loosen/tighten breakers or turn them off for testing. \
          Never claim the policy changed until they approve. Keys: enforcement, \
          max_position_pct, max_slippage_bps, max_session_gas_wei, max_consecutive_errors, \
@@ -103,5 +103,5 @@ pub fn commit_policy_proposal(
 }
 
 fn save_committed(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentError> {
-    crate::degen::policy::save_policy(dir, policy)
+    crate::sentient::policy::save_policy(dir, policy)
 }

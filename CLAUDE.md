@@ -9,7 +9,7 @@ authoritative for how work gets done here.
 
 - `vaughan-core/` — library: chain adapters (Alloy EVM), core services, browser engine (`wiz4rd-engine`), security, persistence, MCP proposal queue/IPC
 - `vaughan-aa/` — EIP-7702 / Ambire smart accounts and batched sends
-- `vaughan-agent/` — [Phase 5] proposal engine, tool registry, Degen circuit breakers (no LLM client)
+- `vaughan-agent/` — [Phase 5] proposal engine, tool registry, Sentient circuit breakers (no LLM client)
 - `vaughan-mcp/` — [Phase 6] MCP stdio server for external agents (Cursor, Claude, …)
 - `vaughan-provider/` — [Phase 2] local EIP-1193 bridge for Freedom Browser
 - `vaughan-cli/` — unified `vaughan` binary (TUI by default; CLI subcommands for scripts)

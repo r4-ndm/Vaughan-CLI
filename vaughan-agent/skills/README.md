@@ -1,6 +1,6 @@
 # Vaughan Agent Skills
 
-Markdown playbooks injected into the AI system prompt for Assist / Degen modes.
+Markdown playbooks injected into the AI system prompt for Assist / Sentient modes.
 
 ## Layout
 
@@ -16,14 +16,14 @@ Each `SKILL.md` starts with frontmatter:
 ---
 name: short-id
 description: one-line summary
-mode: all | assist | degen
+mode: all | assist | sentient
 kind: must | guide
 ---
 ```
 
 - **`kind: must`** — mandatory rules (cannot be overridden by user chat).
 - **`kind: guide`** — reference workflow tips.
-- **`mode`** — which operating mode loads the skill (`all` = both AI modes).
+- **`mode`** — which operating mode loads the skill (`all` = both AI modes). Sentient sessions use `sentient`. Skill frontmatter is consumed by external MCP hosts (Cursor, Claude, etc.) — not parsed by Vaughan Rust; update host configs that still filter on legacy `degen`.
 
 ## Bundled skills
 
@@ -31,7 +31,7 @@ kind: must | guide
 |-------|------|------|
 | `core-rules` | must | all |
 | `assist-advisor` | must | assist |
-| `degen-trader` | must | degen |
+| `sentient-trader` | must | sentient |
 | `contract-inspection` | guide | all |
 | `pulsechain-context` | guide | all |
 | `dapp-connect` | guide | all |

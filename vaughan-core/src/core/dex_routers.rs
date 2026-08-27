@@ -1,7 +1,7 @@
-//! Allowlisted Uni-compatible DEX routers for Degen (and shared catalog).
+//! Allowlisted Uni-compatible DEX routers for Sentient (and shared catalog).
 //!
 //! Addresses match the Dex TUI `venue_router` catalog (PulseX, 9mm, …).
-//! Degen refuses to simulate/broadcast swaps to any other `to`.
+//! Sentient mode refuses to simulate/broadcast swaps to any other `to`.
 
 use alloy::primitives::Address;
 use std::collections::HashSet;
