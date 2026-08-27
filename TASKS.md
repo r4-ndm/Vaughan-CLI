@@ -399,7 +399,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Structured unavailable when binary/child absent; document in `docs/mcp.md`
 
 ### Phase 3 — MCP B2 (FR-7.5)
-- [ ] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP AX tree
+- [x] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP evaluate + Input (refs e0..e49)
 - [ ] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6)
 
 ### Parked — Fable 5 comprehensive audit (before release tag)

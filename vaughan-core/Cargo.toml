@@ -22,6 +22,7 @@ tracing-subscriber = { workspace = true }
 hex = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["connect"] }
 wiz4rd-math = { workspace = true }
 wiz4rd-sdk = { workspace = true }
 

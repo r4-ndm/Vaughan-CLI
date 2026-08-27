@@ -119,6 +119,16 @@ in the TUI/provider.
 When VB is missing or CDP is down, tools return structured JSON with
 `available: false` and a `hint` (not a crash).
 
+**B2 navigation** (requires live CDP session from `browser_open`):
+
+| Tool | Purpose |
+|------|---------|
+| `browser_snapshot` | Interactive refs `e0`…`e49` (title, url, tag, role, name) |
+| `browser_click` | Click ref from snapshot |
+| `browser_type` | Focus ref + insert text |
+| `browser_press` | Key press (Enter, Tab, Escape, arrows, Space, Backspace, Delete) |
+| `browser_wait` | Poll until `text`, `selector`, or `url_contains` matches |
+
 Requires `vaughan-dapp-browser` on `PATH`. In-tab navigation is also gated inside
 the Chromium extension (MV3 allowlist).
 

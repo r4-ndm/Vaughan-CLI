@@ -14,5 +14,10 @@
   "propose_batch_7702",
   "browser_open",
   "browser_navigate",
-  "browser_status"
+  "browser_status",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_press",
+  "browser_wait"
 ]

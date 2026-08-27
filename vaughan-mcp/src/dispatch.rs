@@ -92,6 +92,11 @@ impl McpDispatcher {
             "browser_open" => browser_bridge::browser_open(args, &ctx).await,
             "browser_navigate" => browser_bridge::browser_navigate(args, &ctx).await,
             "browser_status" => browser_bridge::browser_status(&ctx).await,
+            "browser_snapshot" => browser_bridge::browser_snapshot(&ctx).await,
+            "browser_click" => browser_bridge::browser_click(args, &ctx).await,
+            "browser_type" => browser_bridge::browser_type(args, &ctx).await,
+            "browser_press" => browser_bridge::browser_press(args, &ctx).await,
+            "browser_wait" => browser_bridge::browser_wait(args, &ctx).await,
             name if name.starts_with("propose_") => self.propose_tool(name, args, &ctx).await,
             name if self.sensory.definitions().iter().any(|d| d.name == name)
                 || name == "get_balance"

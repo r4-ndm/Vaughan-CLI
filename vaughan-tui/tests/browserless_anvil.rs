@@ -194,7 +194,13 @@ fn anvil_browserless_sign_typed_data_matches_foundry() {
     assert_eq!(signature.len(), 2 + 65 * 2);
 
     let out = Command::new("cast")
-        .args(["wallet", "sign", "--data", "--private-key", common::ANVIL_KEY0])
+        .args([
+            "wallet",
+            "sign",
+            "--data",
+            "--private-key",
+            common::ANVIL_KEY0,
+        ])
         .arg(typed_data.to_string())
         .output()
         .expect("cast must be available");

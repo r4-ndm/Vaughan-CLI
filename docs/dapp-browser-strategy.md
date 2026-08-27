@@ -182,7 +182,8 @@ Unavailable if binary missing.
 ### Phase 3 — MCP B2
 
 `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` /
-`browser_wait` via CDP AX tree. Never auto-sign. Chain changes still Vaughan-approved.
+`browser_wait` via CDP WebSocket (`Runtime.evaluate` refs + `Input.*`). Never auto-sign.
+Chain changes still Vaughan-approved.
 
 Optional later (B3): screenshots, multi-tab — one at a time.
 
