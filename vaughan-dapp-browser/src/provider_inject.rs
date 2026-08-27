@@ -179,33 +179,70 @@ const SCRIPT: &str = r##"(function() {
     enable: () => rpc("eth_requestAccounts", []),
   };
   provider.providers = [provider];
+  const SEAL = Symbol.for("wallet.vaughan.vb.seal");
+  provider[SEAL] = 1;
 
-  try {
-    Object.defineProperty(window, "ethereum", {
-      configurable: true,
-      enumerable: true,
-      get: () => provider,
-      set: () => {},
-    });
-  } catch (_) {
-    window.ethereum = provider;
+  function announce6963() {
+    try {
+      const info = {
+        uuid: "vaughan-dapp-browser-0000-0000-0000-000000000001",
+        name: "Vaughan",
+        icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%23065f46' width='32' height='32' rx='6'/><text x='16' y='22' text-anchor='middle' fill='white' font-size='14' font-family='sans-serif'>V</text></svg>",
+        rdns: "wallet.vaughan",
+      };
+      const detail = Object.freeze({ info, provider });
+      window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail }));
+    } catch (_) {}
   }
 
   try {
-    const info = {
-      uuid: "vaughan-dapp-browser-0000-0000-0000-000000000001",
-      name: "Vaughan",
-      icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%23065f46' width='32' height='32' rx='6'/><text x='16' y='22' text-anchor='middle' fill='white' font-size='14' font-family='sans-serif'>V</text></svg>",
-      rdns: "wallet.vaughan",
-    };
-    window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: Object.freeze({ info, provider }) }));
-    window.addEventListener("eip6963:requestProvider", () => {
-      window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: Object.freeze({ info, provider }) }));
+    Object.defineProperty(window, "ethereum", {
+      configurable: false,
+      enumerable: true,
+      get: () => provider,
     });
+  } catch (_) {
+    try {
+      Object.defineProperty(window, "ethereum", {
+        configurable: true,
+        enumerable: true,
+        get: () => provider,
+        set: () => {},
+      });
+    } catch (_2) {
+      window.ethereum = provider;
+    }
+  }
+
+  try {
+    window.addEventListener("eip6963:requestProvider", () => announce6963());
+    announce6963();
   } catch (_) {}
 
-  console.info("[Vaughan] window.ethereum injected (isVaughan=true). Bridge via extension (CSP-safe). Approve in Vaughan TUI.");
-  const paint = () => showBanner("Vaughan injected - Connect here, then approve in the Vaughan TUI. (click to dismiss)", "ok");
+  function providerIntact() {
+    try {
+      const eth = window.ethereum;
+      return !!(eth && eth.isVaughan && eth[SEAL] === 1);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  setInterval(() => {
+    if (providerIntact()) return;
+    showBanner("VB wallet tampered — pick Vaughan in the wallet list or reload. (click to dismiss)", "err");
+    announce6963();
+    try {
+      Object.defineProperty(window, "ethereum", {
+        configurable: false,
+        enumerable: true,
+        get: () => provider,
+      });
+    } catch (_) {}
+  }, 4000);
+
+  console.info("[Vaughan VB] window.ethereum injected (isVaughan=true). Approve in Vaughan TUI.");
+  const paint = () => showBanner("VB injected — Connect here, approve sign/send in Vaughan TUI. (click to dismiss)", "ok");
   if (document.documentElement) paint();
   else document.addEventListener("DOMContentLoaded", paint, { once: true });
   rpc("eth_chainId", []).then((id) => { chainId = id; }).catch(() => {});
@@ -297,7 +334,9 @@ mod tests {
         assert!(s.contains("isVaughan: true"));
         assert!(s.contains("eip6963:announceProvider"));
         assert!(s.contains("rdns: \"wallet.vaughan\""));
-        assert!(s.contains("Vaughan injected"));
+        assert!(s.contains("VB injected"));
+        assert!(s.contains("wallet.vaughan.vb.seal"));
+        assert!(s.contains("providerIntact"));
         assert!(s.contains("vaughan-page"));
         assert!(s.contains("wallet_requestPermissions"));
         assert!(s.contains("isSensitive"));

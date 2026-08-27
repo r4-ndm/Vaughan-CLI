@@ -157,6 +157,12 @@ pub enum HostRequest {
         requires_grant: bool,
         reply: oneshot::Sender<Result<String, ProviderError>>,
     },
+    /// Allowlisted read-only JSON-RPC forwarded to active network RPC.
+    RpcRead {
+        method: String,
+        params: serde_json::Value,
+        reply: oneshot::Sender<Result<serde_json::Value, ProviderError>>,
+    },
 }
 
 /// The [`WalletHandle`] handed to the provider server. Cheaply cloneable via
@@ -301,6 +307,24 @@ impl WalletHandle for ProviderHost {
             .send(HostRequest::SwitchChain {
                 chain_id: chain_id.to_string(),
                 origin: display_origin(ctx),
+                reply,
+            })
+            .await
+            .map_err(Self::disconnected)?;
+        rx.await.map_err(Self::dropped)?
+    }
+
+    async fn rpc_read(
+        &self,
+        _ctx: &RequestCtx,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        let (reply, rx) = oneshot::channel();
+        self.requests
+            .send(HostRequest::RpcRead {
+                method: method.to_string(),
+                params,
                 reply,
             })
             .await
@@ -1049,6 +1073,24 @@ fn verify_address(address: &str, wallet: &WalletState) -> Result<(), ProviderErr
 
 fn map_wallet_error(e: WalletError) -> ProviderError {
     ProviderError::Internal(e.user_message())
+}
+
+/// Spawn an async read-RPC forward (does not block the UI thread).
+pub(crate) fn spawn_rpc_read(
+    handle: &Handle,
+    snap: vaughan_core::core::NetworkRpcSnapshot,
+    method: String,
+    params: serde_json::Value,
+    reply: oneshot::Sender<Result<serde_json::Value, ProviderError>>,
+) {
+    let handle = handle.clone();
+    handle.spawn(async move {
+        let result = snap
+            .forward_read(&method, params)
+            .await
+            .map_err(map_wallet_error);
+        let _ = reply.send(result);
+    });
 }
 
 #[cfg(test)]

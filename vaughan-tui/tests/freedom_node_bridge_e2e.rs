@@ -81,6 +81,11 @@ async fn spawn_token_gated_provider(
                         "approvals not supported in e2e".to_string(),
                     )));
                 }
+                HostRequest::RpcRead { reply, .. } => {
+                    let _ = reply.send(Err(ProviderError::Internal(
+                        "read proxy not supported in e2e".to_string(),
+                    )));
+                }
             }
         }
     });

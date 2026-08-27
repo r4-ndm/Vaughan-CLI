@@ -43,7 +43,7 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     cdp_port: u16,
 
-    /// Chromium / Chrome binary (defaults: chromium, google-chrome, …).
+    /// Chromium-class binary (Chromium, Chrome, Brave, Edge, …).
     #[arg(long)]
     chrome: Option<String>,
 }

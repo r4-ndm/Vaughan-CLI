@@ -35,6 +35,9 @@ impl Allowlist {
 
     /// Validate a navigation target.
     pub fn check_url(&self, raw: &str) -> Result<(), String> {
+        if Self::is_ephemeral_url(raw) {
+            return Ok(());
+        }
         let u = Url::parse(raw).map_err(|e| format!("invalid url: {e}"))?;
         match u.scheme() {
             "https" => {}
@@ -58,7 +61,6 @@ impl Allowlist {
     }
 
     /// Chrome internals / empty loads — do not treat as allowlist violations.
-    #[allow(dead_code)] // kept for a future navigation watcher / CEF shell
     pub fn is_ephemeral_url(raw: &str) -> bool {
         let t = raw.trim();
         t.is_empty()
@@ -75,6 +77,16 @@ impl Allowlist {
         self.suffixes
             .iter()
             .any(|suf| host == suf || host.ends_with(&format!(".{suf}")))
+    }
+
+    /// Host suffixes written to the extension allowlist (navigation gate).
+    pub fn suffixes(&self) -> &[String] {
+        &self.suffixes
+    }
+
+    /// JSON blob for `allowlist.json` in the unpacked extension directory.
+    pub fn to_extension_json(&self) -> String {
+        serde_json::json!({ "suffixes": self.suffixes }).to_string()
     }
 }
 
@@ -138,5 +150,14 @@ mod tests {
         assert!(Allowlist::is_ephemeral_url("about:blank"));
         assert!(Allowlist::is_ephemeral_url("chrome://newtab/"));
         assert!(!Allowlist::is_ephemeral_url("https://app.pulsex.com/"));
+    }
+
+    #[test]
+    fn extension_json_roundtrip() {
+        let a =
+            Allowlist::from_url_and_hosts("https://app.pulsex.com/", &["ipfs.io".into()]).unwrap();
+        let j = a.to_extension_json();
+        assert!(j.contains("ipfs.io"));
+        assert!(j.contains("pulsex.com"));
     }
 }

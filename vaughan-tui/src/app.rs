@@ -702,6 +702,18 @@ impl App {
                     });
                     break;
                 }
+                HostRequest::RpcRead {
+                    method,
+                    params,
+                    reply,
+                } => match self.wallet().network_rpc_snapshot() {
+                    Ok(snap) => {
+                        provider::spawn_rpc_read(&self.handle, snap, method, params, reply);
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(ProviderError::Internal(e.user_message())));
+                    }
+                },
                 HostRequest::Approval {
                     kind,
                     origin,

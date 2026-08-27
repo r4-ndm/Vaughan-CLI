@@ -28,6 +28,7 @@ pub mod events;
 pub mod handler;
 pub mod methods;
 pub mod rpc;
+pub mod rpc_proxy;
 pub mod server;
 
 pub use error::ProviderError;
@@ -35,4 +36,5 @@ pub use events::{EventBus, ProviderEvent};
 pub use handler::{HandlerResult, RequestCtx, RequestHandler};
 pub use methods::{Eip1193Handler, TxParams, WalletHandle};
 pub use rpc::{RpcError, RpcRequest, RpcResponse};
+pub use rpc_proxy::is_read_proxy_method;
 pub use server::{ProviderServer, DEFAULT_PORT};

@@ -25,13 +25,17 @@ pub fn manifest_json() -> String {
         r#"{{
   "manifest_version": 3,
   "name": "Vaughan Wallet Provider",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Injects window.ethereum → Vaughan TUI (CSP-safe background WebSocket).",
   "key": "{key}",
+  "permissions": [
+    "declarativeNetRequest"
+  ],
   "background": {{
     "service_worker": "background.js"
   }},
   "host_permissions": [
+    "<all_urls>",
     "ws://127.0.0.1/*",
     "ws://localhost/*",
     "http://127.0.0.1/*",
@@ -272,6 +276,38 @@ pub fn background_js(provider_ws: &str) -> String {
     }});
     ensureSocket();
   }});
+
+  // In-tab navigation gate (MV3 declarativeNetRequest): block main_frame loads
+  // to hosts outside allowlist.json (seeded by vaughan-dapp-browser at launch).
+  const NAV_GATE_RULE_ID = 9001;
+  async function installNavGate() {{
+    let suffixes = [];
+    try {{
+      const resp = await fetch(chrome.runtime.getURL("allowlist.json"));
+      const data = await resp.json();
+      suffixes = Array.isArray(data.suffixes) ? data.suffixes : [];
+    }} catch (_) {{
+      return;
+    }}
+    const domains = suffixes.map((s) => String(s || "").trim().toLowerCase()).filter(Boolean);
+    for (const h of ["localhost", "127.0.0.1"]) {{
+      if (!domains.includes(h)) domains.push(h);
+    }}
+    if (domains.length === 0) return;
+    await chrome.declarativeNetRequest.updateDynamicRules({{
+      removeRuleIds: [NAV_GATE_RULE_ID],
+      addRules: [{{
+        id: NAV_GATE_RULE_ID,
+        priority: 1,
+        action: {{ type: "block" }},
+        condition: {{
+          resourceTypes: ["main_frame"],
+          excludedRequestDomains: domains,
+        }},
+      }}],
+    }});
+  }}
+  installNavGate().catch(() => {{}});
 }})();"#,
         ws = ws
     )
@@ -329,5 +365,20 @@ mod tests {
         // Grants are learned from non-empty accounts results and die on lock.
         assert!(js.contains("eth_requestAccounts"));
         assert!(js.contains("connectedOrigins.clear()"));
+    }
+
+    #[test]
+    fn manifest_includes_nav_gate_permissions() {
+        let m = manifest_json();
+        assert!(m.contains("declarativeNetRequest"));
+        assert!(m.contains("<all_urls>"));
+    }
+
+    #[test]
+    fn background_installs_nav_gate() {
+        let js = background_js("ws://127.0.0.1:8745");
+        assert!(js.contains("installNavGate"));
+        assert!(js.contains("excludedRequestDomains"));
+        assert!(js.contains("allowlist.json"));
     }
 }

@@ -52,6 +52,50 @@ MCP agent → browser_* tools → localhost CDP → vaughan-dapp-browser (CEF)
 | Ladybird / Servo | Long-horizon / reject for now |
 | Vaughan-Dioxus | Architectural guide only — never copy/vendor |
 
+## Supported system browsers (Phase 1)
+
+Phase 1 **does not ship a browser**. **VB** spawns a **Chromium-class** binary on
+the user’s machine with an isolated profile + unpacked MV3 extension.
+
+### Recommendation
+
+| Tier | Browsers | Why |
+|------|----------|-----|
+| **Recommended** | **Chromium**, **Google Chrome** | Same engine we test against; no built-in wallet competing with Vaughan’s inject; predictable extension + CDP flags |
+| **Supported** | **Brave**, **Microsoft Edge** | Chromium-based; auto-detected on `PATH`. Extra UX friction possible (see below) |
+| **Not supported** | Firefox, Safari, Ladybird | Different extension / automation stack |
+
+**Default install guidance for new users:** install **Chromium** (or Chrome if
+they already use it). On Arch/CachyOS: `pacman -S chromium`.
+
+### Why not Brave-first?
+
+Brave works and is auto-detected, but it is **not** our top recommendation:
+
+1. **Brave Wallet** — Brave injects its own Ethereum provider. Vaughan also
+   injects via EIP-1193 / EIP-6963. dApps may show multiple wallets; the user
+   must pick **Injected** / MetaMask-family / Vaughan, not Brave Wallet.
+2. **Shields** — tracker/cookie blocking can break fragile DeFi frontends.
+   Users may need to lower Shields per site.
+3. **Support matrix** — we smoke-test against distro **Chromium** first.
+
+Brave-only machines are fine: VB finds `/usr/bin/brave` automatically, or
+set `VAUGHAN_DAPP_BROWSER_CHROME=/usr/bin/brave`.
+
+### Auto-detect order
+
+When `--chrome` is omitted, `vaughan-dapp-browser` tries (first hit wins):
+
+Chromium → Chrome → Brave → Edge (plus common `/usr/bin/…` paths).
+
+Override: `--chrome`, or env `VAUGHAN_DAPP_BROWSER_CHROME`.
+
+### Future (Phase 3+)
+
+Bundled **CEF** removes the “install Chromium” step and pins engine version for
+agents — at the cost of download size and manual security updates. Until then,
+system Chromium is the best balance of compatibility and maintenance.
+
 ### Frameworks considered and rejected as primary shell
 
 | Option | Why not |

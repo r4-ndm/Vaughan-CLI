@@ -49,6 +49,46 @@ pub struct ChromeRpcSnapshot {
     pub address: String,
 }
 
+/// Network RPC context for read-only JSON-RPC proxy (works while wallet is locked).
+#[derive(Debug, Clone)]
+pub struct NetworkRpcSnapshot {
+    pub rpc_url: String,
+    pub fallback_rpc_urls: Vec<String>,
+    pub chain_id: u64,
+    pub network_name: String,
+}
+
+impl NetworkRpcSnapshot {
+    const READ_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    async fn adapter(&self) -> Result<EvmAdapter, WalletError> {
+        EvmAdapter::new(
+            &self.rpc_url,
+            self.chain_id,
+            &self.network_name,
+            &self.fallback_rpc_urls,
+        )
+        .await
+    }
+
+    /// Forward an allowlisted read method to the active network RPC.
+    pub async fn forward_read(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, WalletError> {
+        let adapter = self.adapter().await?;
+        match tokio::time::timeout(Self::READ_RPC_TIMEOUT, adapter.raw_request(method, params))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(WalletError::NetworkError(
+                "read RPC timed out — check RPC / network".into(),
+            )),
+        }
+    }
+}
+
 impl ChromeRpcSnapshot {
     const CHROME_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
@@ -384,6 +424,22 @@ impl WalletState {
     /// The effective RPC URL of the active network (override if set).
     pub fn active_rpc_url(&self) -> String {
         self.effective_rpc()
+    }
+
+    /// Snapshot active network RPC endpoints for read-only provider proxying.
+    ///
+    /// Does not require an unlocked wallet — only initialized vault + network config.
+    pub fn network_rpc_snapshot(&self) -> Result<NetworkRpcSnapshot, WalletError> {
+        if !self.is_initialized() {
+            return Err(WalletError::NotInitialized);
+        }
+        let net = self.networks().active();
+        Ok(NetworkRpcSnapshot {
+            rpc_url: self.effective_rpc(),
+            fallback_rpc_urls: net.fallback_rpc_urls.clone(),
+            chain_id: net.chain_id,
+            network_name: net.name.clone(),
+        })
     }
 
     // ---- onboarding ----
@@ -933,6 +989,7 @@ impl WalletState {
                 name.trim().to_string()
             },
             url: url.to_string(),
+            extra_hosts: Vec::new(),
         };
         let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
         if persisted

@@ -5889,6 +5889,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dirs",
+ "hex",
+ "rand 0.8.7",
  "serde_json",
  "url",
 ]

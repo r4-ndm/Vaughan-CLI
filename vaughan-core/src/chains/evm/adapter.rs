@@ -192,6 +192,26 @@ impl EvmAdapter {
         )
     }
 
+    /// Forward a JSON-RPC read to the active endpoint chain (dApp provider proxy).
+    pub async fn raw_request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, WalletError> {
+        let method = method.to_string();
+        self.with_provider(|provider| {
+            let method = method.clone();
+            let params = params.clone();
+            async move {
+                provider
+                    .raw_request(method.into(), params)
+                    .await
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            }
+        })
+        .await
+    }
+
     pub fn chain_id(&self) -> u64 {
         self.chain_id
     }

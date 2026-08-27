@@ -124,6 +124,64 @@ impl CustomNetwork {
 pub struct TrustedDapp {
     pub name: String,
     pub url: String,
+    /// Extra host suffixes for in-tab navigation (e.g. IPFS gateways for PulseX).
+    #[serde(default)]
+    pub extra_hosts: Vec<String>,
+}
+
+/// Common IPFS gateway hosts used by PulseX and similar directory frontends.
+pub fn default_ipfs_gateway_hosts() -> Vec<&'static str> {
+    vec![
+        "ipfs.io",
+        "cloudflare-ipfs.com",
+        "dweb.link",
+        "gateway.pinata.cloud",
+        "cf-ipfs.com",
+    ]
+}
+
+fn push_unique_host(out: &mut Vec<String>, s: String) {
+    if !s.is_empty() && !out.iter().any(|x| x == &s) {
+        out.push(s);
+    }
+}
+
+/// `app.pulsex.com` → `app.pulsex.com` + `pulsex.com` (parent for redirects).
+fn expand_host_suffixes(host: &str) -> Vec<String> {
+    let host = host.trim().trim_start_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![host.clone()];
+    let parts: Vec<&str> = host.split('.').filter(|p| !p.is_empty()).collect();
+    if parts.len() >= 3 {
+        out.push(format!(
+            "{}.{}",
+            parts[parts.len() - 2],
+            parts[parts.len() - 1]
+        ));
+    }
+    out
+}
+
+/// Host suffixes for `vaughan-dapp-browser --allow-host` from all trusted dApps.
+pub fn trusted_dapp_allow_hosts(dapps: &[TrustedDapp]) -> Vec<String> {
+    let mut out = Vec::new();
+    for d in dapps {
+        if let Ok(u) = url::Url::parse(&d.url) {
+            if let Some(h) = u.host_str() {
+                for s in expand_host_suffixes(h) {
+                    push_unique_host(&mut out, s);
+                }
+            }
+        }
+        for h in &d.extra_hosts {
+            for s in expand_host_suffixes(h) {
+                push_unique_host(&mut out, s);
+            }
+        }
+    }
+    out
 }
 
 /// Built-in PulseChain dApps seeded into every vault (provider origins + launcher).
@@ -132,21 +190,28 @@ pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
         TrustedDapp {
             name: "SquirrelSwap".into(),
             url: "https://app.squirrelswap.pro/#/".into(),
+            extra_hosts: vec![],
         },
         TrustedDapp {
             name: "LibertySwap".into(),
             url: "https://libertyswap.finance/".into(),
+            extra_hosts: vec![],
         },
         // app.pulsex.com is a gateway *directory* (IPFS mirrors), not the DEX UI.
-        // Open a listed IPFS link from there; Vaughan dApp-browser trusts the
-        // extension Origin so mirror hosts still reach the provider.
+        // Open a listed IPFS link from there; mirror hosts must be allowlisted for
+        // in-tab navigation while the extension Origin still attests page_origin.
         TrustedDapp {
             name: "PulseX (pick IPFS mirror)".into(),
             url: "https://app.pulsex.com/".into(),
+            extra_hosts: default_ipfs_gateway_hosts()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         },
         TrustedDapp {
             name: "9inch".into(),
             url: "https://app.9inch.io/swap?chain=pulse".into(),
+            extra_hosts: vec![],
         },
     ]
 }
@@ -162,6 +227,7 @@ fn dapp_origin(url: &str) -> Option<String> {
 }
 
 /// Append any missing [`default_trusted_dapps`] entries (matched by origin).
+/// Also backfills `extra_hosts` on existing defaults (e.g. PulseX IPFS gateways).
 /// Returns `true` when the list changed.
 pub fn merge_default_trusted_dapps(list: &mut Vec<TrustedDapp>) -> bool {
     let mut changed = false;
@@ -169,13 +235,18 @@ pub fn merge_default_trusted_dapps(list: &mut Vec<TrustedDapp>) -> bool {
         let Some(want) = dapp_origin(&dapp.url) else {
             continue;
         };
-        let already = list
-            .iter()
-            .any(|e| dapp_origin(&e.url).as_deref() == Some(want.as_str()));
-        if !already {
-            list.push(dapp);
-            changed = true;
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|e| dapp_origin(&e.url).as_deref() == Some(want.as_str()))
+        {
+            if existing.extra_hosts.is_empty() && !dapp.extra_hosts.is_empty() {
+                existing.extra_hosts = dapp.extra_hosts.clone();
+                changed = true;
+            }
+            continue;
         }
+        list.push(dapp);
+        changed = true;
     }
     changed
 }
@@ -472,6 +543,27 @@ mod tests {
         assert!(list.iter().any(|d| d.url.contains("libertyswap")));
         assert!(list.iter().any(|d| d.url.contains("pulsex")));
         assert!(list.iter().any(|d| d.url.contains("9inch")));
+    }
+
+    #[test]
+    fn merge_backfills_pulsex_ipfs_gateways() {
+        let mut list = vec![TrustedDapp {
+            name: "PulseX".into(),
+            url: "https://app.pulsex.com/".into(),
+            extra_hosts: vec![],
+        }];
+        assert!(merge_default_trusted_dapps(&mut list));
+        let pulsex = list.iter().find(|d| d.url.contains("pulsex")).unwrap();
+        assert!(pulsex.extra_hosts.iter().any(|h| h == "ipfs.io"));
+    }
+
+    #[test]
+    fn trusted_dapp_allow_hosts_includes_ipfs_for_pulsex() {
+        let dapps = default_trusted_dapps();
+        let hosts = trusted_dapp_allow_hosts(&dapps);
+        assert!(hosts.iter().any(|h| h == "ipfs.io"));
+        assert!(hosts.iter().any(|h| h == "app.pulsex.com"));
+        assert!(hosts.iter().any(|h| h == "app.9inch.io"));
     }
 
     #[test]

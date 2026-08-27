@@ -3,15 +3,17 @@
 //! Avoids chromiumoxide page automation (flaky on heavy dApps). The window
 //! stays open until the user closes it.
 //!
-//! **Phase 1 gap:** the host allowlist is enforced for the *initial* `--url`
-//! only. In-tab navigation is not yet gated (CDP / extension watcher later).
+//! In-tab navigation is gated by the extension (MV3 declarativeNetRequest)
+//! using `allowlist.json` written at launch.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use rand::RngCore;
 
 use crate::allowlist::Allowlist;
 use crate::extension_assets;
@@ -99,28 +101,42 @@ pub fn redact_access_token(raw: &str) -> String {
     }
 }
 
+/// Chromium-class binaries tried in order when `--chrome` is omitted.
+///
+/// Prefer **Chromium** or **Google Chrome** (no built-in competing wallet).
+/// **Brave** and **Edge** work but may need extra dApp wallet picker steps.
+pub const CHROME_CANDIDATES: &[&str] = &[
+    "chromium",
+    "chromium-browser",
+    "google-chrome-stable",
+    "google-chrome",
+    "chrome",
+    "brave",
+    "brave-browser",
+    "microsoft-edge-stable",
+    "microsoft-edge",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/brave",
+    "/usr/bin/brave-browser",
+    "/usr/bin/microsoft-edge-stable",
+    "/opt/brave.com/brave/brave",
+];
+
 fn pick_chrome(explicit: &Option<String>) -> Result<String, String> {
     if let Some(p) = explicit {
         let path = resolve_executable(p).ok_or_else(|| format!("chrome binary not found: {p}"))?;
         return Ok(path);
     }
-    for cand in [
-        "chromium",
-        "chromium-browser",
-        "google-chrome",
-        "google-chrome-stable",
-        "chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ] {
+    for cand in CHROME_CANDIDATES {
         if let Some(path) = resolve_executable(cand) {
             return Ok(path);
         }
     }
     Err(
-        "no Chromium/Chrome binary found (install chromium or pass --chrome /usr/bin/chromium)"
+        "no Chromium-class browser found (install chromium, or pass --chrome /path/to/browser)"
             .into(),
     )
 }
@@ -179,10 +195,70 @@ fn free_port() -> u16 {
         .unwrap_or(0)
 }
 
-fn write_inject_extension(dir: &Path, provider_ws: &str) -> Result<(), String> {
+fn random_session_token() -> String {
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    hex::encode(buf)
+}
+
+fn vb_session_path() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("vaughan-cli").join("vb.session"))
+}
+
+/// Persist CDP endpoint metadata for MCP agents (`cdp_token` is session metadata;
+/// Chrome CDP itself is loopback-only — agents must present the token out-of-band).
+fn write_vb_session(cdp_port: u16, cdp_token: &str) -> Result<(), String> {
+    let path = vb_session_path().ok_or_else(|| "no data dir for vb.session".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("vb.session dir: {e}"))?;
+    }
+    let updated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let body = serde_json::json!({
+        "cdp_url": format!("http://127.0.0.1:{cdp_port}"),
+        "cdp_token": cdp_token,
+        "updated_at": updated_at,
+    });
+    let bytes = serde_json::to_vec(&body).map_err(|e| format!("vb.session json: {e}"))?;
+    write_owner_only_file(&path, &bytes)?;
+    Ok(())
+}
+
+fn clear_vb_session() {
+    if let Some(path) = vb_session_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(unix)]
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    f.write_all(bytes)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn write_inject_extension(dir: &Path, provider_ws: &str, allow: &Allowlist) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("ext dir: {e}"))?;
     std::fs::write(dir.join("manifest.json"), extension_assets::manifest_json())
         .map_err(|e| format!("write manifest: {e}"))?;
+    std::fs::write(dir.join("allowlist.json"), allow.to_extension_json())
+        .map_err(|e| format!("write allowlist.json: {e}"))?;
     std::fs::write(
         dir.join("background.js"),
         extension_assets::background_js(provider_ws),
@@ -236,14 +312,11 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
 
     let chrome = pick_chrome(&opts.chrome)?;
     let export_cdp = opts.cdp_port != 0;
-    // Unique temp dir even when CDP is off (no debugging port allocated).
-    let session = if export_cdp {
-        opts.cdp_port
-    } else {
-        free_port().max(1)
-    };
+    let cdp_port = if export_cdp { opts.cdp_port } else { 0 };
+    // Always use a random session id so temp dirs are not predictable from CDP port.
+    let session_id = free_port().max(1);
 
-    let base = std::env::temp_dir().join(format!("vaughan-dapp-browser-{session}"));
+    let base = std::env::temp_dir().join(format!("vaughan-dapp-browser-{session_id}"));
     let profile = base.join("profile");
     let ext = base.join("ext");
     let _ = std::fs::remove_dir_all(&base);
@@ -270,7 +343,14 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
         return Err("session dir is not a real directory".into());
     }
     std::fs::create_dir_all(&profile).map_err(|e| format!("profile: {e}"))?;
-    write_inject_extension(&ext, &opts.provider_ws)?;
+    write_inject_extension(&ext, &opts.provider_ws, &opts.allow)?;
+
+    let cdp_token = if export_cdp {
+        Some(random_session_token())
+    } else {
+        clear_vb_session();
+        None
+    };
 
     eprintln!("vaughan-dapp-browser: chrome={chrome}");
     eprintln!(
@@ -281,24 +361,27 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
         extension_assets::EXTENSION_ID
     );
     eprintln!(
-        "vaughan-dapp-browser: note — initial URL allowlisted; in-tab navigation not yet gated"
+        "vaughan-dapp-browser: in-tab navigation gated ({} allowlisted host suffixes)",
+        opts.allow.suffixes().len()
     );
     if export_cdp {
+        let token = cdp_token.as_deref().unwrap_or("");
+        write_vb_session(cdp_port, token)?;
         println!(
             "{}",
             serde_json::json!({
-                "cdp": format!("http://127.0.0.1:{}", opts.cdp_port),
+                "cdp": format!("http://127.0.0.1:{cdp_port}"),
+                "cdp_token": token,
                 "agentControl": true,
             })
         );
         eprintln!(
-            "vaughan-dapp-browser: CDP exported on 127.0.0.1:{}",
-            opts.cdp_port
+            "vaughan-dapp-browser: CDP on 127.0.0.1:{cdp_port} (loopback; session token in vb.session)"
         );
     } else {
         eprintln!("vaughan-dapp-browser: agent CDP off (pass --cdp-port N to enable)");
     }
-    eprintln!("Look for a green top banner: “Vaughan injected …”");
+    eprintln!("Look for a green top banner: “VB injected …”");
     eprintln!("dApps may say “Injected” — approve sign/send in the Vaughan TUI.");
     eprintln!("Close the Chromium window when finished.");
 
@@ -310,6 +393,10 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
         .arg("--no-default-browser-check")
         .arg("--disable-dev-shm-usage")
         .arg("--disable-sync")
+        .arg("--disable-background-networking")
+        .arg("--disable-default-apps")
+        .arg("--no-pings")
+        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
         .arg("--disable-features=DisableLoadExtensionCommandLineSwitch")
         .arg(format!("--app={}", opts.url))
         .stdin(Stdio::null())
@@ -317,7 +404,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
         .stderr(Stdio::null());
 
     if export_cdp {
-        cmd.arg(format!("--remote-debugging-port={}", opts.cdp_port))
+        cmd.arg(format!("--remote-debugging-port={cdp_port}"))
             .arg("--remote-debugging-address=127.0.0.1");
     }
 
@@ -351,6 +438,12 @@ pub fn run_self_check(provider_ws: &str, chrome: Option<String>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chrome_candidates_include_brave_and_edge() {
+        assert!(CHROME_CANDIDATES.iter().any(|c| c.contains("brave")));
+        assert!(CHROME_CANDIDATES.iter().any(|c| c.contains("edge")));
+    }
 
     #[test]
     fn provider_ws_loopback_only() {

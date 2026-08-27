@@ -46,9 +46,10 @@ pub fn display_host(url: &str) -> String {
 }
 
 /// Open `url` in Vaughan dApp browser if present, else Freedom (never `xdg-open`).
-pub fn open_dapp_url(url: &str) -> Result<String, String> {
+pub fn open_dapp_url(url: &str, allow_hosts: &[String]) -> Result<String, String> {
     open_dapp_url_with_cmds(
         url,
+        allow_hosts,
         env::var(dapp_browser::DAPP_BROWSER_CMD_ENV).ok().as_deref(),
         env::var("VAUGHAN_FREEDOM_CMD").ok().as_deref(),
     )
@@ -57,6 +58,7 @@ pub fn open_dapp_url(url: &str) -> Result<String, String> {
 /// [`open_dapp_url`] with explicit command overrides (tests; `None` = probe).
 fn open_dapp_url_with_cmds(
     url: &str,
+    allow_hosts: &[String],
     dapp_browser_cmd: Option<&str>,
     freedom_cmd: Option<&str>,
 ) -> Result<String, String> {
@@ -69,7 +71,7 @@ fn open_dapp_url_with_cmds(
         return Err("URL must be http or https".into());
     }
 
-    match dapp_browser::try_open_with_cmd(url, dapp_browser_cmd) {
+    match dapp_browser::try_open_with_cmd(url, allow_hosts, dapp_browser_cmd) {
         Ok(msg) => return Ok(msg),
         Err(e) => {
             tracing::debug!(error = %e, "vaughan-dapp-browser unavailable; trying Freedom");
@@ -146,7 +148,7 @@ mod tests {
 
     #[test]
     fn rejects_non_http() {
-        let err = open_dapp_url("file:///tmp/x").unwrap_err();
+        let err = open_dapp_url("file:///tmp/x", &[]).unwrap_err();
         assert!(err.contains("http"));
     }
 
@@ -172,6 +174,7 @@ mod tests {
         // no env mutation (process-global, unsafe on edition 2024).
         let err = open_dapp_url_with_cmds(
             "https://app.pulsex.com/",
+            &[],
             Some("vaughan-dapp-browser-not-installed-for-tests"),
             Some("vaughan-freedom-not-installed-for-tests"),
         )

@@ -49,9 +49,9 @@ pub use mcp_ipc::{
 };
 pub use network::NetworkService;
 pub use persistence::{
-    default_trusted_dapps, is_sentient_profile, merge_default_trusted_dapps, CustomNetwork,
-    CustomToken, PersistedState, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE,
-    SENTIENT_PROFILE,
+    default_ipfs_gateway_hosts, default_trusted_dapps, is_sentient_profile,
+    merge_default_trusted_dapps, trusted_dapp_allow_hosts, CustomNetwork, CustomToken,
+    PersistedState, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
 };
 pub use piteas::{
     AuthStyle, MethodParameters, NativeToken, PiteasClient, PiteasFileConfig, PiteasQuote,
@@ -70,7 +70,7 @@ pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,
 };
-pub use wallet::{ChromeRpcSnapshot, WalletState};
+pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, WalletState};
 pub use wiz4rd::{
     deployment_for_chain, position_manager as wiz4rd_position_manager,
     swap_router as wiz4rd_swap_router, Wiz4rdDeployment, DEPLOYMENT_943, WIZ4RD_FEE_TIERS,

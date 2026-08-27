@@ -6,6 +6,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// When set, pass `--chrome` to the dApp browser binary (e.g. `/usr/bin/brave`).
+pub const DAPP_BROWSER_CHROME_ENV: &str = "VAUGHAN_DAPP_BROWSER_CHROME";
+
 /// Env override: full command prefix; URL is appended (same shape as Freedom).
 pub const DAPP_BROWSER_CMD_ENV: &str = "VAUGHAN_DAPP_BROWSER_CMD";
 
@@ -13,12 +16,20 @@ pub const DAPP_BROWSER_CMD_ENV: &str = "VAUGHAN_DAPP_BROWSER_CMD";
 pub const DAPP_BROWSER_CDP_ENV: &str = "VAUGHAN_DAPP_BROWSER_CDP_PORT";
 
 /// Try to open `url` in `vaughan-dapp-browser`. `Err` if binary missing/fails.
-pub fn try_open(url: &str) -> Result<String, String> {
-    try_open_with_cmd(url, env::var(DAPP_BROWSER_CMD_ENV).ok().as_deref())
+pub fn try_open(url: &str, allow_hosts: &[String]) -> Result<String, String> {
+    try_open_with_cmd(
+        url,
+        allow_hosts,
+        env::var(DAPP_BROWSER_CMD_ENV).ok().as_deref(),
+    )
 }
 
 /// [`try_open`] with an explicit command override (tests; `None` = PATH probe).
-pub(crate) fn try_open_with_cmd(url: &str, cmd_override: Option<&str>) -> Result<String, String> {
+pub(crate) fn try_open_with_cmd(
+    url: &str,
+    allow_hosts: &[String],
+    cmd_override: Option<&str>,
+) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("empty URL".into());
@@ -33,22 +44,32 @@ pub(crate) fn try_open_with_cmd(url: &str, cmd_override: Option<&str>) -> Result
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|p| *p != 0);
 
+    let chrome = env::var(DAPP_BROWSER_CHROME_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
     if let Some(raw) = cmd_override {
-        return spawn_cmd(raw, url, cdp_port);
+        return spawn_cmd(raw, url, allow_hosts, cdp_port, chrome.as_deref());
     }
 
     for bin in ["vaughan-dapp-browser"] {
-        if spawn_bin(Path::new(bin), url, cdp_port) {
+        if spawn_bin(
+            Path::new(bin),
+            url,
+            allow_hosts,
+            cdp_port,
+            chrome.as_deref(),
+        ) {
             return Ok(format!(
-                "opened in Vaughan dApp browser ({bin}) — look for green inject banner; approve sign/send here"
+                "opened in VB ({bin}) — green inject banner; approve sign/send in Vaughan TUI"
             ));
         }
     }
 
     for bin in extra_bin_paths() {
-        if spawn_bin(&bin, url, cdp_port) {
+        if spawn_bin(&bin, url, allow_hosts, cdp_port, chrome.as_deref()) {
             return Ok(format!(
-                "opened in Vaughan dApp browser ({}) — look for green inject banner; approve sign/send here",
+                "opened in VB ({}) — green inject banner; approve sign/send in Vaughan TUI",
                 bin.display()
             ));
         }
@@ -57,7 +78,31 @@ pub(crate) fn try_open_with_cmd(url: &str, cmd_override: Option<&str>) -> Result
     Err("vaughan-dapp-browser not found on PATH".into())
 }
 
-fn spawn_cmd(raw: &str, url: &str, cdp_port: Option<u16>) -> Result<String, String> {
+fn append_allow_hosts(cmd: &mut Command, allow_hosts: &[String]) {
+    for h in allow_hosts {
+        let t = h.trim();
+        if !t.is_empty() {
+            cmd.arg("--allow-host").arg(t);
+        }
+    }
+}
+
+fn append_chrome(cmd: &mut Command, chrome: Option<&str>) {
+    if let Some(bin) = chrome {
+        let t = bin.trim();
+        if !t.is_empty() {
+            cmd.arg("--chrome").arg(t);
+        }
+    }
+}
+
+fn spawn_cmd(
+    raw: &str,
+    url: &str,
+    allow_hosts: &[String],
+    cdp_port: Option<u16>,
+    chrome: Option<&str>,
+) -> Result<String, String> {
     let parts: Vec<&str> = raw.split_whitespace().collect();
     let Some((bin, args)) = parts.split_first() else {
         return Err(format!("{DAPP_BROWSER_CMD_ENV} is empty"));
@@ -65,6 +110,8 @@ fn spawn_cmd(raw: &str, url: &str, cdp_port: Option<u16>) -> Result<String, Stri
     let mut cmd = Command::new(bin);
     cmd.args(args);
     cmd.arg("--url").arg(url);
+    append_allow_hosts(&mut cmd, allow_hosts);
+    append_chrome(&mut cmd, chrome);
     if let Some(port) = cdp_port {
         cmd.arg("--cdp-port").arg(port.to_string());
     }
@@ -74,15 +121,23 @@ fn spawn_cmd(raw: &str, url: &str, cdp_port: Option<u16>) -> Result<String, Stri
         .stderr(std::process::Stdio::null());
     match cmd.spawn() {
         Ok(_) => Ok(format!(
-            "opened in Vaughan dApp browser ({bin}) — look for green inject banner; approve sign/send here"
+            "opened in VB ({bin}) — green inject banner; approve sign/send in Vaughan TUI"
         )),
         Err(e) => Err(format!("{DAPP_BROWSER_CMD_ENV} (`{bin}`) failed: {e}")),
     }
 }
 
-fn spawn_bin(bin: &Path, url: &str, cdp_port: Option<u16>) -> bool {
+fn spawn_bin(
+    bin: &Path,
+    url: &str,
+    allow_hosts: &[String],
+    cdp_port: Option<u16>,
+    chrome: Option<&str>,
+) -> bool {
     let mut cmd = Command::new(bin);
     cmd.arg("--url").arg(url);
+    append_allow_hosts(&mut cmd, allow_hosts);
+    append_chrome(&mut cmd, chrome);
     if let Some(port) = cdp_port {
         cmd.arg("--cdp-port").arg(port.to_string());
     }
@@ -135,7 +190,7 @@ mod tests {
 
     #[test]
     fn rejects_non_http() {
-        let err = try_open("file:///tmp/x").unwrap_err();
+        let err = try_open("file:///tmp/x", &[]).unwrap_err();
         assert!(err.contains("http"));
     }
 }

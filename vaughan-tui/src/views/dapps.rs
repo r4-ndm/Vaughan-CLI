@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 use tokio::runtime::Handle;
-use vaughan_core::core::{TrustedDapp, WalletState};
+use vaughan_core::core::{trusted_dapp_allow_hosts, TrustedDapp, WalletState};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -177,7 +177,8 @@ impl DappsView {
                 KeyCode::Enter => {
                     let dapps = wallet.trusted_dapps();
                     if let Some(TrustedDapp { url, .. }) = dapps.get(self.selected) {
-                        match freedom::open_dapp_url(url) {
+                        let allow_hosts = trusted_dapp_allow_hosts(&dapps);
+                        match freedom::open_dapp_url(url, &allow_hosts) {
                             Ok(msg) => self.status = msg,
                             Err(e) => self.status = e,
                         }

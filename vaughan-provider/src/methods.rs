@@ -16,6 +16,10 @@
 //! - `personal_sign` — EIP-191 signature over a message
 //! - `eth_signTypedData_v4` — EIP-712 signature over typed data
 //! - `wallet_switchEthereumChain` — switch to a built-in network
+//! - Read-only `eth_*` / `net_*` / `web3_*` methods — forwarded to the host's
+//!   active network RPC ([`crate::rpc_proxy`]; VB / Freedom read-interception path)
+
+use crate::rpc_proxy;
 
 use std::sync::Arc;
 
@@ -182,6 +186,14 @@ pub trait WalletHandle: Send + Sync + 'static {
     /// Switch the active network; `chain_id` is a decimal string. Unknown
     /// chains return [`ProviderError::UnrecognizedChain`] (4902).
     async fn switch_chain(&self, ctx: &RequestCtx, chain_id: &str) -> Result<(), ProviderError>;
+
+    /// Forward an allowlisted read-only JSON-RPC call to the active network RPC.
+    async fn rpc_read(
+        &self,
+        ctx: &RequestCtx,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, ProviderError>;
 }
 
 /// The EIP-1193 request dispatcher.
@@ -240,6 +252,9 @@ impl<W: WalletHandle> RequestHandler for Eip1193Handler<W> {
                 let chain_id = parse_switch_chain(&request.params)?;
                 wallet.switch_chain(&ctx, &chain_id).await?;
                 Ok(Value::Null)
+            }
+            other if rpc_proxy::is_read_proxy_method(other) => {
+                wallet.rpc_read(&ctx, other, request.params.clone()).await
             }
             other => Err(ProviderError::UnsupportedMethod(other.to_string())),
         }
@@ -564,6 +579,14 @@ mod tests {
                 Err(ProviderError::UnrecognizedChain(chain_id.into()))
             }
         }
+        async fn rpc_read(
+            &self,
+            _ctx: &RequestCtx,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value, ProviderError> {
+            Ok(json!({ "proxy": method }))
+        }
     }
 
     fn ctx() -> RequestCtx {
@@ -673,6 +696,18 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ProviderError::UnrecognizedChain(_)));
         assert_eq!(err.code(), 4902);
+    }
+
+    #[tokio::test]
+    async fn read_proxy_eth_call() {
+        let wallet = fake_wallet();
+        let out = dispatch(
+            &wallet,
+            r#"{"id":1,"method":"eth_call","params":[{"to":"0x0","data":"0x"},"latest"]}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, json!({ "proxy": "eth_call" }));
     }
 
     #[tokio::test]

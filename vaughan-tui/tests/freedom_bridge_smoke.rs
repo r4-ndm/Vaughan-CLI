@@ -110,6 +110,24 @@ async fn run_approval_consumer(mut rx: mpsc::Receiver<HostRequest>, mut wallet: 
                     }
                 }
             }
+            HostRequest::RpcRead {
+                method,
+                params,
+                reply,
+            } => {
+                let snap = match wallet.network_rpc_snapshot() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = reply.send(Err(ProviderError::Internal(e.user_message())));
+                        continue;
+                    }
+                };
+                let result = snap
+                    .forward_read(&method, params)
+                    .await
+                    .map_err(|e| ProviderError::Internal(e.user_message()));
+                let _ = reply.send(result);
+            }
         }
     }
 }
