@@ -421,19 +421,18 @@ impl DexView {
         }
     }
 
-    /// Called each UI tick; returns a quote job when the debounce elapses.
-    pub fn poll_quote(&mut self, wallet: &WalletState) -> Option<crate::jobs::UiJob> {
+    /// Advance quote debounce without touching the wallet lock (UI tick).
+    ///
+    /// Returns `true` when debounce elapsed and [`Self::start_quote_job`] should run.
+    pub fn tick_quote_debounce(&mut self) -> bool {
         if !matches!(self.stage, Stage::Input) || self.busy != Busy::Idle {
-            return None;
+            return false;
         }
         if self.quote_debounce == 0 || self.quote_loading_gen.is_some() {
-            return None;
+            return false;
         }
         self.quote_debounce -= 1;
-        if self.quote_debounce != 0 {
-            return None;
-        }
-        self.start_quote_job(wallet)
+        self.quote_debounce == 0
     }
 
     fn apply_venue_defaults(&mut self, overwrite_router: bool) {
@@ -833,7 +832,7 @@ impl DexView {
         Self::render_centered_amount_row(frame, area, "Minimum received", value, false, true);
     }
 
-    fn start_quote_job(&mut self, wallet: &WalletState) -> Option<crate::jobs::UiJob> {
+    pub(crate) fn start_quote_job(&mut self, wallet: &WalletState) -> Option<crate::jobs::UiJob> {
         self.quote_gen += 1;
         let quote_gen = self.quote_gen;
         match self.build_quote_job(wallet, quote_gen) {
@@ -949,8 +948,7 @@ impl DexView {
                 token_style
             };
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(sym, style)))
-                    .alignment(Alignment::Center),
+                Paragraph::new(Line::from(Span::styled(sym, style))).alignment(Alignment::Center),
                 inner,
             );
             frame.render_widget(

@@ -431,10 +431,14 @@ impl App {
             self.poll_jobs();
             if let View::Dex(v) = &mut self.view {
                 v.set_tick(self.tick);
-                let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(job) = v.poll_quote(&wallet) {
-                    drop(wallet);
-                    self.spawn_job(job);
+                if v.tick_quote_debounce() {
+                    let job = {
+                        let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        v.start_quote_job(&wallet)
+                    };
+                    if let Some(job) = job {
+                        self.spawn_job(job);
+                    }
                 }
             }
             if let View::Aggregator(v) = &mut self.view {
@@ -1281,7 +1285,8 @@ impl App {
             .unwrap_or_else(|| format!("chain {id}"))
     }
 
-    /// Build the default view for `screen` (refreshing balance on Dashboard).
+    /// Build the default view for `screen`. Chrome/asset RPC refresh is limited
+    /// to screens that need fresh data — other views reuse cached chrome.
     fn navigate(&mut self, screen: Screen) {
         self.settle_chrome_before_navigate();
 
@@ -1374,15 +1379,17 @@ impl App {
             }
             Screen::Dashboard => {
                 self.refresh_chrome();
-                self.spawn_refresh_assets();
+                if self.chrome.assets.is_empty() {
+                    self.spawn_refresh_assets();
+                }
             }
-            _ => self.refresh_chrome(),
+            _ => {}
         }
     }
 
     /// Refresh always-on network / balance / gas chrome (unlocked screens).
     fn refresh_chrome(&mut self) {
-        if !self.wallet().is_unlocked() {
+        if !self.wallet().is_unlocked() || self.chrome.loading {
             return;
         }
         self.chrome.loading = true;
@@ -2186,7 +2193,6 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
     }
 }
 
-/// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).
 /// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).
 fn same_f2_asset(a: &vaughan_core::chains::Balance, b: &vaughan_core::chains::Balance) -> bool {
     match (
