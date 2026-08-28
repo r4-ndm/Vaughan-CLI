@@ -7,9 +7,9 @@ use alloy::primitives::{Address, U256};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use std::str::FromStr;
@@ -26,7 +26,11 @@ use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::dex_calldata::build_approve_tx;
-use crate::views::{body_areas, render_labeled_input, status_paragraph};
+use crate::views::swap_form::{
+    render_centered_amount_row, render_centered_value_field, render_form_footer, render_form_title,
+    render_leg_arrow, render_text_field,
+};
+use crate::views::{body_areas, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfirmStep {
@@ -49,8 +53,9 @@ enum Stage {
     Done,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum Focus {
+    None,
     SrcChain,
     DstChain,
     Amount,
@@ -99,7 +104,7 @@ impl Default for BridgeView {
     fn default() -> Self {
         Self {
             stage: Stage::Input,
-            focus: Focus::Amount,
+            focus: Focus::None,
             src_idx: preset_index(369),
             dst_idx: preset_index(8453),
             amount: Input::new(false, "amount (e.g. 100 USDC)"),
@@ -196,21 +201,7 @@ impl BridgeView {
         match self.stage {
             Stage::Input => self.render_input(frame, body),
             Stage::Confirm(_) => self.render_confirm(frame, body),
-            Stage::Done => {
-                let dest = self.dst().label;
-                frame.render_widget(
-                    Paragraph::new(format!(
-                        "Source broadcast done (LibertySwap).\n\
-                         Approve: {}\n\
-                         Bridge:  {}\n\
-                         Destination ({dest}) arrives asynchronously — check that chain later.\n\
-                         Enter again · Esc dashboard",
-                        self.approve_hash.as_deref().unwrap_or("—"),
-                        self.tx_hash.as_deref().unwrap_or("—")
-                    )),
-                    body,
-                );
-            }
+            Stage::Done => self.render_done(frame, body),
         }
         let status_text = match self.busy {
             Busy::Quoting => format!("{} quoting LibertySwap…", spinner_frame(self.tick)),
@@ -222,75 +213,125 @@ impl BridgeView {
     }
 
     fn render_input(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
+        let show_quote = self.busy == Busy::Quoting;
+        let constraints = vec![
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
-        ])
-        .split(area);
+        ];
+        let chunks = Layout::vertical(constraints).split(area);
+        let mut i = 0;
 
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " Bridge — LibertySwap (USDC) · not official Pulse Omnibridge ",
-                Style::default()
-                    .fg(brand::accent_color())
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            chunks[0],
-        );
+        render_form_title(frame, chunks[i], " Bridge ");
+        i += 1;
 
+        let src = self.src();
         let src_style = if self.focus == Focus::SrcChain {
             Style::default()
                 .fg(brand::accent_color())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(brand::body_color())
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         };
+        render_centered_value_field(
+            frame,
+            chunks[i],
+            "From",
+            Line::from(Span::styled(
+                format!("{}  [{}]", src.label, src.chain_id),
+                src_style,
+            )),
+            self.focus == Focus::SrcChain,
+        );
+        i += 1;
+
+        render_leg_arrow(frame, chunks[i]);
+        i += 1;
+
+        let dst = self.dst();
         let dst_style = if self.focus == Focus::DstChain {
             Style::default()
                 .fg(brand::accent_color())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(brand::body_color())
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("From {} [{}]  ", self.src().label, self.src().chain_id),
-                    src_style,
-                ),
-                Span::styled("↑/↓ when focused", Style::default().fg(brand::body_color())),
-            ])),
-            chunks[1],
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("To   {} [{}]", self.dst().label, self.dst().chain_id),
-                dst_style,
-            ))),
-            chunks[2],
-        );
-        render_labeled_input(
+        render_centered_value_field(
             frame,
-            chunks[3],
-            "Amt USDC",
+            chunks[i],
+            "To",
+            Line::from(Span::styled(
+                format!("{}  [{}]", dst.label, dst.chain_id),
+                dst_style,
+            )),
+            self.focus == Focus::DstChain,
+        );
+        i += 1;
+
+        render_text_field(
+            frame,
+            chunks[i],
+            "Amount",
             &self.amount,
             self.focus == Focus::Amount,
         );
+        i += 1;
+
+        if show_quote {
+            render_centered_amount_row(
+                frame,
+                chunks[i],
+                "Expected",
+                Line::from(Span::styled(
+                    format!("{} quoting…", spinner_frame(self.tick)),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                false,
+                false,
+            );
+        }
+        i += 1;
+
+        render_form_footer(
+            frame,
+            chunks[i],
+            "Tab · select · Enter · deselect · F4 quote · ↑↓ chains · wallet Net = From",
+        );
+    }
+
+    fn render_done(&self, frame: &mut Frame, area: Rect) {
+        let dest = self.dst().label;
+        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(" Bridge sent ")));
         frame.render_widget(
-            Paragraph::new("Tab fields · wallet Net must match From · Enter quote · Esc back"),
-            chunks[4],
+            Paragraph::new(format!(
+                "Source broadcast done (LibertySwap).\n\
+                 Approve: {}\n\
+                 Bridge:  {}\n\
+                 Destination ({dest}) arrives asynchronously.\n\
+                 Enter again · Esc dashboard",
+                self.approve_hash.as_deref().unwrap_or("—"),
+                self.tx_hash.as_deref().unwrap_or("—")
+            )),
+            inner,
         );
     }
 
     fn render_confirm(&self, frame: &mut Frame, area: Rect) {
+        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(" Confirm ")));
         let text = self.confirm_lines.join("\n");
         frame.render_widget(
-            Paragraph::new(format!("{text}\n\nEnter confirm · Esc cancel")),
-            area,
+            Paragraph::new(format!("{text}\n\nEnter confirm · Esc cancel"))
+                .wrap(Wrap { trim: true }),
+            inner,
         );
     }
 
@@ -347,25 +388,22 @@ impl BridgeView {
                             self.src_idx = cycle_preset(self.src_idx, forward);
                         }
                     }
-                    Focus::Amount => {}
+                    Focus::None | Focus::Amount => {}
                 }
                 self.quote = None;
                 KeyOutcome::Consumed
             }
             KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::SrcChain => Focus::DstChain,
-                    Focus::DstChain => Focus::Amount,
-                    Focus::Amount => Focus::SrcChain,
-                };
+                self.focus = self.focus_tab_forward();
                 KeyOutcome::Consumed
             }
             KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::SrcChain => Focus::Amount,
-                    Focus::DstChain => Focus::SrcChain,
-                    Focus::Amount => Focus::DstChain,
-                };
+                self.focus = self.focus_tab_backward();
+                KeyOutcome::Consumed
+            }
+            KeyCode::F(4) => self.start_quote(wallet),
+            KeyCode::Enter if self.focus != Focus::None => {
+                self.focus = Focus::None;
                 KeyOutcome::Consumed
             }
             KeyCode::Enter => self.start_quote(wallet),
@@ -375,9 +413,30 @@ impl BridgeView {
                 }
                 match self.amount.handle_key(key) {
                     InputAction::Ignored => KeyOutcome::NotHandled,
-                    _ => KeyOutcome::Consumed,
+                    _ => {
+                        self.quote = None;
+                        KeyOutcome::Consumed
+                    }
                 }
             }
+        }
+    }
+
+    fn focus_tab_forward(&self) -> Focus {
+        match self.focus {
+            Focus::None => Focus::SrcChain,
+            Focus::SrcChain => Focus::DstChain,
+            Focus::DstChain => Focus::Amount,
+            Focus::Amount => Focus::None,
+        }
+    }
+
+    fn focus_tab_backward(&self) -> Focus {
+        match self.focus {
+            Focus::None => Focus::Amount,
+            Focus::SrcChain => Focus::None,
+            Focus::DstChain => Focus::SrcChain,
+            Focus::Amount => Focus::DstChain,
         }
     }
 

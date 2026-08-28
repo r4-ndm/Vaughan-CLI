@@ -745,7 +745,7 @@ impl DexView {
     fn token_out_symbol<'a>(&self, assets: &'a [Balance]) -> &'a str {
         let raw = self.token_out.value().trim();
         token_symbol_for_address(assets, raw)
-            .or_else(|| token_symbol_hint(raw, self.chain_id))
+            .or_else(|| crate::views::token_symbol_hint(raw, self.chain_id))
             .unwrap_or("tokens")
     }
 
@@ -979,7 +979,7 @@ impl DexView {
         }
 
         let sym = token_symbol_for_address(assets, raw)
-            .or_else(|| token_symbol_hint(raw, self.chain_id))
+            .or_else(|| crate::views::token_symbol_hint(raw, self.chain_id))
             .unwrap_or("???");
 
         // Banner-aligned ticker + contract inside the box; short label painted on top.
@@ -1845,17 +1845,6 @@ fn fee_tier_display(fee: u32) -> String {
     } else {
         format!("{pct:.2}%")
     }
-}
-
-fn token_symbol_hint(addr: &str, chain_id: u64) -> Option<&'static str> {
-    if addr.eq_ignore_ascii_case(WZRD_SMOKE_943) {
-        return Some("WZRD");
-    }
-    let wpls = wpls_for_chain(chain_id);
-    if !wpls.is_empty() && addr.eq_ignore_ascii_case(wpls) {
-        return Some("WPLS");
-    }
-    None
 }
 
 #[cfg(test)]

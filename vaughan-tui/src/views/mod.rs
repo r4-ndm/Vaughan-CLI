@@ -5,7 +5,7 @@
 //! view body → action footer.
 //!
 //! F1–F3: press the key to focus, ↑/↓ to preview, Enter to set, Esc to cancel.
-//! Home send body: F4 focuses recipient, F5 focuses amount. Dex swap: F4 confirm.
+//! Home send body: F4 focuses recipient, F5 focuses amount. Dex / Ag / Bridge: F4 confirm or quote.
 
 pub mod aa_send;
 pub mod ag;
@@ -25,6 +25,7 @@ pub mod placeholder;
 pub mod receive;
 pub mod send;
 pub mod settings;
+pub mod swap_form;
 pub mod unlock;
 pub mod wrap;
 
@@ -227,6 +228,23 @@ pub(crate) fn token_symbol_for_address<'a>(assets: &'a [Balance], addr: &str) ->
             .filter(|a| a.eq_ignore_ascii_case(want))
             .map(|_| b.token.symbol.as_str())
     })
+}
+
+/// Known token tickers for common PulseChain addresses (when not in F2 list).
+pub(crate) fn token_symbol_hint(addr: &str, chain_id: u64) -> Option<&'static str> {
+    use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
+    if addr.eq_ignore_ascii_case(WZRD_SMOKE_943) {
+        return Some("WZRD");
+    }
+    let wpls = match chain_id {
+        369 => "0xA1077a294dDE1B09bB078844df40758a5D0f9a27",
+        943 => "0x70499adEBB11Efd915E3b69E700c331778628707",
+        _ => "",
+    };
+    if !wpls.is_empty() && addr.eq_ignore_ascii_case(wpls) {
+        return Some("WPLS");
+    }
+    None
 }
 
 /// Max fractional digits in the F2 chrome box (status strip).
@@ -714,42 +732,6 @@ pub(crate) fn native_pls_label(chain_id: u64) -> &'static str {
         369 => "PLS",
         _ => "PLS",
     }
-}
-
-/// Token-in row: show native PLS/tPLS when native mode and the address field is empty.
-pub(crate) fn render_token_in_field(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    input: &Input,
-    focused: bool,
-    native_in: bool,
-    chain_id: u64,
-) {
-    if native_in && input.value().trim().is_empty() {
-        let title_text = format!(" {label} ");
-        let title = if focused {
-            brand::focus_title(&title_text)
-        } else {
-            brand::fade_line(&title_text)
-        };
-        let inner = brand::render_faded_box(frame, area, Some(title));
-        let style = if focused {
-            Style::default()
-                .fg(brand::accent_color())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(native_pls_label(chain_id), style))),
-            inner,
-        );
-        return;
-    }
-    render_labeled_input(frame, area, label, input, focused);
 }
 
 /// A status/error line rendered at the bottom of a view's body.
