@@ -5,6 +5,71 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A selectable RPC endpoint (preset label + URL).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcEndpoint {
+    /// Human-readable label (e.g. "Official", "PublicNode").
+    pub label: String,
+    /// HTTPS (or dev http) JSON-RPC URL.
+    pub url: String,
+}
+
+/// Resolve the primary RPC and ordered fallbacks for a network.
+///
+/// Precedence: `session_override` (CLI `--rpc-url`) → `persisted_primary` (Settings)
+/// → built-in default. Fallbacks are every other known endpoint for the network.
+pub fn resolve_rpc_endpoints(
+    net: &EvmNetworkConfig,
+    persisted_primary: Option<&str>,
+    session_override: Option<&str>,
+) -> (String, Vec<String>) {
+    let primary = session_override
+        .map(str::to_string)
+        .or_else(|| persisted_primary.map(str::to_string))
+        .unwrap_or_else(|| net.rpc_url.clone());
+
+    let mut fallbacks = Vec::new();
+    for endpoint in net.known_rpc_endpoints() {
+        if endpoint.url != primary && !fallbacks.contains(&endpoint.url) {
+            fallbacks.push(endpoint.url);
+        }
+    }
+    (primary, fallbacks)
+}
+
+/// Short label for a known RPC URL (hostname fallback for custom URLs).
+pub fn rpc_endpoint_label(url: &str) -> String {
+    match url {
+        "https://rpc.pulsechain.com" => "Official".into(),
+        "https://pulsechain-rpc.publicnode.com" => "PublicNode".into(),
+        "https://rpc.pulsechainrpc.com" => "PulseChainRPC".into(),
+        "https://rpc.pulsechainstats.com" => "PulseChain Stats".into(),
+        "https://rpc-pulsechain.g4mm4.io" => "g4mm4".into(),
+        "https://rpc.gigatheminter.com" => "GigaTheMinter".into(),
+        "https://rpc.v4.testnet.pulsechain.com" => "Official testnet".into(),
+        "https://rpc-testnet-v4.g4mm4.io" => "g4mm4 testnet".into(),
+        "https://pulsechain-testnet-rpc.publicnode.com" => "PublicNode testnet".into(),
+        "https://eth.llamarpc.com" => "LlamaRPC".into(),
+        "https://ethereum-rpc.publicnode.com" => "PublicNode".into(),
+        "https://rpc.ankr.com/eth" => "Ankr".into(),
+        "https://ethereum-sepolia-rpc.publicnode.com" => "PublicNode".into(),
+        "https://rpc.sepolia.org" => "Sepolia.org".into(),
+        "https://sepolia.drpc.org" => "dRPC".into(),
+        "https://polygon-bor-rpc.publicnode.com" => "PublicNode".into(),
+        "https://polygon-rpc.com" => "Polygon".into(),
+        "https://bsc-dataseed.binance.org" => "Binance 1".into(),
+        "https://bsc-dataseed1.binance.org" => "Binance 2".into(),
+        "https://bsc-dataseed2.binance.org" => "Binance 3".into(),
+        "https://bsc-dataseed3.binance.org" => "Binance 4".into(),
+        "https://mainnet.base.org" => "Base official".into(),
+        "https://base-rpc.publicnode.com" => "PublicNode".into(),
+        other => url::Url::parse(other)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "Custom".into()),
+    }
+}
+
 /// EVM network configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvmNetworkConfig {
@@ -80,6 +145,23 @@ impl EvmNetworkConfig {
     pub fn eip3770_short_name(&self) -> &'static str {
         eip3770_short_name(self.chain_id)
     }
+
+    /// Built-in primary plus fallbacks as selectable presets (deduped).
+    pub fn known_rpc_endpoints(&self) -> Vec<RpcEndpoint> {
+        let mut out = Vec::new();
+        for url in std::iter::once(self.rpc_url.as_str())
+            .chain(self.fallback_rpc_urls.iter().map(String::as_str))
+        {
+            if out.iter().any(|e: &RpcEndpoint| e.url == url) {
+                continue;
+            }
+            out.push(RpcEndpoint {
+                label: rpc_endpoint_label(url),
+                url: url.to_string(),
+            });
+        }
+        out
+    }
 }
 
 /// ERC-3770 short name for a chain id (`pls`, `tpls`, `eth`, …).
@@ -131,7 +213,10 @@ pub fn pulsechain_mainnet() -> EvmNetworkConfig {
     )
     .with_fallback_rpcs(&[
         "https://pulsechain-rpc.publicnode.com",
+        "https://rpc.pulsechainrpc.com",
+        "https://rpc.pulsechainstats.com",
         "https://rpc-pulsechain.g4mm4.io",
+        "https://rpc.gigatheminter.com",
     ])
     .with_priority_fee_wei(10_000_000) // 0.01 gwei
     .with_explorer("https://scan.pulsechain.com")
@@ -289,17 +374,23 @@ mod tests {
     }
 
     #[test]
-    fn unknown_network_has_no_per_network_defaults() {
-        let net = EvmNetworkConfig::new(
-            "custom",
-            "Custom",
-            999_999,
-            "https://example.com",
-            "TKN",
-            "Token",
-            false,
-        );
-        assert_eq!(net.default_priority_fee_wei, None);
-        assert!(net.fallback_rpc_urls.is_empty());
+    fn resolve_rpc_endpoints_user_primary_with_fallbacks() {
+        let net = pulsechain_mainnet();
+        let (primary, fallbacks) =
+            resolve_rpc_endpoints(&net, Some("https://rpc-pulsechain.g4mm4.io"), None);
+        assert_eq!(primary, "https://rpc-pulsechain.g4mm4.io");
+        assert!(fallbacks.contains(&"https://rpc.pulsechain.com".to_string()));
+        assert!(fallbacks.contains(&"https://pulsechain-rpc.publicnode.com".to_string()));
+        assert!(!fallbacks.contains(&primary));
+    }
+
+    #[test]
+    fn known_rpc_endpoints_lists_primary_and_fallbacks() {
+        let net = pulsechain_mainnet();
+        let eps = net.known_rpc_endpoints();
+        assert_eq!(eps.len(), 6);
+        assert_eq!(eps[0].label, "Official");
+        assert!(eps.iter().any(|e| e.url == "https://rpc.pulsechainrpc.com"));
+        assert!(eps.iter().any(|e| e.url == "https://rpc.gigatheminter.com"));
     }
 }

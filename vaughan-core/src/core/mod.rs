@@ -5,6 +5,7 @@ pub mod account;
 pub mod aggregator;
 pub mod bridge;
 pub mod broadcasts;
+pub mod dex_quote;
 pub mod dex_routers;
 pub mod mcp_host;
 pub mod mcp_ipc;
@@ -37,6 +38,10 @@ pub use bridge::{
 pub use broadcasts::{
     mark_replaced, push_recent, BroadcastEntry, BroadcastReceipt, ReplaceKind,
     MAX_RECENT_BROADCASTS,
+};
+pub use dex_quote::{
+    min_out_after_slippage, quote_v2_exact_in, quote_v3_exact_in, DexQuote,
+    DEFAULT_DEX_SLIPPAGE_BPS,
 };
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,

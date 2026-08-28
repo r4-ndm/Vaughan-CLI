@@ -158,14 +158,9 @@ impl WalletState {
         let signer: PrivateKeySigner =
             stealth_signer(sk).with_chain_id(Some(self.networks().active().chain_id));
         let net = self.networks().active();
-        let adapter = EvmAdapter::with_signer(
-            &self.active_rpc_url(),
-            net.chain_id,
-            &net.name,
-            signer,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let (primary, fallbacks) = self.rpc_endpoints_for(net);
+        let adapter =
+            EvmAdapter::with_signer(&primary, net.chain_id, &net.name, signer, &fallbacks).await?;
         let from = format!("{:#x}", note.announcement.stealth_address);
         let mut tx = TransactionService::new().build_native_transfer(
             &from,
@@ -193,13 +188,8 @@ impl WalletState {
 
     async fn read_adapter(&self) -> Result<EvmAdapter, WalletError> {
         let net = self.networks().active();
-        EvmAdapter::new(
-            &self.active_rpc_url(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await
+        let (primary, fallbacks) = self.rpc_endpoints_for(net);
+        EvmAdapter::new(&primary, net.chain_id, &net.name, &fallbacks).await
     }
 
     /// Conservative sweep cost (`gas_limit * max_fee`) used to hide leftover dust.

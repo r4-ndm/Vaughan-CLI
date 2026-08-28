@@ -313,6 +313,11 @@ impl EvmAdapter {
         Ok(TxHash(format!("{:?}", pending.tx_hash())))
     }
 
+    /// Drop cached native / ERC-20 balances (call after a successful broadcast).
+    pub async fn invalidate_balance_cache(&self) {
+        self.balance_cache.invalidate_all();
+    }
+
     /// EVM-specific: ERC-20 `balanceOf` (EIP-20) for `wallet_address`, with
     /// symbol/decimals resolved on-chain (cached).
     pub async fn get_token_balance(

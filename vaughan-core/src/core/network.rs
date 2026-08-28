@@ -113,6 +113,8 @@ impl Default for NetworkService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::WalletState;
+    use secrecy::SecretString;
 
     #[test]
     fn default_is_pulsechain() {
@@ -134,6 +136,32 @@ mod tests {
         let ns = NetworkService::with_custom("custom-31337", &[custom]).unwrap();
         assert!(ns.is_custom("custom-31337"));
         assert_eq!(ns.active().chain_id, 31337);
+    }
+
+    #[test]
+    fn update_custom_network_changes_rpc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.json");
+        let mut wallet = WalletState::load(path).unwrap();
+        let mnemonic = bip39::Mnemonic::parse("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about").unwrap();
+        wallet
+            .create(&SecretString::from("Test-Password1!".to_string()), mnemonic)
+            .unwrap();
+        wallet
+            .add_custom_network("Anvil", 31_337, "http://127.0.0.1:8545", "ETH", true)
+            .unwrap();
+        wallet
+            .update_custom_network(
+                "custom-31337",
+                "Local Anvil",
+                "http://127.0.0.1:9999",
+                "ETH",
+                true,
+            )
+            .unwrap();
+        let net = wallet.networks().get("custom-31337").unwrap();
+        assert_eq!(net.name, "Local Anvil");
+        assert_eq!(net.rpc_url, "http://127.0.0.1:9999");
     }
 
     #[test]

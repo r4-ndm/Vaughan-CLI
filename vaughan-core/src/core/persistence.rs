@@ -6,6 +6,7 @@
 //! leave a half-written vault. Before overwriting, the previous good file is
 //! copied to `wallet.json.bak` so a corrupt primary can still be recovered.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,9 @@ pub struct PersistedState {
     /// When true, VB may expose loopback CDP for MCP agent navigation (FR-7.5).
     #[serde(default)]
     pub agent_browser_control: bool,
+    /// Per-network primary RPC override (network id → URL). Fallbacks stay built-in.
+    #[serde(default)]
+    pub network_rpc_primary: HashMap<String, String>,
 }
 
 /// A user-imported ERC-20 (shown in Assets even at zero balance).
@@ -272,6 +276,7 @@ impl PersistedState {
             custom_networks: Vec::new(),
             hardware: Vec::new(),
             agent_browser_control: false,
+            network_rpc_primary: HashMap::new(),
         }
     }
 
@@ -293,6 +298,7 @@ impl PersistedState {
             custom_networks: Vec::new(),
             hardware: Vec::new(),
             agent_browser_control: false,
+            network_rpc_primary: HashMap::new(),
         }
     }
 }
@@ -358,6 +364,70 @@ impl StateManager {
         if !enabled {
             crate::core::vb_browser::clear_vb_session();
         }
+        Ok(())
+    }
+
+    /// Primary RPC override for `network_id` on `profile`, if set.
+    pub fn network_rpc_primary_for_profile(profile_name: &str, network_id: &str) -> Option<String> {
+        Self::for_profile(profile_name)
+            .ok()
+            .and_then(|sm| sm.load().ok())
+            .and_then(|s| {
+                s.network_rpc_primary
+                    .get(&network_id.trim().to_ascii_lowercase())
+                    .cloned()
+            })
+    }
+
+    /// Persist or clear the primary RPC for a built-in/custom network (metadata only).
+    pub fn set_network_rpc_primary_for_profile(
+        profile_name: &str,
+        network_id: &str,
+        rpc_url: Option<&str>,
+    ) -> Result<(), WalletError> {
+        let sm = Self::for_profile(profile_name)?;
+        let mut state = sm.load()?;
+        let key = network_id.trim().to_ascii_lowercase();
+        if let Some(custom) = state
+            .custom_networks
+            .iter_mut()
+            .find(|n| n.id.eq_ignore_ascii_case(&key))
+        {
+            let Some(url) = rpc_url.filter(|u| !u.trim().is_empty()) else {
+                return Ok(());
+            };
+            let parsed = url::Url::parse(url.trim()).map_err(|_| {
+                WalletError::InvalidTransaction("RPC URL must be a valid http(s) URL".into())
+            })?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err(WalletError::InvalidTransaction(
+                    "RPC URL must be http or https".into(),
+                ));
+            }
+            custom.rpc_url = url.trim().to_string();
+            state.network_rpc_primary.remove(&key);
+            sm.save(&state)?;
+            return Ok(());
+        }
+        match rpc_url {
+            None | Some("") => {
+                state.network_rpc_primary.remove(&key);
+            }
+            Some(url) => {
+                let parsed = url::Url::parse(url.trim()).map_err(|_| {
+                    WalletError::InvalidTransaction("RPC URL must be a valid http(s) URL".into())
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(WalletError::InvalidTransaction(
+                        "RPC URL must be http or https".into(),
+                    ));
+                }
+                state
+                    .network_rpc_primary
+                    .insert(key, url.trim().to_string());
+            }
+        }
+        sm.save(&state)?;
         Ok(())
     }
 

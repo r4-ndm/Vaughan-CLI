@@ -22,7 +22,7 @@ use bip39::Mnemonic;
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroize;
 
-use crate::chains::evm::networks::EvmNetworkConfig;
+use crate::chains::evm::networks::{resolve_rpc_endpoints, EvmNetworkConfig, RpcEndpoint};
 use crate::chains::evm::EvmAdapter;
 use crate::chains::{
     Balance, ChainAdapter, ChainTransaction, EvmTransaction, Fee, TxHash, TxStatus,
@@ -286,11 +286,114 @@ impl WalletState {
         self.rpc_override = Some(url.into());
     }
 
+    /// Persisted primary RPC override for `network_id`, if any.
+    pub fn network_rpc_primary(&self, network_id: &str) -> Option<&str> {
+        self.persisted.as_ref().and_then(|p| {
+            p.network_rpc_primary
+                .get(&network_id.trim().to_ascii_lowercase())
+                .map(String::as_str)
+        })
+    }
+
+    /// Selectable RPC presets for a network (built-in list + current custom primary).
+    pub fn known_rpc_endpoints(&self, network_id: &str) -> Vec<RpcEndpoint> {
+        let Some(net) = self.networks.get(network_id) else {
+            return Vec::new();
+        };
+        let mut endpoints = net.known_rpc_endpoints();
+        if let Some(custom) = self.network_rpc_primary(network_id) {
+            if !endpoints.iter().any(|e| e.url == custom) {
+                endpoints.insert(
+                    0,
+                    RpcEndpoint {
+                        label: crate::chains::evm::networks::rpc_endpoint_label(custom),
+                        url: custom.to_string(),
+                    },
+                );
+            }
+        }
+        endpoints
+    }
+
+    /// Primary + ordered fallback RPC URLs for `net` (respects overrides).
+    pub fn rpc_endpoints_for(&self, net: &EvmNetworkConfig) -> (String, Vec<String>) {
+        let session_override = if net.id.eq_ignore_ascii_case(self.networks.active_id()) {
+            self.rpc_override.as_deref()
+        } else {
+            None
+        };
+        resolve_rpc_endpoints(net, self.network_rpc_primary(&net.id), session_override)
+    }
+
+    /// Set or clear the persisted primary RPC for a network.
+    ///
+    /// Built-ins store an override in vault metadata; custom networks update their
+    /// base RPC URL directly (chain id is fixed at add time).
+    pub fn set_network_rpc_primary(
+        &mut self,
+        network_id: &str,
+        rpc_url: Option<&str>,
+    ) -> Result<(), WalletError> {
+        let id = network_id.trim().to_ascii_lowercase();
+        if self.networks.get(&id).is_none() {
+            return Err(WalletError::NetworkNotFound(network_id.to_string()));
+        }
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        if self.networks.is_custom(&id) {
+            let Some(url) = rpc_url.filter(|u| !u.trim().is_empty()) else {
+                return Ok(());
+            };
+            let url = Self::normalize_rpc_url(url)?;
+            let custom = persisted
+                .custom_networks
+                .iter_mut()
+                .find(|n| n.id.eq_ignore_ascii_case(&id))
+                .ok_or_else(|| WalletError::NetworkNotFound(id.clone()))?;
+            custom.rpc_url = url;
+            persisted.network_rpc_primary.remove(&id);
+            let customs = persisted.custom_networks.clone();
+            self.state.save(persisted)?;
+            self.networks.reload_custom(&customs)?;
+            return Ok(());
+        }
+        match rpc_url {
+            None | Some("") => {
+                persisted.network_rpc_primary.remove(&id);
+            }
+            Some(url) => {
+                let url = Self::normalize_rpc_url(url)?;
+                persisted.network_rpc_primary.insert(id, url);
+            }
+        }
+        self.state.save(persisted)?;
+        Ok(())
+    }
+
+    fn normalize_rpc_url(url: &str) -> Result<String, WalletError> {
+        let url = url.trim();
+        let parsed = url::Url::parse(url).map_err(|_| {
+            WalletError::InvalidTransaction("RPC URL must be a valid http(s) URL".into())
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(WalletError::InvalidTransaction(
+                "RPC URL must be http or https".into(),
+            ));
+        }
+        Ok(url.to_string())
+    }
+
     /// The effective RPC url for the active network (override wins).
     fn effective_rpc(&self) -> String {
-        self.rpc_override
-            .clone()
-            .unwrap_or_else(|| self.networks.active().rpc_url.clone())
+        self.rpc_endpoints_for(self.networks.active()).0
+    }
+
+    /// Build an adapter for `net` using the effective primary + fallbacks.
+    pub(crate) async fn adapter_for(
+        &self,
+        net: &EvmNetworkConfig,
+    ) -> Result<EvmAdapter, WalletError> {
+        let (primary, fallbacks) = self.rpc_endpoints_for(net);
+        EvmAdapter::new(&primary, net.chain_id, &net.name, &fallbacks).await
     }
 
     /// True once a vault exists on disk.
@@ -434,9 +537,10 @@ impl WalletState {
             return Err(WalletError::NotInitialized);
         }
         let net = self.networks().active();
+        let (rpc_url, fallback_rpc_urls) = self.rpc_endpoints_for(net);
         Ok(NetworkRpcSnapshot {
-            rpc_url: self.effective_rpc(),
-            fallback_rpc_urls: net.fallback_rpc_urls.clone(),
+            rpc_url,
+            fallback_rpc_urls,
             chain_id: net.chain_id,
             network_name: net.name.clone(),
         })
@@ -637,14 +741,7 @@ impl WalletState {
                 "network name is required".into(),
             ));
         }
-        let parsed = url::Url::parse(rpc_url).map_err(|_| {
-            WalletError::InvalidTransaction("RPC URL must be a valid http(s) URL".into())
-        })?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(WalletError::InvalidTransaction(
-                "RPC URL must be http or https".into(),
-            ));
-        }
+        let rpc_url = Self::normalize_rpc_url(rpc_url)?;
         if chain_id == 0 {
             return Err(WalletError::InvalidTransaction(
                 "chain id must be non-zero".into(),
@@ -671,7 +768,7 @@ impl WalletState {
             id: id.clone(),
             name: name.to_string(),
             chain_id,
-            rpc_url: rpc_url.to_string(),
+            rpc_url: rpc_url.clone(),
             native_symbol: symbol.to_string(),
             is_testnet,
         };
@@ -682,6 +779,54 @@ impl WalletState {
         self.networks
             .reload_custom(&persisted.custom_networks.clone())?;
         Ok(custom)
+    }
+
+    /// Update a custom network's metadata (chain id is fixed at add time).
+    pub fn update_custom_network(
+        &mut self,
+        id: &str,
+        name: &str,
+        rpc_url: &str,
+        native_symbol: &str,
+        is_testnet: bool,
+    ) -> Result<crate::core::persistence::CustomNetwork, WalletError> {
+        if !self.networks.is_custom(id) {
+            return Err(WalletError::Other(
+                "built-in networks cannot be edited — use Settings r for RPC".into(),
+            ));
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(WalletError::InvalidTransaction(
+                "network name is required".into(),
+            ));
+        }
+        let rpc_url = Self::normalize_rpc_url(rpc_url)?;
+        let symbol = {
+            let s = native_symbol.trim();
+            if s.is_empty() {
+                "ETH"
+            } else {
+                s
+            }
+        };
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let key = id.trim().to_ascii_lowercase();
+        let custom = persisted
+            .custom_networks
+            .iter_mut()
+            .find(|n| n.id.eq_ignore_ascii_case(&key))
+            .ok_or_else(|| WalletError::NetworkNotFound(id.to_string()))?;
+        custom.name = name.to_string();
+        custom.rpc_url = rpc_url;
+        custom.native_symbol = symbol.to_string();
+        custom.is_testnet = is_testnet;
+        persisted.network_rpc_primary.remove(&key);
+        let updated = custom.clone();
+        let customs = persisted.custom_networks.clone();
+        self.state.save(persisted)?;
+        self.networks.reload_custom(&customs)?;
+        Ok(updated)
     }
 
     /// Remove a custom network by id. Built-ins cannot be removed.
@@ -699,6 +844,9 @@ impl WalletState {
         if persisted.custom_networks.len() == before {
             return Err(WalletError::NetworkNotFound(id.to_string()));
         }
+        persisted
+            .network_rpc_primary
+            .remove(&id.trim().to_ascii_lowercase());
         let was_active = persisted.active_network_id.eq_ignore_ascii_case(id.trim());
         if was_active {
             persisted.active_network_id = crate::core::network::DEFAULT_NETWORK_ID.to_string();
@@ -725,26 +873,13 @@ impl WalletState {
 
     /// Create an `EvmAdapter` for the active network.
     pub async fn active_adapter(&self) -> Result<EvmAdapter, WalletError> {
-        let net = self.networks.active();
-        EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await
+        self.adapter_for(self.networks.active()).await
     }
 
     /// Native balance of the active account on the active network.
     pub async fn balance(&self) -> Result<Balance, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         adapter.get_balance(address).await
     }
 
@@ -754,9 +889,10 @@ impl WalletState {
     /// `[busy]` — chrome refresh must use this snapshot pattern instead.
     pub fn chrome_rpc_snapshot(&self) -> Result<ChromeRpcSnapshot, WalletError> {
         let (net, address) = self.active_context()?;
+        let (rpc_url, fallback_rpc_urls) = self.rpc_endpoints_for(net);
         Ok(ChromeRpcSnapshot {
-            rpc_url: self.effective_rpc(),
-            fallback_rpc_urls: net.fallback_rpc_urls.clone(),
+            rpc_url,
+            fallback_rpc_urls,
             chain_id: net.chain_id,
             network_name: net.name.clone(),
             address: address.to_string(),
@@ -786,26 +922,14 @@ impl WalletState {
             .into_iter()
             .map(|t| t.address)
             .collect();
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         adapter.get_assets(address, &extras).await
     }
 
     /// Recent ERC-20 Transfer activity for the active account (newest first).
     pub async fn activity(&self, limit: u32) -> Result<Vec<crate::chains::TxRecord>, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         adapter.get_transaction_history(address, limit).await
     }
 
@@ -821,13 +945,7 @@ impl WalletState {
         let owner = Address::from_str(address)
             .map_err(|_| WalletError::InvalidTransaction(format!("active address: {address}")))?;
         let assets = self.assets().await?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
 
         let mut spenders: Vec<(Address, &'static str)> = dex_routers_labeled(net.chain_id);
         for s in OFFICIAL_AGG_ROUTERS {
@@ -876,13 +994,7 @@ impl WalletState {
     /// Balance of a single ERC-20 (`token_address`) for the active account.
     pub async fn token_balance(&self, token_address: &str) -> Result<Balance, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         adapter.get_token_balance(token_address, address).await
     }
 
@@ -892,13 +1004,7 @@ impl WalletState {
         token_address: &str,
     ) -> Result<CustomToken, WalletError> {
         let (net, _) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         // Validate address + that the contract responds to balanceOf/metadata.
         let _ = adapter
             .get_token_balance(token_address, self.active_address()?)
@@ -1060,13 +1166,7 @@ impl WalletState {
         amount: &str,
     ) -> Result<Fee, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         let service = TransactionService::new();
         let tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
         service.estimate_fee(&adapter, &tx).await
@@ -1080,13 +1180,7 @@ impl WalletState {
         amount: &str,
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         let service = TransactionService::new();
         let mut tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
         let fee = service.estimate_fee(&adapter, &tx).await?;
@@ -1122,13 +1216,7 @@ impl WalletState {
     /// Estimate the fee to send `value_wei` (base units) to `to`.
     pub async fn estimate_fee(&self, to: &str, value_wei: &str) -> Result<Fee, WalletError> {
         let (net, address) = self.active_context()?;
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         let service = TransactionService::new();
         let tx = service.build_native_transfer(address, to, value_wei, net.chain_id)?;
         service.estimate_fee(&adapter, &tx).await
@@ -1205,6 +1293,7 @@ impl WalletState {
 
         let (adapter, prepared, raw) = self.prepare_sign_raw(tx).await?;
         let hash = adapter.broadcast_raw(raw).await?;
+        adapter.invalidate_balance_cache().await;
         let entry = BroadcastEntry::from_prepared(&prepared, hash.0.clone(), label);
         Ok(BroadcastReceipt {
             hash: hash.0,
@@ -1276,13 +1365,7 @@ impl WalletState {
     pub async fn estimate_transaction_fee(&self, tx: EvmTransaction) -> Result<Fee, WalletError> {
         self.require_unlocked()?;
         let net = self.networks.active();
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         adapter.estimate_fee(&ChainTransaction::Evm(tx)).await
     }
 
@@ -1359,13 +1442,7 @@ impl WalletState {
         if tx.from.is_empty() {
             tx.from = accounts.active_address().to_string();
         }
-        let adapter = EvmAdapter::new(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let adapter = self.adapter_for(net).await?;
         let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
         if tx.gas_limit.is_none() || missing_fees {
             let mut chain_tx = ChainTransaction::Evm(tx);
@@ -1440,14 +1517,9 @@ impl WalletState {
         accounts.require_software_active()?;
         let net = self.networks.active();
         let signer = accounts.active_signer()?;
-        let adapter = EvmAdapter::with_signer(
-            &self.effective_rpc(),
-            net.chain_id,
-            &net.name,
-            signer,
-            &net.fallback_rpc_urls,
-        )
-        .await?;
+        let (primary, fallbacks) = self.rpc_endpoints_for(net);
+        let adapter =
+            EvmAdapter::with_signer(&primary, net.chain_id, &net.name, signer, &fallbacks).await?;
         let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
         if tx.gas_limit.is_none() || missing_fees {
             let mut chain_tx = ChainTransaction::Evm(tx);

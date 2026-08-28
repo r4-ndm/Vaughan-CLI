@@ -70,15 +70,23 @@ pub fn pulsechain_mainnet_tokens() -> Vec<TokenEntry> {
 }
 
 /// PulseChain testnet v4 (943) — WPLS verified 2026-08-18 (matches the DEX
-/// project's `docs/addresses.md`); no other well-known tokens are deployed
-/// there yet, so the list is intentionally thin.
+/// project's `docs/addresses.md`); WZRD smoke token for wiz4rd-swap testing.
 pub fn pulsechain_testnet_tokens() -> Vec<TokenEntry> {
-    vec![TokenEntry {
-        symbol: "WPLS",
-        name: "Wrapped Pulse",
-        address: "0x70499adEBB11Efd915E3b69E700c331778628707",
-        decimals: 18,
-    }]
+    use crate::core::wiz4rd::WZRD_SMOKE_943;
+    vec![
+        TokenEntry {
+            symbol: "WPLS",
+            name: "Wrapped Pulse",
+            address: "0x70499adEBB11Efd915E3b69E700c331778628707",
+            decimals: 18,
+        },
+        TokenEntry {
+            symbol: "WZRD",
+            name: "Wizard",
+            address: WZRD_SMOKE_943,
+            decimals: 18,
+        },
+    ]
 }
 
 /// The curated token list for a chain id (empty for chains with no registry —
@@ -121,12 +129,18 @@ mod tests {
     }
 
     #[test]
-    fn testnet_list_has_testnet_wpls() {
+    fn testnet_list_has_wpls_and_wzrd() {
         let tokens = pulsechain_testnet_tokens();
-        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens.len(), 2);
+        let wpls = tokens.iter().find(|t| t.symbol == "WPLS").unwrap();
         assert_eq!(
-            tokens[0].address.to_lowercase(),
+            wpls.address.to_lowercase(),
             "0x70499adebb11efd915e3b69e700c331778628707"
+        );
+        let wzrd = tokens.iter().find(|t| t.symbol == "WZRD").unwrap();
+        assert_eq!(
+            wzrd.address.to_lowercase(),
+            "0x29bab93456c0e97ee931c1554c7c215480aa7766"
         );
     }
 
