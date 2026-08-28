@@ -186,7 +186,7 @@ impl View {
             Self::Assets(v) => v.render(frame, area, wallet),
             Self::Browser(v) => v.render(frame, area, wallet),
             Self::Dex(v) => v.render(frame, area, wallet, assets),
-            Self::Aggregator(v) => v.render(frame, area, wallet),
+            Self::Aggregator(v) => v.render(frame, area, wallet, assets),
             Self::Bridge(v) => v.render(frame, area, wallet),
             Self::History(v) => v.render(frame, area, wallet),
             Self::Approvals(v) => v.render(frame, area, wallet),
@@ -1774,31 +1774,17 @@ impl App {
                     native_out,
                     account,
                 } => {
-                    use alloy::primitives::{Address, U256};
-                    use vaughan_core::core::{quote_aggregator, AggQuoteRequest};
+                    use vaughan_core::core::quote_aggregator;
 
-                    let parsed = (|| -> Result<AggQuoteRequest, WalletError> {
-                        let token_in = Address::from_str(&token_in)
-                            .map_err(|_| WalletError::InvalidTransaction("agg token_in".into()))?;
-                        let token_out = Address::from_str(&token_out)
-                            .map_err(|_| WalletError::InvalidTransaction("agg token_out".into()))?;
-                        let amount_in = U256::from_str(&amount)
-                            .map_err(|_| WalletError::InvalidAmount("agg amount".into()))?;
-                        let account = account
-                            .as_deref()
-                            .map(Address::from_str)
-                            .transpose()
-                            .map_err(|_| WalletError::InvalidTransaction("agg account".into()))?;
-                        Ok(AggQuoteRequest {
-                            token_in,
-                            token_out,
-                            token_in_is_native: native_in,
-                            token_out_is_native: native_out,
-                            amount_in,
-                            slippage_percent: slippage,
-                            account,
-                        })
-                    })();
+                    let parsed = parse_agg_quote_request(
+                        &token_in,
+                        &token_out,
+                        &amount,
+                        slippage,
+                        native_in,
+                        native_out,
+                        account.as_deref(),
+                    );
                     let dir = StateManager::default_path()
                         .ok()
                         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -1817,6 +1803,48 @@ impl App {
                             None,
                         )),
                         Err(e) => Err(e),
+                    })
+                }
+                UiJob::AggCompareQuote {
+                    token_in,
+                    token_out,
+                    amount,
+                    slippage,
+                    native_in,
+                    native_out,
+                    account,
+                } => {
+                    use vaughan_core::core::quote_live_aggregators;
+
+                    let parsed = parse_agg_quote_request(
+                        &token_in,
+                        &token_out,
+                        &amount,
+                        slippage,
+                        native_in,
+                        native_out,
+                        account.as_deref(),
+                    );
+                    let dir = StateManager::default_path()
+                        .ok()
+                        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                    let chain_id = wallet
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .networks()
+                        .active()
+                        .chain_id;
+                    UiJobResult::AggCompareQuote(match parsed {
+                        Ok(req) => handle.block_on(quote_live_aggregators(
+                            &req,
+                            chain_id,
+                            dir.as_deref(),
+                            None,
+                        )),
+                        Err(e) => vec![vaughan_core::core::AggQuoteOutcome {
+                            venue: vaughan_core::core::AggVenue::SquirrelSwap,
+                            result: Err(e),
+                        }],
                     })
                 }
                 UiJob::DexQuote {
@@ -2191,6 +2219,39 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
         },
         _ => GlobalAction::None,
     }
+}
+
+fn parse_agg_quote_request(
+    token_in: &str,
+    token_out: &str,
+    amount: &str,
+    slippage: f64,
+    native_in: bool,
+    native_out: bool,
+    account: Option<&str>,
+) -> Result<vaughan_core::core::AggQuoteRequest, WalletError> {
+    use alloy::primitives::{Address, U256};
+    use vaughan_core::core::AggQuoteRequest;
+
+    let token_in = Address::from_str(token_in)
+        .map_err(|_| WalletError::InvalidTransaction("agg token_in".into()))?;
+    let token_out = Address::from_str(token_out)
+        .map_err(|_| WalletError::InvalidTransaction("agg token_out".into()))?;
+    let amount_in =
+        U256::from_str(amount).map_err(|_| WalletError::InvalidAmount("agg amount".into()))?;
+    let account = account
+        .map(Address::from_str)
+        .transpose()
+        .map_err(|_| WalletError::InvalidTransaction("agg account".into()))?;
+    Ok(AggQuoteRequest {
+        token_in,
+        token_out,
+        token_in_is_native: native_in,
+        token_out_is_native: native_out,
+        amount_in,
+        slippage_percent: slippage,
+        account,
+    })
 }
 
 /// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).

@@ -57,9 +57,19 @@ pub enum UiJob {
         tx: EvmTransaction,
         fee: Fee,
     },
-    /// Aggregator Pathfinder / PulseSwap quote (no signing).
+    /// Single-aggregator quote (no signing).
     AggQuote {
         venue: vaughan_core::core::AggVenue,
+        token_in: String,
+        token_out: String,
+        amount: String,
+        slippage: f64,
+        native_in: bool,
+        native_out: bool,
+        account: Option<String>,
+    },
+    /// Parallel quotes from every live aggregator (no signing).
+    AggCompareQuote {
         token_in: String,
         token_out: String,
         amount: String,
@@ -184,6 +194,7 @@ pub enum UiJobResult {
     /// Successful send includes a [`BroadcastReceipt`] for History tracking.
     Send(Result<BroadcastReceipt, WalletError>),
     SendStealth(Result<StealthSendResult, WalletError>),
+    AggCompareQuote(Vec<vaughan_core::core::AggQuoteOutcome>),
     AggQuote(Result<vaughan_core::core::AggQuote, WalletError>),
     DexQuote {
         quote_gen: u64,

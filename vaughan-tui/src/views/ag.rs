@@ -1,22 +1,24 @@
-//! Aggregator (Ag) view — best-route quotes without a partner API key.
+//! Aggregator (Ag) view — single-venue quotes by default; optional compare-all.
 //!
-//! Live today: SquirrelSwap (default), PulseSwap, Piteas. ↑/↓ venue ·
-//! ↑↓ pick In/Out · Space = native PLS in · Enter quote.
+//! ↑/↓ pick venue or Compare all · Tab through fields · F4 quote.
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
+use std::collections::HashSet;
 use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_core::chains::Balance;
 use vaughan_core::chains::EvmTransaction;
-use vaughan_core::core::{format_base_units, AggAccess, AggQuote, AggVenue, WalletState};
+use vaughan_core::core::{
+    rank_agg_quote_outcomes, AggAccess, AggQuote, AggQuoteOutcome, AggVenue, WalletState,
+};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -24,15 +26,15 @@ use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::dex_calldata::build_approve_tx;
+use crate::views::swap_form::{
+    fmt_swap_wei_amount, render_form_footer, render_form_title, render_leg_arrow,
+    render_plain_confirm, render_selector_line, render_text_field, render_token_field,
+    token_display_symbol,
+};
 use crate::views::{
     body_areas, cycle_token_picker, manual_edit_resets_token_pick, parse_swap_amount,
-    parse_token_address, render_labeled_input, render_token_in_field, status_paragraph,
-    TOKEN_PICK_UNINIT,
+    parse_token_address, status_paragraph, TOKEN_PICK_UNINIT,
 };
-
-fn fmt_token_amount(wei: &U256) -> String {
-    format_base_units(&wei.to_string(), 18)
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfirmStep {
@@ -51,12 +53,58 @@ impl ConfirmStep {
 
 enum Stage {
     Input,
+    ComparePick,
     Confirm(ConfirmStep),
     Done,
 }
 
-#[derive(PartialEq, Eq)]
+/// Quote target on the venue row — one aggregator or compare-all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum VenueChoice {
+    Single(AggVenue),
+    CompareAll,
+}
+
+impl VenueChoice {
+    /// ↑/↓ order: live aggregators, Compare all adjacent after Piteas.
+    const TARGETS: &'static [VenueChoice] = &[
+        VenueChoice::Single(AggVenue::SquirrelSwap),
+        VenueChoice::Single(AggVenue::PulseSwap),
+        VenueChoice::Single(AggVenue::Piteas),
+        VenueChoice::CompareAll,
+        VenueChoice::Single(AggVenue::Empseal),
+    ];
+
+    fn next(self) -> Self {
+        let idx = Self::TARGETS.iter().position(|&c| c == self).unwrap_or(0);
+        Self::TARGETS[(idx + 1) % Self::TARGETS.len()]
+    }
+
+    fn prev(self) -> Self {
+        let idx = Self::TARGETS.iter().position(|&c| c == self).unwrap_or(0);
+        let n = Self::TARGETS.len();
+        Self::TARGETS[(idx + n - 1) % n]
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::CompareAll => "Compare all",
+            Self::Single(v) => v.label(),
+        }
+    }
+
+    fn badge(self) -> &'static str {
+        match self {
+            Self::CompareAll => "LIVE",
+            Self::Single(v) if v.is_live() => "LIVE",
+            Self::Single(_) => "listed",
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum Focus {
+    None,
     Venue,
     TokenIn,
     TokenOut,
@@ -75,11 +123,13 @@ enum Busy {
 pub struct AgView {
     stage: Stage,
     focus: Focus,
-    venue: AggVenue,
+    venue_choice: VenueChoice,
     token_in: Input,
     token_out: Input,
     token_in_pick: usize,
     token_out_pick: usize,
+    token_in_editing: bool,
+    token_out_editing: bool,
     amount: Input,
     slippage: Input,
     native_in: bool,
@@ -88,7 +138,11 @@ pub struct AgView {
     tick: u64,
     status: String,
     quote: Option<AggQuote>,
-    confirm_lines: Vec<String>,
+    /// Last parallel compare pass (every live venue).
+    compare: Vec<AggQuoteOutcome>,
+    /// Indices into [`Self::compare`] with ok quotes, best `amount_out` first.
+    compare_ranked: Vec<usize>,
+    compare_pick: usize,
     tx_hash: Option<String>,
     approve_hash: Option<String>,
 }
@@ -97,12 +151,14 @@ impl Default for AgView {
     fn default() -> Self {
         Self {
             stage: Stage::Input,
-            focus: Focus::Amount,
-            venue: AggVenue::SquirrelSwap,
+            focus: Focus::None,
+            venue_choice: VenueChoice::Single(AggVenue::SquirrelSwap),
             token_in: Input::new(false, "↑↓ pick · paste · Space = native PLS"),
             token_out: Input::new(false, "↑↓ pick · paste (e.g. PLSX)"),
             token_in_pick: TOKEN_PICK_UNINIT,
             token_out_pick: TOKEN_PICK_UNINIT,
+            token_in_editing: false,
+            token_out_editing: false,
             amount: Input::new(false, "amount (e.g. 1 or 0.01)"),
             slippage: Input::new(false, "0.5"),
             native_in: true,
@@ -111,7 +167,9 @@ impl Default for AgView {
             tick: 0,
             status: String::new(),
             quote: None,
-            confirm_lines: Vec::new(),
+            compare: Vec::new(),
+            compare_ranked: Vec::new(),
+            compare_pick: 0,
             tx_hash: None,
             approve_hash: None,
         }
@@ -135,14 +193,13 @@ impl AgView {
             v.token_out.set_value(out.trim().to_string());
         }
         if chain_id == 369 {
-            v.status = "Squirrel · Tab In/Out · ↑↓ pick token · Space native · Enter quote".into();
+            v.refresh_venue_status();
         } else {
             v.status = match chain_id {
                 943 => "Aggregators are mainnet (369) — switch Net or use Dex on testnet".into(),
                 _ => "PulseChain aggregators need chain 369".into(),
             };
         }
-        v.refresh_venue_status();
         v
     }
 
@@ -150,16 +207,63 @@ impl AgView {
         if self.chain_id != 369 {
             return;
         }
-        self.status = match self.venue.access() {
-            AggAccess::LiveNoKey => format!(
-                "{} · {} — amount in PLS units · Enter to quote",
-                self.venue.label(),
-                self.venue.blurb()
-            ),
-            AggAccess::NeedsApiKey(why) | AggAccess::ListedOnly(why) => {
-                format!("{} — {} ({why})", self.venue.label(), self.venue.blurb())
-            }
+        self.status = match self.venue_choice {
+            VenueChoice::CompareAll => "Compare all live aggregators — F4 or Enter to quote".into(),
+            VenueChoice::Single(v) => match v.access() {
+                AggAccess::LiveNoKey => {
+                    format!("{} · {} — F4 or Enter to quote", v.label(), v.blurb())
+                }
+                AggAccess::NeedsApiKey(why) | AggAccess::ListedOnly(why) => {
+                    format!("{} — {} ({why})", v.label(), v.blurb())
+                }
+            },
         };
+    }
+
+    fn clear_quotes(&mut self) {
+        self.quote = None;
+        self.compare.clear();
+        self.compare_ranked.clear();
+        self.compare_pick = 0;
+    }
+
+    fn select_compare_pick(&mut self, pick: usize) {
+        self.compare_pick = pick;
+        if let Some(&idx) = self.compare_ranked.get(pick) {
+            if let Ok(q) = &self.compare[idx].result {
+                self.quote = Some(q.clone());
+                self.venue_choice = VenueChoice::Single(q.venue);
+            }
+        }
+    }
+
+    fn refresh_compare_status(&mut self, assets: &[Balance]) {
+        let Some(q) = self.quote.as_ref() else {
+            return;
+        };
+        let out_sym = token_display_symbol(false, &self.token_out, assets, self.chain_id);
+        let out_amt = fmt_swap_wei_amount(&q.amount_out, 18);
+        let ok = self.compare_ranked.len();
+        self.status = format!(
+            "{ok}/{} quotes · ~{out_amt} {out_sym} via {} — ↑↓ pick · Enter confirm",
+            self.compare.len(),
+            q.venue.label(),
+        );
+    }
+
+    fn apply_compare_results(&mut self, outcomes: Vec<AggQuoteOutcome>, assets: &[Balance]) {
+        self.busy = Busy::Idle;
+        self.compare = outcomes;
+        self.compare_ranked = rank_agg_quote_outcomes(&self.compare);
+        if self.compare_ranked.is_empty() {
+            self.quote = None;
+            self.stage = Stage::Input;
+            self.status = "No aggregator returned a route — check pair / amount".into();
+            return;
+        }
+        self.select_compare_pick(0);
+        self.stage = Stage::ComparePick;
+        self.refresh_compare_status(assets);
     }
 
     pub fn set_tick(&mut self, tick: u64) {
@@ -168,6 +272,9 @@ impl AgView {
 
     pub fn apply_job_result(&mut self, result: UiJobResult) {
         match result {
+            UiJobResult::AggCompareQuote(outcomes) => {
+                self.apply_compare_results(outcomes, &[]);
+            }
             UiJobResult::AggQuote(Ok(quote)) => {
                 self.busy = Busy::Idle;
                 self.quote = Some(quote);
@@ -185,7 +292,6 @@ impl AgView {
                     self.approve_hash = Some(hash.clone());
                     self.status = format!("Approve sent ({hash}). Confirm swap next.");
                     self.stage = Stage::Confirm(ConfirmStep::Swap);
-                    self.rebuild_confirm_lines(ConfirmStep::Swap);
                 }
                 Busy::Swapping => {
                     let hash = receipt.hash;
@@ -205,21 +311,13 @@ impl AgView {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState, assets: &[Balance]) {
         let [body, status] = body_areas(area);
         match self.stage {
-            Stage::Input => self.render_input(frame, body),
-            Stage::Confirm(_) => self.render_confirm(frame, body),
-            Stage::Done => {
-                frame.render_widget(
-                    Paragraph::new(format!(
-                        "Done.\nApprove: {}\nSwap: {}",
-                        self.approve_hash.as_deref().unwrap_or("—"),
-                        self.tx_hash.as_deref().unwrap_or("—")
-                    )),
-                    body,
-                );
-            }
+            Stage::Input => self.render_input(frame, body, assets),
+            Stage::ComparePick => self.render_compare_pick(frame, body, assets),
+            Stage::Confirm(_) => self.render_confirm(frame, body, assets),
+            Stage::Done => self.render_done(frame, body),
         }
         let status_text = match self.busy {
             Busy::Quoting => format!("{} quoting…", spinner_frame(self.tick)),
@@ -230,11 +328,12 @@ impl AgView {
         frame.render_widget(status_paragraph(&status_text), status);
     }
 
-    fn render_input(&self, frame: &mut Frame, area: Rect) {
+    fn render_input(&self, frame: &mut Frame, area: Rect, assets: &[Balance]) {
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -242,78 +341,152 @@ impl AgView {
             Constraint::Min(0),
         ])
         .split(area);
+        let mut i = 0;
 
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " AG — SquirrelSwap Brain first (no API key) ",
-                Style::default()
-                    .fg(brand::accent_color())
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            chunks[0],
+        render_form_title(frame, chunks[i], " Ag ");
+        i += 1;
+
+        let (primary, hint) = (
+            Line::from(format!(
+                "{} [{}]",
+                self.venue_choice.label(),
+                self.venue_choice.badge()
+            )),
+            "↑↓ venue · Tab next",
         );
+        render_selector_line(frame, chunks[i], primary, hint, self.focus == Focus::Venue);
+        i += 1;
 
-        let live = if self.venue.is_live() {
-            "LIVE"
-        } else {
-            "listed"
-        };
-        let venue_style = if self.focus == Focus::Venue {
-            Style::default()
-                .fg(brand::accent_color())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            Style::default().fg(brand::body_color())
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("Ag {} [{}]  ", self.venue.label(), live),
-                    venue_style,
-                ),
-                Span::styled("↑/↓ venue", Style::default().fg(brand::body_color())),
-            ])),
-            chunks[1],
-        );
-
-        render_token_in_field(
+        render_token_field(
             frame,
-            chunks[2],
+            chunks[i],
             "In",
             &self.token_in,
             self.focus == Focus::TokenIn,
             self.native_in,
+            assets,
+            self.token_in_editing,
+            area.width,
             self.chain_id,
         );
-        render_labeled_input(
+        i += 1;
+
+        render_leg_arrow(frame, chunks[i]);
+        i += 1;
+
+        render_token_field(
             frame,
-            chunks[3],
+            chunks[i],
             "Out",
             &self.token_out,
             self.focus == Focus::TokenOut,
+            false,
+            assets,
+            self.token_out_editing,
+            area.width,
+            self.chain_id,
         );
-        render_labeled_input(
+        i += 1;
+
+        render_text_field(
             frame,
-            chunks[4],
-            "Amt",
+            chunks[i],
+            "Amount",
             &self.amount,
             self.focus == Focus::Amount,
         );
-        render_labeled_input(
+        i += 1;
+
+        render_text_field(
             frame,
-            chunks[5],
-            "Slip%",
+            chunks[i],
+            "Slippage",
             &self.slippage,
             self.focus == Focus::Slippage,
         );
-        frame.render_widget(
-            Paragraph::new(if self.native_in {
-                "native PLS in (Space) · ↑↓ pick when In/Out focused · Amt in PLS"
-            } else {
-                "ERC-20 in — approve then swap · ↑↓ pick · Amt uses token decimals (18)"
-            }),
-            chunks[6],
+        i += 1;
+
+        render_form_footer(
+            frame,
+            chunks[i],
+            "Tab · select field · ↑↓ venue · F4 quote · Space native in",
         );
+    }
+
+    fn render_compare_pick(&self, frame: &mut Frame, area: Rect, assets: &[Balance]) {
+        let body = self.build_compare_pick_lines(assets);
+        render_plain_confirm(
+            frame,
+            area,
+            " Compare ",
+            body,
+            "↑↓ pick · Enter confirm · Esc back",
+        );
+    }
+
+    fn build_compare_pick_lines(&self, assets: &[Balance]) -> Vec<Line<'static>> {
+        let out_sym = token_display_symbol(false, &self.token_out, assets, self.chain_id);
+        let ranked_set: HashSet<usize> = self.compare_ranked.iter().copied().collect();
+        let mut lines = vec![
+            Line::from(format!(
+                "{}/{} aggregators returned a route",
+                self.compare_ranked.len(),
+                self.compare.len()
+            )),
+            Line::from(""),
+        ];
+
+        for (pick_i, &idx) in self.compare_ranked.iter().enumerate() {
+            let o = &self.compare[idx];
+            let Some(q) = o.result.as_ref().ok() else {
+                continue;
+            };
+            let amt = fmt_swap_wei_amount(&q.amount_out, 18);
+            let marker = if pick_i == self.compare_pick {
+                "★"
+            } else {
+                " "
+            };
+            let mut style = Style::default();
+            if pick_i == self.compare_pick {
+                style = style.fg(brand::accent_color()).add_modifier(Modifier::BOLD);
+            }
+            lines.push(Line::from(Span::styled(
+                format!("{marker} {:<10} ~{amt} {out_sym}", o.venue.label()),
+                style,
+            )));
+        }
+
+        for (idx, o) in self.compare.iter().enumerate() {
+            if ranked_set.contains(&idx) {
+                continue;
+            }
+            let msg = o
+                .result
+                .as_ref()
+                .err()
+                .map(|e| e.user_message())
+                .unwrap_or_else(|| "no route".into());
+            let short = truncate_chars(&msg, 40);
+            lines.push(Line::from(Span::styled(
+                format!("  {:<10} {short}", o.venue.label()),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines
+    }
+
+    fn render_done(&self, frame: &mut Frame, area: Rect) {
+        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(" Ag sent ")));
+        let mut lines = Vec::new();
+        if let Some(a) = &self.approve_hash {
+            lines.push(Line::from(format!("approve: {a}")));
+        }
+        let hash = self.tx_hash.as_deref().unwrap_or("(none)");
+        lines.push(Line::from(format!("swap:    {hash}")));
+        lines.push(Line::from(""));
+        lines.push(Line::from("Enter new quote · Esc home"));
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     /// ↑/↓ on In / Out cycles wallet assets (from chrome asset list).
@@ -322,34 +495,91 @@ impl AgView {
             return false;
         }
         match self.focus {
-            Focus::TokenIn => cycle_token_picker(
-                assets,
-                false,
-                &mut self.token_in_pick,
-                forward,
-                &mut self.native_in,
-                &mut self.token_in,
-                &mut self.status,
-            ),
-            Focus::TokenOut => cycle_token_picker(
-                assets,
-                true,
-                &mut self.token_out_pick,
-                forward,
-                &mut self.native_in,
-                &mut self.token_out,
-                &mut self.status,
-            ),
+            Focus::TokenIn => {
+                self.token_in_editing = false;
+                let changed = cycle_token_picker(
+                    assets,
+                    false,
+                    &mut self.token_in_pick,
+                    forward,
+                    &mut self.native_in,
+                    &mut self.token_in,
+                    &mut self.status,
+                );
+                if changed {
+                    self.clear_quotes();
+                }
+                changed
+            }
+            Focus::TokenOut => {
+                self.token_out_editing = false;
+                let changed = cycle_token_picker(
+                    assets,
+                    true,
+                    &mut self.token_out_pick,
+                    forward,
+                    &mut self.native_in,
+                    &mut self.token_out,
+                    &mut self.status,
+                );
+                if changed {
+                    self.clear_quotes();
+                }
+                changed
+            }
             _ => false,
         }
     }
 
-    fn render_confirm(&self, frame: &mut Frame, area: Rect) {
-        let text = self.confirm_lines.join("\n");
-        frame.render_widget(
-            Paragraph::new(format!("{text}\n\nEnter confirm · Esc cancel")),
-            area,
-        );
+    fn render_confirm(&self, frame: &mut Frame, area: Rect, assets: &[Balance]) {
+        let step = match self.stage {
+            Stage::Confirm(s) => s,
+            _ => ConfirmStep::Swap,
+        };
+        let title = match step {
+            ConfirmStep::Approve => " Approve ",
+            ConfirmStep::Swap => " Confirm swap ",
+        };
+        let body = self.build_confirm_lines(step, assets);
+        render_plain_confirm(frame, area, title, body, "Enter confirm · Esc cancel");
+    }
+
+    fn build_confirm_lines(&self, step: ConfirmStep, assets: &[Balance]) -> Vec<Line<'static>> {
+        let Some(q) = self.quote.as_ref() else {
+            return vec![Line::from("No quote.")];
+        };
+        let in_sym = token_display_symbol(self.native_in, &self.token_in, assets, self.chain_id);
+        let out_sym = token_display_symbol(false, &self.token_out, assets, self.chain_id);
+        let in_amt = fmt_swap_wei_amount(&q.amount_in, 18);
+        let out_amt = fmt_swap_wei_amount(&q.amount_out, 18);
+        let slippage = self.slippage.value().trim().to_string();
+
+        let step_name = match step {
+            ConfirmStep::Approve => "Approve",
+            ConfirmStep::Swap => "Swap",
+        };
+
+        let mut lines = vec![
+            Line::from(format!("{} · {step_name}", q.venue.label())),
+            Line::from(""),
+        ];
+
+        match step {
+            ConfirmStep::Approve => {
+                lines.push(Line::from("Allow router to spend"));
+                lines.push(Line::from(format!("  {in_amt} {in_sym}")));
+                lines.push(Line::from(""));
+                lines.push(Line::from("Swap follows on the next step."));
+            }
+            ConfirmStep::Swap => {
+                lines.push(Line::from(format!("Pay      {in_amt} {in_sym}")));
+                lines.push(Line::from(format!("Receive  ~{out_amt} {out_sym}")));
+                if !slippage.is_empty() {
+                    lines.push(Line::from(format!("Slippage  {slippage}%")));
+                }
+            }
+        }
+        lines
     }
 
     pub fn handle_key(
@@ -375,10 +605,36 @@ impl AgView {
             Stage::Confirm(step) => match key.code {
                 KeyCode::Esc => {
                     self.stage = Stage::Input;
-                    self.quote = None;
+                    self.clear_quotes();
                     KeyOutcome::Consumed
                 }
                 KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet),
+                _ => KeyOutcome::Consumed,
+            },
+            Stage::ComparePick => match key.code {
+                KeyCode::Esc => {
+                    self.stage = Stage::Input;
+                    self.clear_quotes();
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    if self.compare_ranked.is_empty() {
+                        return KeyOutcome::Consumed;
+                    }
+                    let n = self.compare_ranked.len();
+                    self.compare_pick = if matches!(key.code, KeyCode::Down) {
+                        (self.compare_pick + 1) % n
+                    } else {
+                        (self.compare_pick + n - 1) % n
+                    };
+                    self.select_compare_pick(self.compare_pick);
+                    self.refresh_compare_status(&[]);
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Enter => {
+                    self.enter_confirm();
+                    KeyOutcome::Consumed
+                }
                 _ => KeyOutcome::Consumed,
             },
             Stage::Input => self.handle_input_key(key, wallet),
@@ -389,58 +645,66 @@ impl AgView {
         match key.code {
             KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
             KeyCode::Up | KeyCode::Down if self.focus == Focus::Venue => {
-                self.venue = if matches!(key.code, KeyCode::Down) {
-                    self.venue.next()
+                self.venue_choice = if matches!(key.code, KeyCode::Down) {
+                    self.venue_choice.next()
                 } else {
-                    self.venue.prev()
+                    self.venue_choice.prev()
                 };
-                self.quote = None;
+                self.clear_quotes();
                 self.refresh_venue_status();
                 KeyOutcome::Consumed
             }
             KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Venue => Focus::TokenIn,
-                    Focus::TokenIn => Focus::TokenOut,
-                    Focus::TokenOut => Focus::Amount,
-                    Focus::Amount => Focus::Slippage,
-                    Focus::Slippage => Focus::Venue,
-                };
+                let old = self.focus;
+                self.focus = self.focus_tab_forward();
+                self.on_focus_left(old);
                 KeyOutcome::Consumed
             }
             KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Venue => Focus::Slippage,
-                    Focus::TokenIn => Focus::Venue,
-                    Focus::TokenOut => Focus::TokenIn,
-                    Focus::Amount => Focus::TokenOut,
-                    Focus::Slippage => Focus::Amount,
-                };
+                let old = self.focus;
+                self.focus = self.focus_tab_backward();
+                self.on_focus_left(old);
                 KeyOutcome::Consumed
             }
             KeyCode::Char(' ') if matches!(self.focus, Focus::Venue | Focus::TokenIn) => {
-                self.native_in = !self.native_in;
-                if self.native_in {
-                    self.token_in.set_value("");
-                    self.token_in_pick = 0;
-                } else {
-                    self.token_in_pick = TOKEN_PICK_UNINIT;
+                if self.focus == Focus::TokenIn {
+                    self.native_in = !self.native_in;
+                    self.token_in_editing = false;
+                    if self.native_in {
+                        self.token_in.set_value("");
+                        self.token_in_pick = TOKEN_PICK_UNINIT;
+                    } else {
+                        self.token_in_pick = TOKEN_PICK_UNINIT;
+                    }
+                    self.status = if self.native_in {
+                        "native PLS in".into()
+                    } else {
+                        "ERC-20 in".into()
+                    };
+                    self.clear_quotes();
                 }
-                self.status = if self.native_in {
-                    "native PLS in".into()
-                } else {
-                    "ERC-20 in".into()
-                };
+                KeyOutcome::Consumed
+            }
+            KeyCode::F(4) => self.start_quote(wallet),
+            KeyCode::Enter if self.focus != Focus::None => {
+                self.deselect_focus();
                 KeyOutcome::Consumed
             }
             KeyCode::Enter => self.start_quote(wallet),
             _ => {
-                let (input, pick) = match self.focus {
-                    Focus::TokenIn => (&mut self.token_in, Some(&mut self.token_in_pick)),
-                    Focus::TokenOut => (&mut self.token_out, Some(&mut self.token_out_pick)),
-                    Focus::Amount => (&mut self.amount, None),
-                    Focus::Slippage => (&mut self.slippage, None),
-                    Focus::Venue => return KeyOutcome::Consumed,
+                let input = match self.focus {
+                    Focus::TokenIn => {
+                        Some((&mut self.token_in, Some(&mut self.token_in_pick), true))
+                    }
+                    Focus::TokenOut => {
+                        Some((&mut self.token_out, Some(&mut self.token_out_pick), false))
+                    }
+                    Focus::Amount => Some((&mut self.amount, None, false)),
+                    Focus::Slippage => Some((&mut self.slippage, None, false)),
+                    Focus::None | Focus::Venue => None,
+                };
+                let Some((input, pick, is_in)) = input else {
+                    return KeyOutcome::Consumed;
                 };
                 match input.handle_key(key) {
                     InputAction::Ignored => KeyOutcome::NotHandled,
@@ -448,8 +712,14 @@ impl AgView {
                         if let Some(p) = pick {
                             if manual_edit_resets_token_pick(key.code) {
                                 *p = TOKEN_PICK_UNINIT;
+                                if is_in {
+                                    self.token_in_editing = true;
+                                } else {
+                                    self.token_out_editing = true;
+                                }
                             }
                         }
+                        self.clear_quotes();
                         KeyOutcome::Consumed
                     }
                 }
@@ -457,13 +727,45 @@ impl AgView {
         }
     }
 
+    fn focus_tab_forward(&self) -> Focus {
+        match self.focus {
+            Focus::None => Focus::Venue,
+            Focus::Venue => Focus::TokenIn,
+            Focus::TokenIn => Focus::TokenOut,
+            Focus::TokenOut => Focus::Amount,
+            Focus::Amount => Focus::Slippage,
+            Focus::Slippage => Focus::None,
+        }
+    }
+
+    fn focus_tab_backward(&self) -> Focus {
+        match self.focus {
+            Focus::None => Focus::Slippage,
+            Focus::Venue => Focus::None,
+            Focus::TokenIn => Focus::Venue,
+            Focus::TokenOut => Focus::TokenIn,
+            Focus::Amount => Focus::TokenOut,
+            Focus::Slippage => Focus::Amount,
+        }
+    }
+
+    fn on_focus_left(&mut self, old: Focus) {
+        match old {
+            Focus::TokenIn => self.token_in_editing = false,
+            Focus::TokenOut => self.token_out_editing = false,
+            _ => {}
+        }
+    }
+
+    fn deselect_focus(&mut self) {
+        let old = self.focus;
+        self.on_focus_left(old);
+        self.focus = Focus::None;
+    }
+
     fn start_quote(&mut self, wallet: &WalletState) -> KeyOutcome {
         if self.chain_id != 369 {
             self.status = "Aggregators need PulseChain mainnet (369)".into();
-            return KeyOutcome::Consumed;
-        }
-        if !self.venue.is_live() {
-            self.refresh_venue_status();
             return KeyOutcome::Consumed;
         }
         let token_out = match parse_token_address(self.token_out.value(), "Token out") {
@@ -497,18 +799,41 @@ impl AgView {
             .ok()
             .and_then(|s| Address::from_str(s).ok());
 
+        self.clear_quotes();
         self.busy = Busy::Quoting;
-        self.status = format!("quoting {}…", self.venue.label());
-        KeyOutcome::StartJob(UiJob::AggQuote {
-            venue: self.venue,
-            token_in: token_in.to_string(),
-            token_out: token_out.to_string(),
-            amount: amount.to_string(),
-            slippage,
-            native_in: self.native_in,
-            native_out: false,
-            account: account.map(|a| a.to_string()),
-        })
+
+        match self.venue_choice {
+            VenueChoice::CompareAll => {
+                self.status = "quoting all live aggregators…".into();
+                KeyOutcome::StartJob(UiJob::AggCompareQuote {
+                    token_in: token_in.to_string(),
+                    token_out: token_out.to_string(),
+                    amount: amount.to_string(),
+                    slippage,
+                    native_in: self.native_in,
+                    native_out: false,
+                    account: account.map(|a| a.to_string()),
+                })
+            }
+            VenueChoice::Single(venue) => {
+                if !venue.is_live() {
+                    self.busy = Busy::Idle;
+                    self.refresh_venue_status();
+                    return KeyOutcome::Consumed;
+                }
+                self.status = format!("quoting {}…", venue.label());
+                KeyOutcome::StartJob(UiJob::AggQuote {
+                    venue,
+                    token_in: token_in.to_string(),
+                    token_out: token_out.to_string(),
+                    amount: amount.to_string(),
+                    slippage,
+                    native_in: self.native_in,
+                    native_out: false,
+                    account: account.map(|a| a.to_string()),
+                })
+            }
+        }
     }
 
     fn enter_confirm(&mut self) {
@@ -521,47 +846,14 @@ impl AgView {
         } else {
             ConfirmStep::Swap
         };
-        let out_h = fmt_token_amount(&q.amount_out);
-        let status = format!(
-            "{} quote · out≈{out_h} · gas≈{:?} · Enter to {}",
+        let out_sym = token_display_symbol(false, &self.token_out, &[], self.chain_id);
+        let out_amt = fmt_swap_wei_amount(&q.amount_out, 18);
+        self.stage = Stage::Confirm(step);
+        self.status = format!(
+            "{} — receive ~{out_amt} {out_sym} · Enter to {}",
             q.venue.label(),
-            q.gas_estimate,
             step.label()
         );
-        self.rebuild_confirm_lines(step);
-        self.stage = Stage::Confirm(step);
-        self.status = status;
-    }
-
-    fn rebuild_confirm_lines(&mut self, step: ConfirmStep) {
-        let Some(q) = self.quote.as_ref() else {
-            self.confirm_lines.clear();
-            return;
-        };
-        let in_h = fmt_token_amount(&q.amount_in);
-        let out_h = fmt_token_amount(&q.amount_out);
-        let value_h = fmt_token_amount(&q.tx.value);
-        let in_label = if self.native_in { "PLS" } else { "token" };
-        let step_hint = match step {
-            ConfirmStep::Approve => "next: approve router to spend your token",
-            ConfirmStep::Swap => {
-                if self.native_in {
-                    "next: broadcast swap (native PLS)"
-                } else {
-                    "next: broadcast swap (after approve)"
-                }
-            }
-        };
-        self.confirm_lines = vec![
-            format!("Aggregator: {}", q.venue.label()),
-            format!("Confirm: {} — {step_hint}", step.label()),
-            format!("Router:   {:#x}", q.tx.to),
-            format!("You pay:  {in_h} {in_label}  ({})", q.amount_in),
-            format!("You get:  ≈{out_h} out  ({})", q.amount_out),
-            format!("Tx value: {value_h} PLS  ({})", q.tx.value),
-            format!("Calldata: {} bytes", q.tx.data.len()),
-            "Review amounts above — Enter signs & broadcasts this step only.".into(),
-        ];
     }
 
     fn confirm_step(&mut self, step: ConfirmStep, wallet: &WalletState) -> KeyOutcome {
@@ -611,10 +903,28 @@ impl AgView {
     }
 }
 
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    format!(
+        "{}…",
+        s.chars().take(max.saturating_sub(1)).collect::<String>()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::views::parse_swap_amount;
+    use alloy::primitives::U256;
+
+    #[test]
+    fn venue_cycle_piteas_adjacent_compare_all() {
+        let piteas = VenueChoice::Single(AggVenue::Piteas);
+        assert_eq!(piteas.next(), VenueChoice::CompareAll);
+        assert_eq!(VenueChoice::CompareAll.prev(), piteas);
+    }
 
     #[test]
     fn parse_human_pls() {

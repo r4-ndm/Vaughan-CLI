@@ -310,6 +310,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Ag Anvil: SquirrelSwap `/swap` fixture → mock router → native + approve/swap broadcast (`vaughan-tui/tests/ag_view.rs`)
 - [x] Ag end-to-end polish: SquirrelSwap quote → route preview → ERC-20 approve (if needed) → swap confirm → broadcast (explicit approval only)
 - [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/piteas.md`)
+- [x] Ag parallel compare-all (Squirrel / PulseSwap / Piteas / Empseal) with pick screen; single-venue default via ↑/↓
+- [x] PulseSwap advanced quotes: send `extra` pricing + validate inner `data.success`
 - [x] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
 - [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/wiz4rd-addresses.md`)
 - [x] wiz4rd MCP Phase B+C: `get_v3_pool`, `quote_v3_swap`, `propose_v3_swap` (`docs/pulse-defi-skills.md`)
