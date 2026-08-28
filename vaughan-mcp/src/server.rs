@@ -15,7 +15,7 @@ use std::io::{self, BufRead, Write};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing_subscriber::EnvFilter;
-use vaughan_core::chains::evm::networks::get_network_by_id;
+use vaughan_core::chains::evm::networks::{get_network_by_id, resolve_rpc_endpoints};
 use vaughan_core::core::persistence::StateManager;
 
 use crate::dispatch::{McpContext, McpDispatcher};
@@ -195,10 +195,21 @@ pub fn build_context(profile: &str, source: &str) -> Result<McpContext, String> 
     } else {
         "pulsechain-testnet-v4".to_string()
     };
-    let net = get_network_by_id(&net_id).ok_or_else(|| format!("unknown network: {net_id}"))?;
+    let net_id_key = net_id.to_ascii_lowercase();
+    let net = get_network_by_id(&net_id_key)
+        .or_else(|| get_network_by_id(&net_id))
+        .ok_or_else(|| format!("unknown network: {net_id}"))?;
+    let persisted_primary = if sm.exists() {
+        sm.load()
+            .ok()
+            .and_then(|s| s.network_rpc_primary.get(&net_id_key).cloned())
+    } else {
+        None
+    };
+    let (rpc_url, _) = resolve_rpc_endpoints(&net, persisted_primary.as_deref(), None);
     Ok(McpContext {
         profile: profile.to_string(),
-        rpc_url: net.rpc_url.clone(),
+        rpc_url,
         chain_id: net.chain_id,
         network_id: net.id.clone(),
         is_testnet: net.is_testnet,

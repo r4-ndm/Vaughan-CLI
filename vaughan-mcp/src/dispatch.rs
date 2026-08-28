@@ -8,7 +8,7 @@ use vaughan_agent::tools::{
 };
 use vaughan_agent::AgentError;
 use vaughan_core::chains::evm::adapter::EvmAdapter;
-use vaughan_core::chains::evm::networks::get_network_by_id;
+use vaughan_core::chains::evm::networks::{get_network_by_id, resolve_rpc_endpoints};
 use vaughan_core::core::persistence::StateManager;
 use vaughan_core::core::proposal::{
     guard_mainnet_write, proposal_status_json, McpSessionToken, ProposalQueue, TxProposal,
@@ -172,7 +172,10 @@ impl McpDispatcher {
         out.chain_id = session.chain_id;
         out.network_id = session.network_id.clone();
         if let Some(net) = get_network_by_id(&out.network_id) {
-            out.rpc_url = net.rpc_url.clone();
+            let persisted =
+                StateManager::network_rpc_primary_for_profile(&ctx.profile, &out.network_id);
+            let (rpc_url, _) = resolve_rpc_endpoints(&net, persisted.as_deref(), None);
+            out.rpc_url = rpc_url;
             out.is_testnet = net.is_testnet;
         }
         out
@@ -184,14 +187,12 @@ impl McpDispatcher {
         })?;
         let net = get_network_by_id(&ctx.network_id)
             .ok_or_else(|| format!("unknown network: {}", ctx.network_id))?;
-        let adapter = EvmAdapter::new(
-            &ctx.rpc_url,
-            ctx.chain_id,
-            &net.name,
-            &net.fallback_rpc_urls,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let persisted =
+            StateManager::network_rpc_primary_for_profile(&ctx.profile, &ctx.network_id);
+        let (primary, fallbacks) = resolve_rpc_endpoints(&net, persisted.as_deref(), None);
+        let adapter = EvmAdapter::new(&primary, ctx.chain_id, &net.name, &fallbacks)
+            .await
+            .map_err(|e| e.to_string())?;
         let assets = adapter
             .get_assets(&format!("{addr:#x}"), &[])
             .await

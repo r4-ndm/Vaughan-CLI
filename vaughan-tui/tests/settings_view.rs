@@ -74,6 +74,7 @@ fn settings_view_h_opens_hardware_usb_help() {
 
     view.handle_key(key(KeyCode::Char('h')), &mut wallet, &handle, &events);
     let text = render(&view, &wallet);
+    assert!(text.contains("Add udev rules"));
     assert!(text.contains("support.ledger.com/article/115005165269-zd"));
     assert!(text.contains("trezor.io/guides/trezorctl/udev-rules"));
     assert!(
@@ -186,4 +187,64 @@ fn settings_view_p_toggles_agent_browser_control() {
     let reloaded = WalletState::load_with_session(path, OperatingMode::HumanOnly, "default")
         .expect("reload wallet");
     assert!(reloaded.agent_browser_control());
+}
+
+/// `r` opens RPC picker; Enter selects a preset and persists.
+#[test]
+fn settings_view_r_persists_rpc_primary() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let mut view = SettingsView::new(0); // PulseChain mainnet
+
+    view.handle_key(key(KeyCode::Char('r')), &mut wallet, &handle, &events);
+    let mid = render(&view, &wallet);
+    assert!(mid.contains("RPC URL"));
+    assert!(mid.contains("PublicNode"));
+
+    view.handle_key(key(KeyCode::Down), &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+
+    assert_eq!(
+        wallet.network_rpc_primary("pulsechain"),
+        Some("https://pulsechain-rpc.publicnode.com")
+    );
+
+    let path = wallet.path().to_path_buf();
+    let reloaded = WalletState::load_with_session(path, OperatingMode::HumanOnly, "default")
+        .expect("reload wallet");
+    assert_eq!(
+        reloaded.network_rpc_primary("pulsechain"),
+        Some("https://pulsechain-rpc.publicnode.com")
+    );
+    let (primary, _) = reloaded.rpc_endpoints_for(reloaded.networks().get("pulsechain").unwrap());
+    assert_eq!(primary, "https://pulsechain-rpc.publicnode.com");
+}
+
+/// `e` on a custom network opens the edit form with current values.
+#[test]
+fn settings_view_e_opens_custom_edit_form() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    wallet
+        .add_custom_network("Anvil", 31_337, "http://127.0.0.1:8545", "ETH", true)
+        .unwrap();
+    let idx = wallet
+        .networks()
+        .networks()
+        .iter()
+        .position(|n| n.id == "custom-31337")
+        .unwrap();
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let mut view = SettingsView::new(idx);
+
+    view.handle_key(key(KeyCode::Char('e')), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(text.contains("Edit custom network"));
+    assert!(text.contains("31337"));
+    assert!(text.contains("Anvil"));
 }

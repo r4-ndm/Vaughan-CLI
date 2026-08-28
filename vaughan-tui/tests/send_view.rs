@@ -73,6 +73,7 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::EstimateEvmFee { .. }
         | UiJob::SendEvmWithFee { .. }
         | UiJob::AggQuote { .. }
+        | UiJob::DexQuote { .. }
         | UiJob::BridgeQuote { .. }
         | UiJob::RefreshActivity { .. }
         | UiJob::RefreshAllowances
