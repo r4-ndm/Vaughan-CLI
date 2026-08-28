@@ -32,18 +32,22 @@ sol! {
         address[] adapters;
     }
 
+    /// EmpX SDK `FormattedOffer` — field order matches `empx-swap-sdk` `PLS_ROUTER_ABI`.
+    #[derive(Debug)]
+    struct FormattedOffer {
+        uint256[] amounts;
+        address[] adapters;
+        address[] path;
+        uint256 gasEstimate;
+    }
+
     interface IEmpxRouter {
         function findBestPath(
             uint256 amountIn,
             address tokenIn,
             address tokenOut,
             uint256 maxSteps
-        ) external view returns (
-            uint256[] amounts,
-            address[] path,
-            address[] adapters,
-            uint256 gasEstimate
-        );
+        ) external view returns (FormattedOffer offer);
 
         function swapNoSplit(Trade trade, address to, uint256 feeBps) external;
         function swapNoSplitFromPLS(Trade trade, address to, uint256 feeBps) external payable;
@@ -110,10 +114,12 @@ impl EmpxClient {
         let decoded = IEmpxRouter::findBestPathCall::abi_decode_returns(&raw)
             .map_err(|e| WalletError::Other(format!("EmpX path decode: {e}")))?;
 
-        if decoded.path.len() < 2 || decoded.amounts.is_empty() {
+        let offer = decoded;
+
+        if offer.path.len() < 2 || offer.amounts.is_empty() {
             return Err(WalletError::Other("EmpX: empty path".into()));
         }
-        let amount_out_raw = *decoded.amounts.last().unwrap();
+        let amount_out_raw = *offer.amounts.last().unwrap();
         let slippage_bps = ((req.slippage_percent * 100.0).round() as u64).min(5_000);
         let min_out = amount_out_raw
             .saturating_mul(U256::from(10_000u64.saturating_sub(slippage_bps)))
@@ -122,8 +128,8 @@ impl EmpxClient {
         let trade = Trade {
             amountIn: req.amount_in,
             amountOut: min_out,
-            path: decoded.path.clone(),
-            adapters: decoded.adapters.clone(),
+            path: offer.path.clone(),
+            adapters: offer.adapters.clone(),
         };
 
         let recipient = req.account.ok_or_else(|| {
@@ -176,7 +182,7 @@ impl EmpxClient {
             amount_in: req.amount_in,
             amount_out: amount_out_raw,
             gas_estimate: Some({
-                let g = decoded.gasEstimate;
+                let g = offer.gasEstimate;
                 if g > U256::from(u64::MAX) {
                     250_000
                 } else {
@@ -202,5 +208,27 @@ mod tests {
     fn router_parses() {
         let a: Address = EMPX_ROUTER_369.parse().unwrap();
         assert_eq!(a, address!("0x0Cf6D948Cf09ac83a6bf40C7AD7b44657A9F2A52"));
+    }
+
+    /// Live PulseChain quote — PLS → M3M3 (user-reported path).
+    #[tokio::test]
+    #[ignore = "live PulseChain RPC"]
+    async fn live_empx_pls_to_m3m3() {
+        use super::super::types::AggQuoteRequest;
+        let wpls: Address = WPLS_369.parse().unwrap();
+        let m3m3 = address!("0x78a2809e8e2ef8e07429559f15703ee20e885588");
+        let client = EmpxClient::for_chain(369, "https://rpc.pulsechain.com").unwrap();
+        let req = AggQuoteRequest {
+            token_in: wpls,
+            token_out: m3m3,
+            token_in_is_native: true,
+            token_out_is_native: false,
+            amount_in: U256::from(10).pow(U256::from(18)), // 1 PLS
+            slippage_percent: 0.5,
+            account: Some(address!("0x0000000000000000000000000000000000000001")),
+        };
+        let q = client.quote(&req).await.expect("EmpX quote");
+        assert!(q.amount_out > U256::ZERO);
+        assert!(!q.tx.data.is_empty());
     }
 }

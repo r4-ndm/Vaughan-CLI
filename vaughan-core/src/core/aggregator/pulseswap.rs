@@ -55,7 +55,15 @@ impl PulseSwapClient {
             "toToken": to,
             "amountIn": req.amount_in.to_string(),
             "slippage": req.slippage_percent,
-            "userAddress": req.account.map(|a| a.to_string()),
+            "userAddress": req.account.map(|a| format!("{a:#x}")),
+            // PulseSwap returns amountIn/Out 0 and no tx without pricing hints
+            // (see docs.pulseswap.io — extra.tokenInPrice / tokenOutPrice / gasPrice).
+            "extra": {
+                "tokenInPrice": 1.0,
+                "tokenOutPrice": 1.0,
+                "gasPrice": "1000000000",
+                "gasTokenPrice": 1.0,
+            },
         });
 
         let resp = self
@@ -90,9 +98,19 @@ impl PulseSwapClient {
         let data = envelope
             .data
             .ok_or_else(|| WalletError::NetworkError("pulseswap: empty data".into()))?;
+        if !data.success {
+            return Err(WalletError::NetworkError(
+                "pulseswap: no route for this pair/amount".into(),
+            ));
+        }
 
         let amount_in = parse_u256(&data.amount_in)?;
         let amount_out = parse_u256(&data.amount_out)?;
+        if amount_out.is_zero() {
+            return Err(WalletError::NetworkError(
+                "pulseswap: quote returned zero amountOut".into(),
+            ));
+        }
         let tx = data
             .tx
             .ok_or_else(|| WalletError::NetworkError("pulseswap: missing tx calldata".into()))?;
@@ -137,6 +155,7 @@ struct PulseEnvelope {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PulseData {
+    success: bool,
     amount_in: String,
     amount_out: String,
     #[serde(default)]
@@ -190,9 +209,58 @@ mod tests {
         }"#;
         let env: PulseEnvelope = serde_json::from_str(raw).unwrap();
         let d = env.data.unwrap();
+        assert!(d.success);
         assert_eq!(d.amount_in, "1000000000000000000");
         assert_eq!(
             Address::from_str(&d.tx.unwrap().to).unwrap(),
+            address!("0xC994375187988C751C8fCb96A68A0f242947f0E6")
+        );
+    }
+
+    #[test]
+    fn rejects_inner_success_false() {
+        let raw = r#"{
+          "success":true,
+          "data":{
+            "success":false,
+            "amountIn":"0",
+            "amountOut":"0",
+            "gasEstimate":0,
+            "tx":null
+          },
+          "message":"OK"
+        }"#;
+        let env: PulseEnvelope = serde_json::from_str(raw).unwrap();
+        let d = env.data.unwrap();
+        assert!(!d.success);
+    }
+
+    /// Live PulseChain quote — PLS → M3M3 (same path as Empseal compare tests).
+    #[tokio::test]
+    #[ignore = "live PulseSwap API"]
+    async fn live_pulseswap_pls_to_m3m3() {
+        use super::super::types::AggQuoteRequest;
+        use alloy::primitives::address;
+
+        let client = PulseSwapClient::public().unwrap();
+        let m3m3 = address!("0x78a2809e8e2ef8e07429559f15703ee20e885588");
+        let account: Address = "0x742d35Cc6634C0532925a3b8D221691B5c1b6b29"
+            .parse()
+            .unwrap();
+        let req = AggQuoteRequest {
+            token_in: Address::ZERO,
+            token_out: m3m3,
+            token_in_is_native: true,
+            token_out_is_native: false,
+            amount_in: U256::from(1_000_000_u64) * U256::from(10u64).pow(U256::from(24)),
+            slippage_percent: 0.5,
+            account: Some(account),
+        };
+        let q = client.quote(&req).await.expect("pulseswap live quote");
+        assert!(q.amount_out > U256::ZERO);
+        assert!(!q.tx.data.is_empty());
+        assert_eq!(
+            q.tx.to,
             address!("0xC994375187988C751C8fCb96A68A0f242947f0E6")
         );
     }

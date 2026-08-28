@@ -26,9 +26,9 @@ pub mod wiz4rd;
 
 pub use account::{Account, AccountManager, IMPORTED_INDEX_BASE};
 pub use aggregator::{
-    assert_agg_exec_targets, is_allowed_agg_router, quote_aggregator, AggAccess, AggExecTx,
-    AggQuote, AggQuoteRequest, AggVenue, SquirrelPreview, SquirrelSwapClient, AGG_VENUES,
-    OFFICIAL_AGG_ROUTERS,
+    assert_agg_exec_targets, is_allowed_agg_router, quote_aggregator, quote_live_aggregators,
+    rank_agg_quote_outcomes, AggAccess, AggExecTx, AggQuote, AggQuoteOutcome, AggQuoteRequest,
+    AggVenue, SquirrelPreview, SquirrelSwapClient, AGG_VENUES, OFFICIAL_AGG_ROUTERS,
 };
 pub use bridge::{
     assert_bridge_exec_targets, is_whitelisted_router, BridgeApproval, BridgeAsset,

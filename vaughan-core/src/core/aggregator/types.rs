@@ -2,6 +2,8 @@
 
 use alloy::primitives::{Address, Bytes, U256};
 
+use crate::error::WalletError;
+
 use super::catalog::AggVenue;
 
 /// How native PLS is spelled for a given API.
@@ -46,4 +48,11 @@ pub struct AggQuote {
     pub tx: AggExecTx,
     /// ERC-20 spend allowance target (usually the router / `tx.to`).
     pub spender: Address,
+}
+
+/// One venue's result from a parallel compare pass.
+#[derive(Debug)]
+pub struct AggQuoteOutcome {
+    pub venue: AggVenue,
+    pub result: Result<AggQuote, WalletError>,
 }

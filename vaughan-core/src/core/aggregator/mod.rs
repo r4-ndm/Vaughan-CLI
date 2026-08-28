@@ -15,8 +15,9 @@ pub use empx::{EmpxClient, EMPX_ROUTER_369};
 pub use pulseswap::{PulseSwapClient, PULSESWAP_QUOTE_URL};
 pub use routers::{assert_agg_exec_targets, is_allowed_agg_router, OFFICIAL_AGG_ROUTERS};
 pub use squirrelswap::{SquirrelPreview, SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
-pub use types::{AggExecTx, AggQuote, AggQuoteRequest, NativeSentinel};
+pub use types::{AggExecTx, AggQuote, AggQuoteOutcome, AggQuoteRequest, NativeSentinel};
 
+use alloy::primitives::U256;
 use secrecy::SecretString;
 
 use crate::core::piteas::{
@@ -56,6 +57,37 @@ pub async fn quote_aggregator(
         }
         AggAccess::ListedOnly(why) => Err(WalletError::Other(format!("{} — {why}", venue.label()))),
     }
+}
+
+/// Fetch quotes from every [`AggVenue::is_live`] aggregator in parallel.
+pub async fn quote_live_aggregators(
+    req: &AggQuoteRequest,
+    chain_id: u64,
+    piteas_dir: Option<&std::path::Path>,
+    vault_password: Option<&SecretString>,
+) -> Vec<AggQuoteOutcome> {
+    let venues: Vec<AggVenue> = AGG_VENUES.iter().copied().filter(|v| v.is_live()).collect();
+    let futures = venues.into_iter().map(|venue| {
+        let req = req.clone();
+        async move {
+            AggQuoteOutcome {
+                venue,
+                result: quote_aggregator(venue, &req, chain_id, piteas_dir, vault_password).await,
+            }
+        }
+    });
+    futures_util::future::join_all(futures).await
+}
+
+/// Indices into `outcomes` with successful quotes, highest `amount_out` first.
+pub fn rank_agg_quote_outcomes(outcomes: &[AggQuoteOutcome]) -> Vec<usize> {
+    let mut ranked: Vec<(usize, U256)> = outcomes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| o.result.as_ref().ok().map(|q| (i, q.amount_out)))
+        .collect();
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.1));
+    ranked.into_iter().map(|(i, _)| i).collect()
 }
 
 async fn quote_piteas(
@@ -100,4 +132,52 @@ async fn quote_piteas(
         },
         spender: to,
     })
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::*;
+    use alloy::primitives::{Address, Bytes};
+
+    fn dummy_quote(venue: AggVenue, amount_out: u64) -> AggQuote {
+        AggQuote {
+            venue,
+            amount_in: U256::from(1u64),
+            amount_out: U256::from(amount_out),
+            gas_estimate: None,
+            tx: AggExecTx {
+                to: Address::ZERO,
+                data: Bytes::new(),
+                value: U256::ZERO,
+            },
+            spender: Address::ZERO,
+        }
+    }
+
+    #[test]
+    fn rank_puts_highest_amount_out_first() {
+        let outcomes = vec![
+            AggQuoteOutcome {
+                venue: AggVenue::SquirrelSwap,
+                result: Ok(dummy_quote(AggVenue::SquirrelSwap, 100)),
+            },
+            AggQuoteOutcome {
+                venue: AggVenue::Empseal,
+                result: Ok(dummy_quote(AggVenue::Empseal, 300)),
+            },
+            AggQuoteOutcome {
+                venue: AggVenue::PulseSwap,
+                result: Err(WalletError::Other("no route".into())),
+            },
+            AggQuoteOutcome {
+                venue: AggVenue::Piteas,
+                result: Ok(dummy_quote(AggVenue::Piteas, 200)),
+            },
+        ];
+        let ranked = rank_agg_quote_outcomes(&outcomes);
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(outcomes[ranked[0]].venue, AggVenue::Empseal);
+        assert_eq!(outcomes[ranked[1]].venue, AggVenue::Piteas);
+        assert_eq!(outcomes[ranked[2]].venue, AggVenue::SquirrelSwap);
+    }
 }
