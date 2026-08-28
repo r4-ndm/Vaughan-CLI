@@ -923,24 +923,37 @@ fn addr_style(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-/// Rainbow-segmented wallet address spans (Dioxus `ColoredAddressText` layout).
-///
-/// Short / non-hex placeholders render in grey.
-pub fn colored_address_spans(address: &str) -> Vec<Span<'static>> {
+/// Dim ink for non-accent hex runs in form fields (matches pre-rainbow contract text).
+const ADDR_NEUTRAL_DIM: Color = Color::DarkGray;
+
+fn segment_style(segment: Color, dim_neutral: bool) -> Style {
+    if dim_neutral && segment == ADDR_GREY {
+        Style::default().fg(ADDR_NEUTRAL_DIM)
+    } else {
+        addr_style(segment)
+    }
+}
+
+fn colored_address_spans_inner(address: &str, dim_neutral: bool) -> Vec<Span<'static>> {
     let addr = address.trim();
     let body = addr
         .strip_prefix("0x")
         .or_else(|| addr.strip_prefix("0X"))
         .unwrap_or(addr);
     if body.len() < 40 {
-        return vec![Span::styled(addr.to_string(), addr_style(ADDR_GREY))];
+        return vec![Span::styled(
+            addr.to_string(),
+            segment_style(ADDR_GREY, dim_neutral),
+        )];
     }
 
     let mut spans = Vec::with_capacity(6);
     if addr.starts_with("0x") || addr.starts_with("0X") {
-        spans.push(Span::styled("0x".to_string(), addr_style(ADDR_GREY)));
+        spans.push(Span::styled(
+            "0x".to_string(),
+            segment_style(ADDR_GREY, dim_neutral),
+        ));
     }
-    // Segment by Dioxus ranges on the 40-char body.
     let parts: &[(usize, usize, Color)] = &[
         (0, 5, ADDR_GREEN),
         (5, 18, ADDR_GREY),
@@ -951,10 +964,23 @@ pub fn colored_address_spans(address: &str) -> Vec<Span<'static>> {
     for &(start, end, color) in parts {
         spans.push(Span::styled(
             body[start..end].to_string(),
-            addr_style(color),
+            segment_style(color, dim_neutral),
         ));
     }
     spans
+}
+
+/// Rainbow-segmented wallet address spans (Dioxus `ColoredAddressText` layout).
+///
+/// Short / non-hex placeholders render in grey.
+pub fn colored_address_spans(address: &str) -> Vec<Span<'static>> {
+    colored_address_spans_inner(address, false)
+}
+
+/// Same segment layout as [`colored_address_spans`], but grey/`0x` runs use dim
+/// body ink (form fields); green / orange / purple stay bold accents.
+pub fn colored_address_spans_form(address: &str) -> Vec<Span<'static>> {
+    colored_address_spans_inner(address, true)
 }
 
 /// Rainbow address that middle-ellipsizes to `budget` columns when needed.
@@ -1020,6 +1046,82 @@ pub fn wordmark_augha_start(width: u16) -> usize {
 /// Index of the orange segment within a full `0x` + 40-hex address (`body[18..23]`).
 const ORANGE_IN_FULL_ADDR: usize = 2 + 18; // after `0x`
 
+/// Leading column for `0x` so the orange mid-segment aligns under `AUGHA` at `screen_width`.
+pub fn augha_address_leading_pad(screen_width: u16) -> usize {
+    wordmark_augha_start(screen_width).saturating_sub(ORANGE_IN_FULL_ADDR)
+}
+
+/// Ticker + form-styled rainbow address; orange segment under `AUGHA`.
+///
+/// `content_x` is the absolute terminal column where this line is drawn (e.g. the inner
+/// left edge of a field box). Pass `0` when the line starts at the screen origin.
+pub fn colored_token_address_under_augha(
+    ticker: &str,
+    address: &str,
+    screen_width: u16,
+    content_x: u16,
+) -> Line<'static> {
+    let budget = screen_width as usize;
+    if budget == 0 {
+        return Line::from("");
+    }
+
+    let addr = address.trim();
+    let body = addr
+        .strip_prefix("0x")
+        .or_else(|| addr.strip_prefix("0X"))
+        .unwrap_or(addr);
+    let has_0x = addr.starts_with("0x") || addr.starts_with("0X");
+
+    let token_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    if has_0x && body.len() >= 40 {
+        let full_len = 42;
+        let prefix = format!("{ticker} ");
+        let prefix_len = prefix.chars().count();
+        if prefix_len + full_len + content_x as usize <= budget {
+            let abs_pad = augha_address_leading_pad(screen_width);
+            let mut pad = abs_pad
+                .saturating_sub(prefix_len)
+                .saturating_sub(content_x as usize);
+            let end = content_x as usize + pad + prefix_len + full_len;
+            if end > budget {
+                pad = budget.saturating_sub(content_x as usize + prefix_len + full_len);
+            }
+            let mut spans = Vec::new();
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
+            }
+            spans.push(Span::styled(prefix, token_style));
+            spans.extend(colored_address_spans_form(addr));
+            return Line::from(spans);
+        }
+    }
+
+    // Short / narrow: centre ticker + fitted address on the full screen width.
+    let fitted = colored_address_spans_form(addr);
+    let text_w: usize = fitted.iter().map(|s| s.content.chars().count()).sum();
+    let prefix = format!("{ticker} ");
+    let prefix_len = prefix.chars().count();
+    let total = prefix_len + text_w;
+    let mut pad = budget.saturating_sub(total) / 2;
+    if pad + total > budget {
+        pad = budget.saturating_sub(total);
+    }
+    if pad > content_x as usize {
+        pad = pad.saturating_sub(content_x as usize);
+    }
+    let mut spans = Vec::new();
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    spans.push(Span::styled(prefix, token_style));
+    spans.extend(fitted);
+    Line::from(spans)
+}
+
 /// Colour-coded address with left padding so the orange mid-segment sits under
 /// `AUGHA` in the wordmark (same column as [`wordmark_augha_start`]).
 ///
@@ -1067,12 +1169,31 @@ pub fn colored_address_under_augha(address: &str, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Where a box title sits on the top border.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TitleAlign {
+    /// Inset after the top-left corner (default).
+    #[default]
+    Left,
+    /// Horizontally centered on the top edge.
+    Center,
+}
+
 /// Draw a square-corner box with a left→right **box** fade (red → hot pink).
 ///
 /// Optional `title` is painted into the top border (starting two cells in).
 /// Returns the inner content [`Rect`] (empty if the area is too small).
 pub fn render_faded_box(frame: &mut Frame, area: Rect, title: Option<Line<'_>>) -> Rect {
     render_faded_box_with(frame, area, title, FadePalette::Box)
+}
+
+/// Like [`render_faded_box`] but centers the title on the top border.
+pub fn render_faded_box_center_title(
+    frame: &mut Frame,
+    area: Rect,
+    title: Option<Line<'_>>,
+) -> Rect {
+    render_faded_box_with_title_align(frame, area, title, FadePalette::Box, TitleAlign::Center)
 }
 
 /// Draw a square-corner box with the given fade palette on the borders.
@@ -1082,12 +1203,22 @@ pub fn render_faded_box_with(
     title: Option<Line<'_>>,
     palette: FadePalette,
 ) -> Rect {
-    render_faded_box_buf_with(frame.buffer_mut(), area, title, palette)
+    render_faded_box_buf_with(frame.buffer_mut(), area, title, palette, TitleAlign::Left)
+}
+
+fn render_faded_box_with_title_align(
+    frame: &mut Frame,
+    area: Rect,
+    title: Option<Line<'_>>,
+    palette: FadePalette,
+    title_align: TitleAlign,
+) -> Rect {
+    render_faded_box_buf_with(frame.buffer_mut(), area, title, palette, title_align)
 }
 
 /// Same as [`render_faded_box`] but writes into a [`Buffer`] (for tests).
 pub fn render_faded_box_buf(buf: &mut Buffer, area: Rect, title: Option<Line<'_>>) -> Rect {
-    render_faded_box_buf_with(buf, area, title, FadePalette::Box)
+    render_faded_box_buf_with(buf, area, title, FadePalette::Box, TitleAlign::Left)
 }
 
 /// Same as [`render_faded_box_with`] but writes into a [`Buffer`].
@@ -1096,6 +1227,7 @@ pub fn render_faded_box_buf_with(
     area: Rect,
     title: Option<Line<'_>>,
     palette: FadePalette,
+    title_align: TitleAlign,
 ) -> Rect {
     if area.width == 0 || area.height == 0 {
         return Rect::default();
@@ -1168,9 +1300,9 @@ pub fn render_faded_box_buf_with(
         }
     }
 
-    // Title inset on the top border.
+    // Title on the top border.
     if let Some(title) = title {
-        paint_title_on_top(buf, area, title);
+        paint_title_on_top(buf, area, title, title_align);
     }
 
     if w < 3 || h < 3 {
@@ -1184,13 +1316,103 @@ pub fn render_faded_box_buf_with(
     }
 }
 
-fn paint_title_on_top(buf: &mut Buffer, area: Rect, title: Line<'_>) {
+/// Input field box: faded border by default, solid accent border when `focused`.
+pub fn render_field_box(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
+    if focused {
+        render_accent_box_buf(frame.buffer_mut(), area)
+    } else {
+        render_faded_box(frame, area, None)
+    }
+}
+
+fn render_accent_box_buf(buf: &mut Buffer, area: Rect) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return Rect::default();
+    }
+
+    let set = BorderType::border_symbols(BorderType::Plain);
+    let w = area.width;
+    let h = area.height;
+    let border_style = Style::default()
+        .fg(accent_color())
+        .add_modifier(Modifier::BOLD);
+
+    for dx in 0..w {
+        let symbol = if dx == 0 {
+            set.top_left
+        } else if dx == w - 1 {
+            set.top_right
+        } else {
+            set.horizontal_top
+        };
+        buf[(area.x + dx, area.y)]
+            .set_symbol(symbol)
+            .set_style(border_style);
+    }
+
+    if h > 1 {
+        let by = area.y + h - 1;
+        for dx in 0..w {
+            let symbol = if dx == 0 {
+                set.bottom_left
+            } else if dx == w - 1 {
+                set.bottom_right
+            } else {
+                set.horizontal_bottom
+            };
+            buf[(area.x + dx, by)]
+                .set_symbol(symbol)
+                .set_style(border_style);
+        }
+    }
+
+    if h > 2 {
+        for dy in 1..h - 1 {
+            buf[(area.x, area.y + dy)]
+                .set_symbol(set.vertical_left)
+                .set_style(border_style);
+            if w > 1 {
+                buf[(area.x + w - 1, area.y + dy)]
+                    .set_symbol(set.vertical_right)
+                    .set_style(border_style);
+            }
+        }
+    }
+
+    if w < 3 || h < 3 {
+        return Rect::default();
+    }
+    Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: w - 2,
+        height: h - 2,
+    }
+}
+
+fn line_char_width(line: &Line<'_>) -> u16 {
+    line.spans
+        .iter()
+        .map(|span| span.content.chars().count() as u16)
+        .sum()
+}
+
+fn paint_title_on_top(buf: &mut Buffer, area: Rect, title: Line<'_>, align: TitleAlign) {
     if area.width < 4 {
         return;
     }
-    // Leave corner + one horizontal cell free on each side when possible.
-    let start_x = area.x.saturating_add(2);
-    let max_x = area.x.saturating_add(area.width.saturating_sub(2));
+    let title_w = line_char_width(&title);
+    let start_x = match align {
+        TitleAlign::Left => area.x.saturating_add(2),
+        TitleAlign::Center => {
+            if title_w >= area.width {
+                area.x
+            } else {
+                area.x + (area.width - title_w) / 2
+            }
+        }
+    };
+    let max_x = area.x.saturating_add(area.width);
     let mut x = start_x;
     for span in title.spans {
         let style = span.style;
@@ -1500,6 +1722,19 @@ mod tests {
     }
 
     #[test]
+    fn colored_address_form_uses_dim_neutral_grey() {
+        let addr = "0x1234567890abcdef1234567890abcdef12345678";
+        let spans = colored_address_spans_form(addr);
+        assert_eq!(spans[0].style.fg, Some(ADDR_NEUTRAL_DIM));
+        assert!(!spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[1].style.fg, Some(ADDR_GREEN));
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[2].style.fg, Some(ADDR_NEUTRAL_DIM));
+        assert_eq!(spans[3].style.fg, Some(ADDR_ORANGE));
+        assert_eq!(spans[5].style.fg, Some(ADDR_PURPLE));
+    }
+
+    #[test]
     fn colored_address_fitted_preserves_budget() {
         let addr = "0x1234567890abcdef1234567890abcdef12345678";
         let spans = colored_address_fitted(addr, 14);
@@ -1546,6 +1781,47 @@ mod tests {
         assert_eq!(
             orange_at, augha_at,
             "orange should start under AUGHA\nbanner: {banner_s}\ncol={orange_at} augha={augha_at}"
+        );
+    }
+
+    #[test]
+    fn token_address_orange_aligns_under_augha() {
+        let width = 80u16;
+        let augha_at = wordmark_augha_start(width);
+        let addr = "0x29bab93456c0E97EE931C1554c7C215480aa7766";
+        let line = colored_token_address_under_augha("WZRD", addr, width, 0);
+
+        let mut col = 0usize;
+        let mut orange_at = None;
+        for span in &line.spans {
+            let len = span.content.chars().count();
+            if span.style.fg == Some(ADDR_ORANGE) {
+                orange_at = Some(col);
+                break;
+            }
+            col += len;
+        }
+        assert_eq!(
+            orange_at.expect("orange span"),
+            augha_at,
+            "WZRD contract orange should align under AUGHA"
+        );
+
+        let inset = colored_token_address_under_augha("WZRD", addr, width, 1);
+        let mut col = 0usize;
+        let mut orange_at = None;
+        for span in &inset.spans {
+            let len = span.content.chars().count();
+            if span.style.fg == Some(ADDR_ORANGE) {
+                orange_at = Some(col);
+                break;
+            }
+            col += len;
+        }
+        assert_eq!(
+            1 + orange_at.expect("orange span"),
+            augha_at,
+            "inset line should preserve absolute orange column"
         );
     }
 }

@@ -68,6 +68,17 @@ pub enum UiJob {
         native_out: bool,
         account: Option<String>,
     },
+    /// Direct DEX router quote (V2 getAmountsOut / V3 pool math).
+    DexQuote {
+        quote_gen: u64,
+        chain_id: u64,
+        rpc_url: String,
+        protocol_v2: bool,
+        router: String,
+        amount_in: String,
+        fee: u32,
+        path: Vec<String>,
+    },
     /// LibertySwap cross-chain quote (no signing).
     BridgeQuote {
         src_token: String,
@@ -112,7 +123,8 @@ pub struct ChromeSnapshot {
     pub flash_ticks_left: u8,
     /// Which status box is hotkeyed (F1 / F2 / F3).
     pub focus: ChromeFocus,
-    /// Assets with a balance (F2 ↑/↓). Filled by [`UiJob::RefreshAssets`].
+    /// F2 ↑/↓ asset cycle. Filled by [`UiJob::RefreshAssets`] — same set as
+    /// [`WalletState::assets`] (includes user-imported tokens at zero balance).
     pub assets: Vec<Balance>,
     pub asset_idx: usize,
     pub assets_loading: bool,
@@ -120,6 +132,8 @@ pub struct ChromeSnapshot {
     pub pending_network_idx: Option<usize>,
     /// Pending F2 asset index.
     pub pending_asset_idx: Option<usize>,
+    /// After a swap/send, select this ERC-20 in F2 once [`RefreshAssets`] completes.
+    pub pending_asset_address: Option<String>,
     /// Pending F3 account index (`Account::index`).
     pub pending_account_index: Option<u32>,
     /// Count of MCP proposals waiting in the file queue.
@@ -133,10 +147,32 @@ pub enum ChromeFocus {
     None,
     /// F1 — cycle networks with ↑/↓, Enter to set.
     Network,
-    /// F2 — cycle coins with balance with ↑/↓, Enter to set.
+    /// F2 — cycle assets with ↑/↓, Enter to set.
     Asset,
     /// F3 — cycle accounts with ↑/↓, Enter to set.
     Account,
+}
+
+/// Build the F2 asset cycle from a [`WalletState::assets`] fetch.
+///
+/// Core already drops zero-balance curated/discovered tokens but keeps
+/// user-imported customs even at zero — do not re-filter here.
+pub fn chrome_assets_from_fetch(assets: Vec<Balance>) -> Vec<Balance> {
+    assets
+}
+
+/// Index in the F2 asset cycle for `address` (case-insensitive contract match).
+pub fn asset_index_for_address(assets: &[Balance], address: &str) -> Option<usize> {
+    let want = address.trim();
+    if want.is_empty() {
+        return None;
+    }
+    assets.iter().position(|b| {
+        b.token
+            .contract_address
+            .as_ref()
+            .is_some_and(|a| a.eq_ignore_ascii_case(want))
+    })
 }
 
 /// Result delivered back to the UI thread via an unbounded channel.
@@ -149,6 +185,10 @@ pub enum UiJobResult {
     Send(Result<BroadcastReceipt, WalletError>),
     SendStealth(Result<StealthSendResult, WalletError>),
     AggQuote(Result<vaughan_core::core::AggQuote, WalletError>),
+    DexQuote {
+        quote_gen: u64,
+        result: Result<vaughan_core::core::DexQuote, WalletError>,
+    },
     BridgeQuote(Box<Result<vaughan_core::core::BridgeQuote, WalletError>>),
     Activity(Result<Vec<vaughan_core::chains::TxRecord>, WalletError>),
     Allowances(Result<Vec<vaughan_core::chains::AllowanceEntry>, WalletError>),
@@ -161,4 +201,74 @@ pub enum UiJobResult {
 pub fn spinner_frame(tick: u64) -> char {
     const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     FRAMES[(tick as usize) % FRAMES.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vaughan_core::chains::{Balance, TokenInfo};
+
+    #[test]
+    fn asset_index_for_address_matches_contract() {
+        let assets = vec![
+            Balance {
+                token: TokenInfo {
+                    symbol: "PLS".into(),
+                    name: "PulseChain".into(),
+                    decimals: 18,
+                    contract_address: None,
+                },
+                raw: "1".into(),
+                formatted: "1".into(),
+                usd_value: None,
+            },
+            Balance {
+                token: TokenInfo {
+                    symbol: "WZRD".into(),
+                    name: "Wizard".into(),
+                    decimals: 18,
+                    contract_address: Some("0x29bab93456c0E97EE931C1554c7C215480aa7766".into()),
+                },
+                raw: "670201331000844945".into(),
+                formatted: "0.67".into(),
+                usd_value: None,
+            },
+        ];
+        assert_eq!(
+            asset_index_for_address(&assets, "0x29bab93456c0e97ee931c1554c7c215480aa7766"),
+            Some(1)
+        );
+        assert_eq!(asset_index_for_address(&assets, "0xdead"), None);
+    }
+
+    #[test]
+    fn chrome_assets_from_fetch_keeps_zero_balance_imports() {
+        let assets = vec![
+            Balance {
+                token: TokenInfo {
+                    symbol: "PLS".into(),
+                    name: "PulseChain".into(),
+                    decimals: 18,
+                    contract_address: None,
+                },
+                raw: "1000000000000000000".into(),
+                formatted: "1".into(),
+                usd_value: None,
+            },
+            Balance {
+                token: TokenInfo {
+                    symbol: "MEME".into(),
+                    name: "Meme".into(),
+                    decimals: 18,
+                    contract_address: Some("0x2222222222222222222222222222222222222222".into()),
+                },
+                raw: "0".into(),
+                formatted: "0".into(),
+                usd_value: None,
+            },
+        ];
+        let out = chrome_assets_from_fetch(assets);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].token.symbol, "MEME");
+    }
 }
