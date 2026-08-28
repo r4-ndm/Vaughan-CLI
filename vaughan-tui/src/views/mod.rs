@@ -5,7 +5,7 @@
 //! view body → action footer.
 //!
 //! F1–F3: press the key to focus, ↑/↓ to preview, Enter to set, Esc to cancel.
-//! Home send body: F4 focuses recipient, F5 focuses amount.
+//! Home send body: F4 focuses recipient, F5 focuses amount. Dex swap: F4 confirm.
 
 pub mod aa_send;
 pub mod ag;
@@ -48,6 +48,7 @@ pub use settings::SettingsView;
 pub use unlock::UnlockView;
 pub use wrap::WrapView;
 
+use crossterm::event::KeyCode;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -60,8 +61,173 @@ use crate::app::App;
 use crate::brand;
 use crate::input::Input;
 use crate::jobs::{spinner_frame, ChromeFocus};
+use alloy::primitives::U256;
 use vaughan_core::chains::Balance;
-use vaughan_core::core::format_display_amount;
+use vaughan_core::core::{format_display_amount, parse_native_amount};
+
+/// Which swap form field receives a picker (↑/↓) selection.
+pub(crate) enum TokenFieldRole<'a> {
+    InputIn { native_in: &'a mut bool },
+    InputOut,
+}
+
+/// Apply a picked asset to Token in / Token out.
+pub(crate) fn apply_picker_balance(
+    balance: &Balance,
+    role: TokenFieldRole<'_>,
+    input: &mut Input,
+    status: &mut String,
+) -> bool {
+    match role {
+        TokenFieldRole::InputIn { native_in } => {
+            if let Some(addr) = balance.token.contract_address.clone() {
+                *native_in = false;
+                input.set_value(addr);
+            } else {
+                *native_in = true;
+                input.set_value("");
+            }
+            status.clear();
+            true
+        }
+        TokenFieldRole::InputOut => {
+            let Some(addr) = balance.token.contract_address.clone() else {
+                *status = "Token out must be ERC-20".into();
+                return true;
+            };
+            input.set_value(addr);
+            status.clear();
+            true
+        }
+    }
+}
+
+/// Sentinel: no ↑/↓ pick yet — first press selects index 0 (does not skip native).
+pub(crate) const TOKEN_PICK_UNINIT: usize = usize::MAX;
+
+/// Parse a token contract field; empty input gets a clear message (not alloy length errors).
+pub(crate) fn parse_token_address(
+    field: &str,
+    label: &str,
+) -> Result<alloy::primitives::Address, String> {
+    use std::str::FromStr;
+    let t = field.trim();
+    if t.is_empty() {
+        return Err(format!("{label}: pick with ↑↓ or paste a contract address"));
+    }
+    alloy::primitives::Address::from_str(t).map_err(|e| format!("{label}: {e}"))
+}
+
+/// Parse swap amounts: human decimals (`0.1`, `1`) or raw wei (`…wei` suffix or ≥15 digits).
+pub(crate) fn parse_swap_amount(raw: &str, label: &str, decimals: u8) -> Result<U256, String> {
+    use std::str::FromStr;
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err(format!("{label}: enter e.g. 0.1 or paste wei"));
+    }
+    let (strip, force_wei) = if let Some(s) = t.strip_suffix("wei") {
+        (s.trim(), true)
+    } else {
+        (t, false)
+    };
+    if force_wei || (strip.chars().all(|c| c.is_ascii_digit()) && strip.len() >= 15) {
+        let wei = U256::from_str(strip).map_err(|_| format!("{label}: invalid wei integer"))?;
+        if wei.is_zero() {
+            return Err(format!("{label}: must be > 0"));
+        }
+        return Ok(wei);
+    }
+    let wei_str = parse_native_amount(strip, decimals)
+        .map_err(|e| format!("{label}: {}", e.user_message()))?;
+    let wei = U256::from_str(&wei_str).map_err(|_| format!("{label}: parse failed"))?;
+    if wei.is_zero() {
+        return Err(format!("{label}: must be > 0"));
+    }
+    Ok(wei)
+}
+
+/// Min-out field: allows `0` / empty; human decimals (`1`, `0.01`) or raw wei (`1wei`, ≥15 digits).
+pub(crate) fn parse_min_out_amount(raw: &str, label: &str, decimals: u8) -> Result<U256, String> {
+    use std::str::FromStr;
+    let t = raw.trim();
+    if t.is_empty() || t == "0" {
+        return Ok(U256::ZERO);
+    }
+    let (strip, force_wei) = if let Some(s) = t.strip_suffix("wei") {
+        (s.trim(), true)
+    } else {
+        (t, false)
+    };
+    if force_wei || (strip.chars().all(|c| c.is_ascii_digit()) && strip.len() >= 15) {
+        return U256::from_str(strip).map_err(|_| format!("{label}: invalid wei integer"));
+    }
+    let wei_str = parse_native_amount(strip, decimals)
+        .map_err(|e| format!("{label}: {}", e.user_message()))?;
+    U256::from_str(&wei_str).map_err(|_| format!("{label}: parse failed"))
+}
+
+fn picker_candidates(assets: &[Balance], out: bool) -> Vec<&Balance> {
+    if out {
+        assets
+            .iter()
+            .filter(|b| b.token.contract_address.is_some())
+            .collect()
+    } else {
+        assets.iter().collect()
+    }
+}
+
+/// ↑/↓ cycle through wallet assets into a focused Token in / Token out field.
+pub(crate) fn cycle_token_picker(
+    assets: &[Balance],
+    out: bool,
+    pick: &mut usize,
+    forward: bool,
+    native_in: &mut bool,
+    input: &mut Input,
+    status: &mut String,
+) -> bool {
+    let list = picker_candidates(assets, out);
+    if list.is_empty() {
+        *status = "No tokens loaded — open Assets or wait…".into();
+        return true;
+    }
+    if *pick != TOKEN_PICK_UNINIT && *pick >= list.len() {
+        *pick = TOKEN_PICK_UNINIT;
+    }
+    if *pick == TOKEN_PICK_UNINIT {
+        *pick = 0;
+    } else {
+        *pick = if forward {
+            (*pick + 1) % list.len()
+        } else {
+            (*pick + list.len() - 1) % list.len()
+        };
+    }
+    let role = if out {
+        TokenFieldRole::InputOut
+    } else {
+        TokenFieldRole::InputIn { native_in }
+    };
+    apply_picker_balance(list[*pick], role, input, status);
+    *status = format!("{} · ↑↓ pick token", list[*pick].token.symbol);
+    true
+}
+
+/// Resolve ticker symbol from the chrome asset list (case-insensitive address).
+pub(crate) fn token_symbol_for_address<'a>(assets: &'a [Balance], addr: &str) -> Option<&'a str> {
+    let want = addr.trim();
+    if want.is_empty() {
+        return None;
+    }
+    assets.iter().find_map(|b| {
+        b.token
+            .contract_address
+            .as_ref()
+            .filter(|a| a.eq_ignore_ascii_case(want))
+            .map(|_| b.token.symbol.as_str())
+    })
+}
 
 /// Max fractional digits in the F2 chrome box (status strip).
 const F2_FRAC_DIGITS: usize = 4;
@@ -488,16 +654,33 @@ pub(crate) fn render_fkey_labeled_input(
     frame.render_widget(Paragraph::new(input.line()), inner);
 }
 
+/// True when the user typed or deleted in a token field — picker index must reset.
+pub(crate) fn manual_edit_resets_token_pick(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
+    )
+}
+
 /// Render a labelled text input inside a faded square box (yellow title when focused).
-///
-/// The title carries the label; the inner area shows only the value (or stays
-/// blank when empty and unfocused — no duplicated `Label:` / placeholder noise).
 pub(crate) fn render_labeled_input(
     frame: &mut Frame,
     area: Rect,
     label: &str,
     input: &Input,
     focused: bool,
+) {
+    render_labeled_input_aligned(frame, area, label, input, focused, Alignment::Left);
+}
+
+/// Like [`render_labeled_input`] with horizontal alignment for the field body.
+pub(crate) fn render_labeled_input_aligned(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    input: &Input,
+    focused: bool,
+    align: Alignment,
 ) {
     let title_text = format!(" {label} ");
     let title = if focused {
@@ -506,10 +689,67 @@ pub(crate) fn render_labeled_input(
         brand::fade_line(&title_text)
     };
     let inner = brand::render_faded_box(frame, area, Some(title));
-    if !focused && input.value().is_empty() {
+    if input.value().is_empty() {
+        if focused {
+            frame.render_widget(Paragraph::new(input.line()).alignment(align), inner);
+        } else {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    input.placeholder(),
+                    Style::default().fg(Color::DarkGray),
+                )))
+                .alignment(align),
+                inner,
+            );
+        }
         return;
     }
-    frame.render_widget(Paragraph::new(input.line()), inner);
+    frame.render_widget(Paragraph::new(input.line()).alignment(align), inner);
+}
+
+/// Human-readable native symbol for the active EVM chain.
+pub(crate) fn native_pls_label(chain_id: u64) -> &'static str {
+    match chain_id {
+        943 => "tPLS",
+        369 => "PLS",
+        _ => "PLS",
+    }
+}
+
+/// Token-in row: show native PLS/tPLS when native mode and the address field is empty.
+pub(crate) fn render_token_in_field(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    input: &Input,
+    focused: bool,
+    native_in: bool,
+    chain_id: u64,
+) {
+    if native_in && input.value().trim().is_empty() {
+        let title_text = format!(" {label} ");
+        let title = if focused {
+            brand::focus_title(&title_text)
+        } else {
+            brand::fade_line(&title_text)
+        };
+        let inner = brand::render_faded_box(frame, area, Some(title));
+        let style = if focused {
+            Style::default()
+                .fg(brand::accent_color())
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(native_pls_label(chain_id), style))),
+            inner,
+        );
+        return;
+    }
+    render_labeled_input(frame, area, label, input, focused);
 }
 
 /// A status/error line rendered at the bottom of a view's body.
@@ -536,7 +776,225 @@ pub(crate) fn body_areas(area: Rect) -> [Rect; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_address, fit_raw};
+    use super::{
+        apply_picker_balance, cycle_token_picker, fit_address, fit_raw, parse_min_out_amount,
+        parse_swap_amount, parse_token_address, TokenFieldRole, TOKEN_PICK_UNINIT,
+    };
+    use crate::input::Input;
+    use alloy::primitives::U256;
+    use std::str::FromStr;
+    use vaughan_core::chains::{Balance, TokenInfo};
+
+    #[test]
+    fn apply_picker_native_clears_token_in() {
+        let native = Balance {
+            token: TokenInfo {
+                symbol: "PLS".into(),
+                name: "PulseChain".into(),
+                decimals: 18,
+                contract_address: None,
+            },
+            raw: "1".into(),
+            formatted: "1".into(),
+            usd_value: None,
+        };
+        let mut native_in = false;
+        let mut input = Input::new(false, "");
+        input.set_value("0xdead");
+        let mut status = String::new();
+        assert!(apply_picker_balance(
+            &native,
+            TokenFieldRole::InputIn {
+                native_in: &mut native_in,
+            },
+            &mut input,
+            &mut status,
+        ));
+        assert!(native_in);
+        assert!(input.value().is_empty());
+    }
+
+    #[test]
+    fn apply_picker_erc20_sets_token_out() {
+        let token = Balance {
+            token: TokenInfo {
+                symbol: "MEME".into(),
+                name: "Meme".into(),
+                decimals: 18,
+                contract_address: Some("0x2222222222222222222222222222222222222222".into()),
+            },
+            raw: "1".into(),
+            formatted: "1".into(),
+            usd_value: None,
+        };
+        let mut input = Input::new(false, "");
+        let mut status = String::new();
+        assert!(apply_picker_balance(
+            &token,
+            TokenFieldRole::InputOut,
+            &mut input,
+            &mut status,
+        ));
+        assert!(input.value().contains("2222"));
+    }
+
+    #[test]
+    fn parse_token_address_rejects_empty() {
+        assert!(parse_token_address("", "Token out").is_err());
+        assert!(parse_token_address("  ", "Token out")
+            .unwrap_err()
+            .contains("↑↓"));
+    }
+
+    #[test]
+    fn parse_swap_amount_human_and_wei() {
+        assert_eq!(
+            parse_swap_amount("0.1", "amount", 18).unwrap(),
+            U256::from_str("100000000000000000").unwrap()
+        );
+        assert_eq!(
+            parse_swap_amount("1", "amount", 18).unwrap(),
+            U256::from_str("1000000000000000000").unwrap()
+        );
+        let wei = U256::from_str("1000000000000000000").unwrap();
+        assert_eq!(
+            parse_swap_amount("1000000000000000000", "amount", 18).unwrap(),
+            wei
+        );
+        assert_eq!(
+            parse_swap_amount("1000000000000000000wei", "amount", 18).unwrap(),
+            wei
+        );
+    }
+
+    #[test]
+    fn parse_min_out_human_and_wei() {
+        assert_eq!(
+            parse_min_out_amount("1", "min out", 18).unwrap(),
+            U256::from(10u128.pow(18))
+        );
+        assert_eq!(
+            parse_min_out_amount("0.01", "min out", 18).unwrap(),
+            U256::from(10u128.pow(16))
+        );
+        assert_eq!(
+            parse_min_out_amount("1wei", "min out", 18).unwrap(),
+            U256::from(1)
+        );
+        assert_eq!(
+            parse_min_out_amount("0", "min out", 18).unwrap(),
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn cycle_token_picker_first_press_selects_index_zero() {
+        let assets = vec![
+            Balance {
+                token: TokenInfo {
+                    symbol: "PLS".into(),
+                    name: "PulseChain".into(),
+                    decimals: 18,
+                    contract_address: None,
+                },
+                raw: "1".into(),
+                formatted: "1".into(),
+                usd_value: None,
+            },
+            Balance {
+                token: TokenInfo {
+                    symbol: "PLSX".into(),
+                    name: "PLSX".into(),
+                    decimals: 18,
+                    contract_address: Some("0x95B303987A60C71504D99Aa1b13B4DA07b0790ab".into()),
+                },
+                raw: "1".into(),
+                formatted: "1".into(),
+                usd_value: None,
+            },
+        ];
+        let mut pick = TOKEN_PICK_UNINIT;
+        let mut native_in = false;
+        let mut input = Input::new(false, "");
+        let mut status = String::new();
+        cycle_token_picker(
+            &assets,
+            false,
+            &mut pick,
+            true,
+            &mut native_in,
+            &mut input,
+            &mut status,
+        );
+        assert_eq!(pick, 0);
+        assert!(native_in);
+        assert!(input.value().is_empty());
+        cycle_token_picker(
+            &assets,
+            false,
+            &mut pick,
+            true,
+            &mut native_in,
+            &mut input,
+            &mut status,
+        );
+        assert_eq!(pick, 1);
+        assert!(!native_in);
+        assert!(input.value().contains("95B303"));
+    }
+
+    #[test]
+    fn cycle_token_picker_advances_out_list() {
+        let assets = vec![
+            Balance {
+                token: TokenInfo {
+                    symbol: "PLS".into(),
+                    name: "PulseChain".into(),
+                    decimals: 18,
+                    contract_address: None,
+                },
+                raw: "1".into(),
+                formatted: "1".into(),
+                usd_value: None,
+            },
+            Balance {
+                token: TokenInfo {
+                    symbol: "PLSX".into(),
+                    name: "PLSX".into(),
+                    decimals: 18,
+                    contract_address: Some("0x95B303987A60C71504D99Aa1b13B4DA07b0790ab".into()),
+                },
+                raw: "1".into(),
+                formatted: "1".into(),
+                usd_value: None,
+            },
+        ];
+        let mut pick = TOKEN_PICK_UNINIT;
+        let mut native_in = true;
+        let mut input = Input::new(false, "");
+        let mut status = String::new();
+        cycle_token_picker(
+            &assets,
+            true,
+            &mut pick,
+            true,
+            &mut native_in,
+            &mut input,
+            &mut status,
+        );
+        assert_eq!(pick, 0);
+        assert!(input.value().contains("95B303"));
+        cycle_token_picker(
+            &assets,
+            true,
+            &mut pick,
+            true,
+            &mut native_in,
+            &mut input,
+            &mut status,
+        );
+        assert_eq!(pick, 0); // only one ERC-20 candidate for out
+    }
 
     #[test]
     fn fit_address_keeps_full_when_wide() {

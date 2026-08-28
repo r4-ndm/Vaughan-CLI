@@ -58,6 +58,10 @@ impl Input {
         &self.buffer
     }
 
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     pub fn set_value(&mut self, text: impl Into<String>) {
         // Masked inputs hold in-flight secrets: zero the old contents before
         // the assignment can release or reuse the allocation.

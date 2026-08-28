@@ -11,6 +11,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::get_network_by_chain_id;
+use vaughan_core::chains::Balance;
 use vaughan_core::core::proposal::ProposalQueue;
 use vaughan_core::core::{
     mark_replaced, push_recent, BroadcastEntry, McpSessionToken, StateManager, WalletState,
@@ -18,7 +19,10 @@ use vaughan_core::core::{
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
-use crate::jobs::{ChromeFocus, ChromeSnapshot, UiJob, UiJobResult};
+use crate::jobs::{
+    asset_index_for_address, chrome_assets_from_fetch, ChromeFocus, ChromeSnapshot, UiJob,
+    UiJobResult,
+};
 use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
@@ -162,7 +166,14 @@ impl View {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, bridge_line: &str) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        wallet: &WalletState,
+        bridge_line: &str,
+        assets: &[Balance],
+    ) {
         match self {
             Self::Onboarding(v) => v.render(frame, area, wallet),
             Self::Unlock(v) => v.render(frame, area, wallet),
@@ -174,7 +185,7 @@ impl View {
             Self::Dapps(v) => v.render(frame, area, wallet, bridge_line),
             Self::Assets(v) => v.render(frame, area, wallet),
             Self::Browser(v) => v.render(frame, area, wallet),
-            Self::Dex(v) => v.render(frame, area, wallet),
+            Self::Dex(v) => v.render(frame, area, wallet, assets),
             Self::Aggregator(v) => v.render(frame, area, wallet),
             Self::Bridge(v) => v.render(frame, area, wallet),
             Self::History(v) => v.render(frame, area, wallet),
@@ -390,7 +401,8 @@ impl App {
                 .lock()
                 .map(|s| s.summary_line())
                 .unwrap_or_else(|_| "Bridge: status unavailable".into());
-            self.view.render(frame, area, &wallet, &bridge_line);
+            self.view
+                .render(frame, area, &wallet, &bridge_line, &self.chrome.assets);
         } else {
             // Job thread holds the wallet — keep painting a spinner body.
             use ratatui::widgets::Paragraph;
@@ -419,6 +431,11 @@ impl App {
             self.poll_jobs();
             if let View::Dex(v) = &mut self.view {
                 v.set_tick(self.tick);
+                let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(job) = v.poll_quote(&wallet) {
+                    drop(wallet);
+                    self.spawn_job(job);
+                }
             }
             if let View::Aggregator(v) = &mut self.view {
                 v.set_tick(self.tick);
@@ -470,9 +487,17 @@ impl App {
             return;
         }
 
-        // F1/F2/F3 status strip — takes priority over view ↑/↓ when unlocked.
-        if self.wallet().is_unlocked() && self.handle_chrome_hotkey(key) {
-            return;
+        // Dex/Ag Token in/out: ↑/↓ pick from wallet assets; else F1–F3 chrome strip.
+        if self.wallet().is_unlocked() {
+            if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                let forward = matches!(key.code, KeyCode::Down);
+                if self.cycle_active_token_field(forward) {
+                    return;
+                }
+            }
+            if self.handle_chrome_hotkey(key) {
+                return;
+            }
         }
 
         let outcome = {
@@ -567,11 +592,16 @@ impl App {
             KeyOutcome::StartJob(job) => self.spawn_job(job),
             KeyOutcome::SendAsset(balance) => {
                 // Align F2 with the asset the user picked from Assets.
-                if let Some(i) = self.chrome.assets.iter().position(|b| {
-                    b.token.contract_address == balance.token.contract_address
-                        && b.token.symbol == balance.token.symbol
-                }) {
+                if let Some(i) = self
+                    .chrome
+                    .assets
+                    .iter()
+                    .position(|b| same_f2_asset(b, &balance))
+                {
                     self.chrome.asset_idx = i;
+                } else {
+                    self.chrome.assets_loading = true;
+                    self.spawn_job(UiJob::RefreshAssets);
                 }
                 self.view = View::Dashboard(DashboardView::for_asset(balance));
             }
@@ -1026,16 +1056,23 @@ impl App {
         }
     }
 
-    /// `wallet_switchEthereumChain`: switch to a built-in network by chain id.
+    /// `wallet_switchEthereumChain`: switch to any configured network by chain id.
     fn switch_chain(&mut self, chain_id: &str) -> Result<(), ProviderError> {
-        use vaughan_core::chains::evm::networks::get_network_by_chain_id;
         let id: u64 = chain_id
             .parse()
             .map_err(|_| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
-        let net = get_network_by_chain_id(id)
-            .ok_or_else(|| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
+        let net_id = {
+            let wallet = self.wallet();
+            wallet
+                .networks()
+                .networks()
+                .iter()
+                .find(|n| n.chain_id == id)
+                .map(|n| n.id.clone())
+                .ok_or_else(|| ProviderError::UnrecognizedChain(chain_id.to_string()))?
+        };
         self.wallet()
-            .set_active_network(&net.id)
+            .set_active_network(&net_id)
             .map_err(|e| ProviderError::Internal(e.user_message()))?;
         self.events
             .publish(ProviderEvent::ChainChanged(format!("0x{id:x}")));
@@ -1317,7 +1354,13 @@ impl App {
             Screen::Onboarding | Screen::Unlock | Screen::Approve => {}
             Screen::Assets => {
                 self.refresh_chrome();
-                self.spawn_job(UiJob::RefreshAssets);
+                self.spawn_refresh_assets();
+            }
+            Screen::Dex | Screen::Aggregator => {
+                self.refresh_chrome();
+                if self.chrome.assets.is_empty() {
+                    self.spawn_refresh_assets();
+                }
             }
             Screen::History => {
                 self.refresh_chrome();
@@ -1328,6 +1371,10 @@ impl App {
             Screen::Approvals => {
                 self.refresh_chrome();
                 self.spawn_job(ApprovalsView::initial_job());
+            }
+            Screen::Dashboard => {
+                self.refresh_chrome();
+                self.spawn_refresh_assets();
             }
             _ => self.refresh_chrome(),
         }
@@ -1341,6 +1388,44 @@ impl App {
         self.chrome.loading = true;
         self.chrome.error = None;
         self.spawn_job(UiJob::RefreshChrome);
+    }
+
+    /// Re-fetch the F2 asset list (native + ERC-20). Safe to call often; coalesces
+    /// when a refresh is already in flight.
+    fn spawn_refresh_assets(&mut self) {
+        if !self.wallet().is_unlocked() || self.chrome.assets_loading {
+            return;
+        }
+        self.chrome.assets_loading = true;
+        self.spawn_job(UiJob::RefreshAssets);
+    }
+
+    /// Dex / Ag: ↑/↓ on Token in or Token out cycles the wallet asset list.
+    fn cycle_active_token_field(&mut self, forward: bool) -> bool {
+        if !matches!(self.screen(), Screen::Dex | Screen::Aggregator) {
+            return false;
+        }
+        if self.chrome.assets.is_empty() {
+            let on_token_field = match &mut self.view {
+                View::Dex(v) => v.cycle_focused_token_picker(&[], forward),
+                View::Aggregator(v) => v.cycle_focused_token_picker(&[], forward),
+                _ => false,
+            };
+            if !on_token_field {
+                return false;
+            }
+            if !self.chrome.assets_loading {
+                self.chrome.assets_loading = true;
+                self.spawn_job(UiJob::RefreshAssets);
+            }
+            return true;
+        }
+        let assets = self.chrome.assets.clone();
+        match &mut self.view {
+            View::Dex(v) => v.cycle_focused_token_picker(&assets, forward),
+            View::Aggregator(v) => v.cycle_focused_token_picker(&assets, forward),
+            _ => false,
+        }
     }
 
     /// F1 / F2 / F3 focus + ↑/↓ preview + Enter set / Esc cancel.
@@ -1548,6 +1633,7 @@ impl App {
             .publish(ProviderEvent::ChainChanged(format!("0x{chain_id:x}")));
         self.chrome.assets.clear();
         self.chrome.asset_idx = 0;
+        self.chrome.pending_asset_address = None;
         self.chrome.error = None;
         match self.screen() {
             Screen::Dex | Screen::Aggregator | Screen::Settings => {
@@ -1556,6 +1642,7 @@ impl App {
             _ => {}
         }
         self.refresh_chrome();
+        self.spawn_refresh_assets();
         if let View::Dashboard(v) = &mut self.view {
             v.sync_from_chrome(&self.chrome);
         }
@@ -1575,7 +1662,9 @@ impl App {
             .publish(ProviderEvent::AccountsChanged(accounts));
         self.chrome.assets.clear();
         self.chrome.asset_idx = 0;
+        self.chrome.pending_asset_address = None;
         self.refresh_chrome();
+        self.spawn_refresh_assets();
         if matches!(
             self.screen(),
             Screen::Dex | Screen::Aggregator | Screen::Receive
@@ -1723,6 +1812,53 @@ impl App {
                         Err(e) => Err(e),
                     })
                 }
+                UiJob::DexQuote {
+                    quote_gen,
+                    chain_id,
+                    rpc_url,
+                    protocol_v2,
+                    router,
+                    amount_in,
+                    fee,
+                    path,
+                } => {
+                    use alloy::primitives::{Address, U256};
+                    use std::str::FromStr;
+                    use vaughan_core::core::{quote_v2_exact_in, quote_v3_exact_in};
+
+                    let parsed = (|| -> Result<vaughan_core::core::DexQuote, WalletError> {
+                        let amount_in = U256::from_str(&amount_in)
+                            .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
+                        let hops: Result<Vec<Address>, _> = path
+                            .iter()
+                            .map(|s| {
+                                Address::from_str(s.trim()).map_err(|_| {
+                                    WalletError::InvalidTransaction("dex path token".into())
+                                })
+                            })
+                            .collect();
+                        let hops = hops?;
+                        if protocol_v2 {
+                            let router = Address::from_str(&router).map_err(|_| {
+                                WalletError::InvalidTransaction("dex router".into())
+                            })?;
+                            handle.block_on(quote_v2_exact_in(&rpc_url, router, amount_in, &hops))
+                        } else {
+                            if hops.len() != 2 {
+                                return Err(WalletError::Other(
+                                    "V3 quote requires a single-hop path".into(),
+                                ));
+                            }
+                            handle.block_on(quote_v3_exact_in(
+                                &rpc_url, chain_id, hops[0], hops[1], amount_in, fee,
+                            ))
+                        }
+                    })();
+                    UiJobResult::DexQuote {
+                        quote_gen,
+                        result: parsed,
+                    }
+                }
                 UiJob::BridgeQuote {
                     src_token,
                     dst_token,
@@ -1843,16 +1979,21 @@ impl App {
                     self.chrome.assets_loading = false;
                     match &r {
                         Ok(assets) => {
-                            self.chrome.assets = assets
-                                .iter()
-                                .filter(|b| {
-                                    let raw = b.raw.trim();
-                                    !raw.is_empty() && raw != "0" && raw != "0x0"
-                                })
-                                .cloned()
-                                .collect();
+                            self.chrome.assets = chrome_assets_from_fetch(assets.clone());
                             if self.chrome.asset_idx >= self.chrome.assets.len() {
                                 self.chrome.asset_idx = self.chrome.assets.len().saturating_sub(1);
+                            }
+                            if let Some(pending) = self.chrome.pending_asset_idx {
+                                if pending >= self.chrome.assets.len() {
+                                    self.chrome.pending_asset_idx =
+                                        Some(self.chrome.assets.len().saturating_sub(1));
+                                }
+                            }
+                            if let Some(addr) = self.chrome.pending_asset_address.take() {
+                                if let Some(i) = asset_index_for_address(&self.chrome.assets, &addr)
+                                {
+                                    self.chrome.asset_idx = i;
+                                }
                             }
                         }
                         Err(e) => {
@@ -1866,6 +2007,23 @@ impl App {
                     }
                 }
                 other => {
+                    let send_ok = matches!(
+                        &other,
+                        UiJobResult::Send(Ok(_)) | UiJobResult::SendStealth(Ok(_))
+                    );
+                    let dex_swap_token = if send_ok {
+                        if let View::Dex(v) = &self.view {
+                            if v.is_completing_swap() {
+                                v.token_out_address()
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     if let UiJobResult::Send(Ok(receipt)) = &other {
                         let old = receipt.entry.replaces.clone();
                         push_recent(&mut self.recent_broadcasts, receipt.entry.clone());
@@ -1927,6 +2085,21 @@ impl App {
                     };
                     if let Some(job) = reload.or(dex_followup) {
                         self.spawn_job(job);
+                    }
+                    if send_ok {
+                        self.refresh_chrome();
+                        if let Some(addr) = dex_swap_token {
+                            {
+                                let mut w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Err(e) = self.handle.block_on(w.import_custom_token(&addr)) {
+                                    tracing::warn!(error = %e, "import swap token-out failed");
+                                }
+                            }
+                            self.chrome.pending_asset_address = Some(addr);
+                            self.spawn_refresh_assets();
+                        } else if !matches!(self.view, View::Dex(_)) {
+                            self.spawn_refresh_assets();
+                        }
                     }
                 }
             }
@@ -2010,6 +2183,19 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             _ => GlobalAction::None,
         },
         _ => GlobalAction::None,
+    }
+}
+
+/// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).
+/// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).
+fn same_f2_asset(a: &vaughan_core::chains::Balance, b: &vaughan_core::chains::Balance) -> bool {
+    match (
+        a.token.contract_address.as_deref(),
+        b.token.contract_address.as_deref(),
+    ) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        _ => false,
     }
 }
 

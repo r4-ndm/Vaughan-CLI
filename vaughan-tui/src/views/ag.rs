@@ -1,7 +1,7 @@
 //! Aggregator (Ag) view — best-route quotes without a partner API key.
 //!
 //! Live today: SquirrelSwap (default), PulseSwap, Piteas. ↑/↓ venue ·
-//! Space = native PLS in · amount as human units (e.g. `1` or `0.01`) · Enter quote.
+//! ↑↓ pick In/Out · Space = native PLS in · Enter quote.
 
 use alloy::primitives::{Address, U256};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -14,10 +14,9 @@ use ratatui::{
 };
 use std::str::FromStr;
 use tokio::runtime::Handle;
+use vaughan_core::chains::Balance;
 use vaughan_core::chains::EvmTransaction;
-use vaughan_core::core::{
-    format_base_units, parse_native_amount, AggAccess, AggQuote, AggVenue, WalletState,
-};
+use vaughan_core::core::{format_base_units, AggAccess, AggQuote, AggVenue, WalletState};
 use vaughan_provider::EventBus;
 
 use crate::app::{KeyOutcome, Screen};
@@ -25,45 +24,11 @@ use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::dex_calldata::build_approve_tx;
-use crate::views::{body_areas, render_labeled_input, status_paragraph};
-
-/// PulseX (PLSX) on PulseChain mainnet — default Ag `Out` token.
-const PLSX_369: &str = "0x95B303987A60C71504D99Aa1b13B4DA07b0790ab";
-
-fn wpls_for_chain(chain_id: u64) -> &'static str {
-    match chain_id {
-        369 => "0xA1077a294dDE1B09bB078844df40758a5D0f9a27",
-        943 => "0x70499adEBB11Efd915E3b69E700c331778628707",
-        _ => "",
-    }
-}
-
-/// Parse Ag amount: prefer human decimals (`1`, `0.01`); bare integers ≥ 1e15
-/// are treated as wei for power users / pasted Brain values. Suffix `wei` forces wei.
-fn parse_ag_amount(raw: &str) -> Result<U256, String> {
-    let t = raw.trim();
-    if t.is_empty() {
-        return Err("amount: enter e.g. 1 or 0.01 (PLS)".into());
-    }
-    let (strip, force_wei) = if let Some(s) = t.strip_suffix("wei") {
-        (s.trim(), true)
-    } else {
-        (t, false)
-    };
-    if force_wei || (strip.chars().all(|c| c.is_ascii_digit()) && strip.len() >= 15) {
-        let wei = U256::from_str(strip).map_err(|_| "amount: invalid wei integer".to_string())?;
-        if wei.is_zero() {
-            return Err("amount: need non-zero".into());
-        }
-        return Ok(wei);
-    }
-    let wei_str = parse_native_amount(strip, 18).map_err(|e| e.user_message())?;
-    let wei = U256::from_str(&wei_str).map_err(|_| "amount: parse failed".to_string())?;
-    if wei.is_zero() {
-        return Err("amount: need non-zero".into());
-    }
-    Ok(wei)
-}
+use crate::views::{
+    body_areas, cycle_token_picker, manual_edit_resets_token_pick, parse_swap_amount,
+    parse_token_address, render_labeled_input, render_token_in_field, status_paragraph,
+    TOKEN_PICK_UNINIT,
+};
 
 fn fmt_token_amount(wei: &U256) -> String {
     format_base_units(&wei.to_string(), 18)
@@ -113,6 +78,8 @@ pub struct AgView {
     venue: AggVenue,
     token_in: Input,
     token_out: Input,
+    token_in_pick: usize,
+    token_out_pick: usize,
     amount: Input,
     slippage: Input,
     native_in: bool,
@@ -132,8 +99,10 @@ impl Default for AgView {
             stage: Stage::Input,
             focus: Focus::Amount,
             venue: AggVenue::SquirrelSwap,
-            token_in: Input::new(false, "0x token in (Space = native PLS)…"),
-            token_out: Input::new(false, "0x token out…"),
+            token_in: Input::new(false, "↑↓ pick · paste · Space = native PLS"),
+            token_out: Input::new(false, "↑↓ pick · paste (e.g. PLSX)"),
+            token_in_pick: TOKEN_PICK_UNINIT,
+            token_out_pick: TOKEN_PICK_UNINIT,
             amount: Input::new(false, "amount (e.g. 1 or 0.01)"),
             slippage: Input::new(false, "0.5"),
             native_in: true,
@@ -162,19 +131,11 @@ impl AgView {
         };
         v.slippage.set_value("0.5");
         v.amount.set_value(amount.unwrap_or("1").trim().to_string());
-        if let Some(wpls) = non_empty(wpls_for_chain(chain_id)) {
-            v.token_in.set_value(wpls);
-            v.native_in = true;
-        }
         if let Some(out) = token_out.filter(|s| !s.trim().is_empty()) {
             v.token_out.set_value(out.trim().to_string());
-        } else if chain_id == 369 {
-            v.token_out.set_value(PLSX_369);
         }
         if chain_id == 369 {
-            v.status =
-                "Squirrel · native PLS → PLSX · amount e.g. 1 · Enter quote · Space toggles native"
-                    .into();
+            v.status = "Squirrel · Tab In/Out · ↑↓ pick token · Space native · Enter quote".into();
         } else {
             v.status = match chain_id {
                 943 => "Aggregators are mainnet (369) — switch Net or use Dex on testnet".into(),
@@ -315,12 +276,14 @@ impl AgView {
             chunks[1],
         );
 
-        render_labeled_input(
+        render_token_in_field(
             frame,
             chunks[2],
             "In",
             &self.token_in,
             self.focus == Focus::TokenIn,
+            self.native_in,
+            self.chain_id,
         );
         render_labeled_input(
             frame,
@@ -345,12 +308,40 @@ impl AgView {
         );
         frame.render_widget(
             Paragraph::new(if self.native_in {
-                "native PLS in (Space toggles) · Amt is PLS (not wei)"
+                "native PLS in (Space) · ↑↓ pick when In/Out focused · Amt in PLS"
             } else {
-                "ERC-20 in — approve then swap · Amt uses token decimals (18)"
+                "ERC-20 in — approve then swap · ↑↓ pick · Amt uses token decimals (18)"
             }),
             chunks[6],
         );
+    }
+
+    /// ↑/↓ on In / Out cycles wallet assets (from chrome asset list).
+    pub fn cycle_focused_token_picker(&mut self, assets: &[Balance], forward: bool) -> bool {
+        if !matches!(self.stage, Stage::Input) {
+            return false;
+        }
+        match self.focus {
+            Focus::TokenIn => cycle_token_picker(
+                assets,
+                false,
+                &mut self.token_in_pick,
+                forward,
+                &mut self.native_in,
+                &mut self.token_in,
+                &mut self.status,
+            ),
+            Focus::TokenOut => cycle_token_picker(
+                assets,
+                true,
+                &mut self.token_out_pick,
+                forward,
+                &mut self.native_in,
+                &mut self.token_out,
+                &mut self.status,
+            ),
+            _ => false,
+        }
     }
 
     fn render_confirm(&self, frame: &mut Frame, area: Rect) {
@@ -430,9 +421,10 @@ impl AgView {
             KeyCode::Char(' ') if matches!(self.focus, Focus::Venue | Focus::TokenIn) => {
                 self.native_in = !self.native_in;
                 if self.native_in {
-                    if let Some(w) = non_empty(wpls_for_chain(self.chain_id)) {
-                        self.token_in.set_value(w);
-                    }
+                    self.token_in.set_value("");
+                    self.token_in_pick = 0;
+                } else {
+                    self.token_in_pick = TOKEN_PICK_UNINIT;
                 }
                 self.status = if self.native_in {
                     "native PLS in".into()
@@ -443,16 +435,23 @@ impl AgView {
             }
             KeyCode::Enter => self.start_quote(wallet),
             _ => {
-                let input = match self.focus {
-                    Focus::TokenIn => &mut self.token_in,
-                    Focus::TokenOut => &mut self.token_out,
-                    Focus::Amount => &mut self.amount,
-                    Focus::Slippage => &mut self.slippage,
+                let (input, pick) = match self.focus {
+                    Focus::TokenIn => (&mut self.token_in, Some(&mut self.token_in_pick)),
+                    Focus::TokenOut => (&mut self.token_out, Some(&mut self.token_out_pick)),
+                    Focus::Amount => (&mut self.amount, None),
+                    Focus::Slippage => (&mut self.slippage, None),
                     Focus::Venue => return KeyOutcome::Consumed,
                 };
                 match input.handle_key(key) {
                     InputAction::Ignored => KeyOutcome::NotHandled,
-                    _ => KeyOutcome::Consumed,
+                    _ => {
+                        if let Some(p) = pick {
+                            if manual_edit_resets_token_pick(key.code) {
+                                *p = TOKEN_PICK_UNINIT;
+                            }
+                        }
+                        KeyOutcome::Consumed
+                    }
                 }
             }
         }
@@ -467,25 +466,25 @@ impl AgView {
             self.refresh_venue_status();
             return KeyOutcome::Consumed;
         }
-        let token_out = match Address::from_str(self.token_out.value().trim()) {
+        let token_out = match parse_token_address(self.token_out.value(), "Token out") {
             Ok(a) => a,
-            Err(_) => {
-                self.status = "token out: invalid address".into();
+            Err(msg) => {
+                self.status = msg;
                 return KeyOutcome::Consumed;
             }
         };
         let token_in = if self.native_in {
             Address::ZERO
         } else {
-            match Address::from_str(self.token_in.value().trim()) {
+            match parse_token_address(self.token_in.value(), "Token in") {
                 Ok(a) => a,
-                Err(_) => {
-                    self.status = "token in: invalid address".into();
+                Err(msg) => {
+                    self.status = msg;
                     return KeyOutcome::Consumed;
                 }
             }
         };
-        let amount = match parse_ag_amount(self.amount.value()) {
+        let amount = match parse_swap_amount(self.amount.value(), "amount", 18) {
             Ok(a) => a,
             Err(e) => {
                 self.status = e;
@@ -612,26 +611,19 @@ impl AgView {
     }
 }
 
-fn non_empty(s: &str) -> Option<&str> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::views::parse_swap_amount;
 
     #[test]
     fn parse_human_pls() {
         assert_eq!(
-            parse_ag_amount("1").unwrap(),
+            parse_swap_amount("1", "amount", 18).unwrap(),
             U256::from_str("1000000000000000000").unwrap()
         );
         assert_eq!(
-            parse_ag_amount("0.01").unwrap(),
+            parse_swap_amount("0.01", "amount", 18).unwrap(),
             U256::from_str("10000000000000000").unwrap()
         );
     }
@@ -639,7 +631,13 @@ mod tests {
     #[test]
     fn parse_wei_scale_and_suffix() {
         let wei = U256::from_str("1000000000000000000").unwrap();
-        assert_eq!(parse_ag_amount("1000000000000000000").unwrap(), wei);
-        assert_eq!(parse_ag_amount("1000000000000000000wei").unwrap(), wei);
+        assert_eq!(
+            parse_swap_amount("1000000000000000000", "amount", 18).unwrap(),
+            wei
+        );
+        assert_eq!(
+            parse_swap_amount("1000000000000000000wei", "amount", 18).unwrap(),
+            wei
+        );
     }
 }
