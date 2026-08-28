@@ -102,6 +102,7 @@ Stable substrings / codes (see also [`ai-tool-surface.md`](ai-tool-surface.md)):
 
 ## Related
 
+- [`vb-mcp-smoke.md`](vb-mcp-smoke.md) — **VB + CDP agent navigation** smoke (browser_open/snapshot/click)
 - [`mcp.md`](mcp.md) — setup  
 - [`mcp-transport.md`](mcp-transport.md) — why we stay hand-rolled (no `rmcp` now)  
 - [`mcp-threat-model.md`](mcp-threat-model.md) — security  

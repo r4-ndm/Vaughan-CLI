@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web3 &amp; DEX Security — Vaughan Paths</title>
+  <style>
+:root {
+  --bg: #fafafa;
+  --text: #1a1a1a;
+  --muted: #555;
+  --border: #d0d0d0;
+  --head: #f0f4f8;
+  --link: #0b57d0;
+  --code-bg: #f4f4f4;
+  --strong: #0d7a3e;
+  --good: #1565c0;
+  --careful: #b45309;
+  --weak: #b91c1c;
+  --na: #6b7280;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+h1 { font-size: 1.85rem; margin-top: 0; border-bottom: 2px solid var(--border); padding-bottom: 0.4rem; }
+h2 { font-size: 1.35rem; margin-top: 2.2rem; color: #222; }
+h3 { font-size: 1.1rem; margin-top: 1.6rem; }
+
+p, li { max-width: 72ch; }
+p.lead { font-size: 1.05rem; color: var(--muted); }
+
+a { color: var(--link); }
+code {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.9em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+pre {
+  background: #1e1e1e;
+  color: #e8e8e8;
+  padding: 1rem 1.1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  max-width: 100%;
+}
+
+pre code { background: none; padding: 0; color: inherit; }
+
+hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+
+blockquote {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--link);
+  background: #eef4fc;
+  border-radius: 0 6px 6px 0;
+}
+
+blockquote p { margin: 0; max-width: none; }
+
+ul { padding-left: 1.4rem; }
+li { margin: 0.35rem 0; }
+
+.meta {
+  font-size: 0.92rem;
+  color: var(--muted);
+  margin-bottom: 1.5rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 1.25rem 0 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.65rem 0.75rem;
+  vertical-align: top;
+  text-align: left;
+}
+
+th {
+  background: var(--head);
+  font-weight: 600;
+  white-space: normal;
+  word-wrap: break-word;
+  hyphens: auto;
+}
+
+table.table-grid {
+  table-layout: fixed;
+}
+
+table.table-grid th,
+table.table-grid td {
+  width: calc(100% / var(--cols, 7));
+  font-size: 0.8rem;
+  line-height: 1.3;
+  padding: 0.55rem 0.45rem;
+  vertical-align: middle;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+table.table-grid thead th {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+table.table-grid tbody td:first-child {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.82rem;
+}
+
+tr:nth-child(even) td { background: #fbfcfd; }
+
+.rating-strong { background: #ecfdf3 !important; color: var(--strong); font-weight: 600; }
+.rating-good { background: #eff6ff !important; color: var(--good); font-weight: 600; }
+.rating-careful { background: #fffbeb !important; color: var(--careful); font-weight: 600; }
+.rating-weak { background: #fef2f2 !important; color: var(--weak); font-weight: 600; }
+.rating-na { background: #f3f4f6 !important; color: var(--na); }
+
+.center { text-align: center; }
+
+.footer-note {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+@media print {
+  body { background: #fff; padding: 0.5in; max-width: none; }
+  .table-wrap { box-shadow: none; page-break-inside: avoid; }
+  h2, h3 { page-break-after: avoid; }
+  a { color: inherit; text-decoration: none; }
+  .no-print { display: none; }
+}
+</style>
+</head>
+<body>
+  <p class="no-print meta">Generated from <code>Security-Table.md</code> — open in a browser; use Print → Save as PDF for a PDF copy.</p>
+  <h1>Web3 &amp; DEX security — how Vaughan paths compare</h1>
+<p class="lead"><strong>Formatted versions:</strong> <a href="Security-Table.html">Security-Table.html</a> (best for tables) · <a href="Security-Table.pdf">Security-Table.pdf</a> Regenerate: <code>python3 scripts/render-security-table.py --pdf</code></p>
+<p>Plain-language comparison of <strong>how you interact with DeFi</strong> and what can go wrong. Use this to pick a path — not as a formal audit certificate.</p>
+<p class="meta"><strong>Last updated:</strong> 2026-08-27 (VB P0+P1 hardening — see <a href="native-parity-tricks.md">native-parity-tricks.md</a> §5).</p>
+<hr>
+<h2>Start here: which path should I use?</h2>
+<div class="table-wrap"><table><thead><tr><th>Your goal</th><th>Best path</th><th>Why</th></tr></thead><tbody><tr><td>Swap, bridge, inspect contracts, MCP agents — <strong>no website</strong></td><td><strong>Vaughan Wiz4rd-Engine</strong> (default)</td><td>No dApp frontend to hijack; you approve calldata in the TUI</td></tr><tr><td>Must use a <strong>real dApp website</strong> (PulseX mirror, 9inch, …)</td><td><strong>Vaughan Browser</strong> (<code>vaughan-dapp-browser</code>)</td><td>Allowlisted Chromium + extension; signing still in TUI</td></tr></tbody></table></div>
+<p><strong>Rule of thumb:</strong> prefer <strong>Vaughan Wiz4rd-Engine</strong> whenever it can do the job. Use <strong>Vaughan Browser</strong> only when you need the actual web UI.</p>
+<p>Related docs: <a href="browserless-pulse.md">browserless-pulse.md</a>, <a href="dapp-browser-strategy.md">dapp-browser-strategy.md</a>, <a href="freedom-browser-status.md">freedom-browser-status.md</a>, <a href="dapp-connection-risks.md">dapp-connection-risks.md</a>.</p>
+<hr>
+<h2>How to read the ratings</h2>
+<p>Each cell answers: <em>“If this attack happens, how bad is it for this path?”</em></p>
+<div class="table-wrap"><table><thead><tr><th>Rating</th><th>Meaning</th></tr></thead><tbody><tr><td class="rating-strong"><strong>Strong</strong></td><td>Architecture removes the attack or makes it impractical</td></tr><tr><td class="rating-good"><strong>Good</strong></td><td>Keys stay safe; you must read the TUI prompt (human error still possible)</td></tr><tr><td class="rating-careful"><strong>Careful</strong></td><td>Web or browser involved — review what you sign; some exposure remains</td></tr><tr><td class="rating-weak"><strong>Weak</strong></td><td>Common real-world loss vector for this model</td></tr><tr><td class="rating-na"><strong>—</strong></td><td>Not applicable (e.g. no web page)</td></tr></tbody></table></div>
+<hr>
+<h2>Vaughan paths at a glance</h2>
+<p>Side-by-side view of the two active <strong>Vaughan</strong> dApp paths <em>(weakest → strongest, left to right)</em>.</p>
+<div class="table-wrap"><table><thead><tr><th>Threat</th><th>What it means (one line)</th><th class="center">Vaughan Browser</th><th class="center">Vaughan Wiz4rd-Engine</th></tr></thead><tbody><tr><td><strong>Page tricks your wallet</strong> (DOM / JS patching)</td><td>Malicious site replaces <code>window.ethereum</code> or spies on calls</td><td class="center rating-good"><strong>Good</strong> — sealed provider + 4s tamper watchdog + per-tab RPC routing; sign/send truth is TUI</td><td class="center rating-strong"><strong>Strong</strong> — no page</td></tr><tr><td><strong>Fake or hacked website</strong> (DNS, CDN, mirror)</td><td>Frontend shows a legit UI but builds a drainer tx</td><td class="center rating-careful"><strong>Careful</strong> — MV3 nav allowlist + seeded IPFS mirrors; compromised allowlisted host still possible</td><td class="center rating-strong"><strong>Strong</strong> — no frontend</td></tr><tr><td><strong>Keys stolen from browser memory</strong></td><td>Seed / private key in JS heap</td><td class="center rating-strong"><strong>Strong</strong> — Rust vault only; extension holds session token only</td><td class="center rating-strong"><strong>Strong</strong> — Rust vault only</td></tr><tr><td><strong>Signing without understanding</strong> (blind sign)</td><td>You approve hex you never decoded</td><td class="center rating-good"><strong>Good</strong> — WYSIWYS TUI decode + 400ms debounce + 60s auto-deny</td><td class="center rating-strong"><strong>Strong</strong> — ABI decode in TUI / REPL</td></tr><tr><td><strong>Tracking</strong> (IP, fingerprint, relay logs)</td><td>Someone learns who you are and what you hold</td><td class="center rating-good"><strong>Good</strong> — read RPC proxied via Vaughan + Chromium privacy flags; site analytics may remain</td><td class="center rating-strong"><strong>Strong</strong> — direct RPC, no browser</td></tr><tr><td><strong>Infinite approvals / drainers</strong></td><td>One bad signature empties the wallet</td><td class="center rating-good"><strong>Good</strong> — Connect grant per origin + fresh TUI approve; <code>tx.from</code> bound to active account</td><td class="center rating-strong"><strong>Strong</strong> — explicit actions</td></tr></tbody></table></div>
+<p><strong>Summary</strong></p>
+<ul>
+<li><strong>Vaughan Browser</strong> — P1 hardening shipped (watchdog, nav gate, attested origin, connect grant, debounce/TTL); <strong>DOM ~Good</strong>, <strong>tracking ~Good</strong>; web frontend trust still <strong>Careful</strong></li>
+<li><strong>Vaughan Wiz4rd-Engine</strong> — strongest Vaughan path; default for a reason.</li>
+</ul>
+<p><em>Freedom + Vaughan is <strong>parked</strong> until upstream <a href="https://github.com/solardev-xyz/freedom-browser/pull/195">PR #195</a> — see <a href="freedom-browser-status.md">freedom-browser-status.md</a>.</em></p>
+<hr>
+<h2>Full comparison (including non-Vaughan wallets)</h2>
+<p><em>Columns ordered <strong>weakest → strongest</strong> (left to right).</em></p>
+<div class="table-wrap"><table class="table-grid" style="--cols: 7;"><thead><tr><th class="center">Threat</th><th class="center">MetaMask / Rabby / Phantom</th><th class="center">WalletConnect v2</th><th class="center">Brave + Brave Wallet</th><th class="center">Freedom Browser</th><th class="center">Vaughan Browser</th><th class="center">Vaughan Wiz4rd-Engine</th></tr></thead><tbody><tr><td>Page tricks your wallet</td><td class="center rating-weak">Weak</td><td class="center rating-na">—</td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-strong"><strong>Strong</strong></td></tr><tr><td>Fake or hacked website</td><td class="center rating-weak">Weak</td><td class="center rating-weak">Weak</td><td class="center rating-weak">Weak</td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-strong"><strong>Strong</strong></td></tr><tr><td>Keys in browser JS heap</td><td class="center rating-weak">Weak</td><td class="center rating-good">Good</td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-strong"><strong>Strong</strong></td><td class="center rating-strong"><strong>Strong</strong></td></tr><tr><td>Blind signing</td><td class="center rating-weak">Weak</td><td class="center rating-weak">Weak</td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-strong"><strong>Strong</strong></td></tr><tr><td>Tracking / relay metadata</td><td class="center rating-weak">Weak</td><td class="center rating-weak">Weak</td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-strong"><strong>Strong</strong></td></tr><tr><td>Approval drainers</td><td class="center rating-weak">Weak</td><td class="center rating-weak">Weak</td><td class="center rating-careful"><strong>Careful</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-good"><strong>Good</strong></td><td class="center rating-strong"><strong>Strong</strong></td></tr></tbody></table></div>
+<p><em>Vaughan Wiz4rd-Engine = Ag / Dex / Browse / MCP / <code>wiz4rd-engine</code> — no web engine (<a href="browserless-pulse.md">browserless-pulse.md</a>).</em></p>
+<p><em>MetaMask / Rabby / Phantom = browser <strong>extension</strong> architecture (EVM via <code>window.ethereum</code>; Phantom on Solana uses the same in-page provider model).</em></p>
+<p><em>Brave + Brave Wallet = Brave’s <strong>built-in</strong> native wallet — not Vaughan Browser using Brave as the Chromium shell. Keys stay out of page JS heap; Shields cut some tracking; approvals still in-browser.</em></p>
+<p><em>Freedom Browser = built-in mnemonic/Ledger wallet in Freedom (Electron main-process vault; no Vaughan backend).</em></p>
+<hr>
+<h2>Threat details (by attack type)</h2>
+<h3>1. Page tricks your wallet (DOM tampering)</h3>
+<p><strong>What happens:</strong> JavaScript on the page monkey-patches <code>window.ethereum.request</code>, shows fake balances, or intercepts RPC.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>MetaMask / Rabby / Phantom</td><td>Page and extension share the browser; classic attack surface</td></tr><tr><td>Brave + Brave Wallet</td><td>Native built-in provider in the browser binary — harder than an extension to hijack, but the page still runs in the renderer and can race/conflict with <code>window.ethereum</code></td></tr><tr><td>WalletConnect</td><td class="rating-na">— (page talks to phone/desktop wallet via relay)</td></tr><tr><td>Vaughan Wiz4rd-Engine</td><td>No DOM, no <code>window.ethereum</code></td></tr><tr><td><strong>Vaughan Browser</strong></td><td>EIP-1193 inject in MAIN world for dApp interop. <strong>P1:</strong> sealed provider + 4s tamper watchdog + EIP-6963 re-announce; Chrome-attested <code>vaughan_page_origin</code> (page-supplied ignored); per-tab JSON-RPC id routing; read calls proxied via Vaughan RPC. Sign/send truth is always the TUI</td></tr><tr><td>Freedom Browser (built-in)</td><td>Electron <strong>isolated world</strong> + IPC; built-in popup — no Vaughan TUI decode or connect-grant model</td></tr></tbody></table></div>
+<h3>2. Fake or hacked website (DNS, CDN, IPFS mirror)</h3>
+<p><strong>What happens:</strong> You think you’re on PulseX / Uniswap; a compromised script builds a transfer to an attacker.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>MetaMask / Rabby / Phantom / WC</td><td>Full web stack trust</td></tr><tr><td>Brave + Brave Wallet</td><td>Full web stack trust; Shields do not validate calldata</td></tr><tr><td>Vaughan Wiz4rd-Engine</td><td>Calls routers/contracts via Rust + RPC; no site to poison</td></tr><tr><td><strong>Vaughan Browser</strong></td><td>Loads real HTTPS UIs on an <strong>allowlist</strong>. <strong>Shipped:</strong> MV3 <code>declarativeNetRequest</code> in-tab nav gate (<code>allowlist.json</code> at launch). PulseX <strong>IPFS mirror</strong> hosts seeded</td></tr><tr><td>Freedom Browser (built-in)</td><td>Same web trust as Vaughan Browser; approvals in Freedom’s in-browser UI</td></tr></tbody></table></div>
+<h3>3. Keys stolen from browser memory</h3>
+<p><strong>What happens:</strong> Malware or XSS reads the decrypted seed from extension memory.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>MetaMask / Rabby / Phantom</td><td>Seed decrypted in extension JS heap when unlocked — high impact</td></tr><tr><td>Brave + Brave Wallet</td><td>Seed in browser wallet vault when unlocked — not in page JS heap, but in Brave process memory (not Rust)</td></tr><tr><td>WalletConnect</td><td>Keys usually on phone/cold device — lower browser exposure</td></tr><tr><td>Vaughan paths (Vaughan Wiz4rd-Engine / Vaughan Browser)</td><td>Vault: Argon2id + AES-256-GCM; unlock in Rust with zeroization. Browser/extension holds at most a <strong>session WS token</strong> (<code>provider.session</code>, 0o600), not the seed</td></tr><tr><td>Freedom Browser (built-in)</td><td>Seed in Electron main-process vault when unlocked — not in page JS heap, but not the Rust enclave</td></tr></tbody></table></div>
+<h3>4. Signing without understanding (blind sign)</h3>
+<p><strong>What happens:</strong> UI shows “Confirm” but calldata is opaque hex; you approve a drainer.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>MetaMask / Rabby / Phantom / WC</td><td>Popup in browser DOM; same clickjacking and habit risks</td></tr><tr><td>Brave + Brave Wallet</td><td>In-browser approval panel with some tx preview; no terminal WYSIWYS or debounce/TTL</td></tr><tr><td>Vaughan Wiz4rd-Engine</td><td>Dynamic ABI decode (<code>alloy-dyn-abi</code>); REPL / Ag / Dex show intent</td></tr><tr><td><strong>Vaughan Browser</strong></td><td>Every sign/send → <strong>Vaughan TUI</strong> with ABI decode (WYSIWYS), recipient, value, fees; <strong>400ms input debounce</strong> + <strong>60s auto-deny</strong>; no auto-sign</td></tr><tr><td>Freedom Browser (built-in)</td><td>Freedom popup shows tx fields; no Vaughan terminal decode or debounce/TTL</td></tr></tbody></table></div>
+<h3>5. Tracking (IP, fingerprint, relays)</h3>
+<p><strong>What happens:</strong> RPC provider, WalletConnect relay, or analytics learns your IP, wallet, and timing.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>MetaMask / Rabby / Phantom</td><td>Default or bundled RPC + browser fingerprint</td></tr><tr><td>Brave + Brave Wallet</td><td>Bundled RPC + fingerprint; <strong>Shields</strong> block many trackers/third-party calls (DeFi sites may need Shields lowered)</td></tr><tr><td>WalletConnect</td><td>Third-party relay sees origin, IP, session metadata</td></tr><tr><td>Vaughan Wiz4rd-Engine</td><td>Client → your RPC; no WC relay, no browser</td></tr><tr><td><strong>Vaughan Browser</strong></td><td>Provider on loopback with <strong><code>access_token</code></strong> required (extension path); <strong><code>eth_call</code> / <code>eth_estimateGas</code> / …</strong> forwarded to Vaughan’s active RPC. Chromium privacy flags (WebRTC, background net). Sites may still run analytics</td></tr><tr><td>Freedom Browser (built-in)</td><td>Same webview tracking exposure; uses Freedom’s RPC pool</td></tr></tbody></table></div>
+<h3>6. Infinite approvals &amp; drainers</h3>
+<p><strong>What happens:</strong> One <code>approve(max)</code> or malicious router call empties balances.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>MetaMask / Rabby / Phantom / WC</td><td>One-click approve habits</td></tr><tr><td>Brave + Brave Wallet</td><td>Built-in scam/warning heuristics; still in-browser approve flow</td></tr><tr><td>Vaughan Wiz4rd-Engine</td><td>Explicit swap/approve flows in TUI</td></tr><tr><td><strong>Vaughan Browser</strong></td><td>Connect grant required per origin (<code>eth_accounts</code> empty until approved); <strong>fresh TUI approve</strong> per sign/send; <strong><code>tx.from</code> must match active account</strong>; <code>accountsChanged</code> scoped to granted origins</td></tr><tr><td>Freedom Browser (built-in)</td><td>Per-origin dApp permissions in Freedom; Electron popup approve (no Vaughan connect-grant / account-binding)</td></tr></tbody></table></div>
+<hr>
+<h2>Architecture (data flow)</h2>
+<h3>Typical extension (MetaMask, Rabby, Phantom, …)</h3>
+<pre><code>Untrusted web page ──► Extension (JS heap) ──► Cloud / public RPC         ▲   DOM exploits, poisoned CDN, key material in browser</code></pre>
+<h3>Brave + Brave Wallet (built-in)</h3>
+<pre><code>Untrusted web page ──► Brave native wallet UI ──► Brave RPC pool         ▲   Built-in provider (not extension JS heap); Shields help tracking;   still in-browser approve + full web frontend trust</code></pre>
+<h3>Vaughan Wiz4rd-Engine (default — strongest)</h3>
+<pre><code>Vaughan TUI (Ag / Dex / Browse / MCP) ──► Rust + wiz4rd-engine / alloy ──► RPC node         ▲   No browser, no web frontend, no window.ethereum</code></pre>
+<h3>Vaughan Browser</h3>
+<pre><code>Allowlisted HTTPS tab (system Chromium)    │  MAIN inject: window.ethereum (page-visible)    ▼MV3 extension (background WebSocket, attested page origin)    │  ws://127.0.0.1:8745 + access_token    ▼vaughan-provider ──► Vaughan TUI approve/deny    ▲Keys never leave Rust; nav allowlist blocks non-trusted hosts</code></pre>
+<hr>
+<h2>Vaughan Browser controls (2026 P0 + P1 — shipped)</h2>
+<p>Synced with <a href="native-parity-tricks.md">native-parity-tricks.md</a> §5 and <a href="dapp-connection-risks.md">dapp-connection-risks.md</a>.</p>
+<div class="table-wrap"><table><thead><tr><th>Control</th><th>What it does</th></tr></thead><tbody><tr><td>Host allowlist + in-tab nav gate</td><td>MV3 <code>declarativeNetRequest</code> blocks main-frame loads outside <code>allowlist.json</code> (+ IPFS gateway seeds)</td></tr><tr><td>Read RPC proxy</td><td>Allowlisted <code>eth_call</code>, <code>eth_estimateGas</code>, … → Vaughan active network RPC</td></tr><tr><td>Tamper watchdog</td><td>Sealed <code>window.ethereum</code> + 4s integrity check + EIP-6963 re-announce</td></tr><tr><td>Per-tab JSON-RPC routing</td><td>Service worker maps wire ids per tab — no cross-tab response theft</td></tr><tr><td>Isolated temp profile</td><td>Not your daily Chrome profile; session dir <code>0700</code></td></tr><tr><td>Provider <code>access_token</code></td><td>Loopback WS requires session token (<code>provider.session</code>, 0o600); token redacted from launcher stderr</td></tr><tr><td>Chrome-attested page origin</td><td><code>vaughan_page_origin</code> from extension <code>port.sender.url</code>; page-supplied values ignored</td></tr><tr><td>Connect grant before sign</td><td><code>eth_accounts</code> empty until Connect approved; sign/send return 4100 without grant</td></tr><tr><td><code>accountsChanged</code> scoping</td><td>Non-empty events only to origins holding a Connect grant</td></tr><tr><td>Locked wallet</td><td><code>eth_requestAccounts</code> → 4100 while locked (no silent hang)</td></tr><tr><td>Approve debounce + TTL</td><td>400ms input debounce; 60s auto-deny stale prompts</td></tr><tr><td><code>wallet_switchEthereumChain</code> prompts</td><td>Chain switch shows requesting origin in TUI</td></tr><tr><td><code>tx.from</code> account binding</td><td>Reject sign/send when <code>from</code> ≠ active account</td></tr><tr><td>Approve UI sanitization</td><td>Strip control chars from origin/site/message (no terminal escape injection)</td></tr><tr><td>CDP default off</td><td>Agent debugging on loopback only when explicitly enabled; token in <code>vb.session</code></td></tr><tr><td>Chromium privacy flags</td><td>WebRTC IP policy, no background networking, no sync</td></tr></tbody></table></div>
+<p><strong>Not yet (optional / parked paths):</strong> HMAC origin attestation and handshake challenge for Freedom + Vaughan (<a href="https://github.com/solardev-xyz/freedom-browser/pull/195">PR #195</a>); Unix domain socket for provider IPC.</p>
+<p>See <a href="dapp-browser-strategy.md">dapp-browser-strategy.md</a> and <a href="dapp-connection-risks.md">dapp-connection-risks.md</a> for open risks (TUI focus, prompt expiry, etc.).</p>
+<hr>
+<h2>What this document is not</h2>
+<ul>
+<li>Not a substitute for a professional security audit</li>
+<li>Not a guarantee of mainnet safety — <strong>testnet first</strong>, read every TUI prompt</li>
+<li>Not exhaustive of all Vaughan surfaces (MCP, hardware wallets, AA batching have their own docs)</li>
+</ul>
+  <p class="footer-note">Source: docs/Security-Table.md · Regenerate: <code>python3 scripts/render-security-table.py --pdf</code></p>
+</body>
+</html>

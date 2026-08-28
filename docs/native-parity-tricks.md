@@ -199,7 +199,7 @@ Shipped toward Freedom-parity for the Chromium shell (2026-08):
 | 3 Handshake challenge | Not yet |
 | 6 Unix domain socket | Not yet |
 | Token required for https origins (Freedom) | Opt-in via `VAUGHAN_PROVIDER_REQUIRE_TOKEN=1`; default flips after Freedom reads `provider.session` |
-| In-tab navigation allowlist | Still Phase 1 gap |
+| In-tab navigation allowlist | **Yes** — MV3 `declarativeNetRequest` + `allowlist.json` at launch ([dapp-browser-strategy.md](dapp-browser-strategy.md) spike notes) |
 
 Extension attaches `?access_token=` automatically from `provider.session`.
 Freedom PR should read the same file and send `Authorization: Bearer`.

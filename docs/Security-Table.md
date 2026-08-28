@@ -1,9 +1,12 @@
 # Web3 & DEX security — how Vaughan paths compare
 
+**Formatted versions:** [Security-Table.html](Security-Table.html) (best for tables) · [Security-Table.pdf](Security-Table.pdf)  
+Regenerate: `python3 scripts/render-security-table.py --pdf`
+
 Plain-language comparison of **how you interact with DeFi** and what can go wrong.
 Use this to pick a path — not as a formal audit certificate.
 
-**Last updated:** 2026-08 (includes **VB** — Vaughan Browser, formerly “VAB”).
+**Last updated:** 2026-08-27 (VB P0+P1 hardening — see [native-parity-tricks.md](native-parity-tricks.md) §5).
 
 ---
 
@@ -11,12 +14,10 @@ Use this to pick a path — not as a formal audit certificate.
 
 | Your goal | Best path | Why |
 |-----------|-----------|-----|
-| Swap, bridge, inspect contracts, MCP agents — **no website** | **Browserless Pulse** (default) | No dApp frontend to hijack; you approve calldata in the TUI |
-| Must use a **real dApp website** (PulseX mirror, 9inch, …) | **VB** (`vaughan-dapp-browser`) | Allowlisted Chromium + extension; signing still in TUI |
-| Legacy / fallback webview | **Freedom** (parked — [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)) | Prefer VB; Freedom blocked on upstream merge ([status](freedom-browser-status.md)) |
-| MetaMask, Rabby, WalletConnect, … | *(not Vaughan)* | See “Typical browser wallets” below |
+| Swap, bridge, inspect contracts, MCP agents — **no website** | **Vaughan Wiz4rd-Engine** (default) | No dApp frontend to hijack; you approve calldata in the TUI |
+| Must use a **real dApp website** (PulseX mirror, 9inch, …) | **Vaughan Browser** (`vaughan-dapp-browser`) | Allowlisted Chromium + extension; signing still in TUI |
 
-**Rule of thumb:** prefer **Browserless Pulse** whenever it can do the job. Use **VB** only when you need the actual web UI.
+**Rule of thumb:** prefer **Vaughan Wiz4rd-Engine** whenever it can do the job. Use **Vaughan Browser** only when you need the actual web UI.
 
 Related docs: [browserless-pulse.md](browserless-pulse.md), [dapp-browser-strategy.md](dapp-browser-strategy.md), [freedom-browser-status.md](freedom-browser-status.md), [dapp-connection-risks.md](dapp-connection-risks.md).
 
@@ -38,37 +39,43 @@ Each cell answers: *“If this attack happens, how bad is it for this path?”*
 
 ## Vaughan paths at a glance
 
-Side-by-side view of the three ways **Vaughan** can touch a dApp.
+Side-by-side view of the two active **Vaughan** dApp paths *(weakest → strongest, left to right)*.
 
-| Threat | What it means (one line) | Browserless Pulse | VB | Freedom |
-|--------|--------------------------|:-----------------:|:--:|:-------:|
-| **Page tricks your wallet** (DOM / JS patching) | Malicious site replaces `window.ethereum` or spies on calls | **Strong** — no page | **Good** — tamper watchdog + sealed provider + TUI truth | **Good** — isolated IPC to signer |
-| **Fake or hacked website** (DNS, CDN, mirror) | Frontend shows a legit UI but builds a drainer tx | **Strong** — no frontend | **Careful** — allowlisted hosts; IPFS mirrors seeded | **Careful** — same web trust as VB |
-| **Keys stolen from browser memory** | Seed / private key in JS heap | **Strong** — Rust vault only | **Strong** — Rust vault only | **Strong** — Rust vault only |
-| **Signing without understanding** (blind sign) | You approve hex you never decoded | **Strong** — ABI decode in TUI / REPL | **Good** — full tx in TUI before sign | **Good** — full tx in TUI before sign |
-| **Tracking** (IP, fingerprint, relay logs) | Someone learns who you are and what you hold | **Strong** — direct RPC, no browser | **Good** — reads via Vaughan RPC + privacy flags; sites may still analytics | **Careful** — webview + sites |
-| **Infinite approvals / drainers** | One bad signature empties the wallet | **Strong** — explicit actions | **Good** — no auto-sign; Connect + TUI approve | **Good** — no auto-sign; TUI approve |
+| Threat | What it means (one line) | Vaughan Browser | Vaughan Wiz4rd-Engine |
+|--------|--------------------------|:---------------:|:--------------------------:|
+| **Page tricks your wallet** (DOM / JS patching) | Malicious site replaces `window.ethereum` or spies on calls | **Good** — sealed provider + 4s tamper watchdog + per-tab RPC routing; sign/send truth is TUI | **Strong** — no page |
+| **Fake or hacked website** (DNS, CDN, mirror) | Frontend shows a legit UI but builds a drainer tx | **Careful** — MV3 nav allowlist + seeded IPFS mirrors; compromised allowlisted host still possible | **Strong** — no frontend |
+| **Keys stolen from browser memory** | Seed / private key in JS heap | **Strong** — Rust vault only; extension holds session token only | **Strong** — Rust vault only |
+| **Signing without understanding** (blind sign) | You approve hex you never decoded | **Good** — WYSIWYS TUI decode + 400ms debounce + 60s auto-deny | **Strong** — ABI decode in TUI / REPL |
+| **Tracking** (IP, fingerprint, relay logs) | Someone learns who you are and what you hold | **Good** — read RPC proxied via Vaughan + Chromium privacy flags; site analytics may remain | **Strong** — direct RPC, no browser |
+| **Infinite approvals / drainers** | One bad signature empties the wallet | **Good** — Connect grant per origin + fresh TUI approve; `tx.from` bound to active account | **Strong** — explicit actions |
 
 **Summary**
 
-- **Browserless Pulse** — strongest Vaughan path; default for a reason.
-- **VB** — keys/signing as safe as Freedom; **DOM parity ~Good** (watchdog); **tracking ~Good** (RPC proxy); web frontend trust still **Careful**
-- **Freedom** — parked fallback; similar web risk to VB, different bridge (Electron IPC vs extension).
+- **Vaughan Browser** — P1 hardening shipped (watchdog, nav gate, attested origin, connect grant, debounce/TTL); **DOM ~Good**, **tracking ~Good**; web frontend trust still **Careful**
+- **Vaughan Wiz4rd-Engine** — strongest Vaughan path; default for a reason.
+
+*Freedom + Vaughan is **parked** until upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) — see [freedom-browser-status.md](freedom-browser-status.md).*
 
 ---
 
 ## Full comparison (including non-Vaughan wallets)
 
-| Threat | MetaMask / extension | WalletConnect v2 | Browserless Pulse | **VB** | Freedom + Vaughan |
-|--------|:--------------------:|:----------------:|:-----------------:|:------:|:-----------------:|
-| Page tricks your wallet | Weak | — | **Strong** | **Good** | **Good** |
-| Fake or hacked website | Weak | Weak | **Strong** | **Careful** | **Careful** |
-| Keys in browser JS heap | Weak | Good | **Strong** | **Strong** | **Strong** |
-| Blind signing | Weak | Weak | **Strong** | **Good** | **Good** |
-| Tracking / relay metadata | Weak | Weak | **Strong** | **Good** | **Careful** |
-| Approval drainers | Weak | Weak | **Strong** | **Good** | **Good** |
+*Columns ordered **weakest → strongest** (left to right).*
 
-*Browserless Pulse = Ag / Dex / Browse / MCP / `wiz4rd-engine` — no web engine.*
+| Threat | MetaMask / Rabby / Phantom | WalletConnect v2 | Brave + Brave Wallet | Freedom Browser | Vaughan Browser | Vaughan Wiz4rd-Engine |
+|--------|:--------------------------:|:----------------:|:--------------------:|:---------------:|:---------------:|:--------------------------:|
+| Page tricks your wallet | Weak | — | **Careful** | **Good** | **Good** | **Strong** |
+| Fake or hacked website | Weak | Weak | Weak | **Careful** | **Careful** | **Strong** |
+| Keys in browser JS heap | Weak | Good | **Good** | **Good** | **Strong** | **Strong** |
+| Blind signing | Weak | Weak | **Careful** | **Careful** | **Good** | **Strong** |
+| Tracking / relay metadata | Weak | Weak | **Careful** | **Careful** | **Good** | **Strong** |
+| Approval drainers | Weak | Weak | **Careful** | **Good** | **Good** | **Strong** |
+
+*Vaughan Wiz4rd-Engine = Ag / Dex / Browse / MCP / `wiz4rd-engine` — no web engine ([browserless-pulse.md](browserless-pulse.md)).*  
+*MetaMask / Rabby / Phantom = browser **extension** architecture (EVM via `window.ethereum`; Phantom on Solana uses the same in-page provider model).*  
+*Brave + Brave Wallet = Brave’s **built-in** native wallet — not Vaughan Browser using Brave as the Chromium shell. Keys stay out of page JS heap; Shields cut some tracking; approvals still in-browser.*  
+*Freedom Browser = built-in mnemonic/Ledger wallet in Freedom (Electron main-process vault; no Vaughan backend).*
 
 ---
 
@@ -80,11 +87,12 @@ Side-by-side view of the three ways **Vaughan** can touch a dApp.
 
 | Path | Notes |
 |------|-------|
-| MetaMask / extension | Page and extension share the browser; classic attack surface |
+| MetaMask / Rabby / Phantom | Page and extension share the browser; classic attack surface |
+| Brave + Brave Wallet | Native built-in provider in the browser binary — harder than an extension to hijack, but the page still runs in the renderer and can race/conflict with `window.ethereum` |
 | WalletConnect | — (page talks to phone/desktop wallet via relay) |
-| Browserless Pulse | No DOM, no `window.ethereum` |
-| **VB** | EIP-1193 inject in MAIN world for dApp interop. **P1 hardening:** sealed provider + 4s tamper watchdog + EIP-6963 re-announce; reads proxied through Vaughan RPC. Sign/send truth is always the TUI |
-| Freedom | Electron **isolated world** + IPC; page does not hold the signer |
+| Vaughan Wiz4rd-Engine | No DOM, no `window.ethereum` |
+| **Vaughan Browser** | EIP-1193 inject in MAIN world for dApp interop. **P1:** sealed provider + 4s tamper watchdog + EIP-6963 re-announce; Chrome-attested `vaughan_page_origin` (page-supplied ignored); per-tab JSON-RPC id routing; read calls proxied via Vaughan RPC. Sign/send truth is always the TUI |
+| Freedom Browser (built-in) | Electron **isolated world** + IPC; built-in popup — no Vaughan TUI decode or connect-grant model |
 
 ### 2. Fake or hacked website (DNS, CDN, IPFS mirror)
 
@@ -92,10 +100,11 @@ Side-by-side view of the three ways **Vaughan** can touch a dApp.
 
 | Path | Notes |
 |------|-------|
-| MetaMask / WC | Full web stack trust |
-| Browserless Pulse | Calls routers/contracts via Rust + RPC; no site to poison |
-| **VB** | Loads real HTTPS UIs on an **allowlist**. In-tab navigation gated (MV3). PulseX **IPFS mirror** hosts are seeded |
-| Freedom | Same web trust as VB; payload reviewed in TUI |
+| MetaMask / Rabby / Phantom / WC | Full web stack trust |
+| Brave + Brave Wallet | Full web stack trust; Shields do not validate calldata |
+| Vaughan Wiz4rd-Engine | Calls routers/contracts via Rust + RPC; no site to poison |
+| **Vaughan Browser** | Loads real HTTPS UIs on an **allowlist**. **Shipped:** MV3 `declarativeNetRequest` in-tab nav gate (`allowlist.json` at launch). PulseX **IPFS mirror** hosts seeded |
+| Freedom Browser (built-in) | Same web trust as Vaughan Browser; approvals in Freedom’s in-browser UI |
 
 ### 3. Keys stolen from browser memory
 
@@ -103,9 +112,11 @@ Side-by-side view of the three ways **Vaughan** can touch a dApp.
 
 | Path | Notes |
 |------|-------|
-| MetaMask | Seed decrypted in extension JS heap — high impact |
+| MetaMask / Rabby / Phantom | Seed decrypted in extension JS heap when unlocked — high impact |
+| Brave + Brave Wallet | Seed in browser wallet vault when unlocked — not in page JS heap, but in Brave process memory (not Rust) |
 | WalletConnect | Keys usually on phone/cold device — lower browser exposure |
-| Vaughan paths (all) | Vault: Argon2id + AES-256-GCM; unlock in Rust with zeroization. Browser/extension holds at most a **session WS token**, not the seed |
+| Vaughan paths (Vaughan Wiz4rd-Engine / Vaughan Browser) | Vault: Argon2id + AES-256-GCM; unlock in Rust with zeroization. Browser/extension holds at most a **session WS token** (`provider.session`, 0o600), not the seed |
+| Freedom Browser (built-in) | Seed in Electron main-process vault when unlocked — not in page JS heap, but not the Rust enclave |
 
 ### 4. Signing without understanding (blind sign)
 
@@ -113,9 +124,11 @@ Side-by-side view of the three ways **Vaughan** can touch a dApp.
 
 | Path | Notes |
 |------|-------|
-| MetaMask / WC | Often truncated or opaque in popup |
-| Browserless Pulse | Dynamic ABI decode (`alloy-dyn-abi`); REPL / Ag / Dex show intent |
-| **VB / Freedom** | Every sign/send → **Vaughan TUI** with recipient, value, fees; no auto-sign |
+| MetaMask / Rabby / Phantom / WC | Popup in browser DOM; same clickjacking and habit risks |
+| Brave + Brave Wallet | In-browser approval panel with some tx preview; no terminal WYSIWYS or debounce/TTL |
+| Vaughan Wiz4rd-Engine | Dynamic ABI decode (`alloy-dyn-abi`); REPL / Ag / Dex show intent |
+| **Vaughan Browser** | Every sign/send → **Vaughan TUI** with ABI decode (WYSIWYS), recipient, value, fees; **400ms input debounce** + **60s auto-deny**; no auto-sign |
+| Freedom Browser (built-in) | Freedom popup shows tx fields; no Vaughan terminal decode or debounce/TTL |
 
 ### 5. Tracking (IP, fingerprint, relays)
 
@@ -123,11 +136,12 @@ Side-by-side view of the three ways **Vaughan** can touch a dApp.
 
 | Path | Notes |
 |------|-------|
-| MetaMask | Default RPC + browser fingerprint |
+| MetaMask / Rabby / Phantom | Default or bundled RPC + browser fingerprint |
+| Brave + Brave Wallet | Bundled RPC + fingerprint; **Shields** block many trackers/third-party calls (DeFi sites may need Shields lowered) |
 | WalletConnect | Third-party relay sees origin, IP, session metadata |
-| Browserless Pulse | Client → your RPC; no WC relay, no browser |
-| **VB** | Provider on loopback; **`eth_call` / `eth_estimateGas` / …** forwarded to Vaughan’s active RPC (not the page’s Infura key). Chromium privacy flags (WebRTC, background net). Sites may still run analytics |
-| Freedom | Loopback provider; webview may still load third-party assets |
+| Vaughan Wiz4rd-Engine | Client → your RPC; no WC relay, no browser |
+| **Vaughan Browser** | Provider on loopback with **`access_token`** required (extension path); **`eth_call` / `eth_estimateGas` / …** forwarded to Vaughan’s active RPC. Chromium privacy flags (WebRTC, background net). Sites may still run analytics |
+| Freedom Browser (built-in) | Same webview tracking exposure; uses Freedom’s RPC pool |
 
 ### 6. Infinite approvals & drainers
 
@@ -135,15 +149,17 @@ Side-by-side view of the three ways **Vaughan** can touch a dApp.
 
 | Path | Notes |
 |------|-------|
-| MetaMask / WC | One-click approve habits |
-| Browserless Pulse | Explicit swap/approve flows in TUI |
-| **VB / Freedom** | Connect grant required; **fresh TUI approve** per sign/send; never cached |
+| MetaMask / Rabby / Phantom / WC | One-click approve habits |
+| Brave + Brave Wallet | Built-in scam/warning heuristics; still in-browser approve flow |
+| Vaughan Wiz4rd-Engine | Explicit swap/approve flows in TUI |
+| **Vaughan Browser** | Connect grant required per origin (`eth_accounts` empty until approved); **fresh TUI approve** per sign/send; **`tx.from` must match active account**; `accountsChanged` scoped to granted origins |
+| Freedom Browser (built-in) | Per-origin dApp permissions in Freedom; Electron popup approve (no Vaughan connect-grant / account-binding) |
 
 ---
 
 ## Architecture (data flow)
 
-### Typical extension (MetaMask)
+### Typical extension (MetaMask, Rabby, Phantom, …)
 
 ```
 Untrusted web page ──► Extension (JS heap) ──► Cloud / public RPC
@@ -151,15 +167,24 @@ Untrusted web page ──► Extension (JS heap) ──► Cloud / public RPC
    DOM exploits, poisoned CDN, key material in browser
 ```
 
-### Browserless Pulse (default — strongest)
+### Brave + Brave Wallet (built-in)
 
 ```
-Vaughan TUI (Ag / Dex / Browse / MCP) ──► Rust + alloy ──► RPC node
+Untrusted web page ──► Brave native wallet UI ──► Brave RPC pool
+         ▲
+   Built-in provider (not extension JS heap); Shields help tracking;
+   still in-browser approve + full web frontend trust
+```
+
+### Vaughan Wiz4rd-Engine (default — strongest)
+
+```
+Vaughan TUI (Ag / Dex / Browse / MCP) ──► Rust + wiz4rd-engine / alloy ──► RPC node
          ▲
    No browser, no web frontend, no window.ethereum
 ```
 
-### VB (Vaughan Browser)
+### Vaughan Browser
 
 ```
 Allowlisted HTTPS tab (system Chromium)
@@ -173,29 +198,32 @@ vaughan-provider ──► Vaughan TUI approve/deny
 Keys never leave Rust; nav allowlist blocks non-trusted hosts
 ```
 
-### Freedom + Vaughan (parked fallback)
-
-```
-Electron webview (sandbox) ── isolated IPC ──► Freedom main ── 127.0.0.1 ──► Vaughan Rust
-         ▲
-Keys in Rust; web UI trust similar to VB
-```
-
 ---
 
-## VB-specific controls (2026 P0 + P1)
+## Vaughan Browser controls (2026 P0 + P1 — shipped)
+
+Synced with [native-parity-tricks.md](native-parity-tricks.md) §5 and [dapp-connection-risks.md](dapp-connection-risks.md).
 
 | Control | What it does |
 |---------|----------------|
-| Host allowlist + in-tab nav gate | Extension blocks main-frame loads outside trusted hosts (+ IPFS gateway seeds) |
-| Read RPC proxy | Allowlisted `eth_call`, `eth_estimateGas`, … → Vaughan active network RPC (Freedom-style) |
-| Tamper watchdog | Sealed `window.ethereum` + periodic integrity check + EIP-6963 re-announce |
+| Host allowlist + in-tab nav gate | MV3 `declarativeNetRequest` blocks main-frame loads outside `allowlist.json` (+ IPFS gateway seeds) |
+| Read RPC proxy | Allowlisted `eth_call`, `eth_estimateGas`, … → Vaughan active network RPC |
+| Tamper watchdog | Sealed `window.ethereum` + 4s integrity check + EIP-6963 re-announce |
+| Per-tab JSON-RPC routing | Service worker maps wire ids per tab — no cross-tab response theft |
 | Isolated temp profile | Not your daily Chrome profile; session dir `0700` |
-| Provider `access_token` | Loopback WS requires session token |
-| Origin allowlist + attested `vaughan_page_origin` | Extension Origin from Chrome, not page-supplied |
-| Connect grant before sign | `eth_sign` / send require prior Connect approval for that origin |
+| Provider `access_token` | Loopback WS requires session token (`provider.session`, 0o600); token redacted from launcher stderr |
+| Chrome-attested page origin | `vaughan_page_origin` from extension `port.sender.url`; page-supplied values ignored |
+| Connect grant before sign | `eth_accounts` empty until Connect approved; sign/send return 4100 without grant |
+| `accountsChanged` scoping | Non-empty events only to origins holding a Connect grant |
+| Locked wallet | `eth_requestAccounts` → 4100 while locked (no silent hang) |
+| Approve debounce + TTL | 400ms input debounce; 60s auto-deny stale prompts |
+| `wallet_switchEthereumChain` prompts | Chain switch shows requesting origin in TUI |
+| `tx.from` account binding | Reject sign/send when `from` ≠ active account |
+| Approve UI sanitization | Strip control chars from origin/site/message (no terminal escape injection) |
 | CDP default off | Agent debugging on loopback only when explicitly enabled; token in `vb.session` |
 | Chromium privacy flags | WebRTC IP policy, no background networking, no sync |
+
+**Not yet (optional / parked paths):** HMAC origin attestation and handshake challenge for Freedom + Vaughan ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)); Unix domain socket for provider IPC.
 
 See [dapp-browser-strategy.md](dapp-browser-strategy.md) and [dapp-connection-risks.md](dapp-connection-risks.md) for open risks (TUI focus, prompt expiry, etc.).
 
