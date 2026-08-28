@@ -119,7 +119,7 @@ Treat the browser as a **plugin binary**, not part of the wallet heart.
 | Narrow seams | (1) spawn CLI (`--url`, allowlist, provider WS) (2) EIP-1193 to Vaughan (3) optional CDP port/token for agents |
 | MCP degrade | `browser_*` tools return structured unavailable if child absent; Ag/Dex/MCP wallet tools keep working |
 | Default build | `cargo build -p vaughan-cli` must **not** require CEF download |
-| Kill-switch day | Drop/disable crate + soft-launch + MCP browser tools; Browserless Pulse + provider remain; Freedom stays parked |
+| Kill-switch day | Drop/disable crate + soft-launch + MCP browser tools; Browserless Pulse + provider remain; Freedom stays parked — see [vb-kill-switch.md](vb-kill-switch.md) |
 
 ## Multi-chain (not Pulse-only)
 
@@ -135,7 +135,7 @@ Treat the browser as a **plugin binary**, not part of the wallet heart.
 
 - Navigation allowlist only (no open-internet general browser).
 - CDP binds **127.0.0.1 only**; off unless agent-browser toggle is on.
-- Agent tools require unlock + toggle + live child process.
+- Agent tools require **toggle + live child** for CDP navigation (unlock required only for sign/send via provider).
 - Allowlist every CDP/`browser_navigate` (agents must not bypass UI chrome).
 - Page never sees vault secrets / bearer tokens (thin-proxy).
 - Honest EIP-6963 as Vaughan; MetaMask-family `isMetaMask` convenience flag

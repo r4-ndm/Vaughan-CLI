@@ -90,8 +90,22 @@ impl SettingsView {
                     .collect();
 
                 let list = List::new(items);
-                let [list_area, hint_area] =
-                    Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(content);
+                let cdp_label = if wallet.agent_browser_control() {
+                    "Agent browser control (CDP): ON"
+                } else {
+                    "Agent browser control (CDP): OFF"
+                };
+                let cdp_style = if wallet.agent_browser_control() {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                let [list_area, hint_area, cdp_area] = Layout::vertical([
+                    Constraint::Min(4),
+                    Constraint::Length(3),
+                    Constraint::Length(1),
+                ])
+                .areas(content);
                 let inner = brand::render_faded_box(
                     frame,
                     list_area,
@@ -103,10 +117,15 @@ impl SettingsView {
                 let hint_inner = brand::render_faded_box(frame, hint_area, None);
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        "h — Ledger/Trezor USB help (Linux udev) · k — Keys",
+                        "h — Ledger/Trezor USB help (Linux udev) · k — Keys · p — agent browser CDP",
                         Style::default().fg(Color::DarkGray),
                     ))),
                     hint_inner,
+                );
+                let cdp_inner = brand::render_faded_box(frame, cdp_area, None);
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(cdp_label, cdp_style))),
+                    cdp_inner,
                 );
             }
             Stage::HardwareHelp => {
@@ -211,6 +230,21 @@ impl SettingsView {
             KeyCode::Char('h') => {
                 self.stage = Stage::HardwareHelp;
                 self.status.clear();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('p') => {
+                let next = !wallet.agent_browser_control();
+                match wallet.set_agent_browser_control(next) {
+                    Ok(()) => {
+                        self.status = if next {
+                            "Agent browser control (CDP) enabled — MCP browser_* tools may use loopback CDP."
+                                .into()
+                        } else {
+                            "Agent browser control (CDP) disabled — close VB if open.".into()
+                        };
+                    }
+                    Err(e) => self.status = e.user_message(),
+                }
                 KeyOutcome::Consumed
             }
             KeyCode::Char('a') => {

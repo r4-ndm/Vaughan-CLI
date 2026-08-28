@@ -390,7 +390,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] CDP export only with `--cdp-port` / `VAUGHAN_DAPP_BROWSER_CDP_PORT` (default off)
 - [x] Anvil smoke: dApp page Origin + extension Origin → connect + send + multi-chain switch (`vaughan-tui/tests/dapp_browser_bridge_smoke.rs`)
 - [x] Manual smoke: Pulse / 9inch / Squirrel / Liberty headed Chromium (CSP-safe extension; PulseX via IPFS mirror)
-- [ ] Navigation allowlist enforcement after first load — **done** (extension MV3 + MCP `browser_navigate` checks `vb.session` suffixes)
+- [x] Navigation allowlist enforcement after first load — extension MV3 + MCP `browser_navigate` checks `vb.session` suffixes
 - [ ] Tauri + CEF embed (replace system Chromium) — still gated on git `tauri-runtime-cef`
 
 ### Phase 2 — MCP B1 (FR-7.5)
@@ -400,7 +400,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ### Phase 3 — MCP B2 (FR-7.5)
 - [x] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP evaluate + Input (refs e0..e49)
-- [ ] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6)
+- [x] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6) — [`docs/vb-kill-switch.md`](docs/vb-kill-switch.md); Settings **`p`**; `vaughan config agent-browser`
 
 ### Parked — Fable 5 comprehensive audit (before release tag)
 

@@ -196,4 +196,18 @@ async fn browser_status_unavailable_without_vb_session() {
     assert_eq!(body["available"], false);
     assert_eq!(body["reason"], "no_vb_session");
     assert!(body["hint"].as_str().is_some());
+    assert!(body.get("agent_browser_control").is_some());
+}
+
+#[tokio::test]
+async fn browser_navigate_blocked_when_agent_control_off() {
+    std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
+    let (_dispatcher, ctx) = harness().await;
+    let err = vaughan_mcp::browser_bridge::browser_navigate(
+        serde_json::json!({ "url": "https://example.com" }),
+        &ctx,
+    )
+    .await
+    .expect_err("navigate should fail without agent control");
+    assert!(err.contains("agent browser control disabled"));
 }

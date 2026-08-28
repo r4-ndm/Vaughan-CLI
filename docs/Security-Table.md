@@ -220,7 +220,7 @@ Synced with [native-parity-tricks.md](native-parity-tricks.md) §5 and [dapp-con
 | `wallet_switchEthereumChain` prompts | Chain switch shows requesting origin in TUI |
 | `tx.from` account binding | Reject sign/send when `from` ≠ active account |
 | Approve UI sanitization | Strip control chars from origin/site/message (no terminal escape injection) |
-| CDP default off | Agent debugging on loopback only when explicitly enabled; token in `vb.session` |
+| CDP default off | Agent debugging on loopback only when explicitly enabled (Settings **`p`**, `vaughan config agent-browser on`, or env override); token in `vb.session` — see [vb-kill-switch.md](vb-kill-switch.md) |
 | Chromium privacy flags | WebRTC IP policy, no background networking, no sync |
 
 **Not yet (optional / parked paths):** HMAC origin attestation and handshake challenge for Freedom + Vaughan ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)); Unix domain socket for provider IPC.

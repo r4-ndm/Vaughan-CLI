@@ -105,16 +105,24 @@ Wire-format CI: `cargo test -p vaughan-mcp --test conformance`.
 | `mainnet_blocked` | Set `VAUGHAN_MCP_ALLOW_MAINNET=1` (use testnet first) |
 | MCP broken in Cursor | Ensure nothing writes to stdout except JSON-RPC (logs go to stderr) |
 
-## Browser tools (VB B1)
+## Browser tools (VB B1 + B2)
 
 Optional `vaughan-dapp-browser` control for agents. **Never signs** — signing stays
 in the TUI/provider.
 
+**CDP is off by default (FR-7.5).** Enable agent browser control before B2 tools:
+
+- TUI: Settings (`n`) → **`p`**
+- CLI: `vaughan config agent-browser on`
+- Override: `VAUGHAN_DAPP_BROWSER_CDP_PORT=9222` in MCP host env (smoke/dev)
+
+Kill-switch: [vb-kill-switch.md](vb-kill-switch.md).
+
 | Tool | Purpose |
 |------|---------|
-| `browser_open` | Spawn VB at allowlisted `url`; set `VAUGHAN_DAPP_BROWSER_CDP_PORT` (default `9222`) for CDP |
+| `browser_open` | Spawn VB at allowlisted `url`; CDP only when control enabled (see above) |
 | `browser_navigate` | CDP navigate to allowlisted `url` (checks `vb.session` suffixes) |
-| `browser_status` | CDP health + open page URLs |
+| `browser_status` | CDP health + `agent_browser_control` + open page URLs |
 
 When VB is missing or CDP is down, tools return structured JSON with
 `available: false` and a `hint` (not a crash).

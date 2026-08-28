@@ -54,9 +54,23 @@ proposals auto re-sim → policy gate → sign (no card). Legacy profile name
 | `quote_bridge` | LibertySwap bridge quote (read-only) |
 | `watch_balance` | Native/ERC-20 snapshot + optional min/max threshold flags |
 | `watch_quote` | Aggregator quote snapshot + min/max out + `suggested_action` |
-| `get_control_plane_status` | TUI/`serve` reachable + unlocked (sentient readiness) |
+| `get_control_plane_status` | TUI/`serve` reachable + unlocked + `agent_browser_control` (sentient readiness) |
 | `get_stealth_uri` | Stealth meta-address URI (unlocked TUI / serve) |
 | `scan_stealth_notes` | Unswept stealth notes for this vault |
+
+### Browser tools (CDP — default off)
+
+Requires agent browser control (Settings **`p`**, `vaughan config agent-browser on`, or
+`VAUGHAN_DAPP_BROWSER_CDP_PORT`). Never sign. See [vb-kill-switch.md](vb-kill-switch.md).
+
+| Tool | Description |
+|------|-------------|
+| `browser_open` | Open allowlisted URL in VB |
+| `browser_navigate` | CDP navigate |
+| `browser_status` | Session health |
+| `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` | Agent navigation (B2) |
+
+When disabled: `browser_unavailable: agent browser control disabled`.
 
 When the vault is locked and no explicit `address` is passed, read tools return
 `wallet_locked` with guidance to unlock Vaughan or pass `account_address`.

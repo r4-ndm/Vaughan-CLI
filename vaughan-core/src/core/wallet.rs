@@ -1018,6 +1018,24 @@ impl WalletState {
         Ok(())
     }
 
+    /// Whether loopback CDP agent control is enabled for VB (FR-7.5).
+    pub fn agent_browser_control(&self) -> bool {
+        self.persisted
+            .as_ref()
+            .is_some_and(|p| p.agent_browser_control)
+    }
+
+    /// Enable or disable agent browser control (CDP); persists immediately.
+    pub fn set_agent_browser_control(&mut self, enabled: bool) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted.agent_browser_control = enabled;
+        self.state.save(persisted)?;
+        if !enabled {
+            crate::core::vb_browser::clear_vb_session();
+        }
+        Ok(())
+    }
+
     /// Origins derived from trusted dApps (for the provider allowlist).
     pub fn trusted_dapp_origins(&self) -> Vec<String> {
         self.trusted_dapps()

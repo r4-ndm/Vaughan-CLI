@@ -52,6 +52,14 @@ impl Default for DappsView {
 }
 
 impl DappsView {
+    fn agent_control_line(enabled: bool) -> String {
+        if enabled {
+            "CDP agent control: ON (Settings p to disable)".into()
+        } else {
+            "CDP agent control: OFF (Settings n → p to enable for MCP browser tools)".into()
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, bridge_line: &str) {
         let [content, status_area] = body_areas(area);
         let dapps = wallet.trusted_dapps();
@@ -71,6 +79,7 @@ impl DappsView {
                     Paragraph::new(vec![
                         Line::from(bridge_line.to_string()),
                         Line::from("Unlock Vaughan first. Enter → VB if installed, else Freedom (parked / dev only)."),
+                        Line::from(Self::agent_control_line(wallet.agent_browser_control())),
                     ]),
                     bridge_a,
                 );
@@ -178,7 +187,11 @@ impl DappsView {
                     let dapps = wallet.trusted_dapps();
                     if let Some(TrustedDapp { url, .. }) = dapps.get(self.selected) {
                         let allow_hosts = trusted_dapp_allow_hosts(&dapps);
-                        match freedom::open_dapp_url(url, &allow_hosts) {
+                        match freedom::open_dapp_url(
+                            url,
+                            &allow_hosts,
+                            wallet.agent_browser_control(),
+                        ) {
                             Ok(msg) => self.status = msg,
                             Err(e) => self.status = e,
                         }

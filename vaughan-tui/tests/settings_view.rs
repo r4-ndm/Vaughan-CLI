@@ -9,7 +9,7 @@ use common::{funded_wallet, render_frame, Anvil};
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 use tokio::runtime::Handle;
-use vaughan_core::core::WalletState;
+use vaughan_core::core::{OperatingMode, WalletState};
 use vaughan_provider::EventBus;
 use vaughan_tui::app::{KeyOutcome, Screen};
 use vaughan_tui::views::SettingsView;
@@ -166,4 +166,24 @@ fn settings_view_esc_navigates_to_dashboard() {
 
     let outcome = view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
     assert!(matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)));
+}
+
+/// `p` toggles agent browser control and persists across reload.
+#[test]
+fn settings_view_p_toggles_agent_browser_control() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let mut view = SettingsView::new(0);
+
+    assert!(!wallet.agent_browser_control());
+    view.handle_key(key(KeyCode::Char('p')), &mut wallet, &handle, &events);
+    assert!(wallet.agent_browser_control());
+
+    let path = wallet.path().to_path_buf();
+    let reloaded = WalletState::load_with_session(path, OperatingMode::HumanOnly, "default")
+        .expect("reload wallet");
+    assert!(reloaded.agent_browser_control());
 }

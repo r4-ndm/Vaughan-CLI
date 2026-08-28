@@ -183,6 +183,11 @@ enum Command {
         #[command(subcommand)]
         action: PresetCmd,
     },
+    /// Profile configuration (metadata only — no vault unlock).
+    Config {
+        #[command(subcommand)]
+        action: ConfigCmd,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -206,6 +211,25 @@ enum ProposalsCmd {
     List,
     /// Show one proposal by id.
     Show { proposal_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCmd {
+    /// Loopback CDP for MCP browser_* tools (FR-7.5).
+    AgentBrowser {
+        #[command(subcommand)]
+        action: AgentBrowserCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentBrowserCmd {
+    /// Show whether agent browser control is enabled.
+    Show,
+    /// Enable agent browser control (CDP default port when env unset).
+    On,
+    /// Disable agent browser control and clear vb.session.
+    Off,
 }
 
 #[derive(Debug, Subcommand)]
@@ -255,6 +279,7 @@ fn main() {
             }
         }
         Some(Command::Preset { action }) => run_preset(profile, json, action),
+        Some(Command::Config { action }) => run_config(profile, json, action),
         Some(command) => {
             vaughan_core::logging::init_logging();
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -643,6 +668,7 @@ async fn run_cli(
         Command::Mcp { .. } => unreachable!("mcp handled in main"),
         Command::Serve { .. } => unreachable!("serve handled in main"),
         Command::Preset { .. } => unreachable!("preset handled in main"),
+        Command::Config { .. } => unreachable!("config handled in main"),
         Command::Propose { action } => {
             unlock(&mut wallet, None)?;
             let net = wallet.networks().active();
@@ -749,6 +775,38 @@ async fn run_cli(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn run_config(profile: String, json_mode: bool, action: ConfigCmd) -> anyhow::Result<()> {
+    match action {
+        ConfigCmd::AgentBrowser { action } => match action {
+            AgentBrowserCmd::Show => {
+                let enabled = StateManager::agent_browser_control_for_profile(&profile);
+                let data = json!({ "agent_browser_control": enabled, "profile": profile });
+                json_out::print_json_value(json_mode, &data, || {
+                    println!(
+                        "agent_browser_control ({profile}): {}",
+                        if enabled { "on" } else { "off" }
+                    );
+                });
+            }
+            AgentBrowserCmd::On => {
+                StateManager::set_agent_browser_control_for_profile(&profile, true)?;
+                let data = json!({ "agent_browser_control": true, "profile": profile });
+                json_out::print_json_value(json_mode, &data, || {
+                    println!("agent browser control enabled for profile `{profile}`");
+                });
+            }
+            AgentBrowserCmd::Off => {
+                StateManager::set_agent_browser_control_for_profile(&profile, false)?;
+                let data = json!({ "agent_browser_control": false, "profile": profile });
+                json_out::print_json_value(json_mode, &data, || {
+                    println!("agent browser control disabled for profile `{profile}`");
+                });
+            }
+        },
     }
     Ok(())
 }

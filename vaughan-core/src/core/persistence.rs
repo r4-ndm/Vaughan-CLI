@@ -65,6 +65,9 @@ pub struct PersistedState {
     /// Hardware watch accounts (address + path; no secrets). Forward-compatible.
     #[serde(default)]
     pub hardware: Vec<crate::security::hardware::HardwareAccountRecord>,
+    /// When true, VB may expose loopback CDP for MCP agent navigation (FR-7.5).
+    #[serde(default)]
+    pub agent_browser_control: bool,
 }
 
 /// A user-imported ERC-20 (shown in Assets even at zero balance).
@@ -268,6 +271,7 @@ impl PersistedState {
             trusted_dapps: default_trusted_dapps(),
             custom_networks: Vec::new(),
             hardware: Vec::new(),
+            agent_browser_control: false,
         }
     }
 
@@ -288,6 +292,7 @@ impl PersistedState {
             trusted_dapps: default_trusted_dapps(),
             custom_networks: Vec::new(),
             hardware: Vec::new(),
+            agent_browser_control: false,
         }
     }
 }
@@ -329,6 +334,31 @@ impl StateManager {
     pub fn for_profile(profile_name: &str) -> Result<Self, WalletError> {
         let path = Self::profile_path(profile_name)?;
         Ok(Self::new(path))
+    }
+
+    /// Whether agent browser control (loopback CDP) is enabled for `profile`.
+    ///
+    /// Returns `false` when the vault is missing or unreadable.
+    pub fn agent_browser_control_for_profile(profile_name: &str) -> bool {
+        Self::for_profile(profile_name)
+            .ok()
+            .and_then(|sm| sm.load().ok())
+            .is_some_and(|s| s.agent_browser_control)
+    }
+
+    /// Persist agent browser control for `profile` (metadata only — no unlock).
+    pub fn set_agent_browser_control_for_profile(
+        profile_name: &str,
+        enabled: bool,
+    ) -> Result<(), WalletError> {
+        let sm = Self::for_profile(profile_name)?;
+        let mut state = sm.load()?;
+        state.agent_browser_control = enabled;
+        sm.save(&state)?;
+        if !enabled {
+            crate::core::vb_browser::clear_vb_session();
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {

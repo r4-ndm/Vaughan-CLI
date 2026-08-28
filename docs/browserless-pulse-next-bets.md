@@ -85,7 +85,7 @@ No new AA crypto — UX copy only.
 ```text
 browser_open(url)
   → check_url_allowed(url, profile suffixes)
-  → spawn vaughan-dapp-browser --cdp-port $VAUGHAN_DAPP_BROWSER_CDP_PORT|9222
+  → spawn vaughan-dapp-browser --cdp-port $VAUGHAN_DAPP_BROWSER_CDP_PORT (when agent control on; else 0)
   → poll vb.session + cdp_alive (≤5s)
 
 browser_navigate(url)

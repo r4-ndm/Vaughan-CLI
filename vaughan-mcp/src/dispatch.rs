@@ -370,6 +370,7 @@ impl McpDispatcher {
             "control_plane_reachable": reachable,
             "session_file_present": has_session_file,
             "wallet_unlocked": unlocked,
+            "agent_browser_control": StateManager::agent_browser_control_for_profile(profile_name),
             "active_address": address.map(|a| format!("{a:#x}")),
             "profile": profile_name,
             "sentient_auto_exec": auto_exec,

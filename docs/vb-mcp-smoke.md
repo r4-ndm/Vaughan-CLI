@@ -19,12 +19,25 @@
 | 3 | VB on PATH | `which vaughan-dapp-browser` — if empty: `cargo install --path vaughan-dapp-browser` |
 | 4 | Chromium/Chrome | `which chromium` or `which google-chrome` — note full path |
 | 5 | Port 9222 free | `ss -tlnp \| grep 9222` — should be empty before smoke |
+| 6 | Agent CDP enabled | `vaughan config agent-browser on` **or** Settings (`n`) → **`p`** **or** env below |
+
+---
+
+## Enable agent browser control (pick one)
+
+| Method | When |
+|--------|------|
+| `vaughan config agent-browser on` | Headless / `vaughan serve` + Cursor (no TUI) |
+| Settings → **`p`** | Normal TUI use |
+| `VAUGHAN_DAPP_BROWSER_CDP_PORT=9222` in MCP env | CI smoke / power-user override |
+
+Default is **off**. See [vb-kill-switch.md](vb-kill-switch.md).
 
 ---
 
 ## One-time Cursor MCP setup
 
-Edit [`.cursor/mcp.json`](../.cursor/mcp.json) — add `env` to the `vaughan` server:
+Edit [`.cursor/mcp.json`](../.cursor/mcp.json) — optional `env` on the `vaughan` server:
 
 ```json
 {
@@ -33,13 +46,14 @@ Edit [`.cursor/mcp.json`](../.cursor/mcp.json) — add `env` to the `vaughan` se
       "command": "cargo",
       "args": ["run", "-q", "-p", "vaughan-cli", "--", "mcp", "--profile", "default"],
       "env": {
-        "VAUGHAN_DAPP_BROWSER_CDP_PORT": "9222",
         "VAUGHAN_DAPP_BROWSER_CHROME": "/usr/bin/chromium"
       }
     }
   }
 }
 ```
+
+For smoke without touching wallet settings, you may add `"VAUGHAN_DAPP_BROWSER_CDP_PORT": "9222"` instead of step 6 above.
 
 Replace `VAUGHAN_DAPP_BROWSER_CHROME` with your browser path if different.
 

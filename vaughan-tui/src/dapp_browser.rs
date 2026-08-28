@@ -16,11 +16,16 @@ pub const DAPP_BROWSER_CMD_ENV: &str = "VAUGHAN_DAPP_BROWSER_CMD";
 pub const DAPP_BROWSER_CDP_ENV: &str = "VAUGHAN_DAPP_BROWSER_CDP_PORT";
 
 /// Try to open `url` in `vaughan-dapp-browser`. `Err` if binary missing/fails.
-pub fn try_open(url: &str, allow_hosts: &[String]) -> Result<String, String> {
+pub fn try_open(
+    url: &str,
+    allow_hosts: &[String],
+    agent_browser_control: bool,
+) -> Result<String, String> {
     try_open_with_cmd(
         url,
         allow_hosts,
         env::var(DAPP_BROWSER_CMD_ENV).ok().as_deref(),
+        agent_browser_control,
     )
 }
 
@@ -29,6 +34,7 @@ pub(crate) fn try_open_with_cmd(
     url: &str,
     allow_hosts: &[String],
     cmd_override: Option<&str>,
+    agent_browser_control: bool,
 ) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
@@ -39,10 +45,8 @@ pub(crate) fn try_open_with_cmd(
         return Err("URL must be http or https".into());
     }
 
-    let cdp_port = env::var(DAPP_BROWSER_CDP_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .filter(|p| *p != 0);
+    let cdp_port = vaughan_core::core::vb_browser::resolve_cdp_port(agent_browser_control);
+    let cdp_port = if cdp_port == 0 { None } else { Some(cdp_port) };
 
     let chrome = env::var(DAPP_BROWSER_CHROME_ENV)
         .ok()
@@ -190,7 +194,7 @@ mod tests {
 
     #[test]
     fn rejects_non_http() {
-        let err = try_open("file:///tmp/x", &[]).unwrap_err();
+        let err = try_open("file:///tmp/x", &[], false).unwrap_err();
         assert!(err.contains("http"));
     }
 }

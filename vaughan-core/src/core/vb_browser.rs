@@ -43,13 +43,25 @@ pub fn read_vb_session() -> Result<Option<VbSession>, WalletError> {
     Ok(Some(session))
 }
 
-/// Resolve CDP port from env or default.
-pub fn resolve_cdp_port() -> u16 {
-    std::env::var("VAUGHAN_DAPP_BROWSER_CDP_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .filter(|p| *p != 0)
-        .unwrap_or(DEFAULT_CDP_PORT)
+/// Resolve CDP port: env override wins; else toggle; default off (FR-7.5).
+pub fn resolve_cdp_port(agent_control_enabled: bool) -> u16 {
+    if let Ok(s) = std::env::var("VAUGHAN_DAPP_BROWSER_CDP_PORT") {
+        if let Ok(p) = s.parse::<u16>() {
+            return p;
+        }
+    }
+    if agent_control_enabled {
+        DEFAULT_CDP_PORT
+    } else {
+        0
+    }
+}
+
+/// Remove stale VB CDP session metadata (e.g. when disabling agent control).
+pub fn clear_vb_session() {
+    if let Some(path) = vb_session_path() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Chrome internals / empty loads — do not treat as allowlist violations.
@@ -311,9 +323,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cdp_port_default() {
+    fn resolve_cdp_port_default_off() {
         std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
-        assert_eq!(resolve_cdp_port(), DEFAULT_CDP_PORT);
+        assert_eq!(resolve_cdp_port(false), 0);
+        assert_eq!(resolve_cdp_port(true), DEFAULT_CDP_PORT);
+    }
+
+    #[test]
+    fn resolve_cdp_port_env_overrides_toggle() {
+        std::env::set_var("VAUGHAN_DAPP_BROWSER_CDP_PORT", "9333");
+        assert_eq!(resolve_cdp_port(false), 9333);
+        assert_eq!(resolve_cdp_port(true), 9333);
+        std::env::set_var("VAUGHAN_DAPP_BROWSER_CDP_PORT", "0");
+        assert_eq!(resolve_cdp_port(true), 0);
+        std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
     }
 
     #[test]
