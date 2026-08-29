@@ -10,7 +10,7 @@ use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
-use vaughan_core::chains::evm::networks::get_network_by_chain_id;
+use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
 use vaughan_core::chains::Balance;
 use vaughan_core::core::proposal::ProposalQueue;
 use vaughan_core::core::{
@@ -844,6 +844,17 @@ impl App {
                         )));
                         continue;
                     }
+                    // Operator tier: auto-switch on allowlisted dApp origins
+                    // (same suffix list as auto-connect). Signing still manual.
+                    if self.wallet().agent_autonomy_tier() == AgentAutonomyTier::Operator {
+                        if let Some(origin) = origin.as_deref().filter(|s| !s.is_empty()) {
+                            if operator_connect_allowed(origin, &self.wallet().trusted_dapps()) {
+                                let result = self.switch_chain(&chain_id);
+                                let _ = reply.send(result);
+                                continue;
+                            }
+                        }
+                    }
                     let label = Self::network_label_for_chain_hex(&chain_id);
                     let kind = ApprovalKind::SwitchChain {
                         chain_id: chain_id.clone(),
@@ -1272,24 +1283,16 @@ impl App {
 
     /// `wallet_switchEthereumChain`: switch to any configured network by chain id.
     fn switch_chain(&mut self, chain_id: &str) -> Result<(), ProviderError> {
-        let id: u64 = chain_id
+        let decimal_id: u64 = chain_id
             .parse()
             .map_err(|_| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
-        let net_id = {
-            let wallet = self.wallet();
-            wallet
-                .networks()
-                .networks()
-                .iter()
-                .find(|n| n.chain_id == id)
-                .map(|n| n.id.clone())
-                .ok_or_else(|| ProviderError::UnrecognizedChain(chain_id.to_string()))?
-        };
+        let net = resolve_switch_chain_id(decimal_id)
+            .ok_or_else(|| ProviderError::UnrecognizedChain(chain_id.to_string()))?;
         self.wallet()
-            .set_active_network(&net_id)
+            .set_active_network(&net.id)
             .map_err(|e| ProviderError::Internal(e.user_message()))?;
         self.events
-            .publish(ProviderEvent::ChainChanged(format!("0x{id:x}")));
+            .publish(ProviderEvent::ChainChanged(format!("0x{:x}", net.chain_id)));
         Ok(())
     }
 
@@ -1490,11 +1493,17 @@ impl App {
         });
     }
 
-    fn network_label_for_chain_hex(chain_id_hex: &str) -> String {
-        let Ok(id) = u64::from_str_radix(chain_id_hex.trim_start_matches("0x"), 16) else {
-            return chain_id_hex.to_string();
+    fn network_label_for_chain_hex(chain_id: &str) -> String {
+        if let Ok(id) = chain_id.trim().parse::<u64>() {
+            if let Some(net) = resolve_switch_chain_id(id) {
+                return net.name.to_string();
+            }
+        }
+        let Ok(id) = u64::from_str_radix(chain_id.trim_start_matches("0x"), 16) else {
+            return chain_id.to_string();
         };
-        get_network_by_chain_id(id)
+        resolve_switch_chain_id(id)
+            .or_else(|| get_network_by_chain_id(id))
             .map(|n| n.name.to_string())
             .unwrap_or_else(|| format!("chain {id}"))
     }

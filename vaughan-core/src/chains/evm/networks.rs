@@ -331,6 +331,21 @@ pub fn get_network_by_chain_id(chain_id: u64) -> Option<EvmNetworkConfig> {
         .find(|n| n.chain_id == chain_id)
 }
 
+/// Resolve `wallet_switchEthereumChain` after hex/decimal quantity parsing.
+///
+/// Some PulseChain dApps (Switch.win) send `chainId: "0x369"` meaning decimal
+/// **369**, not the correct EIP-155 hex `0x171`. That mis-encoding becomes
+/// decimal **873** after hex parsing — alias it back to PulseChain (369).
+pub fn resolve_switch_chain_id(decimal_id: u64) -> Option<EvmNetworkConfig> {
+    if let Some(net) = get_network_by_chain_id(decimal_id) {
+        return Some(net);
+    }
+    if decimal_id == 873 {
+        return get_network_by_chain_id(369);
+    }
+    None
+}
+
 /// Find a built-in network by id (case-insensitive).
 pub fn get_network_by_id(id: &str) -> Option<EvmNetworkConfig> {
     let needle = id.trim().to_ascii_lowercase();
@@ -359,6 +374,18 @@ mod tests {
         assert!(get_network_by_chain_id(943).unwrap().is_testnet);
         assert_eq!(get_network_by_id("ETHEREUM").unwrap().chain_id, 1);
         assert!(get_network_by_id("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn resolve_switch_chain_id_aliases_pulsechain_0x369_quirk() {
+        assert_eq!(
+            resolve_switch_chain_id(873).unwrap().chain_id,
+            369,
+            "0x369 hex mis-encoding → decimal 873 should map to PulseChain 369"
+        );
+        assert_eq!(resolve_switch_chain_id(369).unwrap().chain_id, 369);
+        assert!(resolve_switch_chain_id(1).unwrap().chain_id == 1);
+        assert!(resolve_switch_chain_id(999_999).is_none());
     }
 
     #[test]
