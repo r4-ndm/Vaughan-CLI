@@ -14,15 +14,15 @@ use vaughan_core::chains::evm::networks::get_network_by_chain_id;
 use vaughan_core::chains::Balance;
 use vaughan_core::core::proposal::ProposalQueue;
 use vaughan_core::core::{
-    mark_replaced, operator_connect_allowed, push_recent, AgentAutonomyTier, BroadcastEntry,
-    McpSessionToken, OperatingMode, StateManager, WalletState,
+    mark_replaced, operator_connect_allowed, push_recent, tui_mode_for_profile, AgentAutonomyTier,
+    BroadcastEntry, McpSessionToken, OperatingMode, StateManager, WalletState,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
 
 use crate::jobs::{
     asset_index_for_address, chrome_assets_from_fetch, ChromeFocus, ChromeSnapshot, UiJob,
-    UiJobResult,
+    UiJobResult, UnlockCompletion,
 };
 use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
@@ -105,7 +105,8 @@ pub enum KeyOutcome {
     /// Show a short chrome toast (copy confirmations, etc.); key is consumed.
     Flash(String),
     /// Unlock picker: load a different profile vault and rebind MCP/grants.
-    SwitchProfile(String),
+    /// Carries the operating mode picked alongside the profile (FR-5.1).
+    SwitchProfile(String, OperatingMode),
 }
 
 impl std::fmt::Debug for KeyOutcome {
@@ -119,7 +120,7 @@ impl std::fmt::Debug for KeyOutcome {
             Self::Intent(i) => f.debug_tuple("Intent").field(i).finish(),
             Self::SignTypedData(_) => write!(f, "SignTypedData(..)"),
             Self::Flash(s) => f.debug_tuple("Flash").field(s).finish(),
-            Self::SwitchProfile(p) => f.debug_tuple("SwitchProfile").field(p).finish(),
+            Self::SwitchProfile(p, m) => f.debug_tuple("SwitchProfile").field(p).field(m).finish(),
         }
     }
 }
@@ -310,7 +311,10 @@ impl App {
     /// auto-exec) and is pre-selected on the unlock-screen profile picker.
     pub fn new(handle: Handle, profile: &str) -> Result<Self, WalletError> {
         let path = StateManager::profile_path(profile)?;
-        let wallet = WalletState::load_with_session(path, OperatingMode::HumanOnly, profile)?;
+        // Seed the session mode from the profile name so a direct
+        // `--profile sentient` launch is SentientTrader even through
+        // onboarding; the unlock picker may override it pre-unlock.
+        let wallet = WalletState::load_with_session(path, tui_mode_for_profile(profile), profile)?;
         let screen = if !wallet.is_initialized() {
             Screen::Onboarding
         } else if !wallet.is_unlocked() {
@@ -505,6 +509,9 @@ impl App {
             if let View::Browser(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
+            if let View::Unlock(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
             terminal.draw(|frame| crate::views::render(frame, self))?;
             if event::poll(Duration::from_millis(80))? {
                 if let Event::Key(key) = event::read()? {
@@ -666,7 +673,7 @@ impl App {
             KeyOutcome::Intent(nav) => self.apply_intent(nav),
             KeyOutcome::SignTypedData(data) => self.begin_local_typed_data_sign(data),
             KeyOutcome::Flash(msg) => self.set_flash(msg),
-            KeyOutcome::SwitchProfile(profile) => self.switch_profile(&profile),
+            KeyOutcome::SwitchProfile(profile, mode) => self.switch_profile(&profile, mode),
             KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
         }
     }
@@ -674,21 +681,25 @@ impl App {
     /// Unlock-screen profile switch: load the selected profile's vault and
     /// rebind the MCP control plane + site grants to its directory.
     ///
-    /// Runs pre-unlock, so no session state is carried across — the mode
+    /// Runs pre-unlock, so no session state is carried across — the `mode`
     /// picked at the next unlock stays immutable for the session (FR-5.1).
     /// Uninitialized profiles land on onboarding to create their vault.
-    fn switch_profile(&mut self, profile: &str) {
+    fn switch_profile(&mut self, profile: &str, mode: OperatingMode) {
         let path = match StateManager::profile_path(profile) {
             Ok(p) => p,
-            Err(e) => return self.set_flash(e.user_message()),
+            Err(e) => return self.profile_switch_error(e.user_message()),
         };
         let wallet = match WalletState::load_with_session(path, OperatingMode::HumanOnly, profile) {
             Ok(w) => w,
-            Err(e) => return self.set_flash(e.user_message()),
+            Err(e) => return self.profile_switch_error(e.user_message()),
         };
         let initialized = wallet.is_initialized();
         let old_dir = profile_dir(self.wallet().path());
         let dir = profile_dir(wallet.path());
+        let mut wallet = wallet;
+        // Carry the picked mode onto the fresh (locked) wallet so onboarding
+        // and the password screen inherit it; unlock re-asserts it anyway.
+        wallet.set_operating_mode(mode);
         *self.wallet() = wallet;
         self.mcp.set_profile_dir(&dir);
         // Provider bridge: the server keeps running on the shared token slot,
@@ -711,6 +722,18 @@ impl App {
     fn set_flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash = Some(msg.into());
         self.chrome.flash_ticks_left = 45; // ~a few seconds at UI tick rate
+    }
+
+    /// Surface a profile-switch failure where the user can see it: the chrome
+    /// flash only renders on unlocked screens, so on the unlock screen the
+    /// error goes to the view's status line instead of vanishing — otherwise
+    /// the password prompt would silently keep targeting the previous wallet.
+    fn profile_switch_error(&mut self, msg: String) {
+        if let View::Unlock(v) = &mut self.view {
+            v.set_status(msg);
+        } else {
+            self.set_flash(msg);
+        }
     }
 
     fn apply_intent(&mut self, nav: crate::intent::IntentNav) {
@@ -1002,7 +1025,11 @@ impl App {
     }
 
     fn poll_mcp(&mut self) {
-        let mcp_pending = if self.wallet().is_unlocked() {
+        // HumanOnly runs no agent surface at all: no loopback control plane,
+        // no session token, no file-queue surfacing (FR-5.1 mode teeth).
+        let agent_surface =
+            self.wallet().is_unlocked() && self.wallet().operating_mode().is_ai_enabled();
+        let mcp_pending = if agent_surface {
             self.mcp.on_unlock(&self.handle);
             let wallet = self.wallet();
             let net = wallet.networks().active();
@@ -1022,7 +1049,9 @@ impl App {
         self.chrome.mcp_pending = mcp_pending;
         self.chrome.mcp_listener = self.mcp.listener_state();
         let pending_on_screen = self.pending_approval.is_some();
-        self.mcp.poll_file_queue(pending_on_screen);
+        if agent_surface {
+            self.mcp.poll_file_queue(pending_on_screen);
+        }
 
         while let Ok(request) = self.mcp_rx.try_recv() {
             match request {
@@ -1876,6 +1905,21 @@ impl App {
             // Never hold the wallet mutex across RPC / signing awaits — that freezes the
             // TUI on `[busy]` / `(busy)` (seen after unlock → Sentient → Dashboard chrome refresh).
             let result = match job {
+                UiJob::Unlock { password, mode } => {
+                    // Clone the vault under a brief lock, then run the Argon2id
+                    // KDF unlocked — holding the mutex across it would freeze
+                    // the render loop (and the spinner with it).
+                    let payload = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.unlock_payload()
+                    };
+                    UiJobResult::Unlock(match payload {
+                        Ok(p) => p
+                            .decrypt(&password)
+                            .map(|accounts| UnlockCompletion { accounts, mode }),
+                        Err(e) => Err(e),
+                    })
+                }
                 UiJob::RefreshChrome => {
                     let snap = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
@@ -2174,6 +2218,31 @@ impl App {
     fn poll_jobs(&mut self) {
         while let Ok(result) = self.job_rx.try_recv() {
             match result {
+                UiJobResult::Unlock(r) => {
+                    match r {
+                        Ok(done) => {
+                            let address = {
+                                let mut wallet =
+                                    self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                                wallet.apply_unlocked_accounts(done.accounts);
+                                // Mode locks for the session (FR-5.1).
+                                wallet.set_operating_mode(done.mode);
+                                wallet.active_address().map(|a| a.to_string()).ok()
+                            };
+                            if let Some(addr) = address {
+                                self.events
+                                    .publish(ProviderEvent::AccountsChanged(vec![addr]));
+                            }
+                            self.navigate(Screen::Dashboard);
+                        }
+                        Err(e) => {
+                            // Back to the password prompt with the error shown.
+                            if let View::Unlock(v) = &mut self.view {
+                                v.unlock_failed(e.user_message());
+                            }
+                        }
+                    }
+                }
                 UiJobResult::Chrome(r) => {
                     self.chrome.loading = false;
                     match r {

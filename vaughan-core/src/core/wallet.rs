@@ -188,6 +188,40 @@ pub struct WalletState {
     hw_mock: Option<crate::security::MockSignerBackend>,
 }
 
+/// Everything the expensive half of [`WalletState::unlock`] needs, cloned out of
+/// the persisted state so the Argon2id KDF + account derivation can run off the
+/// UI thread. Holds only ciphertext and public metadata — no plaintext secrets.
+pub struct UnlockPayload {
+    vault: crate::security::encryption::EncryptedVault,
+    hardware: Vec<crate::security::hardware::HardwareAccountRecord>,
+    active_account_index: u32,
+}
+
+impl UnlockPayload {
+    /// Decrypt the vault and derive the account list (the slow part: Argon2id).
+    pub fn decrypt(self, password: &SecretString) -> Result<AccountManager, WalletError> {
+        let mut plaintext = decrypt(&self.vault, password)?;
+        let phrase = std::str::from_utf8(&plaintext).map_err(|_| {
+            WalletError::DecryptionFailed("vault did not contain a valid mnemonic".to_string())
+        })?;
+        let mut secrets = VaultSecrets::decode(phrase)?;
+        plaintext.zeroize();
+        let mut accounts = AccountManager::from_secrets_with_hardware(
+            &secrets,
+            AccountManager::DEFAULT_ACCOUNT_COUNT,
+            &self.hardware,
+        )?;
+        secrets.zeroize();
+        if accounts.set_active(self.active_account_index).is_err() {
+            // Imported-only edge / stale index: fall back to first account.
+            if let Some(first) = accounts.accounts().first().map(|a| a.index) {
+                accounts.set_active(first)?;
+            }
+        }
+        Ok(accounts)
+    }
+}
+
 impl WalletState {
     /// Load (or discover) the wallet at `path` with default session settings.
     pub fn load(path: PathBuf) -> Result<Self, WalletError> {
@@ -591,28 +625,26 @@ impl WalletState {
         if self.is_unlocked() {
             return Ok(());
         }
-        let persisted = self.persisted.as_ref().ok_or(WalletError::NotInitialized)?;
-        let mut plaintext = decrypt(&persisted.vault, password)?;
-        let phrase = std::str::from_utf8(&plaintext).map_err(|_| {
-            WalletError::DecryptionFailed("vault did not contain a valid mnemonic".to_string())
-        })?;
-        let mut secrets = VaultSecrets::decode(phrase)?;
-        plaintext.zeroize();
-        let hardware = persisted.hardware.clone();
-        let mut accounts = AccountManager::from_secrets_with_hardware(
-            &secrets,
-            AccountManager::DEFAULT_ACCOUNT_COUNT,
-            &hardware,
-        )?;
-        secrets.zeroize();
-        if accounts.set_active(persisted.active_account_index).is_err() {
-            // Imported-only edge / stale index: fall back to first account.
-            if let Some(first) = accounts.accounts().first().map(|a| a.index) {
-                accounts.set_active(first)?;
-            }
-        }
-        self.accounts = Some(accounts);
+        let accounts = self.unlock_payload()?.decrypt(password)?;
+        self.apply_unlocked_accounts(accounts);
         Ok(())
+    }
+
+    /// Clone everything the expensive half of [`Self::unlock`] needs, so the
+    /// Argon2id KDF can run off the UI thread without holding the wallet lock
+    /// (a multi-second KDF under the mutex would freeze the TUI render loop).
+    pub fn unlock_payload(&self) -> Result<UnlockPayload, WalletError> {
+        let persisted = self.persisted.as_ref().ok_or(WalletError::NotInitialized)?;
+        Ok(UnlockPayload {
+            vault: persisted.vault.clone(),
+            hardware: persisted.hardware.clone(),
+            active_account_index: persisted.active_account_index,
+        })
+    }
+
+    /// Install accounts produced by [`UnlockPayload::decrypt`] (off-thread KDF).
+    pub fn apply_unlocked_accounts(&mut self, accounts: AccountManager) {
+        self.accounts = Some(accounts);
     }
 
     /// Re-encrypt the current unlocked secrets under `password` (must match vault).

@@ -385,15 +385,14 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
         // agent signs on its own under policy, so `· Op` would mislead.
         let mode_tag = app
             .try_wallet()
-            .map(|w| {
-                if w.operating_mode() == OperatingMode::SentientTrader {
-                    " · Sentient".to_string()
-                } else {
-                    w.agent_autonomy_tier()
-                        .chrome_label()
-                        .map(|l| format!(" · {l}"))
-                        .unwrap_or_default()
-                }
+            .map(|w| match w.operating_mode() {
+                OperatingMode::SentientTrader => " · Sentient".to_string(),
+                OperatingMode::HumanOnly => " · Human".to_string(),
+                OperatingMode::AiAssisted => w
+                    .agent_autonomy_tier()
+                    .chrome_label()
+                    .map(|l| format!(" · {l}"))
+                    .unwrap_or_default(),
             })
             .unwrap_or_default();
         format!("{net_name}{testnet}{mcp_tag}{mode_tag}")

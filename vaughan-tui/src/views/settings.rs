@@ -143,12 +143,19 @@ impl SettingsView {
                         let policy = crate::sentient_mcp::sentient_policy_line(wallet)
                             .unwrap_or_else(|| "policy: unknown".into());
                         (
-                            format!("Agent mode: Sentient (auto-exec) — {policy}"),
+                            format!(
+                                "Agent mode: Sentient (auto-exec) — {policy} · lock (l) to switch"
+                            ),
                             Style::default().fg(Color::Magenta),
                         )
                     }
-                    _ => (
-                        "Agent mode: Advisor — switch: lock (l) → pick profile at unlock"
+                    OperatingMode::AiAssisted => (
+                        "Agent mode: Advisor (MCP on) — switch: lock (l) → pick mode at unlock"
+                            .to_string(),
+                        Style::default().fg(Color::Green),
+                    ),
+                    OperatingMode::HumanOnly => (
+                        "Agent mode: Human only (MCP off) — switch: lock (l) → pick mode at unlock"
                             .to_string(),
                         Style::default().fg(Color::DarkGray),
                     ),

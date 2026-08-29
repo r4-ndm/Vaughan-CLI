@@ -7,8 +7,9 @@
 > reference only.
 >
 > **Update (2026-08-29):** operating mode is no longer picked on a welcome
-> screen — it is keyed to the **profile you pick at unlock** (FR-5.1), and the
-> sentient kill-switch is **Ctrl+K** (not Esc). See
+> screen — the **unlock picker** asks Human or Sentient first, then the mode
+> for human wallets (Human only / Advisor; FR-5.1), and the sentient
+> kill-switch is **Ctrl+K** (not Esc). See
 > [`docs/mcp-threat-model.md`](mcp-threat-model.md) for the current controls.
 
 This guide explains how to configure and use the AI Agent subsystem (`vaughan-agent`) across **AI-Assisted** and **Sentient** operating modes.

@@ -1,12 +1,21 @@
 //! Background UI jobs so RPC work never `block_on`s the TUI thread.
 
+use secrecy::SecretString;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee};
+use vaughan_core::core::{AccountManager, OperatingMode};
 use vaughan_core::core::{BroadcastEntry, BroadcastReceipt, ReplaceKind, StealthSendResult};
 use vaughan_core::error::WalletError;
 use vaughan_core::security::stealth::StealthAnnouncement;
 
 /// Work the app should spawn on the tokio runtime.
 pub enum UiJob {
+    /// Vault KDF + account derivation (Argon2id — seconds in a debug build).
+    /// Carries the session mode to apply on success; the wallet itself is
+    /// only locked briefly to clone the [`vaughan_core::core::UnlockPayload`].
+    Unlock {
+        password: SecretString,
+        mode: OperatingMode,
+    },
     /// Native balance + gas hint for the always-on status chrome.
     RefreshChrome,
     RefreshBalance,
@@ -189,6 +198,9 @@ pub fn asset_index_for_address(assets: &[Balance], address: &str) -> Option<usiz
 
 /// Result delivered back to the UI thread via an unbounded channel.
 pub enum UiJobResult {
+    /// Vault unlock finished off the UI thread: derived accounts + the session
+    /// mode the user picked at the unlock screen.
+    Unlock(Result<UnlockCompletion, WalletError>),
     Chrome(Result<(Balance, String), WalletError>),
     Balance(Result<Balance, WalletError>),
     Assets(Result<Vec<Balance>, WalletError>),
@@ -208,6 +220,13 @@ pub enum UiJobResult {
     TxStatus(Result<vaughan_core::chains::TxStatus, WalletError>),
     /// Updated statuses for session broadcasts `(hash, status)`.
     BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),
+}
+
+/// Successful off-thread unlock: derived accounts plus the session mode picked
+/// at the unlock screen (applied to the wallet by the app on completion).
+pub struct UnlockCompletion {
+    pub accounts: AccountManager,
+    pub mode: OperatingMode,
 }
 
 /// Frames for a braille spinner (no extra deps).

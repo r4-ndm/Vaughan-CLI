@@ -19,17 +19,20 @@ Bind this document before shipping MCP v1.
 - OS-level keyloggers, clipboard sniffers, shoulder surfing.
 - Smart contract exploits after a correct approval / policy-allowed auto-exec.
 
-## Product model (adviser vs sentient)
+## Product model (human vs adviser vs sentient)
 
 Full write-up: [`agent-roles.md`](agent-roles.md).
 
 | Role | Trust assumption | Control |
 |------|------------------|---------|
+| **Human only** | No agent surface wanted | MCP control plane + proposal queue surfacing off entirely |
 | **Adviser** (`default` / `vaughan`) | Agent may be wrong; human wants help | Every write needs human approve |
 | **Sentient** (`sentient` / `vaughan-sentient`) | Agent acts on **its** seed (or shared partnership seed + skill preset) | Auto-exec under policy; don’t conflate with human `default` |
 
-Primary separation is **whose seed** and **who decides**. Partnership = shared
-seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
+Mode is picked per profile on the unlock picker and locked for the session
+(FR-5.1). Primary separation is **whose seed** and **who decides**.
+Partnership = shared seed + [`sentient-presets.md`](sentient-presets.md) — no
+on-chain contracts.
 
 ## Controls matrix
 

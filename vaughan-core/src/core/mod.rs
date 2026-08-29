@@ -82,7 +82,7 @@ pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,
 };
-pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, WalletState};
+pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, UnlockPayload, WalletState};
 pub use wiz4rd::{
     deployment_for_chain, position_manager as wiz4rd_position_manager,
     swap_router as wiz4rd_swap_router, Wiz4rdDeployment, DEPLOYMENT_943, WIZ4RD_FEE_TIERS,

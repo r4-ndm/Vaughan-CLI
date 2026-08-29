@@ -67,8 +67,9 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         } => UiJobResult::SendStealth(
             handle.block_on(wallet.send_stealth(&announcement, &value_wei)),
         ),
-        // Chrome / DEX / Ag / Bridge jobs are not used by SendView tests.
-        UiJob::RefreshChrome
+        // Chrome / DEX / Ag / Bridge / unlock jobs are not used by SendView tests.
+        UiJob::Unlock { .. }
+        | UiJob::RefreshChrome
         | UiJob::SendEvm { .. }
         | UiJob::EstimateEvmFee { .. }
         | UiJob::SendEvmWithFee { .. }

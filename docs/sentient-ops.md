@@ -19,17 +19,25 @@ propose loops.
 ## Switching agent mode (TUI)
 
 The unlock screen doubles as the mode switch (FR-5.1: mode locks at unlock,
-never mid-session):
+never mid-session). The picker asks **Human or Sentient** first — whose seed
+backs the session:
+
+- **Human — your wallet**: then pick the mode — **Human only** (no MCP
+  control plane, no proposal queue, no agent surface at all) or **Advisor**
+  (agent proposes via MCP, you approve every write). With several human
+  wallets on disk, a wallet list comes first.
+- **Sentient — agent wallet**: always auto-exec under policy; the mode step
+  is skipped because auto-exec never runs on a human wallet's seed.
+
+Details:
 
 - `vaughan --profile sentient` launches straight into the sentient vault.
-- With more than one profile on disk, the unlock screen opens a **profile
-  picker** — each row shows its mode (`Advisor — you approve` /
-  `Sentient — agent auto-exec`). Picking a profile loads that vault; an
-  uninitialized profile routes to onboarding to create it.
-- From inside the wallet: `l` locks → picker → pick profile → unlock.
+- Advisor is pre-selected for human wallets; Sentient shows
+  `(new — vault created next)` until the agent wallet exists.
+- From inside the wallet: `l` locks → picker → Human/Sentient → password.
 - The sentient password screen shows the live policy bounds (enforcement,
   max %/trade, slippage cap) **before** you unlock; the F1 strip shows
-  `· Sentient` while a sentient session is active.
+  `· Sentient` / `· Human` while a session is active.
 
 ## Recommended sentient stack
 

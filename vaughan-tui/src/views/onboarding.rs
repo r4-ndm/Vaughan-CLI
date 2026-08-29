@@ -10,7 +10,7 @@ use ratatui::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
-use vaughan_core::core::{tui_mode_for_profile, WalletState};
+use vaughan_core::core::WalletState;
 use vaughan_core::security::encryption::validate_password_policy;
 use vaughan_core::security::hd_wallet::{generate_mnemonic, validate_mnemonic};
 use vaughan_core::security::Mnemonic;
@@ -144,7 +144,8 @@ impl OnboardingView {
             Stage::Choose => match key.code {
                 KeyCode::Char('c') => match generate_mnemonic() {
                     Ok(mnemonic) => {
-                        wallet.set_operating_mode(tui_mode_for_profile(wallet.profile_name()));
+                        // Operating mode was seeded at load / picked on the
+                        // unlock picker — onboarding never overrides it.
                         self.mnemonic = Some(mnemonic);
                         self.status.clear();
                         self.stage = Stage::ShowMnemonic;
@@ -152,7 +153,6 @@ impl OnboardingView {
                     Err(e) => self.status = e.user_message(),
                 },
                 KeyCode::Char('r') => {
-                    wallet.set_operating_mode(tui_mode_for_profile(wallet.profile_name()));
                     self.input = Input::new(false, "abandon abandon ... about");
                     self.status.clear();
                     self.stage = Stage::EnterMnemonic;
@@ -236,9 +236,6 @@ impl OnboardingView {
                         let mnemonic = self.mnemonic.as_ref().unwrap().clone();
                         match wallet.create(&password, mnemonic) {
                             Ok(()) => {
-                                wallet.set_operating_mode(tui_mode_for_profile(
-                                    wallet.profile_name(),
-                                ));
                                 self.mnemonic = None;
                                 return KeyOutcome::Navigate(Screen::Dashboard);
                             }
