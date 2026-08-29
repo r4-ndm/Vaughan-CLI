@@ -120,7 +120,7 @@ In-browser wallet popups (MetaMask, Rabby) render approval prompts inside the br
    ```
    ┌─────────────────────────────────────────────────────────────┐
    │ ACTION:   ERC-20 Approve                                    │
-   │ TOKEN:    USDC (0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48) │
+   │ TOKEN:    USDC (0x15d38573d2feeb82e7ad5187ab8c1d52810b1f07) │
    │ SPENDER:  Uniswap V3 Router                                 │
    │ AMOUNT:   500.00 USDC                                       │
    │ NETWORK:  PulseChain Mainnet (Chain 369)                    │

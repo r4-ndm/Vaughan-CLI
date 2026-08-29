@@ -27,9 +27,11 @@
   Use the picker: click the BUY token button → search → select.
 - **Many fake `USDC` labels:** 9X lists a dozen tickers containing "USDC"
   (Pump.tires, Unstable Dick Coin, …). The picker reads **full row text**
-  (ticker + name + `0x…` address) and selects the row matching Vaughan's
-  registry contract (`USDC` → pUSDC `0xA0b86991…06eB48`). It refuses to
-  deep-click a bare "USDC" label when the registry address is known.
+  (ticker + name + `0x…` address) and selects Vaughan's registry contract:
+  **bridged USDC** `0x15D38573…1f07` ("USD COIN FROM ETHEREUM") — not
+  **pUSDC** `0xA0b86991…06eB48` (Ethereum fork copy; different economic
+  value). Refuses to deep-click a bare "USDC" label when the registry
+  address is known.
 - **Amount entry (2026-08-29):** 9X's sell mask is ATM-style (implicit ÷1000).
   Pass **human units** in `amount_in` (1M PLS → `"1000000"`). The URL's
   `sellAmount=` mirrors raw field digits, not the parsed amount.

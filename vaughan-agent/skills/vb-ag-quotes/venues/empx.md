@@ -13,12 +13,13 @@ EmpX often returns the **best browserless** PLS→HEX among live API integration
 
 ## Quirks
 
-- **Canonical USDC (`0x15D38573…1f07`) routes are broken** (verified 2026-08-29):
-  `findBestPath` routes WPLS → eHEX/HEX/DAI → USDC through dust pools, quoting
-  ~1000× off market (1M PLS → "12.05 USDC"; 1k PLS → "0.0135 USDC"). The router's
-  adapter set misses the deep PulseX USDC pools. **pUSDC (`0xA0b86991…06eB48`)
-  quotes fine** (single-hop WPLS, 1M PLS → 12,069 USDC). Cross-check EmpX
-  stablecoin quotes against 9X/Switch before trusting them.
+- **USDC address on PulseChain:** human/VB quotes use **bridged USDC**
+  `0x15D38573…1f07` (same value as Ethereum USDC). The fork copy at
+  `0xA0b86991…06eB48` (often labeled **pUSDC** on 9X) is a separate token.
+- **EmpX router quirk (2026-08-29):** `findBestPath` to bridged USDC
+  (`0x15D38573…`) may route through thin pools and quote badly; pUSDC paths
+  can look healthier on browserless EmpX alone. Cross-check EmpX stablecoin
+  quotes against 9X/Switch VB reads before trusting browserless numbers.
 
 ## MCP
 

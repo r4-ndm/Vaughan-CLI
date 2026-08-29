@@ -53,17 +53,21 @@ pub fn pulsechain_mainnet_tokens() -> Vec<TokenEntry> {
             address: "0x2fa878Ab3F87CC1C9737Fc071108F904c0B0C95d",
             decimals: 18,
         },
-        // Bridged stablecoins live at their Ethereum origin addresses.
+        // USDT retained the Ethereum fork copy at the origin address on
+        // PulseChain; liquidity varies — verify before large trades.
         TokenEntry {
             symbol: "USDT",
             name: "Tether USD",
             address: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
             decimals: 6,
         },
+        // Bridged from Ethereum (Omnibridge/Liberty path) — NOT the inactive
+        // fork copy at 0xA0b86991… (pUSDC label on 9X). Same economic value
+        // as Ethereum USDC; verified on PulseChain scan + bridge client.
         TokenEntry {
             symbol: "USDC",
-            name: "USD Coin",
-            address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            name: "USD Coin from Ethereum",
+            address: "0x15D38573d2feeb82e7ad5187aB8c1D52810B1f07",
             decimals: 6,
         },
     ]
@@ -125,6 +129,15 @@ mod tests {
         assert_ne!(
             hex.address.to_lowercase(),
             "0x2b591e99afe9f32eaa6214f7b4d7723a4c8d3f0e"
+        );
+        let usdc = tokens.iter().find(|t| t.symbol == "USDC").unwrap();
+        assert_eq!(
+            usdc.address.to_ascii_lowercase(),
+            "0x15d38573d2feeb82e7ad5187ab8c1d52810b1f07"
+        );
+        assert_ne!(
+            usdc.address.to_ascii_lowercase(),
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
         );
     }
 

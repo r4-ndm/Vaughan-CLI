@@ -353,7 +353,7 @@ mod tests {
         let addr = registry_address_for_symbol(369, "USDC").unwrap();
         assert_eq!(
             addr.to_ascii_lowercase(),
-            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            "0x15d38573d2feeb82e7ad5187ab8c1d52810b1f07"
         );
     }
 }
