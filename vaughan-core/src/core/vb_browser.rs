@@ -300,6 +300,27 @@ pub fn vb_session_provider_token_stale(session: &VbSession) -> bool {
     session.provider_token.is_empty() || session.provider_token != current
 }
 
+/// Back-fill `provider_token` when an older `vaughan-dapp-browser` wrote a
+/// session without it (extension still has the right token from launch).
+pub fn patch_vb_session_provider_token() -> Result<(), WalletError> {
+    let Some(mut session) = read_vb_session()? else {
+        return Ok(());
+    };
+    if !session.provider_token.is_empty() {
+        return Ok(());
+    }
+    let Some(token) = read_latest_provider_session_token() else {
+        return Ok(());
+    };
+    session.provider_token = token;
+    let Some(path) = vb_session_path() else {
+        return Ok(());
+    };
+    let bytes = serde_json::to_vec(&session)
+        .map_err(|e| WalletError::Serialization(format!("vb.session json: {e}")))?;
+    write_owner_only(&path, &bytes)
+}
+
 /// Best-effort terminate of a stale VB launcher (Unix `kill`; no-op elsewhere).
 pub fn terminate_vb_process(session: &VbSession) {
     if session.pid > 0 {
@@ -636,9 +657,9 @@ fn open_vb_log() -> Option<std::fs::File> {
 }
 
 fn resolve_dapp_browser_bin() -> Option<PathBuf> {
-    if let Some(path) = find_on_path("vaughan-dapp-browser") {
-        return Some(path);
-    }
+    // Prefer the sibling next to `vaughan` / `vaughan-cli` (cargo run MCP) so
+    // spawn uses the same build as the agent — PATH may point at an older
+    // `cargo install` that omits newer vb.session fields (e.g. provider_token).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let sibling = dir.join("vaughan-dapp-browser");
@@ -646,6 +667,9 @@ fn resolve_dapp_browser_bin() -> Option<PathBuf> {
                 return Some(sibling);
             }
         }
+    }
+    if let Some(path) = find_on_path("vaughan-dapp-browser") {
+        return Some(path);
     }
     if let Some(home) = dirs::home_dir() {
         for rel in [

@@ -13,8 +13,8 @@ use vaughan_core::core::persistence::{default_ipfs_gateway_hosts, StateManager};
 use vaughan_core::core::vb_browser::{
     allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_or_reuse,
     cdp_open_url, check_url_allowed, clear_target_pin, clear_vb_session, read_vb_session,
-    resolve_cdp_port, spawn_cdp_port, spawn_dapp_browser, terminate_vb_process,
-    vb_session_pid_matches, vb_session_provider_token_stale, wait_for_cdp,
+    patch_vb_session_provider_token, resolve_cdp_port, spawn_cdp_port, spawn_dapp_browser,
+    terminate_vb_process, vb_session_pid_matches, vb_session_provider_token_stale, wait_for_cdp,
     write_target_pin, VbSession,
 };
 use vaughan_core::core::vb_cdp::{self, ElementRef, SwapTokenSide};
@@ -422,6 +422,7 @@ pub async fn browser_open(args: Value, ctx: &McpContext) -> Result<Value, String
 
     // Pin the tab VB opened with so follow-up tools stick to it.
     if alive {
+        let _ = patch_vb_session_provider_token();
         if let Ok(pages) = cdp_list_pages(&cdp_url).await {
             if let Some(id) = pages
                 .iter()
