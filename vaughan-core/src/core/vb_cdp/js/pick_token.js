@@ -13,9 +13,19 @@
     const a = addrNorm(addr);
     if (!a.startsWith('0x') || a.length < 10) return false;
     if (t.includes(a)) return true;
-    const head = a.slice(0, 10);
-    const tail = a.slice(-6);
-    return t.includes(head) && t.includes(tail);
+    // UI truncates tails (Switch: …1f07; 9X: …06eB48).
+    let tailOk = false;
+    for (const n of [8, 6, 4]) {
+      if (t.includes(a.slice(-n))) {
+        tailOk = true;
+        break;
+      }
+    }
+    if (!tailOk) return false;
+    for (const n of [10, 8, 6]) {
+      if (t.includes(a.slice(0, n))) return true;
+    }
+    return t.includes('0x' + a.slice(2, 6));
   };
   const rowHasContract = t => /0x[a-f0-9]{4,}/i.test(t);
   const rowMatchesSymbol = (t, sym) => {
