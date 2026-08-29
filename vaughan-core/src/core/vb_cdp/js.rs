@@ -60,13 +60,19 @@ pub(crate) fn open_token_picker(symbol_json: &str, side: &str, avoid_json: &str)
 }
 
 /// Type the symbol into the picker search box.
-pub(crate) fn search_token(symbol_json: &str) -> String {
-    SEARCH_TOKEN.replace("__VB_SYMBOL__", symbol_json)
+pub(crate) fn search_token(symbol_json: &str, term_json: &str) -> String {
+    SEARCH_TOKEN
+        .replace("__VB_SYMBOL__", symbol_json)
+        .replace("__VB_TERM__", term_json)
 }
 
 /// Click the matching token row in the (filtered) picker modal.
-pub(crate) fn pick_token(symbol_json: &str) -> String {
-    PICK_TOKEN.replace("__VB_SYMBOL__", symbol_json)
+/// `address_json` is a JSON literal (`null` or `"0x…"`) — when set, rows
+/// whose label contains that address (or its tail) sort first.
+pub(crate) fn pick_token(symbol_json: &str, address_json: &str) -> String {
+    PICK_TOKEN
+        .replace("__VB_SYMBOL__", symbol_json)
+        .replace("__VB_ADDRESS__", address_json)
 }
 
 /// Focus snapshot ref `idx` and mark it as the type target; `clear` selects

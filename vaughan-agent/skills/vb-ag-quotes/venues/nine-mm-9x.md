@@ -25,21 +25,18 @@
 - Browserless path may be limited — prefer VB for parity with human UX.
 - **`buyToken` deep-link param is ignored** (2026-08-29): SPA reverts BUY to 9MM.
   Use the picker: click the BUY token button → search → select.
-- **Two USDC entries:** `USDC` = `0x15D38573…1f07` (canonical bridged, deep
-  liquidity) vs `pUSDC` = `0xA0b86991…06eB48`. Pick deliberately; Vaughan's
-  curated registry maps `USDC` to the pUSDC address.
-- **Amount entry (2026-08-29, corrected):** 9X's sell mask is ATM-style
-  (last digit = smallest unit) for **every** input method — key events,
-  insertText, and setter all parse ÷1000. Pass **human units** in `amount_in`
-  (1M PLS → `"1000000"`); the typing layer multiplies by 1000 before keying
-  into the field (1B digits typed → ~1M effective). The URL's `sellAmount=`
-  mirrors the *raw* field digits, NOT the parsed amount — don't read it as
-  confirmation of the parse.
-- **Layer divergence + `out_check`:** 9X's display layer and quote engine
-  can disagree about the amount (sell `$` correct while MIN RECEIVED is
-  1000× off). `browser_read_quote`'s sell-side check only validates the
-  display layer — always read the `out_check` block too (compares best
-  output vs expected when token_out is a stablecoin).
+- **Two USDC entries:** `USDC` = `0x15D38573…1f07` (canonical bridged) vs
+  `pUSDC` = `0xA0b86991…06eB48` (deep PulseX liquidity). Vaughan's curated
+  registry maps `USDC` → pUSDC; the token picker now prefers rows whose label
+  contains that address when multiple tickers match.
+- **Amount entry (2026-08-29):** 9X's sell mask is ATM-style (implicit ÷1000).
+  Pass **human units** in `amount_in` (1M PLS → `"1000000"`). The URL's
+  `sellAmount=` mirrors raw field digits, not the parsed amount.
+- **Layer divergence + `sell_check`:** 9X's display layer and quote engine can
+  disagree (sell `$` correct while MIN RECEIVED is 1000× off). For stablecoin
+  routes, `browser_read_quote`'s `sell_check` uses **`check: sell_vs_out`**
+  (page sell USD vs quoted USDC out on the same screen) — a ratio far from 1
+  flags misparse.
 - **Digit-leading tickers:** the BUY default `9MM` used to defeat the token
   picker's button regex (required a leading letter) so output picks landed on
   the SELL leg and legs flip-flopped. Fixed in `open_token_picker.js`

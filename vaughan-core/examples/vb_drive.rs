@@ -26,9 +26,11 @@ async fn main() {
         Some("open") => cdp_open_url(cdp, arg(&args, 2))
             .await
             .map(|id| serde_json::json!({ "ok": true, "target": id })),
-        Some("select-in") => cdp_select_swap_token(cdp, arg(&args, 2), SwapTokenSide::Input).await,
+        Some("select-in") => {
+            cdp_select_swap_token(cdp, arg(&args, 2), SwapTokenSide::Input, 369).await
+        }
         Some("select-out") => {
-            cdp_select_swap_token(cdp, arg(&args, 2), SwapTokenSide::Output).await
+            cdp_select_swap_token(cdp, arg(&args, 2), SwapTokenSide::Output, 369).await
         }
         Some("amount") => {
             let strategy = args

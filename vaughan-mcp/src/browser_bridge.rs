@@ -597,6 +597,7 @@ pub async fn browser_open_agg(args: Value, ctx: &McpContext) -> Result<Value, St
                     &amount_in,
                     true,
                     type_strategy,
+                    ctx.chain_id,
                 )
                 .await
                 {
@@ -1067,7 +1068,7 @@ pub async fn browser_select_token(args: Value, ctx: &McpContext) -> Result<Value
         .ok_or_else(|| "missing side (input | output)".to_string())?;
     let side = parse_swap_side(side_raw)?;
     let cdp_url = require_cdp_session_mut(ctx).await?;
-    let result = vb_cdp::cdp_select_swap_token(&cdp_url, symbol, side)
+    let result = vb_cdp::cdp_select_swap_token(&cdp_url, symbol, side, ctx.chain_id)
         .await
         .map_err(wallet_err)?;
     Ok(json!({
@@ -1104,6 +1105,7 @@ pub async fn browser_setup_swap(args: Value, ctx: &McpContext) -> Result<Value, 
         amount_in,
         submit_quote,
         strategy,
+        ctx.chain_id,
     )
     .await
     .map_err(wallet_err)?;

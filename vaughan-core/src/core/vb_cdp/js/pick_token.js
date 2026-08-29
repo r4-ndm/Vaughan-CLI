@@ -2,7 +2,19 @@
 // Runs after search_token.js + a settle delay, so rows are collected fresh.
 (() => {
   const symbol = __VB_SYMBOL__;
+  const preferAddr = __VB_ADDRESS__;
   const norm = s => (s || '').trim().toUpperCase();
+  const addrNorm = a => (a || '').trim().toLowerCase();
+  const rowText = el => (el.innerText || el.textContent || '').trim();
+  const rowMatchesAddr = (el, addr) => {
+    if (!addr) return false;
+    const t = rowText(el).toLowerCase();
+    const a = addrNorm(addr);
+    if (!a.startsWith('0x') || a.length < 10) return false;
+    if (t.includes(a)) return true;
+    const tail = a.slice(-8);
+    return tail.length >= 6 && t.includes(tail);
+  };
   const collect = (root, out) => {
     root.querySelectorAll('button, a, [role=button], [role=option], li, div, span, p').forEach(e => out.push(e));
     root.querySelectorAll('*').forEach(el => { if (el.shadowRoot) collect(el.shadowRoot, out); });
@@ -15,7 +27,7 @@
   else collect(document.body, pool);
   const rowMatches = el => {
     if (!el.getBoundingClientRect().height) return false;
-    const t = (el.innerText || el.textContent || '').trim();
+    const t = rowText(el);
     if (!t || t.length > 100) return false;
     const first = norm(t.split('\n')[0]);
     if (/^(import|custom token|manage|clear|close|cancel|back)$/i.test(first)) return false;
@@ -28,9 +40,16 @@
     return new RegExp('\\b' + symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(t);
   };
   const rows = pool.filter(rowMatches);
-  rows.sort((a, b) => {
-    const ta = norm((a.innerText || '').split('\n')[0]);
-    const tb = norm((b.innerText || '').split('\n')[0]);
+  const addrRows = preferAddr ? rows.filter(r => rowMatchesAddr(r, preferAddr)) : [];
+  const candidates = addrRows.length ? addrRows : rows;
+  candidates.sort((a, b) => {
+    if (preferAddr) {
+      const aa = rowMatchesAddr(a, preferAddr);
+      const ab = rowMatchesAddr(b, preferAddr);
+      if (aa !== ab) return aa ? -1 : 1;
+    }
+    const ta = norm(rowText(a).split('\n')[0]);
+    const tb = norm(rowText(b).split('\n')[0]);
     if (ta === symbol) return -1;
     if (tb === symbol) return 1;
     if (symbol === 'PLS') {
@@ -39,8 +58,14 @@
     }
     return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
   });
-  const pick = rows[0];
-  if (!pick) return { ok: false, error: 'token row not found', symbol, rows: rows.length };
+  const pick = candidates[0];
+  if (!pick) return { ok: false, error: 'token row not found', symbol, rows: rows.length, preferAddr };
   pick.click();
-  return { ok: true, selected: symbol, method: 'picker', picked: norm((pick.innerText || '').split('\n')[0]) };
+  return {
+    ok: true,
+    selected: symbol,
+    method: 'picker',
+    picked: norm(rowText(pick).split('\n')[0]),
+    matched_address: preferAddr && rowMatchesAddr(pick, preferAddr),
+  };
 })()

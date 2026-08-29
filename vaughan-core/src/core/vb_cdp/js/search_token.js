@@ -3,6 +3,7 @@
 // evaluator keeps walking until the frame hosting the modal is found.
 (() => {
   const symbol = __VB_SYMBOL__;
+  const term = __VB_TERM__;
   const collect = (root, out) => {
     root.querySelectorAll('input').forEach(e => out.push(e));
     root.querySelectorAll('*').forEach(el => { if (el.shadowRoot) collect(el.shadowRoot, out); });
@@ -19,9 +20,9 @@
   search.focus();
   search.click();
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-  if (setter) setter.call(search, symbol);
-  else search.value = symbol;
+  if (setter) setter.call(search, term);
+  else search.value = term;
   search.dispatchEvent(new Event('input', { bubbles: true }));
   search.dispatchEvent(new Event('change', { bubbles: true }));
-  return { ok: true, searched: true, symbol, term: symbol };
+  return { ok: true, searched: true, symbol, term };
 })()

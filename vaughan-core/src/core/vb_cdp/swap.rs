@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use super::client::{deep_click_in_all_frames, evaluate_in_all_frames, CdpPage};
 use super::js;
+use crate::chains::evm::tokens_for_chain;
 use crate::error::WalletError;
 
 /// Which leg of a swap form to target (top ≈ input, bottom ≈ output on most UIs).
@@ -43,6 +44,40 @@ fn json_string(s: &str) -> Result<String, WalletError> {
     serde_json::to_string(s).map_err(|e| WalletError::Serialization(e.to_string()))
 }
 
+/// Registry contract for a ticker on `chain_id` (disambiguates duplicate labels).
+fn registry_address_for_symbol(chain_id: u64, symbol: &str) -> Option<String> {
+    if symbol.starts_with("0X") {
+        return Some(symbol.to_string());
+    }
+    tokens_for_chain(chain_id)
+        .into_iter()
+        .find(|t| t.symbol.eq_ignore_ascii_case(symbol))
+        .map(|t| t.address.to_string())
+}
+
+fn address_search_tail(addr: &str) -> Option<String> {
+    let a = addr.trim();
+    if a.len() >= 10 && a.starts_with("0x") {
+        Some(a[a.len() - 8..].to_string())
+    } else {
+        None
+    }
+}
+
+fn pick_matched_registry_address(pick: &Value) -> bool {
+    pick.pointer("/result/matched_address")
+        .or_else(|| pick.get("matched_address"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+}
+
+fn pick_address_json(chain_id: u64, symbol: &str) -> Result<String, WalletError> {
+    match registry_address_for_symbol(chain_id, symbol) {
+        Some(addr) => json_string(&addr),
+        None => Ok("null".into()),
+    }
+}
+
 /// True when the picker modal probe found a dialog/search box in any frame.
 async fn picker_modal_open(page: &mut CdpPage) -> bool {
     evaluate_in_all_frames(page, js::MODAL_PROBE)
@@ -59,9 +94,11 @@ pub async fn cdp_select_swap_token(
     cdp_http_url: &str,
     symbol: &str,
     side: SwapTokenSide,
+    chain_id: u64,
 ) -> Result<Value, WalletError> {
     let sym = normalize_swap_symbol(symbol);
     let sym_json = json_string(&sym)?;
+    let addr_json = pick_address_json(chain_id, &sym)?;
     let side_js = side.as_str();
 
     let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
@@ -109,20 +146,33 @@ pub async fn cdp_select_swap_token(
         }
     }
 
-    // Step 2: type the symbol into the picker search box (no-op when the
-    // venue lists all tokens), then let the filtered list settle.
-    let search = evaluate_in_all_frames(&mut page, &js::search_token(&sym_json)).await?;
+    // Step 2–3: search the picker, pick a row (retry by address tail when labels
+    // hide the contract — common on 9X duplicate tickers).
+    let registry_addr = registry_address_for_symbol(chain_id, &sym);
+    let mut search = evaluate_in_all_frames(&mut page, &js::search_token(&sym_json, &sym_json)).await?;
     let searched = search
         .pointer("/result/searched")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     tokio::time::sleep(Duration::from_millis(if searched { 700 } else { 200 })).await;
 
-    // Step 3: click the matching row from fresh (post-search) DOM.
-    let mut pick = evaluate_in_all_frames(&mut page, &js::pick_token(&sym_json)).await?;
+    let pick_js = js::pick_token(&sym_json, &addr_json);
+    let mut pick = evaluate_in_all_frames(&mut page, &pick_js).await?;
     if pick.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         tokio::time::sleep(Duration::from_millis(900)).await;
-        pick = evaluate_in_all_frames(&mut page, &js::pick_token(&sym_json)).await?;
+        pick = evaluate_in_all_frames(&mut page, &pick_js).await?;
+    }
+    if registry_addr.is_some()
+        && pick.get("ok").and_then(|v| v.as_bool()) == Some(true)
+        && !pick_matched_registry_address(&pick)
+    {
+        if let Some(tail) = registry_addr.as_deref().and_then(address_search_tail) {
+            let tail_json = json_string(&tail)?;
+            search =
+                evaluate_in_all_frames(&mut page, &js::search_token(&sym_json, &tail_json)).await?;
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            pick = evaluate_in_all_frames(&mut page, &pick_js).await?;
+        }
     }
     if pick.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         pick = deep_click_in_all_frames(&mut page, &sym).await?;
@@ -214,6 +264,7 @@ pub async fn cdp_setup_swap(
         amount_in,
         submit_quote,
         super::interact::TypeStrategy::Auto,
+        369,
     )
     .await
 }
@@ -227,10 +278,13 @@ pub async fn cdp_setup_swap_with_strategy(
     amount_in: &str,
     submit_quote: bool,
     strategy: super::interact::TypeStrategy,
+    chain_id: u64,
 ) -> Result<Value, WalletError> {
-    let in_res = cdp_select_swap_token(cdp_http_url, token_in, SwapTokenSide::Input).await?;
+    let in_res =
+        cdp_select_swap_token(cdp_http_url, token_in, SwapTokenSide::Input, chain_id).await?;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    let out_res = cdp_select_swap_token(cdp_http_url, token_out, SwapTokenSide::Output).await?;
+    let out_res =
+        cdp_select_swap_token(cdp_http_url, token_out, SwapTokenSide::Output, chain_id).await?;
     tokio::time::sleep(Duration::from_millis(400)).await;
     let amt_res = cdp_set_swap_amount_with_strategy(cdp_http_url, amount_in, strategy).await?;
     let submit_res = if submit_quote {
@@ -259,5 +313,14 @@ mod tests {
         assert_eq!(normalize_swap_symbol("native"), "PLS");
         assert_eq!(normalize_swap_symbol("pls"), "PLS");
         assert_eq!(normalize_swap_symbol("HEX"), "HEX");
+    }
+
+    #[test]
+    fn registry_address_for_usdc_on_pulsechain() {
+        let addr = registry_address_for_symbol(369, "USDC").unwrap();
+        assert_eq!(
+            addr.to_ascii_lowercase(),
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        );
     }
 }
