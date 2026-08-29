@@ -26,8 +26,8 @@ Browserless `quote_swap` for Switch typically requires a **developer API key**. 
 ## Flow
 
 1. Open **`https://www.switch.win/dapp`** (swap widget — not the marketing homepage).
-2. **`browser_connect_wallet`** — opens Connect modal, clicks **Vaughan** (shadow DOM / snapshot ref).
-3. Approve **`eth_requestAccounts`** in Vaughan TUI if prompted (one-time per session).
+2. **`browser_connect_wallet`** — opens Connect modal, clicks **Vaughan** (shadow DOM / snapshot ref), then auto-selects **PulseChain** in Switch's in-app chain picker when the wallet is on chain 369.
+3. Operator tier auto-grants **`eth_requestAccounts`** and **`wallet_switchEthereumChain`** on allowlisted hosts (no TUI card when sentient + Operator).
 4. **`browser_setup_swap`** with `token_in: PLS`, `token_out: HEX`, `amount_in: 1` — selects tokens in the embedded swap iframe, sets amount, clicks **Switch Now**.
 5. **`browser_snapshot`** — read HEX output from the quote panel.
 
@@ -64,3 +64,7 @@ Page title: *Switch.win - The Premiere DEX Aggregator* (or similar).
   output symbol (e.g. `HEX`) → `browser_type` the search box → `browser_click_text USDC`.
 - Quotes render **without** wallet connect (Connect Wallet stays visible) — fine
   for read-only quote tours.
+- **In-app chain picker:** Switch (and other multi-chain Ag UIs) show a network
+  dropdown separate from the wallet provider chain switch. `browser_connect_wallet`
+  / `browser_open_agg` with `connect_wallet: true` auto-clicks the wallet's
+  active network label (PulseChain on 369) after connect — generic, not Switch-only.

@@ -457,6 +457,13 @@ pub async fn cdp_navigate_target(
     Ok(())
 }
 
+/// Focus an existing page target without reloading (preserves dApp wallet state).
+pub async fn cdp_focus_target(cdp_http_url: &str, target_id: &str) -> Result<(), WalletError> {
+    let mut page = CdpPage::connect_target(cdp_http_url, target_id).await?;
+    let _ = page.call("Page.bringToFront", json!({})).await;
+    Ok(())
+}
+
 /// XPath 1.0 string literal: no escape mechanism exists, so quote with `'` —
 /// or `"` when the text contains `'` — and fall back to `concat()` when both
 /// quote kinds appear. Agent-supplied text reaches this query raw, so without

@@ -373,9 +373,9 @@ pub async fn cdp_open_url(cdp_url: &str, url: &str) -> Result<Option<String>, Wa
 ///
 /// Agent navigations used to mint a fresh tab every call, so a quote tour
 /// across two venues left half a dozen tabs and "first page" reads landed on
-/// stale ones. Reuse matches agent intent ("go to Switch" = the Switch tab)
-/// and the navigation doubles as a reload, which re-runs the dApp's
-/// `eth_accounts` check against current grants. Returns `(target_id, reused)`.
+/// stale ones. Reuse matches agent intent ("go to Switch" = the Switch tab).
+/// When the tab is already on the same path, only focuses it — no reload, so
+/// wallet connect state is preserved. Returns `(target_id, reused)`.
 pub async fn cdp_open_or_reuse(
     cdp_url: &str,
     url: &str,
@@ -398,7 +398,12 @@ pub async fn cdp_open_or_reuse(
                     continue;
                 }
                 if let Some(id) = page.get("id").and_then(|i| i.as_str()) {
-                    crate::core::vb_cdp::cdp_navigate_target(cdp_url, id, url).await?;
+                    let page_url = page.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                    if same_dapp_path(page_url, url) {
+                        crate::core::vb_cdp::cdp_focus_target(cdp_url, id).await?;
+                    } else {
+                        crate::core::vb_cdp::cdp_navigate_target(cdp_url, id, url).await?;
+                    }
                     return Ok((Some(id.to_string()), true));
                 }
             }
@@ -406,6 +411,14 @@ pub async fn cdp_open_or_reuse(
     }
     let id = cdp_open_url(cdp_url, url).await?;
     Ok((id, false))
+}
+
+/// Same origin + path — ignore query/hash so reuse does not reload mid-session.
+fn same_dapp_path(current: &str, target: &str) -> bool {
+    match (Url::parse(current), Url::parse(target)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin() && a.path() == b.path(),
+        _ => current.trim_end_matches('/') == target.trim_end_matches('/'),
+    }
 }
 
 /// Current URL of the pinned page target (or the first page when unpinned).

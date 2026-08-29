@@ -28,6 +28,8 @@ const READ_TYPE_TARGET: &str = include_str!("js/read_type_target.js");
 const RESELECT_TYPE_TARGET: &str = include_str!("js/reselect_type_target.js");
 const SET_MARKED_VALUE: &str = include_str!("js/set_marked_value.js");
 const CONNECT_STATE: &str = include_str!("js/connect_state.js");
+const SELECT_DAPP_CHAIN_PROBE: &str = include_str!("js/select_dapp_chain_probe.js");
+const OPEN_CHAIN_PICKER: &str = include_str!("js/open_chain_picker.js");
 const WAIT_PROBE: &str = include_str!("js/wait_probe.js");
 
 /// Snapshot of interactive refs (`{ title, url, refs }`).
@@ -99,6 +101,16 @@ pub(crate) fn set_marked_value(text_json: &str) -> String {
 /// Connected-state probe (address chip / Connect CTA presence).
 pub(crate) fn connect_state() -> &'static str {
     CONNECT_STATE
+}
+
+/// Whether the dApp UI already shows one of `terms_json` as the active chain.
+pub(crate) fn select_dapp_chain_probe(terms_json: &str) -> String {
+    SELECT_DAPP_CHAIN_PROBE.replace("__VB_TERMS_JSON__", terms_json)
+}
+
+/// Try to open a network/chain picker modal or dropdown.
+pub(crate) fn open_chain_picker() -> &'static str {
+    OPEN_CHAIN_PICKER
 }
 
 /// Wait probe for text / selector / URL substring (each a JSON literal or `null`).

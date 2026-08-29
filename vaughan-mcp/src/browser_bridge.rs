@@ -565,7 +565,8 @@ pub async fn browser_open_agg(args: Value, ctx: &McpContext) -> Result<Value, St
                 }
             }
             if connect_wallet {
-                match vb_cdp::cdp_connect_vaughan_wallet(&session.cdp_url).await {
+                match vb_cdp::cdp_connect_vaughan_wallet(&session.cdp_url, Some(ctx.chain_id)).await
+                {
                     Ok(connect) => {
                         if let Some(obj) = out.as_object_mut() {
                             obj.insert("connect_wallet".to_string(), connect);
@@ -1109,7 +1110,7 @@ pub async fn browser_connect_wallet(_args: Value, ctx: &McpContext) -> Result<Va
             ));
         }
     }
-    let result = vb_cdp::cdp_connect_vaughan_wallet(&cdp_url)
+    let result = vb_cdp::cdp_connect_vaughan_wallet(&cdp_url, Some(ctx.chain_id))
         .await
         .map_err(wallet_err)?;
     Ok(json!({ "status": "connect_wallet", "result": result }))

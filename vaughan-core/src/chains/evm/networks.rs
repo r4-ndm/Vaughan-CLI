@@ -178,6 +178,29 @@ pub fn eip3770_short_name(chain_id: u64) -> &'static str {
     }
 }
 
+/// Visible labels to click in multi-chain dApp network pickers (Switch, 9X, …).
+///
+/// Ordered most-specific first; avoids generic tokens like `ETH` that collide
+/// with tickers. Falls back to the built-in network name when unknown.
+pub fn dapp_chain_picker_labels(chain_id: u64) -> Vec<String> {
+    let static_labels: &[&str] = match chain_id {
+        369 => &["PulseChain", "Pulse"],
+        943 => &["PulseChain Testnet", "Testnet v4", "Testnet"],
+        1 => &["Ethereum", "Mainnet"],
+        8453 => &["Base"],
+        56 => &["BNB Chain", "BSC", "Binance"],
+        137 => &["Polygon", "MATIC"],
+        11155111 => &["Sepolia"],
+        _ => &[],
+    };
+    if !static_labels.is_empty() {
+        return static_labels.iter().map(|s| s.to_string()).collect();
+    }
+    get_network_by_chain_id(chain_id)
+        .map(|n| vec![n.name.clone()])
+        .unwrap_or_default()
+}
+
 /// Ethereum mainnet.
 pub fn ethereum_mainnet() -> EvmNetworkConfig {
     EvmNetworkConfig::new(
@@ -374,6 +397,16 @@ mod tests {
         assert!(get_network_by_chain_id(943).unwrap().is_testnet);
         assert_eq!(get_network_by_id("ETHEREUM").unwrap().chain_id, 1);
         assert!(get_network_by_id("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn dapp_chain_picker_labels_pulsechain_and_fallback() {
+        assert_eq!(
+            dapp_chain_picker_labels(369),
+            vec!["PulseChain".to_string(), "Pulse".to_string()]
+        );
+        assert!(dapp_chain_picker_labels(1).contains(&"Ethereum".to_string()));
+        assert_eq!(dapp_chain_picker_labels(999_999), Vec::<String>::new());
     }
 
     #[test]

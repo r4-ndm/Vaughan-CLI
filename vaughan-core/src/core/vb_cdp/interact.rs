@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use super::client::{click_result_ok, click_text_cascade, evaluate_in_all_frames, CdpPage};
 use super::js;
+use crate::chains::evm::networks::dapp_chain_picker_labels;
 use crate::error::WalletError;
 
 /// Click an element by snapshot ref (`browser_click`).
@@ -48,11 +49,17 @@ pub async fn cdp_dismiss_modals(cdp_http_url: &str) -> Result<Value, WalletError
 
 /// Connect wallet on a dApp: open Connect → pick Vaughan/Injected (shadow DOM + snapshot refs).
 ///
+/// When `chain_id` is set, also tries to select that chain in the dApp's own
+/// network picker (Switch, 9X, …) — separate from `wallet_switchEthereumChain`.
+///
 /// After the provider click, the page is polled for connected state (address
 /// chip / Connect CTA gone). Clicking "Vaughan" only *requests* accounts —
 /// `eth_requestAccounts` may await TUI approval or never fire — so the result
 /// reports `connected` separately from click success.
-pub async fn cdp_connect_vaughan_wallet(cdp_http_url: &str) -> Result<Value, WalletError> {
+pub async fn cdp_connect_vaughan_wallet(
+    cdp_http_url: &str,
+    chain_id: Option<u64>,
+) -> Result<Value, WalletError> {
     let mut steps = Vec::new();
     let mut modal_open = false;
     for label in ["Connect Wallet", "Connect"] {
@@ -73,7 +80,7 @@ pub async fn cdp_connect_vaughan_wallet(cdp_http_url: &str) -> Result<Value, Wal
         if click_result_ok(&r) {
             tokio::time::sleep(Duration::from_millis(1200)).await;
             let connected = poll_connect_state(cdp_http_url, Duration::from_secs(8)).await;
-            return Ok(json!({
+            let mut out = json!({
                 "ok": true,
                 "provider": provider,
                 "steps": steps,
@@ -83,11 +90,101 @@ pub async fn cdp_connect_vaughan_wallet(cdp_http_url: &str) -> Result<Value, Wal
                 } else {
                     "no connected state observed — approve eth_requestAccounts in the Vaughan TUI if prompted; some dApps also require a chain switch"
                 },
-            }));
+            });
+            if let Some(cid) = chain_id {
+                let pick = cdp_select_dapp_chain(cdp_http_url, cid, Duration::from_secs(6)).await?;
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("select_chain".to_string(), pick);
+                }
+            }
+            return Ok(out);
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     Ok(json!({ "ok": false, "error": "wallet provider not found", "steps": steps }))
+}
+
+/// Select the wallet's active chain in a dApp network picker (UI layer).
+///
+/// Generic: clicks visible labels from [`dapp_chain_picker_labels`] after
+/// optionally opening a "Select network" control. Retries until `max_wait`
+/// because many dApps (Switch) render the picker only after connect settles.
+pub async fn cdp_select_dapp_chain(
+    cdp_http_url: &str,
+    chain_id: u64,
+    max_wait: Duration,
+) -> Result<Value, WalletError> {
+    let terms = dapp_chain_picker_labels(chain_id);
+    if terms.is_empty() {
+        return Ok(json!({ "ok": false, "skipped": true, "reason": "unknown chain_id" }));
+    }
+    let terms_json =
+        serde_json::to_string(&terms).map_err(|e| WalletError::Serialization(e.to_string()))?;
+
+    let deadline = Instant::now() + max_wait;
+    let mut last = json!({
+        "ok": false,
+        "error": "chain option not found in dApp UI",
+        "chain_id": chain_id,
+        "terms": terms,
+    });
+
+    loop {
+        if chain_already_selected(cdp_http_url, &terms_json).await? {
+            return Ok(json!({
+                "ok": true,
+                "already": true,
+                "chain_id": chain_id,
+                "terms": terms,
+            }));
+        }
+
+        let mut open_step = None;
+        if let Ok(mut page) = CdpPage::connect_first_page(cdp_http_url).await {
+            if let Ok(r) = evaluate_in_all_frames(&mut page, js::open_chain_picker()).await {
+                let inner = r.get("result").cloned().unwrap_or(r);
+                if inner.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                    open_step = Some(inner);
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+
+        for term in &terms {
+            let r = cdp_click_by_text(cdp_http_url, term).await?;
+            if click_result_ok(&r) {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                let verified = chain_already_selected(cdp_http_url, &terms_json).await?;
+                return Ok(json!({
+                    "ok": true,
+                    "selected": term,
+                    "chain_id": chain_id,
+                    "open": open_step,
+                    "verified": verified,
+                }));
+            }
+        }
+
+        last = json!({
+            "ok": false,
+            "error": "chain option not found in dApp UI",
+            "chain_id": chain_id,
+            "terms": terms,
+            "open": open_step,
+        });
+
+        if Instant::now() >= deadline {
+            return Ok(last);
+        }
+        tokio::time::sleep(Duration::from_millis(800)).await;
+    }
+}
+
+async fn chain_already_selected(cdp_http_url: &str, terms_json: &str) -> Result<bool, WalletError> {
+    let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
+    let r = evaluate_in_all_frames(&mut page, &js::select_dapp_chain_probe(terms_json)).await?;
+    let inner = r.get("result").cloned().unwrap_or(r);
+    Ok(inner.get("already").and_then(|v| v.as_bool()) == Some(true))
 }
 
 /// Poll the page for post-connect state (address chip visible / Connect CTA gone).
