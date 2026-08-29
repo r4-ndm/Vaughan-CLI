@@ -62,6 +62,10 @@ impl DashboardView {
         self.send.sync_from_chrome(chrome);
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        self.send.allows_footer_shortcuts()
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
         self.send.render(frame, area, wallet);
     }

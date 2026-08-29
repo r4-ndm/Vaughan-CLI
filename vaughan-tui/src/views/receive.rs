@@ -141,6 +141,10 @@ impl ReceiveView {
         lines
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        true
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,

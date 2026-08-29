@@ -96,10 +96,17 @@ fn unlock_view_correct_password_unlocks_and_publishes_event() {
     let job =
         expect_unlock_job(view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events));
 
-    // While the KDF runs, the wallet is still locked and the spinner shows.
+    // While the KDF runs, the wallet is still locked and the loading bar shows.
     assert!(!wallet.is_unlocked(), "job in flight — still locked");
     let text = render(&view, &wallet);
-    assert!(text.contains("Unlocking"), "spinner status:\n{text}");
+    assert!(
+        !text.contains("Unlocking"),
+        "no unlock caption under the field:\n{text}"
+    );
+    assert!(
+        text.contains('█') || text.contains('░') || text.contains('▓'),
+        "password box should show a loading bar:\n{text}"
+    );
 
     // Keys are swallowed mid-unlock (no double submit, no Esc).
     let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
@@ -202,6 +209,19 @@ fn picker_lists_human_or_sentient_roles() {
     );
 }
 
+#[test]
+fn password_field_uses_empty_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = fresh_wallet(dir.path());
+    wallet.lock();
+    let view = UnlockView::default();
+    let text = render(&view, &wallet);
+    assert!(
+        !text.lines().any(|line| line.contains("password▌")),
+        "empty password field should not show a placeholder word:\n{text}"
+    );
+}
+
 /// Enter on Sentient skips the mode step (auto-exec only runs on the agent
 /// wallet's seed) and emits `SwitchProfile` with SentientTrader.
 #[test]
@@ -231,6 +251,14 @@ fn picker_enter_on_sentient_emits_switch_profile() {
     assert!(
         text.contains("Password"),
         "password stage after pick:\n{text}"
+    );
+    assert!(
+        !text.contains("policy enforced"),
+        "password screen should not repeat session policy:\n{text}"
+    );
+    assert!(
+        text.contains("Esc back"),
+        "password hint should offer Esc back:\n{text}"
     );
 
     // Esc from the password stage returns to the role choice.
@@ -271,15 +299,15 @@ fn picker_wallet_then_mode_for_regular_profiles() {
 
     let text = render(&view, &wallet);
     assert!(
-        text.contains("Mode for savings"),
-        "mode step for savings:\n{text}"
+        !text.contains("Mode for savings"),
+        "mode step uses short title:\n{text}"
     );
     assert!(
-        text.contains("Human only — manual wallet, no agent"),
+        text.contains("Human only"),
         "human-only row:\n{text}"
     );
     assert!(
-        text.contains("Advisor — agent proposes, you approve"),
+        text.contains("Agent advisor"),
         "advisor row:\n{text}"
     );
     assert!(
@@ -303,7 +331,7 @@ fn picker_wallet_then_mode_for_regular_profiles() {
     assert!(matches!(outcome, KeyOutcome::Consumed));
     let text = render(&view, &wallet);
     assert!(
-        text.contains("Mode for savings"),
+        !text.contains("Mode for savings"),
         "mode step after Esc:\n{text}"
     );
 }
@@ -326,11 +354,11 @@ fn single_profile_offers_human_and_advisor_rows() {
 
     let text = render(&view, &wallet);
     assert!(
-        text.contains("Human only — manual wallet, no agent"),
+        text.contains("Human only"),
         "human-only row:\n{text}"
     );
     assert!(
-        text.contains("Advisor — agent proposes, you approve"),
+        text.contains("Agent advisor"),
         "advisor row:\n{text}"
     );
     assert!(

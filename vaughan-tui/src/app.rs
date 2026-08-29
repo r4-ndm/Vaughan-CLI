@@ -229,6 +229,30 @@ impl View {
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
     }
+
+    /// Footer chip keys defer to global navigation when this returns true.
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        match self {
+            Self::Onboarding(v) => v.allows_footer_shortcuts(),
+            Self::Unlock(v) => v.allows_footer_shortcuts(),
+            Self::Dashboard(v) => v.allows_footer_shortcuts(),
+            Self::AaSend(v) => v.allows_footer_shortcuts(),
+            Self::Receive(v) => v.allows_footer_shortcuts(),
+            Self::Settings(v) => v.allows_footer_shortcuts(),
+            Self::Keys(v) => v.allows_footer_shortcuts(),
+            Self::Dapps(v) => v.allows_footer_shortcuts(),
+            Self::Assets(v) => v.allows_footer_shortcuts(),
+            Self::Browser(v) => v.allows_footer_shortcuts(),
+            Self::Dex(v) => v.allows_footer_shortcuts(),
+            Self::Aggregator(v) => v.allows_footer_shortcuts(),
+            Self::Bridge(v) => v.allows_footer_shortcuts(),
+            Self::History(v) => v.allows_footer_shortcuts(),
+            Self::Approvals(v) => v.allows_footer_shortcuts(),
+            Self::Wrap(v) => v.allows_footer_shortcuts(),
+            Self::Placeholder(v) => v.allows_footer_shortcuts(),
+            Self::Approve(v) => v.allows_footer_shortcuts(),
+        }
+    }
 }
 
 /// A sign/send/connect request waiting on the user's approve/deny decision.
@@ -428,6 +452,11 @@ impl App {
         self.tick
     }
 
+    /// Hide the splash tagline on the password prompt so the field stays clean.
+    pub(crate) fn suppress_unlock_slogan(&self) -> bool {
+        matches!(&self.view, View::Unlock(u) if u.is_password_stage())
+    }
+
     /// Shared need-to-know strip (balance / gas) for every unlocked view.
     pub fn chrome(&self) -> &ChromeSnapshot {
         &self.chrome
@@ -570,6 +599,7 @@ impl App {
             self.view
                 .handle_key(key, &mut wallet, &self.handle, &self.events)
         };
+        let outcome = defer_footer_shortcut(outcome, key, self.view.allows_footer_shortcuts());
 
         match global_action(key, &outcome) {
             GlobalAction::Quit => {
@@ -2429,6 +2459,15 @@ enum GlobalAction {
     CopyAddress,
 }
 
+/// When a view swallows a footer chip key without acting on it, retry globally.
+fn defer_footer_shortcut(outcome: KeyOutcome, key: KeyEvent, allows: bool) -> KeyOutcome {
+    if allows && crate::views::is_footer_shortcut(key) && matches!(outcome, KeyOutcome::Consumed) {
+        KeyOutcome::NotHandled
+    } else {
+        outcome
+    }
+}
+
 /// Decide global shortcuts for `key` given how the active view handled it.
 ///
 /// Pure and unit-tested: this is where the "typing into a field must not
@@ -2457,6 +2496,10 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
 
     if key.code == KeyCode::Tab {
         return GlobalAction::CycleScreens;
+    }
+
+    if key.code == KeyCode::Esc {
+        return GlobalAction::Navigate(Screen::Dashboard);
     }
 
     // Footer shortcuts — available from every unlocked view when idle.
@@ -2540,6 +2583,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
@@ -2621,6 +2668,22 @@ mod tests {
     }
 
     #[test]
+    fn defer_footer_shortcut_retries_consumed_chip_keys() {
+        assert!(matches!(
+            defer_footer_shortcut(KeyOutcome::Consumed, press('d'), true),
+            KeyOutcome::NotHandled
+        ));
+        assert!(matches!(
+            defer_footer_shortcut(KeyOutcome::Consumed, press('d'), false),
+            KeyOutcome::Consumed
+        ));
+        assert!(matches!(
+            defer_footer_shortcut(KeyOutcome::Navigate(Screen::Dex), press('d'), true),
+            KeyOutcome::Navigate(Screen::Dex)
+        ));
+    }
+
+    #[test]
     fn footer_shortcuts_when_unhandled() {
         assert_eq!(
             global_action(press('s'), &KeyOutcome::NotHandled),
@@ -2661,6 +2724,10 @@ mod tests {
         assert_eq!(
             global_action(press('l'), &KeyOutcome::NotHandled),
             GlobalAction::Lock
+        );
+        assert_eq!(
+            global_action(key(KeyCode::Esc), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::Dashboard)
         );
         assert_eq!(
             global_action(press('s'), &KeyOutcome::Consumed),

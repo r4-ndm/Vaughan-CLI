@@ -49,7 +49,7 @@ pub use settings::SettingsView;
 pub use unlock::UnlockView;
 pub use wrap::WrapView;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -65,6 +65,26 @@ use crate::jobs::{spinner_frame, ChromeFocus};
 use alloy::primitives::U256;
 use vaughan_core::chains::Balance;
 use vaughan_core::core::{format_display_amount, parse_native_amount, OperatingMode};
+
+/// True when `key` matches a footer chip (`v`/`d`/`g`, Tab, Esc, `x`, …).
+pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if key.modifiers.contains(KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT) {
+        return false;
+    }
+    match key.code {
+        KeyCode::Tab | KeyCode::Esc => true,
+        KeyCode::Char('x') | KeyCode::Char('X') => !ctrl,
+        KeyCode::Char(c) if c.is_ascii_alphabetic() => {
+            matches!(
+                c.to_ascii_lowercase(),
+                'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' | 'l' | 'm'
+                    | 'n' | 'o' | 'r' | 's' | 't' | 'v' | 'w'
+            )
+        }
+        _ => false,
+    }
+}
 
 /// Which swap form field receives a picker (↑/↓) selection.
 pub(crate) enum TokenFieldRole<'a> {
@@ -268,13 +288,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     let unlocked = app.try_wallet().is_some_and(|w| w.is_unlocked());
 
     if !unlocked {
+        let show_slogan = !app.suppress_unlock_slogan();
+        let slogan_h = u16::from(show_slogan);
         let [body, slogan] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+            Layout::vertical([Constraint::Min(0), Constraint::Length(slogan_h)]).areas(area);
         app.render_body(frame, body);
-        frame.render_widget(
-            Paragraph::new(brand::typing_slogan(app.tick())).alignment(Alignment::Center),
-            slogan,
-        );
+        if show_slogan {
+            frame.render_widget(
+                Paragraph::new(brand::typing_slogan(app.tick())).alignment(Alignment::Center),
+                slogan,
+            );
+        }
         if app.quit_confirm().is_some() {
             render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
         }
@@ -764,11 +788,7 @@ pub(crate) fn status_paragraph(status: &str) -> Paragraph<'static> {
         Style::default().fg(Color::Red)
     };
     Paragraph::new(Span::styled(
-        if status.is_empty() {
-            " ".to_string()
-        } else {
-            status.to_string()
-        },
+        status.to_string(),
         style,
     ))
 }

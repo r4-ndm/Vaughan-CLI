@@ -292,6 +292,10 @@ impl HistoryView {
         frame.render_widget(List::new(items), inner);
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        matches!(self.stage, Stage::List)
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,

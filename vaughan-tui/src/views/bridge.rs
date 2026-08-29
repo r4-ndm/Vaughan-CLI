@@ -335,6 +335,13 @@ impl BridgeView {
         );
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        match self.stage {
+            Stage::Input => !matches!(self.focus, Focus::Amount),
+            Stage::Confirm(_) | Stage::Done => true,
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,

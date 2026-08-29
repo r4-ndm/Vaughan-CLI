@@ -8,10 +8,10 @@
 //! mode is locked in at unlock and immutable for the session (FR-5.1).
 
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::widgets::{Gauge, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use tokio::runtime::Handle;
 use vaughan_core::core::{
@@ -68,11 +68,28 @@ pub struct UnlockView {
     tick: u64,
 }
 
+#[derive(Clone, Copy)]
+enum ListLayout {
+    Default,
+    /// Match the splash logo width; centre row labels and the hint line.
+    LogoCentered,
+}
+
+impl ListLayout {
+    fn match_logo_width(self) -> bool {
+        matches!(self, Self::LogoCentered)
+    }
+
+    fn center_rows(self) -> bool {
+        matches!(self, Self::LogoCentered)
+    }
+}
+
 impl Default for UnlockView {
     /// Password-only unlock with no profile scan (tests; single-vault UX).
     fn default() -> Self {
         Self {
-            input: Input::new(true, "password"),
+            input: Input::new(true, ""),
             status: String::new(),
             profiles: Vec::new(),
             selected: 0,
@@ -109,7 +126,7 @@ impl UnlockView {
     pub fn with_profiles(profiles: Vec<ProfileMeta>, current_profile: &str) -> Self {
         let current_is_sentient = is_sentient_profile(current_profile);
         Self {
-            input: Input::new(true, "password"),
+            input: Input::new(true, ""),
             status: String::new(),
             selected: usize::from(current_is_sentient),
             stage: if profiles.is_empty() {
@@ -158,12 +175,32 @@ impl UnlockView {
             .or_else(|| self.profiles.iter().find(|p| p.is_sentient))
     }
 
-    fn mode_badge(mode: OperatingMode) -> &'static str {
+    fn mode_picker_label(mode: OperatingMode) -> &'static str {
         match mode {
-            OperatingMode::HumanOnly => "Human only — manual wallet, no agent",
-            OperatingMode::AiAssisted => "Advisor — agent proposes, you approve",
-            OperatingMode::SentientTrader => "Sentient — agent auto-exec under policy",
+            OperatingMode::HumanOnly => "Human only",
+            OperatingMode::AiAssisted => "Agent advisor",
+            OperatingMode::SentientTrader => "Sentient",
         }
+    }
+
+    fn password_hint_h(&self) -> u16 {
+        if self.stage == Stage::Password
+            && self.password_back.is_some()
+            && !self.unlocking
+        {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// True on the password prompt (hide splash tagline for a cleaner field).
+    pub fn is_password_stage(&self) -> bool {
+        self.stage == Stage::Password
+    }
+
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        false
     }
 
     fn row_count(&self) -> usize {
@@ -175,16 +212,15 @@ impl UnlockView {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState) {
         let art = brand::logo_art_lines(area.width);
         let art_h = art.len() as u16;
         let gap = 1u16;
         let input_h = 3u16;
         let status_h = 1u16;
-        let policy = crate::sentient_mcp::sentient_policy_line(wallet);
-        let info_h = if policy.is_some() { 2u16 } else { 1u16 };
+        let hint_h = self.password_hint_h();
         let block = match self.stage {
-            Stage::Password => art_h.saturating_add(gap + info_h + input_h + status_h),
+            Stage::Password => art_h.saturating_add(gap + input_h + hint_h + status_h),
             Stage::PickRole | Stage::PickWallet | Stage::PickMode => {
                 // +2: the faded box's top/bottom borders eat two rows.
                 let list_h = self.row_count() as u16 + 2;
@@ -213,8 +249,57 @@ impl UnlockView {
             Stage::PickRole => self.render_roles(frame, body),
             Stage::PickWallet => self.render_wallets(frame, body),
             Stage::PickMode => self.render_modes(frame, body),
-            Stage::Password => self.render_password(frame, body, wallet, policy.as_deref()),
+            Stage::Password => self.render_password(frame, body),
         }
+    }
+
+    fn logo_matched_rect(area: Rect) -> Rect {
+        let art_w = brand::logo_art_width() as u16;
+        if area.width == 0 {
+            return area;
+        }
+        // Narrow terminals: the splash falls back to a single banner using full width.
+        if (area.width as usize) < brand::logo_art_width() {
+            return area;
+        }
+        let box_w = art_w.min(area.width);
+        Rect {
+            x: area.x + (area.width.saturating_sub(box_w)) / 2,
+            width: box_w,
+            ..area
+        }
+    }
+
+    /// Pad left and right so row text is centred and the line spans the full inner width.
+    fn center_fill_width(text: &str, width: u16) -> String {
+        let w = width as usize;
+        let n = text.chars().count();
+        if n >= w {
+            return text.to_string();
+        }
+        let pad_total = w - n;
+        let pad_left = pad_total / 2;
+        let pad_right = pad_total - pad_left;
+        format!(
+            "{}{}{}",
+            " ".repeat(pad_left),
+            text,
+            " ".repeat(pad_right)
+        )
+    }
+
+    fn picker_highlight_style() -> Style {
+        Style::default()
+            .fg(Color::Gray)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    }
+
+    /// Indeterminate KDF progress (ping-pong 0..1) for the password loading bar.
+    fn unlock_progress(tick: u64) -> f64 {
+        const CYCLE: u64 = 80;
+        let phase = (tick % CYCLE) as f64 / CYCLE as f64;
+        1.0 - (phase * 2.0 - 1.0).abs()
     }
 
     fn render_list(
@@ -224,6 +309,7 @@ impl UnlockView {
         title: &str,
         labels: Vec<(String, Style)>,
         hint: &str,
+        layout: ListLayout,
     ) {
         let list_h = labels.len() as u16 + 2;
         let [list_area, hint_area, status_area] = Layout::vertical([
@@ -232,17 +318,45 @@ impl UnlockView {
             Constraint::Length(1),
         ])
         .areas(area);
+        let list_area = if layout.match_logo_width() {
+            Self::logo_matched_rect(list_area)
+        } else {
+            list_area
+        };
+        let hint_area = if layout.match_logo_width() {
+            Self::logo_matched_rect(hint_area)
+        } else {
+            hint_area
+        };
+        let inner = brand::render_faded_box(frame, list_area, Some(brand::fade_line(title)));
         let items: Vec<ListItem> = labels
             .into_iter()
-            .map(|(label, style)| ListItem::new(Line::from(Span::styled(label, style))))
+            .map(|(label, style)| {
+                let text = if layout.center_rows() {
+                    Self::center_fill_width(label.trim(), inner.width)
+                } else {
+                    label
+                };
+                ListItem::new(Line::from(Span::styled(text, style)))
+            })
             .collect();
-        let inner = brand::render_faded_box(frame, list_area, Some(brand::fade_line(title)));
-        frame.render_widget(List::new(items), inner);
+        let mut list_state = ListState::default();
+        list_state.select(Some(self.selected));
+        let list = List::new(items)
+            .highlight_style(Self::picker_highlight_style())
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_symbol("");
+        frame.render_stateful_widget(list, inner, &mut list_state);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 hint.to_string(),
                 Style::default().fg(Color::DarkGray),
-            ))),
+            )))
+            .alignment(if layout.match_logo_width() {
+                Alignment::Center
+            } else {
+                Alignment::Left
+            }),
             hint_area,
         );
         frame.render_widget(status_paragraph(&self.status), status_area);
@@ -262,19 +376,13 @@ impl UnlockView {
         ];
         let labels = rows
             .iter()
-            .enumerate()
-            .map(|(i, (_, label, is_new, base))| {
-                let tag = if *is_new {
-                    "  (new — vault created next)"
+            .map(|(_, label, is_new, base)| {
+                let text = if *is_new {
+                    format!("{label}  (new — vault created next)")
                 } else {
-                    ""
+                    (*label).to_string()
                 };
-                let style = if i == self.selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    *base
-                };
-                (format!("  {label}{tag}"), style)
+                (text, *base)
             })
             .collect();
         self.render_list(
@@ -283,6 +391,7 @@ impl UnlockView {
             " Wallet ",
             labels,
             "↑↓ select · Enter continue",
+            ListLayout::LogoCentered,
         );
     }
 
@@ -290,19 +399,16 @@ impl UnlockView {
         let labels = self
             .human_profiles()
             .iter()
-            .enumerate()
-            .map(|(i, p)| {
+            .map(|p| {
                 let new_tag = if p.initialized {
                     ""
                 } else {
                     "  (new — vault created next)"
                 };
-                let style = if i == self.selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    Style::default()
-                };
-                (format!("  {:<12} your wallet{new_tag}", p.name), style)
+                (
+                    format!("  {:<12} your wallet{new_tag}", p.name),
+                    Style::default(),
+                )
             })
             .collect();
         self.render_list(
@@ -311,72 +417,39 @@ impl UnlockView {
             " Human — which wallet ",
             labels,
             "↑↓ select · Enter continue · Esc back",
+            ListLayout::Default,
         );
     }
 
     fn render_modes(&self, frame: &mut Frame, area: Rect) {
         let labels = HUMAN_WALLET_MODES
             .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let label = format!("  {}", Self::mode_badge(*m));
-                let style = if i == self.selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    match m {
-                        OperatingMode::AiAssisted => Style::default().fg(Color::Green),
-                        _ => Style::default(),
-                    }
+            .map(|m| {
+                let style = match m {
+                    OperatingMode::AiAssisted => Style::default().fg(Color::Green),
+                    _ => Style::default(),
                 };
-                (label, style)
+                (Self::mode_picker_label(*m).to_string(), style)
             })
             .collect();
-        let wallet_name = self.picked_profile.as_deref().unwrap_or("default");
-        let title = format!(" Mode for {wallet_name} — locked for the session ");
         self.render_list(
             frame,
             area,
-            &title,
+            " Mode ",
             labels,
             "↑↓ select · Enter continue · Esc back",
+            ListLayout::LogoCentered,
         );
     }
 
-    fn render_password(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        wallet: &WalletState,
-        policy: Option<&str>,
-    ) {
-        let info_h = if policy.is_some() { 2u16 } else { 1u16 };
-        let [profile_area, input_area, status_area] = Layout::vertical([
-            Constraint::Length(info_h),
+    fn render_password(&self, frame: &mut Frame, area: Rect) {
+        let hint_h = self.password_hint_h();
+        let [input_area, hint_area, status_area] = Layout::vertical([
             Constraint::Length(3),
+            Constraint::Length(hint_h),
             Constraint::Length(1),
         ])
         .areas(area);
-        let profile = wallet.profile_name();
-        let mode = self
-            .picked_mode
-            .unwrap_or_else(|| tui_mode_for_profile(profile));
-        let mut profile_line = format!("Profile: {profile}  ({})", Self::mode_badge(mode));
-        if self.password_back.is_some() && !self.unlocking {
-            profile_line.push_str("  · Esc back");
-        }
-        let mut info_lines = vec![Line::from(Span::styled(
-            profile_line,
-            Style::default().fg(Color::DarkGray),
-        ))];
-        if let Some(policy) = policy {
-            let style = if policy.contains("DISABLED") || policy.contains("WARN-ONLY") {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            info_lines.push(Line::from(Span::styled(format!("  {policy}"), style)));
-        }
-        frame.render_widget(Paragraph::new(info_lines), profile_area);
         // Keep the password field a comfortable width, centred.
         let field_w = input_area.width.min(56).max(24.min(input_area.width));
         let field_x = input_area.x + (input_area.width.saturating_sub(field_w)) / 2;
@@ -387,28 +460,30 @@ impl UnlockView {
             height: input_area.height,
         };
         if self.unlocking {
-            // The password was moved into the unlock job; show a fixed mask
-            // (not the real length) plus an animated spinner for the KDF wait.
-            let inner = brand::render_faded_box(frame, field, Some(brand::fade_line(" Password ")));
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "••••••••",
-                    Style::default().fg(Color::DarkGray),
-                ))),
-                inner,
-            );
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!(
-                        "{} Unlocking — Argon2id key derivation…",
-                        crate::jobs::spinner_frame(self.tick)
-                    ),
-                    Style::default().fg(Color::Yellow),
-                ))),
-                status_area,
-            );
+            let inner =
+                brand::render_faded_box(frame, field, Some(brand::fade_line(" Password ")));
+            let gauge = Gauge::default()
+                .ratio(Self::unlock_progress(self.tick))
+                .gauge_style(
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                )
+                .label("");
+            frame.render_widget(gauge, inner);
+            frame.render_widget(status_paragraph(&self.status), status_area);
         } else {
             render_labeled_input(frame, field, "Password", &self.input, true);
+            if hint_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "Esc back",
+                        Style::default().fg(Color::DarkGray),
+                    )))
+                    .alignment(Alignment::Center),
+                    hint_area,
+                );
+            }
             frame.render_widget(status_paragraph(&self.status), status_area);
         }
     }

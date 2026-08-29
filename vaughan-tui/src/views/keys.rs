@@ -294,6 +294,10 @@ impl KeysView {
         );
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        matches!(self.stage, Stage::Menu)
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,

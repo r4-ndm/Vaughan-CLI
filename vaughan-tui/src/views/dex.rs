@@ -1164,6 +1164,19 @@ impl DexView {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        match self.stage {
+            Stage::Input => match self.focus {
+                Focus::None | Focus::Dex | Focus::Fee => true,
+                Focus::TokenIn => !self.token_in_editing,
+                Focus::TokenOut => !self.token_out_editing,
+                Focus::Router | Focus::Amount | Focus::MinOut => false,
+            },
+            Stage::Confirm(_) => self.confirm_focus != ConfirmFocus::CustomGas,
+            Stage::Done => true,
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,

@@ -259,6 +259,10 @@ impl AaSendView {
         frame.render_widget(status_paragraph(&self.status), status_area);
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        false
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,

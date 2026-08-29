@@ -196,6 +196,17 @@ impl SendView {
         self.tick = tick;
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        if self.busy != Busy::Idle {
+            return true;
+        }
+        match self.stage {
+            Stage::Input => self.focus == Focus::Idle,
+            Stage::Confirm => self.confirm_focus != ConfirmFocus::CustomGas,
+            Stage::Done => true,
+        }
+    }
+
     pub fn apply_job_result(&mut self, result: UiJobResult) {
         match result {
             UiJobResult::Fee(Ok(fee)) => {

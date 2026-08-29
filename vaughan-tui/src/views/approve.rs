@@ -321,6 +321,10 @@ impl ApproveView {
         frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        false
+    }
+
     pub fn handle_key(
         &mut self,
         _key: KeyEvent,

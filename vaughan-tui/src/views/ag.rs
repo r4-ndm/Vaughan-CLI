@@ -590,6 +590,18 @@ impl AgView {
         lines
     }
 
+    pub fn allows_footer_shortcuts(&self) -> bool {
+        match self.stage {
+            Stage::Input => match self.focus {
+                Focus::None | Focus::Venue => true,
+                Focus::TokenIn => !self.token_in_editing,
+                Focus::TokenOut => !self.token_out_editing,
+                Focus::Amount | Focus::Slippage => false,
+            },
+            Stage::ComparePick | Stage::Confirm(_) | Stage::Done => true,
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
