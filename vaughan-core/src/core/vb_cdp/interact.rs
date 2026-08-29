@@ -169,42 +169,100 @@ async fn verify_marked_value(page: &mut CdpPage, text: &str) -> (Option<String>,
     (settled.or(first), ok)
 }
 
+/// Typing strategy override for venues whose input handling diverges under
+/// real key events (9X: display mask reads ÷1000 while the quote engine reads
+/// raw digits — a single insertText/setter write gives both layers one final
+/// string to parse). `Auto` keeps the hardened default pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeStrategy {
+    /// Per-char key events → `Input.insertText` → native setter; first
+    /// strategy whose value survives delayed re-verification wins.
+    #[default]
+    Auto,
+    /// Real per-char key events only.
+    KeyEvents,
+    /// Whole-string `Input.insertText` (paste-like) only.
+    InsertText,
+    /// Legacy native-setter write only.
+    NativeSetter,
+}
+
+impl TypeStrategy {
+    /// Parse an MCP `type_strategy` argument (`key-events` / `insert-text` /
+    /// `native-setter` / `auto`).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "key-events" | "keyevents" | "keys" => Some(Self::KeyEvents),
+            "insert-text" | "inserttext" | "paste" => Some(Self::InsertText),
+            "native-setter" | "setter" => Some(Self::NativeSetter),
+            _ => None,
+        }
+    }
+}
+
 /// Type into the marked element as faithfully as a human, then verify the
-/// settled value matches. Strategy order: real per-char key events →
-/// whole-string `Input.insertText` → legacy native-setter write. The first
-/// strategy whose value survives the delayed re-verify wins; if none does,
-/// the result reports `verified: false` with the field's final value so the
-/// agent knows the quote is for the wrong amount.
-pub(crate) async fn type_into_marked(page: &mut CdpPage, text: &str) -> Result<Value, WalletError> {
+/// settled value matches. With `TypeStrategy::Auto`: real per-char key
+/// events → whole-string `Input.insertText` → legacy native-setter write;
+/// the first strategy whose value survives the delayed re-verify wins. A
+/// forced strategy runs that method only. If verification fails, the result
+/// reports `verified: false` with the field's final value so the agent
+/// knows the quote is for the wrong amount.
+pub(crate) async fn type_into_marked_with(
+    page: &mut CdpPage,
+    text: &str,
+    strategy: TypeStrategy,
+) -> Result<Value, WalletError> {
     let text_json =
         serde_json::to_string(text).map_err(|e| WalletError::Serialization(e.to_string()))?;
 
-    // Strategy 1: per-char real key events (indistinguishable from typing).
-    for ch in text.chars() {
-        page.type_char(ch).await?;
-        tokio::time::sleep(Duration::from_millis(40)).await;
+    if strategy == TypeStrategy::Auto || strategy == TypeStrategy::KeyEvents {
+        // Per-char real key events (indistinguishable from typing).
+        for ch in text.chars() {
+            page.type_char(ch).await?;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        let (value, verified) = verify_marked_value(page, text).await;
+        if verified || strategy == TypeStrategy::KeyEvents {
+            return Ok(
+                json!({ "ok": true, "value": value, "verified": verified, "strategy": "key-events" }),
+            );
+        }
+        let mut last = value;
+
+        // Fall through to insertText.
+        let _ = evaluate_in_all_frames(page, js::reselect_type_target()).await;
+        page.insert_text(text).await?;
+        let (value, verified) = verify_marked_value(page, text).await;
+        if verified {
+            return Ok(
+                json!({ "ok": true, "value": value, "verified": true, "strategy": "insert-text" }),
+            );
+        }
+        last = value.or(last);
+        return native_setter_finish(page, &text_json, text, last).await;
     }
-    let (value, verified) = verify_marked_value(page, text).await;
-    if verified {
+
+    if strategy == TypeStrategy::InsertText {
+        let _ = evaluate_in_all_frames(page, js::reselect_type_target()).await;
+        page.insert_text(text).await?;
+        let (value, verified) = verify_marked_value(page, text).await;
         return Ok(
-            json!({ "ok": true, "value": value, "verified": true, "strategy": "key-events" }),
+            json!({ "ok": true, "value": value, "verified": verified, "strategy": "insert-text" }),
         );
     }
-    let mut last = value;
 
-    // Strategy 2: whole-string insertText (paste-like, real input events).
-    let _ = evaluate_in_all_frames(page, js::reselect_type_target()).await;
-    page.insert_text(text).await?;
-    let (value, verified) = verify_marked_value(page, text).await;
-    if verified {
-        return Ok(
-            json!({ "ok": true, "value": value, "verified": true, "strategy": "insert-text" }),
-        );
-    }
-    last = value.or(last);
+    native_setter_finish(page, &text_json, text, None).await
+}
 
-    // Strategy 3: legacy native-setter write (unmasked inputs only, really).
-    let _ = evaluate_in_all_frames(page, &js::set_marked_value(&text_json)).await;
+/// Legacy native-setter write + verification (final fallback or forced).
+async fn native_setter_finish(
+    page: &mut CdpPage,
+    text_json: &str,
+    text: &str,
+    last: Option<String>,
+) -> Result<Value, WalletError> {
+    let _ = evaluate_in_all_frames(page, &js::set_marked_value(text_json)).await;
     let (value, verified) = verify_marked_value(page, text).await;
     Ok(json!({
         "ok": true,
@@ -226,6 +284,17 @@ pub async fn cdp_type(
     text: &str,
     clear: bool,
 ) -> Result<Value, WalletError> {
+    cdp_type_with_strategy(cdp_http_url, element_ref, text, clear, TypeStrategy::Auto).await
+}
+
+/// [`cdp_type`] with an explicit [`TypeStrategy`] override.
+pub async fn cdp_type_with_strategy(
+    cdp_http_url: &str,
+    element_ref: super::ElementRef,
+    text: &str,
+    clear: bool,
+    strategy: TypeStrategy,
+) -> Result<Value, WalletError> {
     let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
     let focus = js::focus_ref(element_ref.0, clear);
     let focused = evaluate_in_all_frames(&mut page, &focus).await?;
@@ -233,7 +302,7 @@ pub async fn cdp_type(
     if focus_inner.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return Ok(focus_inner);
     }
-    let mut out = type_into_marked(&mut page, text).await?;
+    let mut out = type_into_marked_with(&mut page, text, strategy).await?;
     if let Some(obj) = out.as_object_mut() {
         obj.insert("ref".to_string(), json!(format!("e{}", element_ref.0)));
         obj.insert("typed_len".to_string(), json!(text.chars().count()));

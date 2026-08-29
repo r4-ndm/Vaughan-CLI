@@ -28,21 +28,28 @@
 - **Two USDC entries:** `USDC` = `0x15D38573…1f07` (canonical bridged, deep
   liquidity) vs `pUSDC` = `0xA0b86991…06eB48`. Pick deliberately; Vaughan's
   curated registry maps `USDC` to the pUSDC address.
-- **Amount entry (2026-08-29, updated):** with the current `vb_cdp` typing
-  pipeline (per-char key events, strategy `key-events`), amounts are **literal**
-  on 9X — type `1000000` for 1M PLS, no workaround. The old ÷1000 quirk was an
-  insertText/paste-path artifact (the mask's paste handler reads fixed-point).
-  The page URL mirrors state as `sellAmount=` — a cheap way to confirm what the
-  app actually parsed (visible via `browser_status` pages list).
+- **Amount entry (2026-08-29, corrected):** 9X's sell mask is ATM-style
+  (last digit = smallest unit) for **every** input method — key events,
+  insertText, and setter all parse ÷1000. **Workaround: type intended
+  amount × 1000** (1M PLS → `1000000000`; display then values it correctly,
+  e.g. `≈ $11,956`). The URL's `sellAmount=` mirrors the *raw* field digits,
+  NOT the parsed amount — don't read it as confirmation of the parse.
+- **Layer divergence + `out_check`:** 9X's display layer and quote engine
+  can disagree about the amount (sell `$` correct while MIN RECEIVED is
+  1000× off). `browser_read_quote`'s sell-side check only validates the
+  display layer — always read the `out_check` block too (compares best
+  output vs expected when token_out is a stablecoin).
 - **Digit-leading tickers:** the BUY default `9MM` used to defeat the token
   picker's button regex (required a leading letter) so output picks landed on
   the SELL leg and legs flip-flopped. Fixed in `open_token_picker.js`
   (2026-08-29) — digit-leading tickers (9MM, 1INCH) now match.
-- **NO_QUOTE / "Something went wrong" (2026-08-29):** after ~20 automated quote
-  requests in a session, 9X's quote API started erroring for every request —
-  persists across reloads, amounts, pairs, and input methods (deep-link state
-  included). DApp-side rate limit or outage, NOT a typing problem. Back off and
-  retry later; don't hammer Refresh.
+- **Quote-engine outage (2026-08-29):** after ~20 automated quotes in a
+  session, 9X's backend degraded in stages: `NO_QUOTE` / "Something went
+  wrong" on every request (deep links included), then ~1h later **garbage
+  quotes at any amount with any input method** (1,000 PLS → `MIN RECEIVED
+  171,426 USDC`, rate line `1 PLS = 5.77 USDC`, values changing randomly
+  between reads). DApp-side, NOT a typing problem — an insane `out_check`
+  ratio is the automated tell. Back off and retry later; don't hammer.
 - Quote panel: route split across venues (PULSEX_V1/PHUX/SWITCHX/…), `VS SELL`
   impact %, MIN RECEIVED, EST GAS. Renders without wallet connect. Default
   slippage 1.00%.

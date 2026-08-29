@@ -29,8 +29,12 @@ kind: guide
    `browser_read_quote` — it cross-checks the page's sell-side `$` valuation
    against an oracle price (EmpX) and returns `quote.sell_check` with
    `suspected_amount_misparse: true` when the venue's input mask silently
-   shifted your digits (e.g. ÷1000). Generic — works on any venue that shows
-   a sell `$` estimate. Always use it for large amounts.
+   shifted your digits (e.g. ÷1000). When `token_out` is a stablecoin it also
+   returns `quote.out_check`, comparing the quote's best output against the
+   expected value — this catches venues whose display layer and quote engine
+   parse the amount differently, and venues serving garbage quotes (9X
+   outage, 2026-08-29). Generic — works on any venue that shows a sell `$`
+   estimate. Always use it for large amounts; never trust a flagged quote.
 
 Never auto-sign swaps — user approves in the TUI (or sentient policy on `serve`).
 

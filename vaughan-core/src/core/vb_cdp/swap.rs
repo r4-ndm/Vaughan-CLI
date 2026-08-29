@@ -148,13 +148,23 @@ pub async fn cdp_select_swap_token(
 /// response carries `value` (post-mask read-back) and `verified`, so a
 /// mis-parsed amount is visible instead of silently quoting the wrong size.
 pub async fn cdp_set_swap_amount(cdp_http_url: &str, amount: &str) -> Result<Value, WalletError> {
+    cdp_set_swap_amount_with_strategy(cdp_http_url, amount, super::interact::TypeStrategy::Auto)
+        .await
+}
+
+/// [`cdp_set_swap_amount`] with an explicit typing strategy override.
+pub async fn cdp_set_swap_amount_with_strategy(
+    cdp_http_url: &str,
+    amount: &str,
+    strategy: super::interact::TypeStrategy,
+) -> Result<Value, WalletError> {
     let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
     let focused = evaluate_in_all_frames(&mut page, js::focus_amount()).await?;
     let focus_inner = focused.get("result").cloned().unwrap_or(focused.clone());
     if focus_inner.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return Ok(focus_inner);
     }
-    let mut out = super::interact::type_into_marked(&mut page, amount).await?;
+    let mut out = super::interact::type_into_marked_with(&mut page, amount, strategy).await?;
     if let Some(obj) = out.as_object_mut() {
         obj.insert("amount".to_string(), json!(amount));
     }
@@ -197,11 +207,32 @@ pub async fn cdp_setup_swap(
     amount_in: &str,
     submit_quote: bool,
 ) -> Result<Value, WalletError> {
+    cdp_setup_swap_with_strategy(
+        cdp_http_url,
+        token_in,
+        token_out,
+        amount_in,
+        submit_quote,
+        super::interact::TypeStrategy::Auto,
+    )
+    .await
+}
+
+/// [`cdp_setup_swap`] with an explicit typing strategy override.
+#[allow(clippy::too_many_arguments)]
+pub async fn cdp_setup_swap_with_strategy(
+    cdp_http_url: &str,
+    token_in: &str,
+    token_out: &str,
+    amount_in: &str,
+    submit_quote: bool,
+    strategy: super::interact::TypeStrategy,
+) -> Result<Value, WalletError> {
     let in_res = cdp_select_swap_token(cdp_http_url, token_in, SwapTokenSide::Input).await?;
     tokio::time::sleep(Duration::from_millis(400)).await;
     let out_res = cdp_select_swap_token(cdp_http_url, token_out, SwapTokenSide::Output).await?;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    let amt_res = cdp_set_swap_amount(cdp_http_url, amount_in).await?;
+    let amt_res = cdp_set_swap_amount_with_strategy(cdp_http_url, amount_in, strategy).await?;
     let submit_res = if submit_quote {
         tokio::time::sleep(Duration::from_millis(800)).await;
         Some(cdp_click_swap_submit(cdp_http_url).await?)

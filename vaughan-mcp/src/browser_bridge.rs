@@ -25,6 +25,20 @@ fn empty_object_schema() -> Value {
     json!({ "type": "object", "properties": {} })
 }
 
+/// Optional `type_strategy` arg shared by the typing tools. `auto` keeps the
+/// hardened pipeline; venue playbooks may call for `insert-text` when a
+/// dApp's display mask and quote engine diverge under per-char key events.
+fn parse_type_strategy(args: &Value) -> Result<vb_cdp::TypeStrategy, String> {
+    match args.get("type_strategy").and_then(|v| v.as_str()) {
+        None => Ok(vb_cdp::TypeStrategy::Auto),
+        Some(raw) => vb_cdp::TypeStrategy::parse(raw).ok_or_else(|| {
+            format!(
+                "unknown type_strategy `{raw}` (auto | key-events | insert-text | native-setter)"
+            )
+        }),
+    }
+}
+
 fn url_schema() -> Value {
     json!({
         "type": "object",
@@ -78,6 +92,11 @@ pub fn browser_tool_definitions() -> Vec<Value> {
                     "setup_tokens": {
                         "type": "boolean",
                         "description": "After open, select tokens + amount via UI pickers (default true when token_in/out set or pls_hex)"
+                    },
+                    "type_strategy": {
+                        "type": "string",
+                        "enum": ["auto", "key-events", "insert-text", "native-setter"],
+                        "description": "Typing strategy override for the amount (default auto)"
                     }
                 },
                 "required": ["venue"]
@@ -159,7 +178,12 @@ pub fn browser_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "ref": { "type": "string" },
                     "text": { "type": "string" },
-                    "clear": { "type": "boolean", "description": "Clear field before typing (default false)" }
+                    "clear": { "type": "boolean", "description": "Clear field before typing (default false)" },
+                    "type_strategy": {
+                        "type": "string",
+                        "enum": ["auto", "key-events", "insert-text", "native-setter"],
+                        "description": "Typing strategy override (default auto). Venue playbooks may require insert-text when a dApp's display mask and quote engine diverge under per-char key events."
+                    }
                 },
                 "required": ["ref", "text"]
             }),
@@ -192,6 +216,11 @@ pub fn browser_tool_definitions() -> Vec<Value> {
                     "submit_quote": {
                         "type": "boolean",
                         "description": "Click Switch Now / Swap after amount (default true)"
+                    },
+                    "type_strategy": {
+                        "type": "string",
+                        "enum": ["auto", "key-events", "insert-text", "native-setter"],
+                        "description": "Typing strategy override for the amount (default auto)"
                     }
                 },
                 "required": ["token_in", "token_out"]
@@ -460,6 +489,7 @@ pub async fn browser_open_agg(args: Value, ctx: &McpContext) -> Result<Value, St
         .get("setup_tokens")
         .and_then(|v| v.as_bool())
         .unwrap_or_else(|| token_in.is_some() || token_out.is_some() || pls_hex);
+    let type_strategy = parse_type_strategy(&args)?;
     let mut connect_wallet = args
         .get("connect_wallet")
         .and_then(|v| v.as_bool())
@@ -538,7 +568,15 @@ pub async fn browser_open_agg(args: Value, ctx: &McpContext) -> Result<Value, St
                 }
             }
             if setup_tokens {
-                match vb_cdp::cdp_setup_swap(&session.cdp_url, &tin, &tout, &amount_in, true).await
+                match vb_cdp::cdp_setup_swap_with_strategy(
+                    &session.cdp_url,
+                    &tin,
+                    &tout,
+                    &amount_in,
+                    true,
+                    type_strategy,
+                )
+                .await
                 {
                     Ok(setup) => {
                         if let Some(obj) = out.as_object_mut() {
@@ -857,6 +895,41 @@ async fn sell_value_check(
         obj.insert("unit_price_usd".to_string(), json!(unit_price_usd));
         obj.insert("expect_token_in".to_string(), json!(symbol));
     }
+
+    // Output-leg cross-check: when the buy token is a stablecoin, the quote's
+    // best output should land near the expected value too. This catches
+    // venues whose display layer and quote engine parse the amount
+    // differently (9X: sell $ correct, quote computed on raw digits).
+    let token_out_sym = quote
+        .get("token_out")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let out_stable = matches!(
+        token_out_sym.to_ascii_uppercase().as_str(),
+        "USDC" | "USDT" | "DAI"
+    );
+    if out_stable {
+        if let Some(best) = quote.get("best").and_then(|v| v.as_f64()) {
+            let out_ratio = if expected_usd > 0.0 {
+                best / expected_usd
+            } else {
+                0.0
+            };
+            let out_flag = !(0.5..=2.0).contains(&out_ratio);
+            if let Some(obj) = check.as_object_mut() {
+                obj.insert(
+                    "out_check".to_string(),
+                    json!({
+                        "page_out": best,
+                        "token_out": token_out_sym,
+                        "expected_usd": expected_usd,
+                        "ratio": out_ratio,
+                        "suspected_amount_misparse": out_flag,
+                    }),
+                );
+            }
+        }
+    }
     check
 }
 
@@ -895,9 +968,10 @@ pub async fn browser_type(args: Value, ctx: &McpContext) -> Result<Value, String
         .and_then(|v| v.as_str())
         .ok_or_else(|| "missing text".to_string())?;
     let clear = args.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
+    let strategy = parse_type_strategy(&args)?;
     let element_ref = ElementRef::parse(ref_raw).map_err(wallet_err)?;
     let cdp_url = require_cdp_session_mut(ctx).await?;
-    let result = vb_cdp::cdp_type(&cdp_url, element_ref, text, clear)
+    let result = vb_cdp::cdp_type_with_strategy(&cdp_url, element_ref, text, clear, strategy)
         .await
         .map_err(wallet_err)?;
     Ok(json!({
@@ -977,10 +1051,18 @@ pub async fn browser_setup_swap(args: Value, ctx: &McpContext) -> Result<Value, 
         .get("submit_quote")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let strategy = parse_type_strategy(&args)?;
     let cdp_url = require_cdp_session_mut(ctx).await?;
-    let result = vb_cdp::cdp_setup_swap(&cdp_url, token_in, token_out, amount_in, submit_quote)
-        .await
-        .map_err(wallet_err)?;
+    let result = vb_cdp::cdp_setup_swap_with_strategy(
+        &cdp_url,
+        token_in,
+        token_out,
+        amount_in,
+        submit_quote,
+        strategy,
+    )
+    .await
+    .map_err(wallet_err)?;
     Ok(json!({
         "status": "swap_setup",
         "token_in": vb_cdp::normalize_swap_symbol(token_in),

@@ -15,7 +15,7 @@ use vaughan_core::chains::evm::tokens_for_chain;
 use vaughan_core::core::aggregator::{quote_aggregator, AggQuoteRequest, AggVenue};
 use vaughan_core::core::vb_browser::cdp_open_url;
 use vaughan_core::core::vb_cdp::{
-    cdp_read_quote, cdp_select_swap_token, cdp_set_swap_amount, cdp_snapshot, SwapTokenSide,
+    self, cdp_read_quote, cdp_select_swap_token, cdp_snapshot, SwapTokenSide,
 };
 
 #[tokio::main]
@@ -30,7 +30,13 @@ async fn main() {
         Some("select-out") => {
             cdp_select_swap_token(cdp, arg(&args, 2), SwapTokenSide::Output).await
         }
-        Some("amount") => cdp_set_swap_amount(cdp, arg(&args, 2)).await,
+        Some("amount") => {
+            let strategy = args
+                .get(3)
+                .and_then(|s| vb_cdp::TypeStrategy::parse(s))
+                .unwrap_or_default();
+            vb_cdp::cdp_set_swap_amount_with_strategy(cdp, arg(&args, 2), strategy).await
+        }
         // Oracle unit-price probe — same path as browser_read_quote's
         // sell_check: 1k units of SYM → USDC via EmpX, dead-address recipient.
         Some("price") => {
@@ -93,6 +99,6 @@ async fn main() {
     }
 }
 
-fn arg<'a>(args: &'a [String], i: usize) -> &'a str {
+fn arg(args: &[String], i: usize) -> &str {
     args.get(i).map(|s| s.as_str()).unwrap_or("")
 }
