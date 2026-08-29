@@ -11,10 +11,10 @@ use vaughan_core::chains::evm::tokens_for_chain;
 use vaughan_core::core::aggregator::{quote_aggregator, AggQuoteRequest, AggVenue, AGG_VENUES};
 use vaughan_core::core::persistence::{default_ipfs_gateway_hosts, StateManager};
 use vaughan_core::core::vb_browser::{
-    allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_url,
-    check_url_allowed, clear_target_pin, clear_vb_session, read_vb_session, resolve_cdp_port,
-    spawn_cdp_port, spawn_dapp_browser, vb_session_pid_matches, wait_for_cdp, write_target_pin,
-    VbSession,
+    allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_or_reuse,
+    cdp_open_url, check_url_allowed, clear_target_pin, clear_vb_session, read_vb_session,
+    resolve_cdp_port, spawn_cdp_port, spawn_dapp_browser, vb_session_pid_matches, wait_for_cdp,
+    write_target_pin, VbSession,
 };
 use vaughan_core::core::vb_cdp::{self, ElementRef, SwapTokenSide};
 use vaughan_core::error::WalletError;
@@ -104,8 +104,15 @@ pub fn browser_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "browser_navigate",
-            "description": "Navigate the active VB session to an allowlisted URL via CDP. Requires a running VB child with CDP.",
-            "inputSchema": url_schema(),
+            "description": "Navigate the active VB session to an allowlisted URL via CDP. Reuses an existing same-origin tab unless new_tab is true. Requires a running VB child with CDP.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "https:// URL (allowlisted hosts only)" },
+                    "new_tab": { "type": "boolean", "description": "Force a fresh tab instead of reusing a same-origin one (default false)" }
+                },
+                "required": ["url"]
+            }),
         }),
         json!({
             "name": "browser_status",
@@ -369,7 +376,7 @@ pub async fn browser_open(args: Value, ctx: &McpContext) -> Result<Value, String
             .filter(|s| !s.cdp_url.trim().is_empty());
         if let Some(session) = session {
             if verify_vb_session(&session).await.is_ok() {
-                let target = cdp_open_url(&session.cdp_url, url)
+                let (target, reused_tab) = cdp_open_or_reuse(&session.cdp_url, url)
                     .await
                     .map_err(wallet_err)?;
                 if let Some(id) = target {
@@ -382,7 +389,12 @@ pub async fn browser_open(args: Value, ctx: &McpContext) -> Result<Value, String
                     "cdp_alive": true,
                     "agent_browser_control": agent_control,
                     "allow_suffixes": suffixes.len(),
-                    "hint": "VB already running — opened a new tab in the existing session",
+                    "reused_tab": reused_tab,
+                    "hint": if reused_tab {
+                        "VB running — reused the existing same-origin tab"
+                    } else {
+                        "VB already running — opened a new tab in the existing session"
+                    },
                 }));
             }
         }
@@ -635,9 +647,22 @@ pub async fn browser_navigate(args: Value, ctx: &McpContext) -> Result<Value, St
     let suffixes = suffixes_for_nav(ctx, url, &session.allow_suffixes);
     check_url_allowed(url, &suffixes).map_err(wallet_err)?;
 
-    let target = cdp_open_url(&session.cdp_url, url)
-        .await
-        .map_err(wallet_err)?;
+    let new_tab = args
+        .get("new_tab")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let (target, reused_tab) = if new_tab {
+        (
+            cdp_open_url(&session.cdp_url, url)
+                .await
+                .map_err(wallet_err)?,
+            false,
+        )
+    } else {
+        cdp_open_or_reuse(&session.cdp_url, url)
+            .await
+            .map_err(wallet_err)?
+    };
     if let Some(id) = target {
         let _ = write_target_pin(&session.cdp_url, &id);
     }
@@ -645,6 +670,7 @@ pub async fn browser_navigate(args: Value, ctx: &McpContext) -> Result<Value, St
     Ok(json!({
         "status": "navigated",
         "url": url,
+        "reused_tab": reused_tab,
         "cdp_url": session.cdp_url,
     }))
 }

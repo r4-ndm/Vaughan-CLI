@@ -57,6 +57,32 @@ impl CdpPage {
         })
     }
 
+    /// Attach to a specific page target by CDP target id.
+    pub(crate) async fn connect_target(
+        cdp_http_url: &str,
+        target_id: &str,
+    ) -> Result<Self, WalletError> {
+        let pages = cdp_list_pages(cdp_http_url).await?;
+        let ws_url = pages
+            .iter()
+            .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("page"))
+            .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(target_id))
+            .and_then(|p| p.get("webSocketDebuggerUrl"))
+            .and_then(|u| u.as_str())
+            .filter(|ws| !ws.is_empty())
+            .ok_or_else(|| {
+                WalletError::NetworkError(format!("cdp: page target `{target_id}` not found"))
+            })?;
+        let (ws, _) = connect_async(ws_url)
+            .await
+            .map_err(|e| WalletError::NetworkError(format!("cdp ws connect: {e}")))?;
+        Ok(Self {
+            ws,
+            next_id: 1,
+            domains_on: false,
+        })
+    }
+
     async fn ensure_domains(&mut self) -> Result<(), WalletError> {
         if self.domains_on {
             return Ok(());
@@ -415,6 +441,20 @@ pub async fn cdp_page_ws_url(cdp_http_url: &str) -> Result<String, WalletError> 
     Err(WalletError::NetworkError(
         "cdp: no page target with webSocketDebuggerUrl".into(),
     ))
+}
+
+/// Navigate an existing page target to `url` and focus it. Backs
+/// [`crate::core::vb_browser::cdp_open_or_reuse`]: same-origin tabs are
+/// reused instead of accumulating one tab per agent navigation.
+pub async fn cdp_navigate_target(
+    cdp_http_url: &str,
+    target_id: &str,
+    url: &str,
+) -> Result<(), WalletError> {
+    let mut page = CdpPage::connect_target(cdp_http_url, target_id).await?;
+    page.call("Page.navigate", json!({ "url": url })).await?;
+    let _ = page.call("Page.bringToFront", json!({})).await;
+    Ok(())
 }
 
 /// XPath 1.0 string literal: no escape mechanism exists, so quote with `'` —

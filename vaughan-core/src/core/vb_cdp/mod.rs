@@ -18,7 +18,7 @@ mod quote;
 mod snapshot;
 mod swap;
 
-pub use client::{cdp_page_ws_url, ElementRef};
+pub use client::{cdp_navigate_target, cdp_page_ws_url, ElementRef};
 pub use interact::{
     cdp_click, cdp_click_by_text, cdp_connect_vaughan_wallet, cdp_dismiss_modals, cdp_press,
     cdp_type, cdp_type_with_strategy, cdp_wait, TypeStrategy,

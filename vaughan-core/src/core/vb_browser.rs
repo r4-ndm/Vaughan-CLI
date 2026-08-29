@@ -369,6 +369,45 @@ pub async fn cdp_open_url(cdp_url: &str, url: &str) -> Result<Option<String>, Wa
     Ok(body.get("id").and_then(|v| v.as_str()).map(str::to_string))
 }
 
+/// Open `url`, reusing an existing same-origin tab when one is open.
+///
+/// Agent navigations used to mint a fresh tab every call, so a quote tour
+/// across two venues left half a dozen tabs and "first page" reads landed on
+/// stale ones. Reuse matches agent intent ("go to Switch" = the Switch tab)
+/// and the navigation doubles as a reload, which re-runs the dApp's
+/// `eth_accounts` check against current grants. Returns `(target_id, reused)`.
+pub async fn cdp_open_or_reuse(
+    cdp_url: &str,
+    url: &str,
+) -> Result<(Option<String>, bool), WalletError> {
+    let origin = Url::parse(url)
+        .ok()
+        .map(|u| u.origin().ascii_serialization());
+    if let Some(origin) = origin {
+        if let Ok(pages) = cdp_list_pages(cdp_url).await {
+            for page in &pages {
+                if page.get("type").and_then(|t| t.as_str()) != Some("page") {
+                    continue;
+                }
+                let page_origin = page
+                    .get("url")
+                    .and_then(|u| u.as_str())
+                    .and_then(|u| Url::parse(u).ok())
+                    .map(|u| u.origin().ascii_serialization());
+                if page_origin.as_deref() != Some(origin.as_str()) {
+                    continue;
+                }
+                if let Some(id) = page.get("id").and_then(|i| i.as_str()) {
+                    crate::core::vb_cdp::cdp_navigate_target(cdp_url, id, url).await?;
+                    return Ok((Some(id.to_string()), true));
+                }
+            }
+        }
+    }
+    let id = cdp_open_url(cdp_url, url).await?;
+    Ok((id, false))
+}
+
 /// Current URL of the pinned page target (or the first page when unpinned).
 ///
 /// Used to re-check the allowlist before mutating tools: the in-tab nav gate
