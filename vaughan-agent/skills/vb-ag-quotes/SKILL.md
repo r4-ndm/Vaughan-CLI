@@ -26,15 +26,12 @@ kind: guide
 4. **Browserless fast path** (Squirrel / PulseSwap / Piteas / EmpX): MCP `quote_swap` with `amount_in` in **wei**.
 5. **Read quote:** `browser_snapshot` or `browser_read_quote` (visible body text, all frames) or parse `setup_swap` in the `browser_open_agg` response.
 6. **Verify the amount landed:** pass `expect_amount_in` + `expect_token_in` to
-   `browser_read_quote` — it cross-checks the page's sell-side `$` valuation
-   against an oracle price (EmpX) and returns `quote.sell_check` with
-   `suspected_amount_misparse: true` when the venue's input mask silently
-   shifted your digits (e.g. ÷1000). When `token_out` is a stablecoin it also
-   returns `quote.out_check`, comparing the quote's best output against the
-   expected value — this catches venues whose display layer and quote engine
-   parse the amount differently, and venues serving garbage quotes (9X
-   outage, 2026-08-29). Generic — works on any venue that shows a sell `$`
-   estimate. Always use it for large amounts; never trust a flagged quote.
+   `browser_read_quote` — returns `quote.sell_check` with
+   `suspected_amount_misparse: true` when the venue mis-read your amount or
+   the quote is garbage. For **stablecoin** outputs (`USDC`, `USDT`, `DAI`) the
+   check is **`sell_vs_out`**: page sell-side `$` vs quoted output on the same
+   screen (ratio should be ~1). Non-stable routes fall back to an EmpX oracle
+   cross-check. Always use it for large amounts; never trust a flagged quote.
 
 Never auto-sign swaps — user approves in the TUI (or sentient policy on `serve`).
 

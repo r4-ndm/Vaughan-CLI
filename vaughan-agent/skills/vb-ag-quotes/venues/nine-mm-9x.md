@@ -49,8 +49,9 @@
   wrong" on every request (deep links included), then ~1h later **garbage
   quotes at any amount with any input method** (1,000 PLS → `MIN RECEIVED
   171,426 USDC`, rate line `1 PLS = 5.77 USDC`, values changing randomly
-  between reads). DApp-side, NOT a typing problem — an insane `out_check`
-  ratio is the automated tell. Back off and retry later; don't hammer.
+  between reads). DApp-side, NOT a typing problem — an insane `sell_check`
+  ratio (`sell_vs_out` far from 1) is the automated tell. Back off and retry
+  later; don't hammer.
 - Quote panel: route split across venues (PULSEX_V1/PHUX/SWITCHX/…), `VS SELL`
   impact %, MIN RECEIVED, EST GAS. Renders without wallet connect. Default
   slippage 1.00%.

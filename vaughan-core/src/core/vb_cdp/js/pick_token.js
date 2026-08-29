@@ -119,15 +119,7 @@
       address: (lines.find(l => /0x[a-f0-9]{4,}/i.test(l)) || '').slice(0, 48),
     };
   };
-  const visible_rows = rows.slice(0, 10).map(summarize);
-  const debug_texts = rows.length ? [] : visible
-    .filter(el => {
-      const t = rowText(el);
-      return t.length >= 4 && t.length <= 200 &&
-        (rowMatchesSymbol(t, symbol) || /0x[a-f0-9]{4,}/i.test(t) || t.toUpperCase().includes(symbol));
-    })
-    .slice(0, 12)
-    .map(el => rowText(el).slice(0, 140));
+  const visible_rows = rows.slice(0, 5).map(summarize);
   const pick = candidates[0];
   if (!pick) {
     return {
@@ -138,9 +130,6 @@
       rows: rows.length,
       addr_rows: addrRows.length,
       visible_rows,
-      debug_texts,
-      modal_text: (modalRoot?.innerText || '').slice(0, 1200),
-      modal_len: (modalRoot?.innerText || '').length,
     };
   }
   pick.click();
@@ -153,6 +142,5 @@
     picked_name: pickedText.split('\n')[1] || '',
     picked_address: (pickedText.split('\n').find(l => /0x[a-f0-9]{4,}/i.test(l)) || '').trim(),
     matched_address: !!(preferAddr && rowMatchesAddr(pick, preferAddr)),
-    visible_rows,
   };
 })()

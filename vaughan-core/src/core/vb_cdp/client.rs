@@ -508,7 +508,7 @@ fn picker_result_score(v: &Value) -> i32 {
         .and_then(|x| x.as_array())
         .map(|a| a.len())
         .unwrap_or(0) as i32;
-    rows * 100 + vis + (r.get("modal_len").and_then(|x| x.as_u64()).unwrap_or(0) as i32)
+    rows * 100 + vis
 }
 
 /// Picker eval: prefer `prefer_frame` (from a prior search/open step), else the
