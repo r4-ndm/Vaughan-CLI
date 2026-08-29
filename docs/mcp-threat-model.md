@@ -42,12 +42,41 @@ seed + [`sentient-presets.md`](sentient-presets.md) — no on-chain contracts.
 | Local socket hijack | Loopback only (`127.0.0.1:8746`); random session token in `mcp.session` (0600) |
 | MCP exfiltrates keys | MCP process never unlocks vault; banned tools + tests |
 | Agent spends human savings | Use distinct seeds; only share mnemonic for intentional partnership |
-| Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes |
+| Sentient batch smuggling | `Batch7702` auto-exec decodes `execute(txns)` legs; every native/ERC-20 transfer leg is sized against its own balance; unsizeable raw calls are refused (human profile required) |
+| Sentient sandwich / zero min-out | Gate-time fresh quote; `min_amount_out` must be within `max_slippage_bps` of it |
+| Sentient rogue router | Audited DEX router allowlist checked both at `propose_swap` and again at the auto-exec gate |
+| Sentient gas drain | Fresh fee estimate (fail-closed) + pre-broadcast `check_gas_budget` against the session ceiling; fee-spike >10% rejected |
+| Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced` |
+| Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes; re-checked at the sentient gate |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
-| Runaway sentient agent | Profile policy + circuit breakers + Esc kill-switch |
+| Runaway sentient agent | Profile policy + circuit breakers + **Ctrl+K** kill-switch (TUI) |
 | Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`; Batch7702 uses Ambire `estimate_self_pay_fee`) |
 | TOCTOU | Re-simulate + re-estimate fee before sign |
 | Double-spend proposal | Terminal states; duplicate `proposal_id` rejected at enqueue |
+| Queue HMAC downgrade | HMAC-SHA256 covers the `source` field too; queue dirs 0700, history 0600, reads size-capped |
+| Provider token theft | Token rotates on every lock/unlock edge; `provider.session` only exists while unlocked; invalidated on exit |
+| MCP listener DoS | Bind-before-token-publish, exponential backoff on bind failure, connection cap + per-connection lifetime timeout |
+| Profile path traversal | Profile names validated (`[a-zA-Z0-9_-]`, ≤64) before any path join |
+
+## VB agent control (CDP) controls
+
+Chrome DevTools Protocol itself has **no authentication** — anything on
+loopback that reaches the CDP port can drive the browser. The `cdp_token` in
+`vb.session` is session metadata for agents, **not** a CDP credential. The
+real controls are:
+
+| Threat | Control |
+|--------|---------|
+| Well-known-port squatting (9222) | Random loopback port per spawn (`spawn_cdp_port`); env override kept for dev |
+| Stale `vb.session` → foreign browser | PID binding: `vb.session` records the launcher PID; MCP verifies `/proc/<pid>` is still `vaughan-dapp-browser` before any CDP call; stale files are deleted |
+| Tab hijack mid-session | Target pinning (`vb.target`): tools attach to the tab `browser_open`/`browser_navigate` opened, not "first page" |
+| Agent navigates to attacker page | `data:`/`blob:` rejected as nav targets; in-tab nav gate (MV3 declarativeNetRequest) fails **closed** when `allowlist.json` is unreadable |
+| Nav-gate bypass then click/type | Mutating tools re-check the **current** page URL against the session allowlist before acting (fail-closed when unreadable) |
+| Snapshot leaks typed secrets | `browser_snapshot` masks input values (`hasValue` boolean only) |
+| IPFS gateway wallet phishing | `browser_connect_wallet` / `browser_open_agg` auto-connect refuse on public IPFS gateway hosts — connect is a human decision there |
+| Page-origin spoofing via provider | Per-launch extension secret seals `vaughan_page_origin` (AES-256-GCM, `vaughan_origin_seal`); provider rejects unsealed assertions when a key is installed |
+| XPath/quote injection in click-by-text | XPath 1.0 literal quoting (`concat()` when both quote kinds present) |
+| `vb.log` / `vb.target` info leak | Both written 0600 |
 
 ## Automated test coverage (approval path)
 

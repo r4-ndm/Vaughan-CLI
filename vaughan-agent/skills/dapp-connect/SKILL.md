@@ -53,6 +53,7 @@ Use these labels in site files:
 ## Agent / coding notes
 
 - Prefer browserless Pulse (Ag / Dex / MCP) when the user does not need the web UI.
+- **Ag quote tours in VB** (PLS→HEX across catalog venues): see [`vb-ag-quotes`](../vb-ag-quotes/SKILL.md).
 - Owned browser is optional; never teach auto-sign in the page.
 - When a connect hang is reported, read the site playbook **before** changing
   core provider code.

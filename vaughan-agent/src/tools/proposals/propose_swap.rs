@@ -104,6 +104,16 @@ impl Tool for ProposeSwapTool {
         let router = Address::from_str(router_str)
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid router address: {e}")))?;
 
+        // Only audited catalog routers — an arbitrary "router" contract would
+        // make the swap calldata unsizeable and bypass the sentient gate's
+        // fresh-quote slippage floor.
+        if !vaughan_core::core::is_allowed_dex_router(context.chain_id, router) {
+            return Err(AgentError::InvalidToolCall(format!(
+                "router {router} is not on the audited DEX allowlist for chain {}",
+                context.chain_id
+            )));
+        }
+
         let path_arr = args
             .get("path")
             .and_then(|v| v.as_array())

@@ -2,6 +2,7 @@
 //! top-level [`WalletState`] that ties them together for the UI.
 
 pub mod account;
+pub mod agent_autonomy;
 pub mod aggregator;
 pub mod bridge;
 pub mod broadcasts;
@@ -25,6 +26,9 @@ pub mod wallet;
 pub mod wiz4rd;
 
 pub use account::{Account, AccountManager, IMPORTED_INDEX_BASE};
+pub use agent_autonomy::{
+    operator_connect_allow_suffixes, operator_connect_allowed, AgentAutonomyTier,
+};
 pub use aggregator::{
     assert_agg_exec_targets, is_allowed_agg_router, quote_aggregator, quote_live_aggregators,
     rank_agg_quote_outcomes, AggAccess, AggExecTx, AggQuote, AggQuoteOutcome, AggQuoteRequest,
@@ -58,13 +62,14 @@ pub use network::NetworkService;
 pub use persistence::{
     default_ipfs_gateway_hosts, default_trusted_dapps, is_sentient_profile,
     merge_default_trusted_dapps, trusted_dapp_allow_hosts, CustomNetwork, CustomToken,
-    PersistedState, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
+    PersistedState, ProfileMeta, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE,
+    SENTIENT_PROFILE,
 };
 pub use piteas::{
     AuthStyle, MethodParameters, NativeToken, PiteasClient, PiteasFileConfig, PiteasQuote,
     QuoteRequest, PITEAS_ROUTER_MAINNET,
 };
-pub use profile::OperatingMode;
+pub use profile::{tui_mode_for_profile, OperatingMode};
 pub use proposal::{
     apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, mcp_control_port,
     mcp_mainnet_writes_allowed, proposal_status_json, validate_proposal_id, McpSessionToken,

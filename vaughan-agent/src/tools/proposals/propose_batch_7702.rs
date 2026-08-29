@@ -112,12 +112,18 @@ impl Tool for ProposeBatch7702Tool {
                 .get("value_wei")
                 .and_then(|v| v.as_str())
                 .unwrap_or("0");
-            let value = U256::from_str(val_str).unwrap_or(U256::ZERO);
+            let value = U256::from_str(val_str).map_err(|e| {
+                AgentError::InvalidToolCall(format!("Invalid batch call value_wei: {e}"))
+            })?;
 
             let data_str = item.get("data").and_then(|v| v.as_str()).unwrap_or("0x");
-            let data_bytes = hex::decode(data_str.trim_start_matches("0x")).unwrap_or_default();
+            let data_bytes = hex::decode(data_str.trim_start_matches("0x")).map_err(|e| {
+                AgentError::InvalidToolCall(format!("Invalid batch call data hex: {e}"))
+            })?;
 
-            total_value += value;
+            total_value = total_value.checked_add(value).ok_or_else(|| {
+                AgentError::InvalidToolCall("batch total value overflow".to_string())
+            })?;
             txns.push(Transaction {
                 to,
                 value,

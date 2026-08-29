@@ -52,20 +52,56 @@ pub struct RpcErrorObj {
     pub message: String,
 }
 
+/// Maximum bytes for one newline-delimited request. MCP tool calls are small
+/// JSON objects; an uncapped `lines()` read lets a hostile/buggy host grow
+/// server memory unboundedly with a single never-terminated line.
+const MAX_STDIO_LINE_BYTES: u64 = 1024 * 1024;
+
+/// One capped read result.
+enum StdioLine {
+    /// A complete (or EOF-terminated) line within the cap.
+    Line(String),
+    /// The line exceeded the cap; the remainder was drained to the next
+    /// newline so the stream stays in sync.
+    Oversized,
+}
+
 /// Run the MCP stdio server until stdin closes.
 pub async fn run_stdio_server(profile: String, source: String) -> io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(io::stderr)
-        .init();
+        .try_init()
+        .ok();
 
     let dispatcher = McpDispatcher::new(&profile).map_err(io::Error::other)?;
     let ctx = build_context(&profile, &source).map_err(io::Error::other)?;
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line?;
+    let mut stream = stdin.lock();
+    loop {
+        let line = match read_capped_line(&mut stream)? {
+            None => break, // clean EOF
+            Some(StdioLine::Oversized) => {
+                let response = RpcResponse {
+                    jsonrpc: "2.0",
+                    id: Value::Null,
+                    result: None,
+                    error: Some(RpcErrorObj {
+                        code: -32700,
+                        message: format!(
+                            "parse error: request exceeds {MAX_STDIO_LINE_BYTES} bytes"
+                        ),
+                    }),
+                };
+                let out = serde_json::to_string(&response).map_err(io::Error::other)?;
+                writeln!(stdout, "{out}")?;
+                stdout.flush()?;
+                continue;
+            }
+            Some(StdioLine::Line(line)) => line,
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -75,6 +111,38 @@ pub async fn run_stdio_server(profile: String, source: String) -> io::Result<()>
         stdout.flush()?;
     }
     Ok(())
+}
+
+/// Read one `\n`-terminated line with a hard size cap.
+///
+/// `take()` bounds the bytes consumed; on overflow the rest of the offending
+/// line is drained (uncapped read into a throwaway buffer would defeat the
+/// cap, so drain in fixed-size chunks) and reported as [`StdioLine::Oversized`].
+fn read_capped_line(stream: &mut impl BufRead) -> io::Result<Option<StdioLine>> {
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    let n = stream
+        .by_ref()
+        .take(MAX_STDIO_LINE_BYTES + 1)
+        .read_until(b'\n', &mut buf)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.len() as u64 > MAX_STDIO_LINE_BYTES {
+        let mut drain = [0u8; 8192];
+        loop {
+            let read = stream.read(&mut drain)?;
+            if read == 0 || drain[..read].contains(&b'\n') {
+                break;
+            }
+        }
+        return Ok(Some(StdioLine::Oversized));
+    }
+    Ok(Some(StdioLine::Line(
+        String::from_utf8_lossy(&buf)
+            .trim_end_matches('\n')
+            .to_string(),
+    )))
 }
 
 /// Parse one newline-delimited JSON-RPC request and produce a response.

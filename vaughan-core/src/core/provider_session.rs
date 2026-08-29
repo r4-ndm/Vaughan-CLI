@@ -14,9 +14,22 @@ use crate::error::WalletError;
 pub const PROVIDER_SESSION_FILE: &str = "provider.session";
 
 /// Ephemeral shared secret between Vaughan and trusted local clients.
-#[derive(Debug, Clone)]
 pub struct ProviderSessionToken {
     token: String,
+}
+
+impl std::fmt::Debug for ProviderSessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProviderSessionToken(REDACTED)")
+    }
+}
+
+impl Clone for ProviderSessionToken {
+    fn clone(&self) -> Self {
+        Self {
+            token: self.token.clone(),
+        }
+    }
 }
 
 impl ProviderSessionToken {
@@ -30,6 +43,12 @@ impl ProviderSessionToken {
         }
     }
 
+    /// Wrap an existing token value (e.g. the running server's live slot) so
+    /// it can be published to another profile dir on a profile switch.
+    pub fn from_string(token: String) -> Self {
+        Self { token }
+    }
+
     /// Hex token string (never log this).
     pub fn as_str(&self) -> &str {
         &self.token
@@ -40,15 +59,26 @@ impl ProviderSessionToken {
         profile_dir.join(PROVIDER_SESSION_FILE)
     }
 
-    /// Persist with restrictive permissions.
+    /// Persist with restrictive permissions (0600 from creation — no
+    /// permissive write-then-chmod window).
     pub fn write(&self, profile_dir: &Path) -> Result<(), WalletError> {
         fs::create_dir_all(profile_dir).map_err(|e| WalletError::Io(e.to_string()))?;
         let path = Self::path(profile_dir);
-        fs::write(&path, self.token.as_bytes()).map_err(|e| WalletError::Io(e.to_string()))?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true).mode(0o600);
+            let mut f = opts
+                .open(&path)
+                .map_err(|e| WalletError::Io(e.to_string()))?;
+            use std::io::Write;
+            f.write_all(self.token.as_bytes())
+                .map_err(|e| WalletError::Io(e.to_string()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, self.token.as_bytes()).map_err(|e| WalletError::Io(e.to_string()))?;
         }
         Ok(())
     }

@@ -5,6 +5,11 @@
 > [`docs/mcp.md`](mcp.md) (`vaughan mcp`). The `vaughan-agent` crate remains as
 > a library (proposals, tools, circuit breakers). This document is historical
 > reference only.
+>
+> **Update (2026-08-29):** operating mode is no longer picked on a welcome
+> screen — it is keyed to the **profile you pick at unlock** (FR-5.1), and the
+> sentient kill-switch is **Ctrl+K** (not Esc). See
+> [`docs/mcp-threat-model.md`](mcp-threat-model.md) for the current controls.
 
 This guide explains how to configure and use the AI Agent subsystem (`vaughan-agent`) across **AI-Assisted** and **Sentient** operating modes.
 
@@ -127,8 +132,17 @@ temperature = 0.2
 
 Vaughan injects markdown **skills** into the LLM system prompt for Assist / Sentient:
 
+- **Index (any agent):** [`vaughan-agent/skills/INDEX.md`](../vaughan-agent/skills/INDEX.md)
 - Bundled: `vaughan-agent/skills/*/SKILL.md` (compiled into the binary)
 - User overrides: `<profile>/skills/*/SKILL.md` (same `name` replaces bundled)
+
+Notable guides for MCP hosts:
+
+| Skill | When |
+|-------|------|
+| [`vb-ag-quotes`](../vaughan-agent/skills/vb-ag-quotes/SKILL.md) | Ag quote tours, `browser_open_agg`, Switch.win VB path |
+| [`dapp-connect`](../vaughan-agent/skills/dapp-connect/SKILL.md) | dApp inject / connect bugs |
+| [`pulsechain-context`](../vaughan-agent/skills/pulsechain-context/SKILL.md) | PLS/WPLS/HEX addresses |
 
 `kind: must` skills are mandatory safety/signing rules. `kind: guide` skills are
 workflow tips (contract inspection, PulseChain context). See

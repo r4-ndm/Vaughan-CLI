@@ -64,7 +64,7 @@ use crate::input::Input;
 use crate::jobs::{spinner_frame, ChromeFocus};
 use alloy::primitives::U256;
 use vaughan_core::chains::Balance;
-use vaughan_core::core::{format_display_amount, parse_native_amount};
+use vaughan_core::core::{format_display_amount, parse_native_amount, OperatingMode};
 
 /// Which swap form field receives a picker (↑/↓) selection.
 pub(crate) enum TokenFieldRole<'a> {
@@ -370,10 +370,33 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
             .unwrap_or_else(|| ("—".into(), String::new(), "ETH".into()))
     };
 
-    let network_value = if chrome.mcp_pending > 0 {
-        format!("{net_name}{testnet} · MCP {}", chrome.mcp_pending)
-    } else {
-        format!("{net_name}{testnet}")
+    let network_value = {
+        use crate::mcp::McpListenerState;
+        let mcp_tag = match chrome.mcp_listener {
+            McpListenerState::Active if chrome.mcp_pending > 0 => {
+                format!(" · MCP on ({})", chrome.mcp_pending)
+            }
+            McpListenerState::Active => " · MCP on".to_string(),
+            McpListenerState::Starting => " · MCP …".to_string(),
+            McpListenerState::Unavailable => " · MCP off".to_string(),
+            McpListenerState::Off => String::new(),
+        };
+        // Sentient supersedes the adviser autonomy tier in the strip: the
+        // agent signs on its own under policy, so `· Op` would mislead.
+        let mode_tag = app
+            .try_wallet()
+            .map(|w| {
+                if w.operating_mode() == OperatingMode::SentientTrader {
+                    " · Sentient".to_string()
+                } else {
+                    w.agent_autonomy_tier()
+                        .chrome_label()
+                        .map(|l| format!(" · {l}"))
+                        .unwrap_or_default()
+                }
+            })
+            .unwrap_or_default();
+        format!("{net_name}{testnet}{mcp_tag}{mode_tag}")
     };
 
     let asset_idx = if chrome.focus == ChromeFocus::Asset {

@@ -45,7 +45,7 @@ pub(crate) fn try_open_with_cmd(
         return Err("URL must be http or https".into());
     }
 
-    let cdp_port = vaughan_core::core::vb_browser::resolve_cdp_port(agent_browser_control);
+    let cdp_port = vaughan_core::core::vb_browser::spawn_cdp_port(agent_browser_control);
     let cdp_port = if cdp_port == 0 { None } else { Some(cdp_port) };
 
     let chrome = env::var(DAPP_BROWSER_CHROME_ENV)

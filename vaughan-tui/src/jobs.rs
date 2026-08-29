@@ -148,6 +148,8 @@ pub struct ChromeSnapshot {
     pub pending_account_index: Option<u32>,
     /// Count of MCP proposals waiting in the file queue.
     pub mcp_pending: usize,
+    /// Loopback MCP listener (Cursor / Claude agents) — shown on F1 network strip.
+    pub mcp_listener: crate::mcp::McpListenerState,
 }
 
 /// Status-strip focus for F1 / F2 / F3.

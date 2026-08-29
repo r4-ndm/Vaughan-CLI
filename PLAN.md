@@ -128,7 +128,7 @@ plane; stdio MCP stays the agent client.
 - **Zero AI key exposure**: MCP and `vaughan-agent` never unlock the vault or hold signers.
 - **Ground-truth rendering**: The TUI approval card shows calldata/value/network; agent explanations are labelled untrusted.
 - **Physical capital isolation**: Sentient profile paths remain available for high-risk sessions (`~/.vaughan/profiles/sentient/`; legacy `…/degen/`).
-- **Circuit breakers**: Max position sizing % per trade, dual-horizon gas caps, adaptive slippage ceilings, and emergency kill-switches (`Esc`/`q`).
+- **Circuit breakers**: Max position sizing % per trade, dual-horizon gas caps, adaptive slippage ceilings, and an emergency kill-switch (**Ctrl+K**).
 - **No telemetry/analytics**: Testnet-first for all fund-moving features (including MCP writes).
 
 ## Build order

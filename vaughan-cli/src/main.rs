@@ -220,6 +220,11 @@ enum ConfigCmd {
         #[command(subcommand)]
         action: AgentBrowserCmd,
     },
+    /// Agent connect autonomy: advisor (manual) vs operator (auto on allowlist).
+    AgentAutonomy {
+        #[command(subcommand)]
+        action: AgentAutonomyCmd,
+    },
     /// Primary RPC URL per network (metadata only — no unlock).
     Rpc {
         #[command(subcommand)]
@@ -304,6 +309,16 @@ enum AgentBrowserCmd {
 }
 
 #[derive(Debug, Subcommand)]
+enum AgentAutonomyCmd {
+    /// Show the current agent autonomy tier.
+    Show,
+    /// Manual Connect approval for every site (default).
+    Advisor,
+    /// Auto-connect on trusted dApp + Ag catalog hosts; never auto-sign.
+    Operator,
+}
+
+#[derive(Debug, Subcommand)]
 enum PresetCmd {
     /// List bundled preset ids.
     List,
@@ -324,7 +339,7 @@ fn main() {
     } = cli;
     let result = match command {
         None | Some(Command::Tui) => {
-            vaughan_tui::run_interactive().map_err(|e| anyhow::anyhow!("{}", e))
+            vaughan_tui::run_interactive(&profile).map_err(|e| anyhow::anyhow!("{}", e))
         }
         Some(Command::Mcp { source }) => {
             vaughan_core::logging::init_logging();
@@ -883,6 +898,50 @@ fn run_config(profile: String, json_mode: bool, action: ConfigCmd) -> anyhow::Re
                 let data = json!({ "agent_browser_control": false, "profile": profile });
                 json_out::print_json_value(json_mode, &data, || {
                     println!("agent browser control disabled for profile `{profile}`");
+                });
+            }
+        },
+        ConfigCmd::AgentAutonomy { action } => match action {
+            AgentAutonomyCmd::Show => {
+                use vaughan_core::core::AgentAutonomyTier;
+                let tier = StateManager::agent_autonomy_tier_for_profile(&profile);
+                let data = json!({
+                    "agent_autonomy_tier": tier.as_str(),
+                    "operator_auto_connect": tier == AgentAutonomyTier::Operator,
+                    "profile": profile,
+                });
+                json_out::print_json_value(json_mode, &data, || {
+                    println!("agent_autonomy_tier ({profile}): {}", tier.as_str());
+                });
+            }
+            AgentAutonomyCmd::Advisor => {
+                use vaughan_core::core::AgentAutonomyTier;
+                StateManager::set_agent_autonomy_tier_for_profile(
+                    &profile,
+                    AgentAutonomyTier::Advisor,
+                )?;
+                let data = json!({
+                    "agent_autonomy_tier": "advisor",
+                    "profile": profile,
+                });
+                json_out::print_json_value(json_mode, &data, || {
+                    println!("agent autonomy tier set to advisor for profile `{profile}`");
+                });
+            }
+            AgentAutonomyCmd::Operator => {
+                use vaughan_core::core::AgentAutonomyTier;
+                StateManager::set_agent_autonomy_tier_for_profile(
+                    &profile,
+                    AgentAutonomyTier::Operator,
+                )?;
+                let data = json!({
+                    "agent_autonomy_tier": "operator",
+                    "profile": profile,
+                });
+                json_out::print_json_value(json_mode, &data, || {
+                    println!(
+                        "agent autonomy tier set to operator for profile `{profile}` (auto-connect allowlist only)"
+                    );
                 });
             }
         },

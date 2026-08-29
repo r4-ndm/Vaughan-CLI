@@ -11,20 +11,11 @@
         "mcp",
         "--profile",
         "default"
-      ]
-    },
-    "vaughan-sentient": {
-      "command": "cargo",
-      "args": [
-        "run",
-        "-q",
-        "-p",
-        "vaughan-cli",
-        "--",
-        "mcp",
-        "--profile",
-        "sentient"
-      ]
+      ],
+      "env": {
+        "VAUGHAN_DAPP_BROWSER_CHROME": "/usr/bin/chromium",
+        "VAUGHAN_DAPP_BROWSER_CDP_PORT": "9222"
+      }
     }
   }
 }

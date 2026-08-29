@@ -178,6 +178,7 @@ vaughan-core/src/
   error.rs                     # WalletError + retry helper
   logging.rs                   # tracing setup
 vaughan-tui/src/               # ratatui app: onboarding, unlock, dashboard, send, receive, settings
+vaughan-agent/skills/          # agent playbooks (any MCP host) — start at skills/INDEX.md
 REQUIREMENTS.md  PLAN.md  TASKS.md   # requirements / plan / task backlog
 ```
 

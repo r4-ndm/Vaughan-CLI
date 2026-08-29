@@ -237,6 +237,7 @@ vaughan-cli/
 - [docs/sentient-ops.md](docs/sentient-ops.md) — Always-on serve, watch loops, multi-tenant boundaries
 - [docs/ai-tool-surface.md](docs/ai-tool-surface.md) — Public tool contract for agents
 - [docs/pulse-defi-skills.md](docs/pulse-defi-skills.md) — Pulse DeFi MCP skill pack (quote / trade)
+- [vaughan-agent/skills/INDEX.md](vaughan-agent/skills/INDEX.md) — **Agent playbooks index** (mcp-connect, vb-ag-quotes, dapp-connect, …)
 - [docs/mcp-threat-model.md](docs/mcp-threat-model.md) — MCP threat model
 - [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md) — EIP-1193 provider bridge
 - [docs/ambire-aa.md](docs/ambire-aa.md) — Ambire EIP-7702 batch transactions

@@ -29,6 +29,7 @@ pub mod handler;
 pub mod methods;
 pub mod rpc;
 pub mod rpc_proxy;
+pub mod seal;
 pub mod server;
 
 pub use error::ProviderError;

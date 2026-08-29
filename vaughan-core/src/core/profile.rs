@@ -51,6 +51,17 @@ impl fmt::Display for OperatingMode {
     }
 }
 
+/// Session mode for an interactive (TUI) unlock of `profile`: the sentient
+/// profile trades autonomously under policy; every other profile stays
+/// human-approved. Single source of truth for unlock + onboarding.
+pub fn tui_mode_for_profile(profile: &str) -> OperatingMode {
+    if crate::core::persistence::is_sentient_profile(profile) {
+        OperatingMode::SentientTrader
+    } else {
+        OperatingMode::HumanOnly
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

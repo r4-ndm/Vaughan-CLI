@@ -89,6 +89,30 @@ fn test_circuit_breaker_gas_and_error_tripwires() {
 }
 
 #[test]
+fn test_check_gas_budget_rejects_pre_broadcast_without_tripping() {
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+        max_session_gas_wei: U256::from(1_000),
+        ..Default::default()
+    });
+
+    // Under budget: ok. Record 600.
+    assert!(breaker.check_gas_budget(U256::from(600)).is_ok());
+    breaker.record_success(U256::from(600)).unwrap();
+
+    // 600 + 500 would cross 1000: rejected, but the session stays open
+    // (rejection is not a permanent trip — cheaper txs may still fit).
+    assert!(breaker.check_gas_budget(U256::from(500)).is_err());
+    assert!(!breaker.is_tripped());
+
+    // A cheaper tx still fits.
+    assert!(breaker.check_gas_budget(U256::from(400)).is_ok());
+
+    // A tripped breaker rejects budget checks too.
+    breaker.trip("halt");
+    assert!(breaker.check_gas_budget(U256::from(1)).is_err());
+}
+
+#[test]
 fn test_circuit_breaker_emergency_stop() {
     let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
     assert!(!breaker.is_tripped());

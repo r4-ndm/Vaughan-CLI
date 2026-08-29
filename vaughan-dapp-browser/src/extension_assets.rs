@@ -121,16 +121,51 @@ pub fn content_bridge_js() -> &'static str {
 /// Two trust rules live here:
 /// - **Origin attestation:** the page origin comes from `port.sender.url`
 ///   (Chrome-attested), never from a page-supplied field — anything arriving
-///   over `postMessage` is forgeable by the page.
+///   over `postMessage` is forgeable by the page. Each assertion is then
+///   *sealed* with AES-256-GCM under the per-launch extension secret so the
+///   provider can tell a real extension relay from a local process that
+///   learned the bridge token and forged the extension handshake origin.
 /// - **Response routing:** the worker assigns the JSON-RPC wire id itself and
 ///   maps it back to the originating port, so two tabs cannot collide on ids
 ///   or steal each other's (signature-bearing) responses.
-pub fn background_js(provider_ws: &str) -> String {
+pub fn background_js(provider_ws: &str, extension_secret_hex: &str) -> String {
     let ws =
         serde_json::to_string(provider_ws).unwrap_or_else(|_| "\"ws://127.0.0.1:8745\"".into());
+    let seal_key = serde_json::to_string(extension_secret_hex).unwrap_or_else(|_| "\"\"".into());
     format!(
         r#"(function () {{
   const WS_URL = {ws};
+  const EXT_SEAL_KEY_HEX = {seal_key};
+  /** @type {{Promise<CryptoKey>|null}} */
+  let sealKeyPromise = null;
+  function hexToBytes(hex) {{
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }}
+  function bytesToHex(bytes) {{
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }}
+  function sealKey() {{
+    if (!sealKeyPromise) {{
+      sealKeyPromise = crypto.subtle.importKey(
+        "raw", hexToBytes(EXT_SEAL_KEY_HEX), {{ name: "AES-GCM" }}, false, ["encrypt"]
+      );
+    }}
+    return sealKeyPromise;
+  }}
+  /** Seal the page origin: hex(iv || AES-256-GCM(origin)). Empty key = no seal. */
+  async function sealOrigin(pageOrigin) {{
+    if (!EXT_SEAL_KEY_HEX || !pageOrigin) return undefined;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt(
+      {{ name: "AES-GCM", iv }}, await sealKey(), new TextEncoder().encode(pageOrigin)
+    );
+    const blob = new Uint8Array(iv.length + ct.byteLength);
+    blob.set(iv, 0);
+    blob.set(new Uint8Array(ct), iv.length);
+    return bytesToHex(blob);
+  }}
   /** @type {{WebSocket|null}} */
   let socket = null;
   /** @type {{Map<number, {{port: chrome.runtime.Port, clientId: *, method: string, pageOrigin: string}}>}} */
@@ -221,15 +256,16 @@ pub fn background_js(provider_ws: &str) -> String {
   function sendRpc(port, clientId, method, params, pageOrigin) {{
     const wireId = nextWireId++;
     pending.set(wireId, {{ port, clientId, method, pageOrigin }});
-    const payload = JSON.stringify({{
-      jsonrpc: "2.0",
-      id: wireId,
-      method,
-      params: params || [],
-      vaughan_page_origin: pageOrigin || undefined,
-    }});
     const s = ensureSocket();
-    const go = () => {{
+    const go = (originSeal) => {{
+      const payload = JSON.stringify({{
+        jsonrpc: "2.0",
+        id: wireId,
+        method,
+        params: params || [],
+        vaughan_page_origin: pageOrigin || undefined,
+        vaughan_origin_seal: originSeal || undefined,
+      }});
       try {{ s.send(payload); }}
       catch (e) {{
         pending.delete(wireId);
@@ -242,8 +278,13 @@ pub fn background_js(provider_ws: &str) -> String {
         }} catch (_) {{}}
       }}
     }};
-    if (s.readyState === WebSocket.OPEN) go();
-    else s.addEventListener("open", go, {{ once: true }});
+    const start = () => {{
+      sealOrigin(pageOrigin)
+        .then(go)
+        .catch(() => go(undefined));
+    }};
+    if (s.readyState === WebSocket.OPEN) start();
+    else s.addEventListener("open", start, {{ once: true }});
   }}
 
   chrome.runtime.onConnect.addListener((port) => {{
@@ -282,28 +323,30 @@ pub fn background_js(provider_ws: &str) -> String {
   const NAV_GATE_RULE_ID = 9001;
   async function installNavGate() {{
     let suffixes = [];
+    let allowlistOk = true;
     try {{
       const resp = await fetch(chrome.runtime.getURL("allowlist.json"));
       const data = await resp.json();
       suffixes = Array.isArray(data.suffixes) ? data.suffixes : [];
     }} catch (_) {{
-      return;
+      allowlistOk = false;
     }}
     const domains = suffixes.map((s) => String(s || "").trim().toLowerCase()).filter(Boolean);
     for (const h of ["localhost", "127.0.0.1"]) {{
       if (!domains.includes(h)) domains.push(h);
     }}
-    if (domains.length === 0) return;
+    // Fail closed: without the allowlist there is no gate, so block every
+    // main_frame load rather than letting navigation run unrestricted.
+    const condition = allowlistOk
+      ? {{ resourceTypes: ["main_frame"], excludedRequestDomains: domains }}
+      : {{ resourceTypes: ["main_frame"] }};
     await chrome.declarativeNetRequest.updateDynamicRules({{
       removeRuleIds: [NAV_GATE_RULE_ID],
       addRules: [{{
         id: NAV_GATE_RULE_ID,
         priority: 1,
         action: {{ type: "block" }},
-        condition: {{
-          resourceTypes: ["main_frame"],
-          excludedRequestDomains: domains,
-        }},
+        condition,
       }}],
     }});
   }}
@@ -339,14 +382,14 @@ mod tests {
 
     #[test]
     fn background_embeds_loopback_ws() {
-        let js = background_js("ws://127.0.0.1:8745");
+        let js = background_js("ws://127.0.0.1:8745", "00");
         assert!(js.contains("ws://127.0.0.1:8745"));
         assert!(js.contains("WebSocket"));
     }
 
     #[test]
     fn background_attests_origin_and_namespaces_wire_ids() {
-        let js = background_js("ws://127.0.0.1:8745");
+        let js = background_js("ws://127.0.0.1:8745", "00");
         // H1: page origin must come from Chrome-attested sender.url…
         assert!(js.contains("port.sender.url"));
         // …never from a page-supplied postMessage field.
@@ -358,7 +401,7 @@ mod tests {
 
     #[test]
     fn background_scopes_accounts_changed_to_connected_origins() {
-        let js = background_js("ws://127.0.0.1:8745");
+        let js = background_js("ws://127.0.0.1:8745", "00");
         // M3: account events only reach origins that completed a Connect.
         assert!(js.contains("connectedOrigins"));
         assert!(js.contains("portOrigins"));
@@ -376,7 +419,7 @@ mod tests {
 
     #[test]
     fn background_installs_nav_gate() {
-        let js = background_js("ws://127.0.0.1:8745");
+        let js = background_js("ws://127.0.0.1:8745", "00");
         assert!(js.contains("installNavGate"));
         assert!(js.contains("excludedRequestDomains"));
         assert!(js.contains("allowlist.json"));

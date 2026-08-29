@@ -202,7 +202,10 @@ async fn browser_status_unavailable_without_vb_session() {
 #[tokio::test]
 async fn browser_navigate_blocked_when_agent_control_off() {
     std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
-    let (_dispatcher, ctx) = harness().await;
+    // Hermetic: a never-created profile has no persisted toggle, so agent
+    // browser control is off regardless of the developer's real wallet state.
+    let profile = "conformance-no-such-profile";
+    let ctx = build_context(profile, "conformance").expect("context");
     let err = vaughan_mcp::browser_bridge::browser_navigate(
         serde_json::json!({ "url": "https://example.com" }),
         &ctx,

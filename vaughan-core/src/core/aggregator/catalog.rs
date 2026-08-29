@@ -100,6 +100,44 @@ impl AggVenue {
     pub fn is_live(self) -> bool {
         matches!(self.access(), AggAccess::LiveNoKey)
     }
+
+    /// Human-facing swap UI for VB agent control (no developer API key).
+    ///
+    /// Browserless Ag/MCP may still use HTTP clients where `is_live()`; this is
+    /// the side door for Switch, CURV, and any venue with a web app.
+    /// Deep link or swap page preset for PLS → HEX on PulseChain (369).
+    ///
+    /// **Same-chain only.** LibertyX (bridge / USDC) and Internet Money (wallet
+    /// shell) are excluded — use Bridge (`f`) or `web_url()` for those products.
+    pub fn web_url_pls_hex(self) -> Option<String> {
+        const HEX: &str = "0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39";
+        const NATIVE: &str = "0x0000000000000000000000000000000000000000";
+        match self {
+            Self::SquirrelSwap => Some("https://app.squirrelswap.pro/#/swap".into()),
+            Self::PulseSwap => Some(format!(
+                "https://pulseswap.io/?chain=pulsechain&from={NATIVE}&to={HEX}&amount=1"
+            )),
+            Self::Piteas => Some("https://app.piteas.io/".into()),
+            Self::SwitchWin | Self::Curv => Some("https://www.switch.win/dapp".into()),
+            Self::NineMm9x => Some("https://9x.9mm.pro/#/swap?chainId=369".into()),
+            Self::LibertyX | Self::InternetMoney | Self::Empseal | Self::PortalX => None,
+        }
+    }
+
+    pub fn web_url(self) -> Option<&'static str> {
+        match self {
+            Self::SquirrelSwap => Some("https://app.squirrelswap.pro/#/swap"),
+            Self::PulseSwap => Some("https://pulseswap.io/?chain=pulsechain"),
+            Self::Piteas => Some("https://app.piteas.io/"),
+            Self::SwitchWin => Some("https://www.switch.win/dapp"),
+            Self::Empseal => None, // on-chain path-find only — no public swap UI
+            Self::NineMm9x => Some("https://9x.9mm.pro/#/swap?chainId=369"),
+            Self::Curv => Some("https://www.switch.win/dapp"), // Jolt/CURV — Switch routing UI
+            Self::InternetMoney => Some("https://internetmoney.io/"),
+            Self::LibertyX => Some("https://libertyswap.finance/"), // bridge — not same-chain Ag
+            Self::PortalX => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -121,5 +159,21 @@ mod tests {
     fn cycle_wraps() {
         assert_eq!(AggVenue::SquirrelSwap.next(), AggVenue::PulseSwap);
         assert_eq!(AggVenue::PortalX.next(), AggVenue::SquirrelSwap);
+    }
+
+    #[test]
+    fn web_urls_for_vb_human_path() {
+        assert!(AggVenue::SquirrelSwap
+            .web_url()
+            .unwrap()
+            .contains("squirrelswap"));
+        assert!(AggVenue::SwitchWin
+            .web_url()
+            .unwrap()
+            .contains("switch.win"));
+        assert!(AggVenue::Empseal.web_url().is_none());
+        assert!(AggVenue::NineMm9x.web_url().unwrap().contains("9x.9mm.pro"));
+        assert!(AggVenue::LibertyX.web_url_pls_hex().is_none());
+        assert!(AggVenue::InternetMoney.web_url_pls_hex().is_none());
     }
 }

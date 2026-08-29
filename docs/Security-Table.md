@@ -211,8 +211,8 @@ Synced with [native-parity-tricks.md](native-parity-tricks.md) §5 and [dapp-con
 | Tamper watchdog | Sealed `window.ethereum` + 4s integrity check + EIP-6963 re-announce |
 | Per-tab JSON-RPC routing | Service worker maps wire ids per tab — no cross-tab response theft |
 | Isolated temp profile | Not your daily Chrome profile; session dir `0700` |
-| Provider `access_token` | Loopback WS requires session token (`provider.session`, 0o600); token redacted from launcher stderr |
-| Chrome-attested page origin | `vaughan_page_origin` from extension `port.sender.url`; page-supplied values ignored |
+| Provider `access_token` | Loopback WS requires session token (`provider.session`, 0o600, only while unlocked; rotated on lock/unlock); token redacted from launcher stderr |
+| Chrome-attested page origin | `vaughan_page_origin` from extension `port.sender.url`; page-supplied values ignored; per-launch AES-GCM origin seal (`vaughan_origin_seal`) proves the assertion came from the real extension bundle |
 | Connect grant before sign | `eth_accounts` empty until Connect approved; sign/send return 4100 without grant |
 | `accountsChanged` scoping | Non-empty events only to origins holding a Connect grant |
 | Locked wallet | `eth_requestAccounts` → 4100 while locked (no silent hang) |
@@ -220,10 +220,11 @@ Synced with [native-parity-tricks.md](native-parity-tricks.md) §5 and [dapp-con
 | `wallet_switchEthereumChain` prompts | Chain switch shows requesting origin in TUI |
 | `tx.from` account binding | Reject sign/send when `from` ≠ active account |
 | Approve UI sanitization | Strip control chars from origin/site/message (no terminal escape injection) |
-| CDP default off | Agent debugging on loopback only when explicitly enabled (Settings **`p`**, `vaughan config agent-browser on`, or env override); token in `vb.session` — see [vb-kill-switch.md](vb-kill-switch.md) |
+| CDP default off | Agent debugging on loopback only when explicitly enabled (Settings **`p`**, `vaughan config agent-browser on`, or env override) — see [vb-kill-switch.md](vb-kill-switch.md) |
+| CDP endpoint binding | **Chrome CDP has no auth** — `cdp_token` in `vb.session` is agent session metadata, not a CDP credential. Real controls: random loopback port per spawn, PID-bound `vb.session` (MCP verifies `/proc/<pid>` is `vaughan-dapp-browser`), pinned tab target, allowlist re-check before mutating tools |
 | Chromium privacy flags | WebRTC IP policy, no background networking, no sync |
 
-**Not yet (optional / parked paths):** HMAC origin attestation and handshake challenge for Freedom + Vaughan ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)); Unix domain socket for provider IPC.
+**Not yet (optional / parked paths):** handshake challenge for Freedom ([PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)); Unix domain socket for provider IPC.
 
 See [dapp-browser-strategy.md](dapp-browser-strategy.md) and [dapp-connection-risks.md](dapp-connection-risks.md) for open risks (TUI focus, prompt expiry, etc.).
 

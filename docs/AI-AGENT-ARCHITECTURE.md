@@ -116,7 +116,7 @@ In `SentientTrader` mode, autonomous signing is governed by deterministic limits
    - **Cumulative Session Budget**: Hard lifetime gas cap (e.g. `Y PLS`). Once reached, the agent enters a mandatory hard stop.
 4. **Gas-to-Value Ratio Tripwire**: Automatically rejects any transaction where estimated gas cost exceeds 5% of the transaction's economic value.
 5. **Adaptive Slippage Ceiling**: Price impact is calculated against pool reserves using `wiz4rd-engine`. Trades exceeding calculated depth or a 1.0%–2.5% safety wall are blocked.
-6. **Emergency Stop (Kill Switch)**: Pressing `Esc` or `q` immediately aborts active agent tasks, cancels pending operations, and locks the session.
+6. **Emergency Stop (Kill Switch)**: Pressing **Ctrl+K** in the TUI trips the session circuit breaker, aborting sentient auto-execution until the profile is unlocked again.
 
 ---
 

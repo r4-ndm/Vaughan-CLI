@@ -20,6 +20,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+rand = { workspace = true }
 hex = { workspace = true }
 url = { workspace = true }
 wiz4rd-math = { workspace = true }

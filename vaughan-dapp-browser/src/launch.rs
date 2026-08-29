@@ -207,7 +207,14 @@ fn vb_session_path() -> Option<PathBuf> {
 
 /// Persist CDP endpoint metadata for MCP agents (`cdp_token` is session metadata;
 /// Chrome CDP itself is loopback-only — agents must present the token out-of-band).
-fn write_vb_session(cdp_port: u16, cdp_token: &str, allow: &Allowlist) -> Result<(), String> {
+/// `extension_secret` lets the provider verify the extension's page-origin seals;
+/// both are owner-only files (0600).
+fn write_vb_session(
+    cdp_port: u16,
+    cdp_token: &str,
+    allow: &Allowlist,
+    extension_secret: &str,
+) -> Result<(), String> {
     let path = vb_session_path().ok_or_else(|| "no data dir for vb.session".to_string())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("vb.session dir: {e}"))?;
@@ -216,21 +223,28 @@ fn write_vb_session(cdp_port: u16, cdp_token: &str, allow: &Allowlist) -> Result
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let cdp_url = if cdp_port == 0 {
+        String::new()
+    } else {
+        format!("http://127.0.0.1:{cdp_port}")
+    };
     let body = serde_json::json!({
-        "cdp_url": format!("http://127.0.0.1:{cdp_port}"),
+        "cdp_url": cdp_url,
         "cdp_token": cdp_token,
         "allow_suffixes": allow.suffixes(),
+        // PID binding: MCP verifies /proc/<pid> is still a vaughan-dapp-browser
+        // before driving the CDP endpoint, so a stale file + squatted port (or
+        // the user's own Chromium with --remote-debugging-port) is never
+        // mistaken for this session.
+        "pid": std::process::id(),
+        // Per-launch extension seal key; the provider learns it here and
+        // requires sealed page-origin assertions from the extension.
+        "extension_secret": extension_secret,
         "updated_at": updated_at,
     });
     let bytes = serde_json::to_vec(&body).map_err(|e| format!("vb.session json: {e}"))?;
     write_owner_only_file(&path, &bytes)?;
     Ok(())
-}
-
-fn clear_vb_session() {
-    if let Some(path) = vb_session_path() {
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 #[cfg(unix)]
@@ -254,7 +268,12 @@ fn write_owner_only_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-fn write_inject_extension(dir: &Path, provider_ws: &str, allow: &Allowlist) -> Result<(), String> {
+fn write_inject_extension(
+    dir: &Path,
+    provider_ws: &str,
+    allow: &Allowlist,
+    extension_secret: &str,
+) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("ext dir: {e}"))?;
     std::fs::write(dir.join("manifest.json"), extension_assets::manifest_json())
         .map_err(|e| format!("write manifest: {e}"))?;
@@ -262,7 +281,7 @@ fn write_inject_extension(dir: &Path, provider_ws: &str, allow: &Allowlist) -> R
         .map_err(|e| format!("write allowlist.json: {e}"))?;
     std::fs::write(
         dir.join("background.js"),
-        extension_assets::background_js(provider_ws),
+        extension_assets::background_js(provider_ws, extension_secret),
     )
     .map_err(|e| format!("write background.js: {e}"))?;
     std::fs::write(
@@ -344,12 +363,20 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
         return Err("session dir is not a real directory".into());
     }
     std::fs::create_dir_all(&profile).map_err(|e| format!("profile: {e}"))?;
-    write_inject_extension(&ext, &opts.provider_ws, &opts.allow)?;
 
+    // Per-launch extension secret: seals page-origin assertions so the
+    // provider can distinguish the real extension relay from a local process
+    // that learned the bridge token. Generated even when CDP export is off —
+    // the provider seal check does not depend on agent control.
+    let extension_secret = random_session_token();
+    write_inject_extension(&ext, &opts.provider_ws, &opts.allow, &extension_secret)?;
+
+    // vb.session is written on EVERY launch: it carries the PID binding and
+    // the extension seal key, both needed regardless of CDP. With CDP off the
+    // cdp_url/cdp_token fields are empty (agent tools treat that as no CDP).
     let cdp_token = if export_cdp {
         Some(random_session_token())
     } else {
-        clear_vb_session();
         None
     };
 
@@ -367,7 +394,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     );
     if export_cdp {
         let token = cdp_token.as_deref().unwrap_or("");
-        write_vb_session(cdp_port, token, &opts.allow)?;
+        write_vb_session(cdp_port, token, &opts.allow, &extension_secret)?;
         println!(
             "{}",
             serde_json::json!({
@@ -380,6 +407,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
             "vaughan-dapp-browser: CDP on 127.0.0.1:{cdp_port} (loopback; session token in vb.session)"
         );
     } else {
+        write_vb_session(0, "", &opts.allow, &extension_secret)?;
         eprintln!("vaughan-dapp-browser: agent CDP off (pass --cdp-port N to enable)");
     }
     eprintln!("Look for a green top banner: “VB injected …”");

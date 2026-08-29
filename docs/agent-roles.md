@@ -10,7 +10,9 @@ the same seed unless you intend a deliberate partnership.
 | **Vault / seed** | `default` — human’s savings | `sentient` — **the agent’s seed** |
 | **MCP server name** | `vaughan` | `vaughan-sentient` |
 | **CLI** | `--profile default` | `--profile sentient` |
+| **TUI switch** | Unlock picker → `default` | Unlock picker → `sentient`, or `vaughan --profile sentient` |
 | **Writes** | Propose → TUI approval card | Auto re-sim → policy → sign (unlocked TUI) |
+| **Connect (VB / Ag)** | Advisor: manual Connect card · **Operator**: auto on allowlist | Same tiers apply; sentient adds auto-exec |
 | **Mental model** | “Help me trade / inspect” | “This is my wallet — I act” |
 
 Keys never leave the Vaughan process either way. The split is **whose seed** and
@@ -21,10 +23,27 @@ Keys never leave the Vaughan process either way. The split is **whose seed** and
 You use Vaughan. The agent reads chain state, quotes, and **proposes**. You
 approve or reject. Use for real savings and reviewing suggestions.
 
+### Autonomy tiers (adviser profile)
+
+On `default`, pick how much **connect** automation the agent gets before signing:
+
+| Tier | Connect | Sign / `propose_*` |
+|------|---------|-------------------|
+| **Advisor** (default) | Manual Connect card | Human approval |
+| **Operator** | Auto on trusted dApp + Ag catalog hosts | Human approval |
+
+Toggle in **Settings → Networks (`n`) → `o`**, CLI `vaughan config agent-autonomy operator`,
+or check F1 for `· Op` when Operator is on. Never auto-signs on the adviser profile.
+
 ## Sentient
 
 The **`sentient` profile seed belongs to the agent**. It can do what it wants
 with that capital under the **skill + policy** loaded for that profile.
+
+Switch in the TUI at the session boundary: `l` lock → unlock-screen profile
+picker → `sentient` (or launch `vaughan --profile sentient`). The password
+screen shows the live policy bounds before unlock; F1 shows `· Sentient`
+while active. See [`sentient-ops.md`](sentient-ops.md#switching-agent-mode-tui).
 
 ## Partnership (keep it simple)
 

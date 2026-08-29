@@ -25,6 +25,8 @@ See also:
 
 ## Cursor configuration
 
+Agent playbook (connect + reconnect): [`vaughan-agent/skills/mcp-connect/SKILL.md`](../vaughan-agent/skills/mcp-connect/SKILL.md) · per-host: [`hosts/INDEX.md`](../vaughan-agent/skills/mcp-connect/hosts/INDEX.md).
+
 ### Adviser (human-led) — `vaughan`
 
 Project config ships at [`.cursor/mcp.json`](../.cursor/mcp.json) (cargo-run for
@@ -88,7 +90,7 @@ Full tick-list (adviser + sentient): [`mcp-smoke.md`](mcp-smoke.md).
 Quick path:
 
 1. Unlock Vaughan TUI on PulseChain testnet v4.
-2. Connect Vaughan MCP (`.cursor/mcp.json`; restart Cursor MCP).
+2. Connect Vaughan MCP (`.cursor/mcp.json`; reconnect host — see [`mcp-connect` skill](../vaughan-agent/skills/mcp-connect/SKILL.md)).
 3. `get_address` / `list_assets` — should return the unlocked account.
 4. `propose_transfer` → **Deny** in TUI → `proposals/rejected/` has the file.
 5. `propose_transfer` → **Approve** on testnet → status shows `tx_hash`.
@@ -103,7 +105,7 @@ Wire-format CI: `cargo test -p vaughan-mcp --test conformance`.
 | `wallet_locked` | Unlock Vaughan TUI; or pass explicit `account_address` on read tools |
 | `pending_user` forever | TUI must be open and unlocked for live socket path |
 | `mainnet_blocked` | Set `VAUGHAN_MCP_ALLOW_MAINNET=1` (use testnet first) |
-| MCP broken in Cursor | Ensure nothing writes to stdout except JSON-RPC (logs go to stderr) |
+| MCP broken in Cursor | Ensure nothing writes to stdout except JSON-RPC (logs go to stderr); reconnect MCP — [`mcp-connect`](../vaughan-agent/skills/mcp-connect/SKILL.md) |
 
 ## Browser tools (VB B1 + B2)
 
@@ -116,11 +118,25 @@ in the TUI/provider.
 - CLI: `vaughan config agent-browser on`
 - Override: `VAUGHAN_DAPP_BROWSER_CDP_PORT=9222` in MCP host env (smoke/dev)
 
+When enabled, each VB spawn gets a **random loopback CDP port** (the env
+override pins a fixed port for dev). Chrome CDP itself has no authentication —
+the endpoint is guarded instead by: PID-bound `vb.session` (MCP verifies the
+recorded PID is a live `vaughan-dapp-browser` before any call), a pinned tab
+target (`vb.target`), and an allowlist re-check of the current page URL before
+mutating tools (`browser_click`/`browser_type`/`browser_connect_wallet`/…).
+`data:` and `blob:` navigation targets are rejected; `browser_snapshot` masks
+input field values; wallet auto-connect is refused on public IPFS gateways.
+
+When the wallet is unlocked, the **F1 network strip** shows **`· MCP on`** when the loopback
+control plane is listening (`127.0.0.1:8746`). **`· MCP off`** means bind failed (often
+`vaughan serve` still running) — stop serve and lock/unlock the TUI.
+
 Kill-switch: [vb-kill-switch.md](vb-kill-switch.md).
 
 | Tool | Purpose |
 |------|---------|
 | `browser_open` | Spawn VB at allowlisted `url`; CDP only when control enabled (see above) |
+| `browser_open_agg` | Ag-catalog swap UI — venue id + optional `pls_hex`; playbook: [`vb-ag-quotes/SKILL.md`](../vaughan-agent/skills/vb-ag-quotes/SKILL.md) |
 | `browser_navigate` | CDP navigate to allowlisted `url` (checks `vb.session` suffixes) |
 | `browser_status` | CDP health + `agent_browser_control` + open page URLs |
 

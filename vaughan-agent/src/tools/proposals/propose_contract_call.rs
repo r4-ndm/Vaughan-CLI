@@ -79,7 +79,8 @@ impl Tool for ProposeContractCallTool {
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid calldata hex: {e}")))?;
 
         let value_wei = if let Some(val_str) = args.get("value_wei").and_then(|v| v.as_str()) {
-            U256::from_str(val_str).unwrap_or(U256::ZERO)
+            U256::from_str(val_str)
+                .map_err(|e| AgentError::InvalidToolCall(format!("Invalid value_wei: {e}")))?
         } else {
             U256::ZERO
         };

@@ -211,10 +211,18 @@ impl AgView {
             VenueChoice::CompareAll => "Compare all live aggregators — F4 or Enter to quote".into(),
             VenueChoice::Single(v) => match v.access() {
                 AggAccess::LiveNoKey => {
-                    format!("{} · {} — F4 or Enter to quote", v.label(), v.blurb())
+                    let vb = v
+                        .web_url()
+                        .map(|u| format!(" · VB: {u}"))
+                        .unwrap_or_default();
+                    format!("{} · {} — F4 or Enter to quote{vb}", v.label(), v.blurb())
                 }
                 AggAccess::NeedsApiKey(why) | AggAccess::ListedOnly(why) => {
-                    format!("{} — {} ({why})", v.label(), v.blurb())
+                    let vb = v
+                        .web_url()
+                        .map(|u| format!(" · VB: {u}"))
+                        .unwrap_or_default();
+                    format!("{} — {} ({why}){vb}", v.label(), v.blurb())
                 }
             },
         };

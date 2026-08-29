@@ -217,6 +217,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Profile Directory Isolation: Sentient mode runs in isolated directory `~/.vaughan/profiles/sentient/` with separate keys/vault (FR-5.2)
 - [x] Dynamic dashboard badge rendering and CLI `--profile <name>` / `--mode <human|assist|sentient>` flags
 - [x] Unit & integration tests in `vaughan-core` and `vaughan-tui` passing (FR-5.1, FR-5.2)
+- [x] Unlock-screen profile picker: mode follows profile (`default` adviser / `sentient` auto-exec); TUI honors `--profile`; F1 `· Sentient` strip; live policy bounds shown pre-unlock (FR-5.1, 2026-08-29)
 
 ### Step 2: `vaughan-agent` Workspace Crate & Provider Adapters (Done)
 - [x] New `vaughan-agent` crate added to workspace
@@ -242,7 +243,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Circuit breaker: gas burn ceiling & consecutive error tripwire (FR-5.6)
 - [x] Circuit breaker: hard slippage limit (max 1.0%) (FR-5.6)
 - [x] Multi-RPC quorum validation to defeat rogue/compromised or stale RPCs (FR-5.6)
-- [x] Emergency stop (kill-switch via `Esc`/`q`) (FR-5.6)
+- [x] Emergency stop (kill-switch via **Ctrl+K**, trips the session breaker) (FR-5.6)
 - [x] Deterministic Anvil autonomous trader test suite passing (FR-5.6)
 
 ### Step 6: TUI Agent View & CLI Non-Interactive Execution (Done)
@@ -296,7 +297,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### Sentient session policy (guardrails the user owns)
 
 > Burner/`sentient` profile only. Agent may **explain** `/policy` commands; only the
-> human writes `sentient-policy.toml`. Esc emergency-stop always works.
+> human writes `sentient-policy.toml`. Ctrl+K emergency-stop always works.
 
 - [x] `AgentSessionPolicy` + `sentient-policy.toml` load/save (`vaughan-agent::sentient::policy`)
 - [x] Enforcement modes: `enforced` | `warn-only` | `disabled` (disabled needs `acknowledge_unsafe` / `/policy confirm-unsafe`)
@@ -403,6 +404,21 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### Phase 3 — MCP B2 (FR-7.5)
 - [x] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP evaluate + Input (refs e0..e49)
 - [x] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6) — [`docs/vb-kill-switch.md`](docs/vb-kill-switch.md); Settings **`p`**; `vaughan config agent-browser`
+- [x] Hardening: `vb_cdp` split into modules + `js/*.js` snippets; VB spawn via `setsid` + `vb.log`; picker search-box flow (long-tail tokens); quote `token_out` inference + Swap-details auto-expand + labeled outputs
+
+### MCP + VB agent-control security audit (2026-08-29, all findings fixed)
+
+> Full audit of the MCP surface, proposal queue/IPC, sentient auto-exec gate, and
+> VB CDP agent control. Controls matrix: [`docs/mcp-threat-model.md`](docs/mcp-threat-model.md).
+
+- [x] Sentient gate: `Batch7702` per-leg sizing (native + ERC-20 `execute(txns)` decode; unsizeable raw calls refused for auto-exec)
+- [x] Sentient gate: fresh quote + slippage floor, audited router allowlist (propose-time + gate-time), fresh fee estimate (fail-closed) + pre-broadcast gas-budget check, mainnet re-check, mode-keyed gate
+- [x] Policy file: `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced`; kill-switch key = **Ctrl+K**
+- [x] Proposal queue: file-queue proposals answerable in TUI (no softlock), HMAC covers `source`, token `Debug` redaction, queue dir 0700 / history 0600, size-capped reads, random id suffix
+- [x] Provider bridge: token rotates on lock/unlock, `provider.session` only exists while unlocked, bind-before-token-publish + backoff + connection caps/timeouts, profile-switch rebind
+- [x] VB CDP: random loopback port per spawn, PID-bound `vb.session` (`/proc` verify), pinned tab target (`vb.target`), allowlist re-check before mutating tools, `data:`/`blob:` nav rejected, snapshot input-value masking, IPFS-gateway auto-connect refused, XPath literal quoting, `vb.log`/`vb.target` 0600, nav gate fail-closed, `cdp_open_url` percent-encoding
+- [x] Origin attestation: per-launch extension secret; AES-256-GCM `vaughan_origin_seal` verified by provider (`vaughan-provider::seal`)
+- [x] MCP server: 1 MiB stdio line cap, `get_network` RPC URL redaction, `import_token` requires unlocked session, `watch_balance` malformed-arg rejection, profile-name validation (path traversal), control-plane status reachability fix, circuit-breaker `saturating_add` gas totals
 
 ### Parked — Fable 5 comprehensive audit (before release tag)
 

@@ -5810,6 +5810,7 @@ dependencies = [
  "alloy-dyn-abi",
  "async-trait",
  "hex",
+ "rand 0.8.7",
  "reqwest",
  "secrecy",
  "serde",
@@ -5917,9 +5918,12 @@ dependencies = [
 name = "vaughan-provider"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "alloy",
  "async-trait",
  "futures-util",
+ "hex",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

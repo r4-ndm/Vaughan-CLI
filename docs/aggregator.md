@@ -48,8 +48,8 @@ Which venues we can integrate **without** partner signup / API keys:
 | **9X (9mm)** | Unknown / no public quote API found | Listed only | Not cleanly — ask or skip |
 
 **Without begging:** Squirrel + Piteas + EmpX (shipped).  
-**Needs a key:** Switch, Jolt.  
-**Stuck until a public API appears:** 9X.
+**Needs a key:** Switch, Jolt — use **VB human path** via MCP `browser_open_agg` (see skill above).  
+**Stuck until a public API appears:** 9X — try VB at `9mm.pro/swap`.
 
 EmpX is on-chain routing (`empx-swap-sdk` → `findBestPath` / `getSwapCalldata`), reimplemented with Alloy (ABI/interop only — no vendoring their TS). PulseChain mainnet **369 only**.
 
@@ -66,5 +66,6 @@ EmpX is on-chain routing (`empx-swap-sdk` → `findBestPath` / `getSwapCalldata`
 
 ## Related
 
+- **Agent playbook (VB quotes):** [`vaughan-agent/skills/vb-ag-quotes/SKILL.md`](../vaughan-agent/skills/vb-ag-quotes/SKILL.md) — multi-venue PLS→HEX tours, `browser_open_agg`, Switch.win without API key
 - `docs/piteas.md` — public beta + optional partner key vault
 - Dex (`d`) — direct Uni V2/V3 routers

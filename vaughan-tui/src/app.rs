@@ -14,7 +14,8 @@ use vaughan_core::chains::evm::networks::get_network_by_chain_id;
 use vaughan_core::chains::Balance;
 use vaughan_core::core::proposal::ProposalQueue;
 use vaughan_core::core::{
-    mark_replaced, push_recent, BroadcastEntry, McpSessionToken, StateManager, WalletState,
+    mark_replaced, operator_connect_allowed, push_recent, AgentAutonomyTier, BroadcastEntry,
+    McpSessionToken, OperatingMode, StateManager, WalletState,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
@@ -103,6 +104,8 @@ pub enum KeyOutcome {
     SignTypedData(serde_json::Value),
     /// Show a short chrome toast (copy confirmations, etc.); key is consumed.
     Flash(String),
+    /// Unlock picker: load a different profile vault and rebind MCP/grants.
+    SwitchProfile(String),
 }
 
 impl std::fmt::Debug for KeyOutcome {
@@ -116,6 +119,7 @@ impl std::fmt::Debug for KeyOutcome {
             Self::Intent(i) => f.debug_tuple("Intent").field(i).finish(),
             Self::SignTypedData(_) => write!(f, "SignTypedData(..)"),
             Self::Flash(s) => f.debug_tuple("Flash").field(s).finish(),
+            Self::SwitchProfile(p) => f.debug_tuple("SwitchProfile").field(p).finish(),
         }
     }
 }
@@ -240,6 +244,9 @@ enum PendingReply {
     Switch(oneshot::Sender<Result<(), ProviderError>>),
     /// Browserless local EIP-712 — result shown as chrome flash on approve.
     LocalSign,
+    /// File-queue MCP proposal (`reply: None`): no channel — approve/deny is
+    /// written back to the queue files (`mark_approved` / `mark_rejected`).
+    Queued,
 }
 
 /// Discard accidental keypresses for this long after an approve prompt appears.
@@ -287,13 +294,23 @@ pub struct App {
     /// Session-scoped circuit breaker for sentient auto-exec (created lazily,
     /// dropped on lock so tripwires reset with the session).
     sentient_breaker: Option<vaughan_agent::CircuitBreaker>,
+    /// Live provider-bridge secret slots shared with the WS server; the token
+    /// rotates on every lock/unlock edge so a stolen token dies at lock, and
+    /// the origin-seal key tracks the running VB launch.
+    provider_slots: provider::ProviderBridgeSlots,
+    /// Tracks the last lock state the provider token was synced to (edge
+    /// detection for rotation).
+    provider_session_unlocked: bool,
 }
 
 impl App {
-    /// Load the wallet from the default location and pick the initial screen.
-    pub fn new(handle: Handle) -> Result<Self, WalletError> {
-        let path = StateManager::default_path()?;
-        let wallet = WalletState::load(path)?;
+    /// Load the wallet for `profile` and pick the initial screen.
+    ///
+    /// The profile selects the vault (`default` = adviser; `sentient` = agent
+    /// auto-exec) and is pre-selected on the unlock-screen profile picker.
+    pub fn new(handle: Handle, profile: &str) -> Result<Self, WalletError> {
+        let path = StateManager::profile_path(profile)?;
+        let wallet = WalletState::load_with_session(path, OperatingMode::HumanOnly, profile)?;
         let screen = if !wallet.is_initialized() {
             Screen::Onboarding
         } else if !wallet.is_unlocked() {
@@ -318,7 +335,7 @@ impl App {
                 std::collections::HashSet::new()
             }),
         ));
-        provider::spawn_provider_server(
+        let provider_slots = provider::spawn_provider_server(
             &handle,
             host_tx,
             events.clone(),
@@ -351,6 +368,8 @@ impl App {
             bridge_status,
             connected_sites,
             sentient_breaker: None,
+            provider_slots,
+            provider_session_unlocked: false,
         };
         app.navigate(screen);
         Ok(app)
@@ -366,6 +385,27 @@ impl App {
             self.sentient_breaker = Some(breaker);
         }
         Ok(self.sentient_breaker.as_ref().unwrap().clone())
+    }
+
+    /// Ctrl+K kill switch: trip the session breaker so sentient auto-exec
+    /// halts for the rest of the session. No-op on non-sentient profiles and
+    /// while locked (auto-exec cannot run locked anyway).
+    fn trip_sentient_breaker(&mut self) {
+        if !self.wallet().is_unlocked()
+            || !crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name())
+        {
+            return;
+        }
+        match self.sentient_breaker() {
+            Ok(breaker) => {
+                breaker.trip("manual kill switch (Ctrl+K)");
+                tracing::warn!(target: "vaughan_tui::mcp", "sentient circuit breaker tripped manually");
+                self.set_flash(
+                    "Sentient breaker TRIPPED — auto-exec halted until restart".to_string(),
+                );
+            }
+            Err(e) => self.set_flash(e.to_string()),
+        }
     }
 
     pub fn wallet(&self) -> std::sync::MutexGuard<'_, WalletState> {
@@ -474,6 +514,10 @@ impl App {
                 }
             }
         }
+        // Clean shutdown: leave no live session tokens on disk.
+        let dir = profile_dir(self.wallet().path());
+        let _ = vaughan_core::core::ProviderSessionToken::invalidate(&dir);
+        let _ = McpSessionToken::invalidate(&dir);
         Ok(())
     }
 
@@ -481,6 +525,16 @@ impl App {
         // Quit confirm owns the keyboard until Yes/No/Esc.
         if self.quit_confirm.is_some() {
             self.handle_quit_confirm_key(key);
+            return;
+        }
+
+        // Sentient kill switch: Ctrl+K trips the session breaker from any
+        // screen (including the approval prompt), halting auto-exec for the
+        // rest of the session.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+        {
+            self.trip_sentient_breaker();
             return;
         }
 
@@ -612,7 +666,44 @@ impl App {
             KeyOutcome::Intent(nav) => self.apply_intent(nav),
             KeyOutcome::SignTypedData(data) => self.begin_local_typed_data_sign(data),
             KeyOutcome::Flash(msg) => self.set_flash(msg),
+            KeyOutcome::SwitchProfile(profile) => self.switch_profile(&profile),
             KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
+        }
+    }
+
+    /// Unlock-screen profile switch: load the selected profile's vault and
+    /// rebind the MCP control plane + site grants to its directory.
+    ///
+    /// Runs pre-unlock, so no session state is carried across — the mode
+    /// picked at the next unlock stays immutable for the session (FR-5.1).
+    /// Uninitialized profiles land on onboarding to create their vault.
+    fn switch_profile(&mut self, profile: &str) {
+        let path = match StateManager::profile_path(profile) {
+            Ok(p) => p,
+            Err(e) => return self.set_flash(e.user_message()),
+        };
+        let wallet = match WalletState::load_with_session(path, OperatingMode::HumanOnly, profile) {
+            Ok(w) => w,
+            Err(e) => return self.set_flash(e.user_message()),
+        };
+        let initialized = wallet.is_initialized();
+        let old_dir = profile_dir(self.wallet().path());
+        let dir = profile_dir(wallet.path());
+        *self.wallet() = wallet;
+        self.mcp.set_profile_dir(&dir);
+        // Provider bridge: the server keeps running on the shared token slot,
+        // so re-pointing discovery means invalidating the old profile's
+        // provider.session and clearing any stale file in the new one. The
+        // next unlock edge publishes a fresh token into the new dir.
+        let _ = vaughan_core::core::ProviderSessionToken::invalidate(&old_dir);
+        let _ = vaughan_core::core::ProviderSessionToken::invalidate(&dir);
+        self.provider_session_unlocked = false;
+        // Site grants persist per profile; reload for the switched vault.
+        if let Ok(mut grants) = self.connected_sites.write() {
+            *grants = vaughan_core::core::site_grants::load(&dir).unwrap_or_default();
+        }
+        if !initialized {
+            self.navigate(Screen::Onboarding);
         }
     }
 
@@ -651,6 +742,7 @@ impl App {
     /// surfacing sign/send/connect requests as an approval prompt.
     fn poll_provider(&mut self) {
         self.expire_stale_approval();
+        self.sync_provider_session();
         while let Ok(request) = self.host_rx.try_recv() {
             match request {
                 HostRequest::Accounts { site, reply } => {
@@ -674,6 +766,15 @@ impl App {
                     if self.connected_sites.read().unwrap().contains(&site) {
                         let _ = reply.send(Ok(self.visible_accounts()));
                         continue;
+                    }
+                    if self.wallet().agent_autonomy_tier() == AgentAutonomyTier::Operator {
+                        let dapps = self.wallet().trusted_dapps();
+                        if operator_connect_allowed(&site, &dapps) {
+                            self.connected_sites.write().unwrap().insert(site.clone());
+                            self.persist_connected_sites();
+                            let _ = reply.send(Ok(self.visible_accounts()));
+                            continue;
+                        }
                     }
                     if self.pending_approval.is_some() {
                         let _ = reply.send(Err(ProviderError::Unauthorized(
@@ -801,6 +902,72 @@ impl App {
         }
     }
 
+    /// Rotate the provider-bridge token on lock/unlock edges: a stolen
+    /// `provider.session` dies at lock, and the file is only published while
+    /// unlocked. Rotation never sets the slot to `None` (that would mean
+    /// "no token required") — a locked bridge gets a fresh unwritten token.
+    fn sync_provider_session(&mut self) {
+        let unlocked = self.wallet().is_unlocked();
+        if unlocked != self.provider_session_unlocked {
+            self.provider_session_unlocked = unlocked;
+            let fresh = vaughan_core::core::ProviderSessionToken::generate();
+            *self.provider_slots.token.write().unwrap() = Some(fresh.as_str().to_string());
+            let dir = profile_dir(self.wallet().path());
+            if unlocked {
+                if let Err(e) = fresh.write(&dir) {
+                    tracing::warn!(error = %e, "provider session token write failed");
+                }
+            } else {
+                let _ = vaughan_core::core::ProviderSessionToken::invalidate(&dir);
+            }
+        }
+        self.sync_origin_seal_key();
+    }
+
+    /// Learn the per-launch VB extension seal key from `vb.session` (throttled
+    /// — the file changes only when VB (re)launches). A stale session (PID
+    /// gone / not VB) clears the slot so seals from a dead browser stop
+    /// passing; no file at all leaves the slot untouched on a read error
+    /// streak-free path (None → legacy issuer-only attestation).
+    fn sync_origin_seal_key(&mut self) {
+        // ~2s cadence: poll_provider runs every tick (~80ms).
+        if !self.tick.is_multiple_of(25) {
+            return;
+        }
+        let session = match vaughan_core::core::vb_browser::read_vb_session() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+        if !vaughan_core::core::vb_browser::vb_session_pid_matches(&session) {
+            let mut slot = self.provider_slots.origin_seal.write().unwrap();
+            if slot.is_some() {
+                *slot = None;
+                tracing::info!("vb.session stale — cleared extension origin-seal key");
+            }
+            return;
+        }
+        if session.extension_secret.is_empty() {
+            return;
+        }
+        let mut slot = self.provider_slots.origin_seal.write().unwrap();
+        if slot.as_deref() != Some(session.extension_secret.as_str()) {
+            *slot = Some(session.extension_secret.clone());
+            tracing::info!("installed VB extension origin-seal key from vb.session");
+        }
+    }
+
+    /// Write a denial back to the MCP file queue (no-op for live proposals
+    /// that never entered the queue).
+    fn reject_queued_proposal(&self, proposal_id: &str, reason: &str) {
+        let wallet = self.wallet();
+        if let Some(parent) = wallet.path().parent() {
+            if let Ok(Some(token)) = McpSessionToken::read(parent) {
+                let queue = ProposalQueue::new(parent);
+                let _ = queue.mark_rejected(proposal_id, reason, token.as_bytes());
+            }
+        }
+    }
+
     fn expire_stale_approval(&mut self) {
         let Some(pending) = self.pending_approval.as_ref() else {
             return;
@@ -822,6 +989,13 @@ impl App {
                 let _ = reply.send(Err(ProviderError::UserRejected));
             }
             PendingReply::LocalSign => {}
+            PendingReply::Queued => {
+                // No channel to reject on — write the denial back to the
+                // queue so the proposal does not resurface on the next poll.
+                if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
+                    self.reject_queued_proposal(proposal_id, "expired without decision");
+                }
+            }
         }
         let back = self.approve_return;
         self.navigate(back);
@@ -846,6 +1020,7 @@ impl App {
             0
         };
         self.chrome.mcp_pending = mcp_pending;
+        self.chrome.mcp_listener = self.mcp.listener_state();
         let pending_on_screen = self.pending_approval.is_some();
         self.mcp.poll_file_queue(pending_on_screen);
 
@@ -916,10 +1091,16 @@ impl App {
                         Some(format!("MCP ({source})")),
                         details,
                     ));
-                    let Some(reply) = reply else { continue };
+                    // File-queue proposals have no reply channel; they still
+                    // get a real pending approval so the card is answerable —
+                    // approve/deny is written back to the queue files.
+                    let pending_reply = match reply {
+                        Some(reply) => PendingReply::Sign(reply),
+                        None => PendingReply::Queued,
+                    };
                     self.pending_approval = Some(PendingApproval {
                         kind,
-                        reply: PendingReply::Sign(reply),
+                        reply: pending_reply,
                         shown_at: std::time::Instant::now(),
                     });
                     break;
@@ -1155,19 +1336,13 @@ impl App {
         };
         if deny {
             if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
-                let wallet = self.wallet();
-                if let Some(parent) = wallet.path().parent() {
-                    if let Ok(Some(token)) = McpSessionToken::read(parent) {
-                        let queue = ProposalQueue::new(parent);
-                        let _ = queue.mark_rejected(proposal_id, "user rejected", token.as_bytes());
-                    }
-                }
+                self.reject_queued_proposal(proposal_id, "user rejected");
             }
             match pending.reply {
                 PendingReply::Sign(reply) => {
                     let _ = reply.send(Err(ProviderError::UserRejected));
                 }
-                PendingReply::LocalSign => {}
+                PendingReply::LocalSign | PendingReply::Queued => {}
                 PendingReply::Accounts(reply) => {
                     let _ = reply.send(Err(ProviderError::UserRejected));
                 }
@@ -1220,6 +1395,16 @@ impl App {
                 match result {
                     Ok(sig) => self.set_flash(format!("EIP-712 signature: {sig}")),
                     Err(e) => self.set_flash(format!("Sign failed: {e}")),
+                }
+            }
+            PendingReply::Queued => {
+                // File-queue proposal: execute writes mark_approved back to
+                // the queue; surface the outcome as a flash.
+                let kind = pending.kind;
+                let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                match result {
+                    Ok(hash) => self.set_flash(format!("Queued proposal executed: {hash}")),
+                    Err(e) => self.set_flash(format!("Queued proposal failed: {e}")),
                 }
             }
         }
@@ -1292,7 +1477,10 @@ impl App {
 
         let view = match screen {
             Screen::Onboarding => View::Onboarding(OnboardingView::default()),
-            Screen::Unlock => View::Unlock(UnlockView::default()),
+            Screen::Unlock => {
+                let profile = self.wallet().profile_name().to_string();
+                View::Unlock(UnlockView::new(&profile))
+            }
             Screen::Dashboard => {
                 let mut v = DashboardView::loading();
                 v.sync_from_chrome(&self.chrome);

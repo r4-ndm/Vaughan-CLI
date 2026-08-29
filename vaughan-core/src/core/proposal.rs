@@ -330,6 +330,11 @@ impl ProposalQueue {
     fn ensure_dirs(&self) -> Result<(), ProposalError> {
         for dir in [self.pending_dir(), self.approved_dir(), self.rejected_dir()] {
             fs::create_dir_all(&dir).map_err(|e| ProposalError::Io(e.to_string()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+            }
         }
         Ok(())
     }
@@ -352,7 +357,7 @@ impl ProposalQueue {
         }
         self.check_enqueue_rate()?;
         let source = source.into();
-        let hmac = compute_proposal_hmac(session_secret, &proposal)?;
+        let hmac = compute_proposal_hmac(session_secret, &source, &proposal)?;
         let queued = QueuedProposal {
             proposal,
             source,
@@ -377,7 +382,10 @@ impl ProposalQueue {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let data = fs::read_to_string(&path).map_err(|e| ProposalError::Io(e.to_string()))?;
+            // Oversized/planted files are skipped, not read (UI-thread DoS).
+            let Ok(data) = read_capped(&path) else {
+                continue;
+            };
             if let Ok(queued) = serde_json::from_str::<QueuedProposal>(&data) {
                 if !queued.proposal.is_expired() {
                     out.push(queued);
@@ -395,7 +403,7 @@ impl ProposalQueue {
     ) -> Result<QueuedProposal, ProposalError> {
         validate_proposal_id(proposal_id)?;
         let path = self.pending_dir().join(format!("{proposal_id}.json"));
-        let data = fs::read_to_string(&path).map_err(|_| ProposalError::NotFound)?;
+        let data = read_capped(&path).map_err(|_| ProposalError::NotFound)?;
         let queued: QueuedProposal =
             serde_json::from_str(&data).map_err(|e| ProposalError::Io(e.to_string()))?;
         verify_proposal_hmac(session_secret, &queued)?;
@@ -517,7 +525,7 @@ impl ProposalQueue {
         let entries = fs::read_dir(&dir).map_err(|e| ProposalError::Io(e.to_string()))?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(data) = read_capped(&path) {
                 if let Ok(queued) = serde_json::from_str::<QueuedProposal>(&data) {
                     if queued.proposal.is_expired() {
                         let _ = fs::remove_file(&path);
@@ -575,9 +583,15 @@ impl ProposalQueue {
 }
 
 /// MCP session token persisted beside the profile vault.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpSessionToken {
     token: String,
+}
+
+impl std::fmt::Debug for McpSessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("McpSessionToken(REDACTED)")
+    }
 }
 
 impl McpSessionToken {
@@ -655,7 +669,15 @@ fn now_unix() -> u64 {
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), ProposalError> {
-    let tmp = path.with_extension("tmp");
+    // Unique tmp name: concurrent writers (e.g. the enqueue rate limiter)
+    // must not share a scratch file.
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = format!(
+        "tmp.{:x}.{:x}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let tmp = path.with_extension(unique);
     {
         let mut file = fs::File::create(&tmp).map_err(|e| ProposalError::Io(e.to_string()))?;
         // Restrict before writing so the file is never readable between
@@ -674,12 +696,33 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), ProposalError> {
     Ok(())
 }
 
+/// Largest proposal/queue file we will read — anything bigger is skipped, so
+/// a planted multi-GB file cannot freeze the caller.
+const MAX_QUEUE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Read a queue file, refusing oversized ones (planted-file DoS guard).
+fn read_capped(path: &Path) -> Result<String, ProposalError> {
+    let meta = fs::metadata(path).map_err(|e| ProposalError::Io(e.to_string()))?;
+    if meta.len() > MAX_QUEUE_FILE_BYTES {
+        return Err(ProposalError::Io(format!(
+            "queue file too large ({} bytes)",
+            meta.len()
+        )));
+    }
+    fs::read_to_string(path).map_err(|e| ProposalError::Io(e.to_string()))
+}
+
 fn append_history(root: &Path, record: &serde_json::Value) -> Result<(), ProposalError> {
     fs::create_dir_all(root).map_err(|e| ProposalError::Io(e.to_string()))?;
     let path = root.join("history.jsonl");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
         .open(&path)
         .map_err(|e| ProposalError::Io(e.to_string()))?;
     let line = serde_json::to_string(record).map_err(|e| ProposalError::Io(e.to_string()))?;
@@ -687,13 +730,21 @@ fn append_history(root: &Path, record: &serde_json::Value) -> Result<(), Proposa
     Ok(())
 }
 
-fn compute_proposal_hmac(secret: &[u8], proposal: &TxProposal) -> Result<String, ProposalError> {
-    let bytes = serde_json::to_vec(proposal).map_err(|e| ProposalError::Io(e.to_string()))?;
+/// HMAC covers the `source` label as well as the proposal body, so a queued
+/// file cannot be relabeled (e.g. `unknown-script` → `cursor`) without
+/// invalidating the tag.
+fn compute_proposal_hmac(
+    secret: &[u8],
+    source: &str,
+    proposal: &TxProposal,
+) -> Result<String, ProposalError> {
+    let bytes =
+        serde_json::to_vec(&(source, proposal)).map_err(|e| ProposalError::Io(e.to_string()))?;
     Ok(hex::encode(hmac_sha256(secret, &bytes)))
 }
 
 fn verify_proposal_hmac(secret: &[u8], queued: &QueuedProposal) -> Result<(), ProposalError> {
-    let expected = compute_proposal_hmac(secret, &queued.proposal)?;
+    let expected = compute_proposal_hmac(secret, &queued.source, &queued.proposal)?;
     if constant_time_eq(expected.as_bytes(), queued.hmac.as_bytes()) {
         Ok(())
     } else {

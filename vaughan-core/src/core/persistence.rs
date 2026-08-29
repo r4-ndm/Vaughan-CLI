@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::agent_autonomy::AgentAutonomyTier;
 use crate::core::profile::OperatingMode;
 use crate::error::WalletError;
 use crate::security::encryption::EncryptedVault;
@@ -43,6 +44,29 @@ pub fn is_sentient_profile(name: &str) -> bool {
     name == SENTIENT_PROFILE || name == DEGEN_PROFILE
 }
 
+/// Validate a profile name for safe on-disk use.
+///
+/// Names come from CLI args and MCP host configs; without validation a name
+/// like `../../tmp/x` is a path-traversal primitive out of `profiles/`.
+/// Allowed: ASCII alphanumerics, `-`, `_`, max 64 chars. Empty is allowed
+/// here and means the default profile (callers map it before use).
+pub fn validate_profile_name(name: &str) -> Result<(), WalletError> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    let ok = name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(WalletError::Other(format!(
+            "invalid profile name {name:?} — use 1-64 chars of [a-zA-Z0-9_-]"
+        )))
+    }
+}
+
 /// Everything persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedState {
@@ -69,6 +93,9 @@ pub struct PersistedState {
     /// When true, VB may expose loopback CDP for MCP agent navigation (FR-7.5).
     #[serde(default)]
     pub agent_browser_control: bool,
+    /// MCP/VB connect autonomy: advisor = manual Connect card; operator = auto on allowlist.
+    #[serde(default)]
+    pub agent_autonomy_tier: AgentAutonomyTier,
     /// Per-network primary RPC override (network id → URL). Fallbacks stay built-in.
     #[serde(default)]
     pub network_rpc_primary: HashMap<String, String>,
@@ -200,6 +227,31 @@ pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
             extra_hosts: vec![],
         },
         TrustedDapp {
+            name: "PulseSwap".into(),
+            url: "https://pulseswap.io/?chain=pulsechain".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "Piteas".into(),
+            url: "https://app.piteas.io/".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "Switch.win".into(),
+            url: "https://www.switch.win/".into(),
+            extra_hosts: vec!["beta.switch.win".into()],
+        },
+        TrustedDapp {
+            name: "9mm swap".into(),
+            url: "https://9mm.pro/swap".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "Internet Money".into(),
+            url: "https://internetmoney.io/".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
             name: "LibertySwap".into(),
             url: "https://libertyswap.finance/".into(),
             extra_hosts: vec![],
@@ -276,6 +328,7 @@ impl PersistedState {
             custom_networks: Vec::new(),
             hardware: Vec::new(),
             agent_browser_control: false,
+            agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
         }
     }
@@ -298,6 +351,7 @@ impl PersistedState {
             custom_networks: Vec::new(),
             hardware: Vec::new(),
             agent_browser_control: false,
+            agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
         }
     }
@@ -306,6 +360,19 @@ impl PersistedState {
 /// Loads and saves [`PersistedState`] to a JSON file on disk.
 pub struct StateManager {
     path: PathBuf,
+}
+
+/// Profile metadata for the unlock-screen picker (metadata only — no decryption).
+#[derive(Debug, Clone)]
+pub struct ProfileMeta {
+    /// Profile name (`default`, `sentient`, …).
+    pub name: String,
+    /// Vault file path for this profile.
+    pub path: PathBuf,
+    /// True when the vault file exists and parses (wallet created).
+    pub initialized: bool,
+    /// True for the agent-owned sentient profile (incl. legacy `degen`).
+    pub is_sentient: bool,
 }
 
 impl StateManager {
@@ -321,7 +388,12 @@ impl StateManager {
     /// Profile-specific location:
     /// - "default" -> `<data_dir>/vaughan-cli/wallet.json`
     /// - other (e.g. "degen") -> `<data_dir>/vaughan-cli/profiles/<name>/wallet.json`
+    ///
+    /// Profile names are validated: they arrive from CLI args and MCP host
+    /// configs, and an unvalidated name is a path-traversal vector
+    /// (`../../etc` would escape `profiles/`).
     pub fn profile_path(profile_name: &str) -> Result<PathBuf, WalletError> {
+        validate_profile_name(profile_name)?;
         let base = dirs::data_dir().ok_or_else(|| {
             WalletError::Io("could not determine the user data directory".to_string())
         })?;
@@ -340,6 +412,57 @@ impl StateManager {
     pub fn for_profile(profile_name: &str) -> Result<Self, WalletError> {
         let path = Self::profile_path(profile_name)?;
         Ok(Self::new(path))
+    }
+
+    /// List known profiles for the unlock picker: `default` first, then every
+    /// `profiles/<name>/` directory sorted by name. Metadata only — no secrets.
+    ///
+    /// A profile directory without `wallet.json` is still listed
+    /// (`initialized: false`): `preset apply` writes policy there before the
+    /// vault exists, and picking it routes to onboarding.
+    pub fn list_profiles() -> Vec<ProfileMeta> {
+        let Ok(default_path) = Self::default_path() else {
+            return Vec::new();
+        };
+        Self::list_profiles_at(&default_path)
+    }
+
+    /// [`list_profiles`] against an explicit default-vault path (tests).
+    pub fn list_profiles_at(default_path: &std::path::Path) -> Vec<ProfileMeta> {
+        let mut out = vec![ProfileMeta {
+            name: DEFAULT_PROFILE.to_string(),
+            initialized: Self::new(default_path.to_path_buf()).load().is_ok(),
+            path: default_path.to_path_buf(),
+            is_sentient: false,
+        }];
+        let Some(profiles_dir) = default_path.parent().map(|p| p.join("profiles")) else {
+            return out;
+        };
+        let Ok(entries) = std::fs::read_dir(&profiles_dir) else {
+            return out;
+        };
+        let mut named: Vec<ProfileMeta> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                // Skip names that would fail profile_path validation (e.g.
+                // stray dotdirs) so the picker never offers an unusable entry.
+                if validate_profile_name(&name).is_err() {
+                    return None;
+                }
+                let path = e.path().join(WALLET_FILE);
+                Some(ProfileMeta {
+                    is_sentient: is_sentient_profile(&name),
+                    initialized: Self::new(path.clone()).load().is_ok(),
+                    name,
+                    path,
+                })
+            })
+            .collect();
+        named.sort_by(|a, b| a.name.cmp(&b.name));
+        out.extend(named);
+        out
     }
 
     /// Whether agent browser control (loopback CDP) is enabled for `profile`.
@@ -365,6 +488,26 @@ impl StateManager {
             crate::core::vb_browser::clear_vb_session();
         }
         Ok(())
+    }
+
+    /// Agent autonomy tier for `profile` (defaults to advisor when vault missing).
+    pub fn agent_autonomy_tier_for_profile(profile_name: &str) -> AgentAutonomyTier {
+        Self::for_profile(profile_name)
+            .ok()
+            .and_then(|sm| sm.load().ok())
+            .map(|s| s.agent_autonomy_tier)
+            .unwrap_or_default()
+    }
+
+    /// Persist agent autonomy tier for `profile` (metadata only — no unlock).
+    pub fn set_agent_autonomy_tier_for_profile(
+        profile_name: &str,
+        tier: AgentAutonomyTier,
+    ) -> Result<(), WalletError> {
+        let sm = Self::for_profile(profile_name)?;
+        let mut state = sm.load()?;
+        state.agent_autonomy_tier = tier;
+        sm.save(&state)
     }
 
     /// Primary RPC override for `network_id` on `profile`, if set.
@@ -635,10 +778,12 @@ mod tests {
     #[test]
     fn merge_default_dapps_is_idempotent() {
         let mut list = default_trusted_dapps();
+        let defaults = list.len();
         assert!(!merge_default_trusted_dapps(&mut list));
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), defaults);
         list.clear();
         assert!(merge_default_trusted_dapps(&mut list));
+        assert_eq!(list.len(), defaults);
         assert!(list.iter().any(|d| d.url.contains("squirrelswap")));
         assert!(list.iter().any(|d| d.url.contains("libertyswap")));
         assert!(list.iter().any(|d| d.url.contains("pulsex")));
@@ -772,11 +917,72 @@ mod tests {
     }
 
     #[test]
+    fn profile_name_validation_blocks_traversal() {
+        assert!(StateManager::profile_path("../../etc").is_err());
+        assert!(StateManager::profile_path("a/b").is_err());
+        assert!(StateManager::profile_path("a\\b").is_err());
+        assert!(StateManager::profile_path("..").is_err());
+        assert!(StateManager::profile_path("evil name").is_err());
+        assert!(StateManager::profile_path("evil.name").is_err());
+        assert!(StateManager::profile_path(&"x".repeat(65)).is_err());
+        assert!(StateManager::profile_path("sentient").is_ok());
+        assert!(StateManager::profile_path("Bot-1_x").is_ok());
+        assert!(StateManager::profile_path("").is_ok()); // empty = default
+    }
+
+    #[test]
     fn sentient_profile_includes_legacy_degen_alias() {
         assert!(is_sentient_profile(SENTIENT_PROFILE));
         assert!(is_sentient_profile(DEGEN_PROFILE));
         assert!(!is_sentient_profile(DEFAULT_PROFILE));
         assert!(!is_sentient_profile("bot1"));
+    }
+
+    #[test]
+    fn list_profiles_enumerates_default_and_named_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let default_path = dir.path().join("wallet.json");
+
+        // Default only, uninitialized.
+        let list = StateManager::list_profiles_at(&default_path);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, DEFAULT_PROFILE);
+        assert!(!list[0].initialized);
+        assert!(!list[0].is_sentient);
+
+        // Initialize default; add an initialized sentient vault and a
+        // policy-only custom profile dir (preset applied, vault not created).
+        StateManager::new(&default_path)
+            .save(&PersistedState::with_mode_and_profile(
+                dummy_vault(),
+                "pulsechain-testnet-v4",
+                OperatingMode::HumanOnly,
+                DEFAULT_PROFILE,
+            ))
+            .unwrap();
+        let sentient_dir = dir.path().join("profiles").join(SENTIENT_PROFILE);
+        std::fs::create_dir_all(&sentient_dir).unwrap();
+        StateManager::new(sentient_dir.join(WALLET_FILE))
+            .save(&PersistedState::with_mode_and_profile(
+                dummy_vault(),
+                "pulsechain-testnet-v4",
+                OperatingMode::SentientTrader,
+                SENTIENT_PROFILE,
+            ))
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("profiles").join("bot1")).unwrap();
+
+        let list = StateManager::list_profiles_at(&default_path);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].name, DEFAULT_PROFILE);
+        assert!(list[0].initialized);
+        // Named profiles sorted by name: bot1 before sentient.
+        assert_eq!(list[1].name, "bot1");
+        assert!(!list[1].initialized);
+        assert!(!list[1].is_sentient);
+        assert_eq!(list[2].name, SENTIENT_PROFILE);
+        assert!(list[2].initialized);
+        assert!(list[2].is_sentient);
     }
 
     #[test]

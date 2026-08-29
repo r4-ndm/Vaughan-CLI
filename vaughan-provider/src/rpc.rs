@@ -29,6 +29,12 @@ pub struct RpcRequest {
     /// for Freedom, which already gates by Electron tab origin).
     #[serde(default)]
     pub vaughan_page_origin: Option<String>,
+    /// AES-256-GCM seal of `vaughan_page_origin` under the per-launch
+    /// extension secret (hex `iv || ciphertext`). Proves the assertion came
+    /// from the attested extension bundle, not a local process that learned
+    /// the bridge token and forged the extension handshake origin.
+    #[serde(default)]
+    pub vaughan_origin_seal: Option<String>,
 }
 
 impl RpcRequest {

@@ -346,6 +346,15 @@ impl WalletHandle for ProviderHost {
 /// origins are merged on top. Invalid origins disable the bridge (no permissive
 /// "accept any loopback client" mode). The wallet itself is unaffected when the
 /// bridge is down.
+/// Shared slots the host uses to drive provider-bridge secrets at runtime.
+#[derive(Clone)]
+pub struct ProviderBridgeSlots {
+    /// Session token required at every handshake (rotated on lock/unlock).
+    pub token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    /// Per-launch VB extension seal key, learned from `vb.session`.
+    pub origin_seal: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+}
+
 pub fn spawn_provider_server(
     handle: &Handle,
     requests: mpsc::Sender<HostRequest>,
@@ -354,7 +363,26 @@ pub fn spawn_provider_server(
     status: BridgeStatusHandle,
     profile_dir: std::path::PathBuf,
     grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
-) {
+) -> ProviderBridgeSlots {
+    // Live token slot shared with the server: the host rotates it on
+    // lock/unlock, so a stolen token dies at lock without a restart.
+    // Initialized to a fresh unwritten token — never `None` (that would mean
+    // "no token required").
+    let token_slot: std::sync::Arc<std::sync::RwLock<Option<String>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(Some(
+            vaughan_core::core::ProviderSessionToken::generate()
+                .as_str()
+                .to_string(),
+        )));
+    // Per-launch extension seal key; the app loop syncs it from vb.session.
+    let seal_slot: std::sync::Arc<std::sync::RwLock<Option<String>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(None));
+    let slots = ProviderBridgeSlots {
+        token: token_slot,
+        origin_seal: seal_slot,
+    };
+    let slot_for_task = slots.token.clone();
+    let seal_for_task = slots.origin_seal.clone();
     handle.spawn(async move {
         let trusted_origins = match bridge_decision(
             env::var(TRUSTED_ORIGINS_ENV).ok().as_deref(),
@@ -371,23 +399,14 @@ pub fn spawn_provider_server(
                 return;
             }
         };
-        let session = vaughan_core::core::ProviderSessionToken::generate();
-        if let Err(e) = session.write(&profile_dir) {
-            tracing::warn!(error = %e, "provider session token write failed; bridge disabled");
-            set_bridge_status(
-                &status,
-                BridgeStatus::Disabled {
-                    reason: format!("session token write failed ({e})"),
-                },
-            );
-            return;
-        }
         // Dev/test override for the listen port (parallel instances); the
         // packaged default stays DEFAULT_PORT.
         let port = env::var("VAUGHAN_PROVIDER_PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(DEFAULT_PORT);
+        // Bind BEFORE publishing any token: a live provider.session with no
+        // listener invites port-squatting impersonation toward dApps.
         let server = match ProviderServer::bind(port).await {
             Ok(server) => server,
             Err(e) => {
@@ -399,9 +418,12 @@ pub fn spawn_provider_server(
         };
         let server = match configure_server_trusted_origins(server, &trusted_origins) {
             Ok(server) => server
-                .with_session_token(session.as_str())
+                .with_session_token_slot(slot_for_task.clone())
                 // Only the attested extension may speak for page origins.
                 .with_page_origin_issuers([DAPP_BROWSER_PROVIDER_ORIGIN])
+                // Per-launch seal key for page-origin attestation (synced
+                // from vb.session by the app loop).
+                .with_origin_seal_key_slot(seal_for_task.clone())
                 // Live grant set for per-connection accountsChanged filtering.
                 .with_grants(grants),
             Err(e) => {
@@ -430,6 +452,7 @@ pub fn spawn_provider_server(
             );
         }
     });
+    slots
 }
 
 /// The trusted-origin decision for the provider bridge (testable, pure).

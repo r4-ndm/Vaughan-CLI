@@ -41,7 +41,8 @@ pub enum EnforcementMode {
     Enforced,
     /// Allow trades that would fail under Enforced; log a warning (lab / tuning).
     WarnOnly,
-    /// Skip position / slippage / gas / error tripwires. Esc emergency stop still works.
+    /// Skip position / slippage / gas / error tripwires. The Ctrl+K kill
+    /// switch still trips the session breaker.
     /// Requires [`AgentSessionPolicy::acknowledge_unsafe`].
     Disabled,
 }
@@ -66,7 +67,11 @@ impl EnforcementMode {
 }
 
 /// User-editable Sentient guardrails (burner profile only).
+///
+/// `deny_unknown_fields`: a typo'd key (or a stale legacy file) must fail
+/// closed at load time, never silently fall back to weaker defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AgentSessionPolicy {
     /// Enforcement posture.
     #[serde(default)]
@@ -295,6 +300,9 @@ fn parse_wei(s: &str) -> Result<U256, AgentError> {
 }
 
 /// Load policy from `dir/sentient-policy.toml` (or legacy `degen-policy.toml`), or defaults if missing.
+///
+/// Non-default enforcement is logged loudly: the file is the only guardrail
+/// between an agent and the vault, so a downgrade must never be silent.
 pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
     let Some(path) = policy_file_path(dir) else {
         return Ok(AgentSessionPolicy::default());
@@ -311,10 +319,22 @@ pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
         ))
     })?;
     policy.validate()?;
+    match policy.enforcement {
+        EnforcementMode::Enforced => {}
+        EnforcementMode::WarnOnly => tracing::warn!(
+            target: "vaughan_agent::sentient",
+            "sentient policy enforcement=warn-only: breaker breaches are allowed, only logged"
+        ),
+        EnforcementMode::Disabled => tracing::warn!(
+            target: "vaughan_agent::sentient",
+            "sentient policy enforcement=DISABLED: agent trades unbounded (acknowledge_unsafe set)"
+        ),
+    }
     Ok(policy)
 }
 
-/// Atomically write `sentient-policy.toml` after validation.
+/// Atomically write `sentient-policy.toml` after validation (0600 — the file
+/// is a fund-safety control, not casual config).
 pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentError> {
     policy.validate()?;
     fs::create_dir_all(dir).map_err(|e| {
@@ -324,9 +344,22 @@ pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentE
     let tmp = dir.join(format!(".{SENTIENT_POLICY_TOML}.tmp"));
     let body = toml::to_string_pretty(policy)
         .map_err(|e| AgentError::ProviderError(format!("serialize policy: {e}")))?;
-    fs::write(&tmp, body).map_err(|e| {
-        AgentError::ProviderError(format!("failed to write {}: {e}", tmp.display()))
-    })?;
+    {
+        use std::io::Write;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp).map_err(|e| {
+            AgentError::ProviderError(format!("failed to write {}: {e}", tmp.display()))
+        })?;
+        f.write_all(body.as_bytes()).map_err(|e| {
+            AgentError::ProviderError(format!("failed to write {}: {e}", tmp.display()))
+        })?;
+    }
     fs::rename(&tmp, &path).map_err(|e| {
         AgentError::ProviderError(format!("failed to replace {}: {e}", path.display()))
     })?;
@@ -342,8 +375,19 @@ pub fn breaker_config_for_session(
         Some(d) => load_policy(d)?,
         None => AgentSessionPolicy::default(),
     };
-    // Cannot require more RPCs than configured endpoints.
-    policy.required_rpc_quorum = policy.required_rpc_quorum.min(rpc_count.max(1));
+    // Cannot require more RPCs than configured endpoints. Clamping is loud:
+    // quorum validation only runs in the (dormant) SentientTrader path, so a
+    // silently-clamped dial would over-promise multi-RPC verification.
+    let available = rpc_count.max(1);
+    if policy.required_rpc_quorum > available {
+        tracing::warn!(
+            target: "vaughan_agent::sentient",
+            required = policy.required_rpc_quorum,
+            available,
+            "required_rpc_quorum clamped to available RPC endpoints"
+        );
+        policy.required_rpc_quorum = available;
+    }
     policy.to_breaker_config()
 }
 
@@ -467,5 +511,30 @@ mod tests {
         .unwrap();
         assert!(prop.after.acknowledge_unsafe);
         assert_eq!(prop.after.enforcement, EnforcementMode::Enforced);
+    }
+
+    #[test]
+    fn unknown_field_fails_closed() {
+        // A typo'd key must not silently fall back to (weaker) defaults.
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SENTIENT_POLICY_TOML),
+            "max_slippage_bpss = 500\n",
+        )
+        .unwrap();
+        assert!(load_policy(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_policy_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        save_policy(dir.path(), &AgentSessionPolicy::default()).unwrap();
+        let mode = std::fs::metadata(dir.path().join(SENTIENT_POLICY_TOML))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

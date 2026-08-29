@@ -6,12 +6,15 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use vaughan_core::core::persistence::StateManager;
+use vaughan_core::core::aggregator::{AggVenue, AGG_VENUES};
+use vaughan_core::core::persistence::{default_ipfs_gateway_hosts, StateManager};
 use vaughan_core::core::vb_browser::{
-    allow_suffixes_for_profile, cdp_alive, cdp_list_pages, cdp_open_url, check_url_allowed,
-    read_vb_session, resolve_cdp_port, spawn_dapp_browser, wait_for_cdp,
+    allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_url,
+    check_url_allowed, clear_target_pin, clear_vb_session, read_vb_session, resolve_cdp_port,
+    spawn_cdp_port, spawn_dapp_browser, vb_session_pid_matches, wait_for_cdp, write_target_pin,
+    VbSession,
 };
-use vaughan_core::core::vb_cdp::{self, ElementRef};
+use vaughan_core::core::vb_cdp::{self, ElementRef, SwapTokenSide};
 use vaughan_core::error::WalletError;
 
 use crate::McpContext;
@@ -42,6 +45,43 @@ pub fn browser_tool_definitions() -> Vec<Value> {
             "inputSchema": url_schema(),
         }),
         json!({
+            "name": "browser_open_agg",
+            "description": "Open an Ag-catalog aggregator swap UI in VB (human path — no developer API key). \
+                Agent playbook: vaughan-agent/skills/vb-ag-quotes/SKILL.md (venue index: venues/INDEX.md). \
+                Venues: squirrel, pulseswap, piteas, switch, 9mm, curv, internetmoney, libertyx. \
+                EmpX/PortalX: use quote_swap (no web UI). Never signs.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "venue": {
+                        "type": "string",
+                        "description": "Aggregator id — see vaughan-agent/skills/vb-ag-quotes/venues/INDEX.md"
+                    },
+                    "pls_hex": {
+                        "type": "boolean",
+                        "description": "Use PLS→HEX deep link when available (default true). Prefer setup_tokens for explicit picker flow."
+                    },
+                    "token_in": {
+                        "type": "string",
+                        "description": "Input token symbol (e.g. PLS, WPLS). With token_out, runs browser_setup_swap after open."
+                    },
+                    "token_out": {
+                        "type": "string",
+                        "description": "Output token symbol (e.g. HEX)"
+                    },
+                    "amount_in": {
+                        "type": "string",
+                        "description": "Sell amount in human units (default 1)"
+                    },
+                    "setup_tokens": {
+                        "type": "boolean",
+                        "description": "After open, select tokens + amount via UI pickers (default true when token_in/out set or pls_hex)"
+                    }
+                },
+                "required": ["venue"]
+            }),
+        }),
+        json!({
             "name": "browser_navigate",
             "description": "Navigate the active VB session to an allowlisted URL via CDP. Requires a running VB child with CDP.",
             "inputSchema": url_schema(),
@@ -53,8 +93,29 @@ pub fn browser_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "browser_snapshot",
-            "description": "Snapshot interactive page elements (refs e0..e49) via CDP. Requires browser_open + CDP. Never signs.",
-            "inputSchema": empty_object_schema(),
+            "description": "Snapshot interactive page elements (refs e0..e49) via CDP, plus visible quote hints from body text (all frames). Requires browser_open + CDP. Never signs.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "token_out": {
+                        "type": "string",
+                        "description": "Output token symbol for quote parsing (default HEX)"
+                    }
+                }
+            }),
+        }),
+        json!({
+            "name": "browser_read_quote",
+            "description": "Read visible swap quote text from the active VB page (all frames — includes non-interactive labels agents miss in browser_snapshot refs). Never signs.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "token_out": {
+                        "type": "string",
+                        "description": "Output token symbol to parse (default HEX)"
+                    }
+                }
+            }),
         }),
         json!({
             "name": "browser_click",
@@ -68,16 +129,71 @@ pub fn browser_tool_definitions() -> Vec<Value> {
             }),
         }),
         json!({
+            "name": "browser_click_text",
+            "description": "Click first visible element containing text (e.g. Vaughan, Injected, MetaMask in wallet modal). Never signs.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "Case-insensitive substring to match" }
+                },
+                "required": ["text"]
+            }),
+        }),
+        json!({
             "name": "browser_type",
-            "description": "Focus element ref and insert text. Never signs.",
+            "description": "Focus element ref and insert text. Set clear:true to replace React controlled inputs. Never signs.",
             "inputSchema": json!({
                 "type": "object",
                 "properties": {
                     "ref": { "type": "string" },
-                    "text": { "type": "string" }
+                    "text": { "type": "string" },
+                    "clear": { "type": "boolean", "description": "Clear field before typing (default false)" }
                 },
                 "required": ["ref", "text"]
             }),
+        }),
+        json!({
+            "name": "browser_select_token",
+            "description": "Open swap token picker on input or output leg and select symbol (PLS, HEX, WPLS, …). Never signs.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Token ticker to select" },
+                    "side": {
+                        "type": "string",
+                        "enum": ["input", "output"],
+                        "description": "Swap leg — input (top) or output (bottom)"
+                    }
+                },
+                "required": ["symbol", "side"]
+            }),
+        }),
+        json!({
+            "name": "browser_setup_swap",
+            "description": "Explicit swap setup: select token_in, token_out via UI pickers, set amount_in, click quote CTA (Switch Now / Swap). Never signs.",
+            "inputSchema": json!({
+                "type": "object",
+                "properties": {
+                    "token_in": { "type": "string", "description": "e.g. PLS or native" },
+                    "token_out": { "type": "string", "description": "e.g. HEX" },
+                    "amount_in": { "type": "string", "description": "Human amount (default 1)" },
+                    "submit_quote": {
+                        "type": "boolean",
+                        "description": "Click Switch Now / Swap after amount (default true)"
+                    }
+                },
+                "required": ["token_in", "token_out"]
+            }),
+        }),
+        json!({
+            "name": "browser_submit_swap",
+            "description": "Click the quote/swap CTA (Switch.win: Switch Now; others: Swap). Use after tokens + amount are set. Never signs.",
+            "inputSchema": empty_object_schema(),
+        }),
+        json!({
+            "name": "browser_connect_wallet",
+            "description": "Open Connect Wallet modal and select Vaughan/Injected (all frames + shadow DOM). Never signs — approve in TUI.",
+            "inputSchema": empty_object_schema(),
         }),
         json!({
             "name": "browser_press",
@@ -109,11 +225,18 @@ pub fn browser_tool_definitions() -> Vec<Value> {
 pub fn browser_tool_names() -> &'static [&'static str] {
     &[
         "browser_open",
+        "browser_open_agg",
         "browser_navigate",
         "browser_status",
         "browser_snapshot",
+        "browser_read_quote",
         "browser_click",
+        "browser_click_text",
         "browser_type",
+        "browser_select_token",
+        "browser_setup_swap",
+        "browser_submit_swap",
+        "browser_connect_wallet",
         "browser_press",
         "browser_wait",
     ]
@@ -147,6 +270,44 @@ fn require_agent_browser_control(profile: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Verify a `vb.session` is live AND still owned by a `vaughan-dapp-browser`
+/// process. A stale file plus a squatted CDP port (or the user's own Chromium
+/// started with `--remote-debugging-port`) must never be driven as VB — the
+/// PID binding is what distinguishes "our browser" from "something answered
+/// on loopback". Fail-closed: on mismatch the stale files are removed.
+async fn verify_vb_session(session: &VbSession) -> Result<(), String> {
+    if !vb_session_pid_matches(session) {
+        clear_vb_session();
+        return Err(
+            "browser_unavailable: stale vb.session (recorded PID is gone or is not vaughan-dapp-browser) — reopen with browser_open"
+                .to_string(),
+        );
+    }
+    if !cdp_alive(&session.cdp_url).await {
+        return Err(
+            "browser_unavailable: VB CDP endpoint not reachable — reopen with browser_open"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// True when `url`'s host is a public IPFS gateway mirror. Auto-connecting
+/// the wallet there is refused: gateways are third-party infrastructure that
+/// can serve altered page JS, so wallet connection on a mirror is a human
+/// decision made in the VB window, not an agent default.
+fn is_ipfs_gateway_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
+        return false;
+    };
+    default_ipfs_gateway_hosts()
+        .iter()
+        .any(|g| host == *g || host.ends_with(&format!(".{g}")))
+}
+
 pub async fn browser_open(args: Value, ctx: &McpContext) -> Result<Value, String> {
     let url = args
         .get("url")
@@ -156,15 +317,61 @@ pub async fn browser_open(args: Value, ctx: &McpContext) -> Result<Value, String
     check_url_allowed(url, &suffixes).map_err(wallet_err)?;
 
     let agent_control = agent_control_enabled(&ctx.profile);
-    let cdp_port = cdp_port_for_profile(&ctx.profile);
+    let cdp_port = spawn_cdp_port(agent_control);
+
+    // Reuse live VB — each browser_open spawn stacks Chromium + extension shells.
+    // The session must verify (PID-bound) before its endpoint is trusted.
+    if agent_control {
+        let session = read_vb_session()
+            .ok()
+            .flatten()
+            .filter(|s| !s.cdp_url.trim().is_empty());
+        if let Some(session) = session {
+            if verify_vb_session(&session).await.is_ok() {
+                let target = cdp_open_url(&session.cdp_url, url)
+                    .await
+                    .map_err(wallet_err)?;
+                if let Some(id) = target {
+                    let _ = write_target_pin(&session.cdp_url, &id);
+                }
+                return Ok(json!({
+                    "status": "reused",
+                    "url": url,
+                    "cdp_url": session.cdp_url,
+                    "cdp_alive": true,
+                    "agent_browser_control": agent_control,
+                    "allow_suffixes": suffixes.len(),
+                    "hint": "VB already running — opened a new tab in the existing session",
+                }));
+            }
+        }
+    }
+
+    clear_target_pin();
     spawn_dapp_browser(url, &suffixes, cdp_port).map_err(wallet_err)?;
 
+    // Chromium cold start with the extension can take several seconds; poll
+    // long enough that a successful spawn reports cdp_alive in one call.
     let cdp_url = format!("http://127.0.0.1:{cdp_port}");
     let alive = if cdp_port != 0 {
-        wait_for_cdp(&cdp_url, Duration::from_secs(5)).await
+        wait_for_cdp(&cdp_url, Duration::from_secs(15)).await
     } else {
         false
     };
+
+    // Pin the tab VB opened with so follow-up tools stick to it.
+    if alive {
+        if let Ok(pages) = cdp_list_pages(&cdp_url).await {
+            if let Some(id) = pages
+                .iter()
+                .find(|p| p.get("type").and_then(|t| t.as_str()) == Some("page"))
+                .and_then(|p| p.get("id"))
+                .and_then(|i| i.as_str())
+            {
+                let _ = write_target_pin(&cdp_url, id);
+            }
+        }
+    }
 
     Ok(json!({
         "status": "opened",
@@ -178,9 +385,189 @@ pub async fn browser_open(args: Value, ctx: &McpContext) -> Result<Value, String
         } else if cdp_port == 0 {
             "VB opened without CDP — enable agent browser control in Settings (p) or `vaughan config agent-browser on`"
         } else {
-            "VB spawned; CDP not yet reachable — retry browser_status"
+            "VB spawned but CDP never came up — check ~/.local/share/vaughan-cli/vb.log"
         },
     }))
+}
+
+fn parse_agg_venue(raw: &str) -> Result<AggVenue, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "squirrel" | "squirrelswap" => Ok(AggVenue::SquirrelSwap),
+        "pulseswap" | "pulse" => Ok(AggVenue::PulseSwap),
+        "piteas" => Ok(AggVenue::Piteas),
+        "switch" | "switchwin" | "switch.win" => Ok(AggVenue::SwitchWin),
+        "empx" | "empseal" => Ok(AggVenue::Empseal),
+        "9mm" | "9x" | "nine_mm" | "9mm9x" => Ok(AggVenue::NineMm9x),
+        "curv" | "jolt" => Ok(AggVenue::Curv),
+        "internetmoney" | "int.money" | "im" => Ok(AggVenue::InternetMoney),
+        "libertyx" | "libertyswap" | "liberty" => Ok(AggVenue::LibertyX),
+        "portalx" | "portal" => Ok(AggVenue::PortalX),
+        other => {
+            let known: Vec<_> = AGG_VENUES.iter().map(|v| v.label()).collect();
+            Err(format!(
+                "unknown aggregator venue '{other}' — use one of: {}",
+                known.join(", ")
+            ))
+        }
+    }
+}
+
+fn parse_swap_side(raw: &str) -> Result<SwapTokenSide, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "input" | "in" | "from" | "sell" => Ok(SwapTokenSide::Input),
+        "output" | "out" | "to" | "buy" => Ok(SwapTokenSide::Output),
+        other => Err(format!("invalid side '{other}' — use input or output")),
+    }
+}
+
+/// Open the Ag-catalog web UI for an aggregator (VB human path).
+pub async fn browser_open_agg(args: Value, ctx: &McpContext) -> Result<Value, String> {
+    let venue_raw = args
+        .get("venue")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing venue".to_string())?;
+    let venue = parse_agg_venue(venue_raw)?;
+    let pls_hex = args
+        .get("pls_hex")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let token_in = args
+        .get("token_in")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let token_out = args
+        .get("token_out")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let amount_in = args
+        .get("amount_in")
+        .and_then(|v| v.as_str())
+        .unwrap_or("1")
+        .to_string();
+    let setup_tokens = args
+        .get("setup_tokens")
+        .and_then(|v| v.as_bool())
+        .unwrap_or_else(|| token_in.is_some() || token_out.is_some() || pls_hex);
+    let mut connect_wallet = args
+        .get("connect_wallet")
+        .and_then(|v| v.as_bool())
+        .unwrap_or_else(|| ctx.active_address.is_some());
+
+    let (tin, tout) = if setup_tokens {
+        (
+            token_in.unwrap_or_else(|| "PLS".into()),
+            token_out.unwrap_or_else(|| "HEX".into()),
+        )
+    } else {
+        (token_in.unwrap_or_default(), token_out.unwrap_or_default())
+    };
+
+    let url = if pls_hex && !setup_tokens {
+        venue.web_url_pls_hex().ok_or_else(|| {
+            format!(
+                "{} has no public swap web UI — use browserless quote_swap / Ag screen",
+                venue.label()
+            )
+        })?
+    } else if let Some(base) = venue.web_url() {
+        base.to_string()
+    } else {
+        return Err(format!(
+            "{} has no public swap web UI — use browserless quote_swap / Ag screen",
+            venue.label()
+        ));
+    };
+
+    let mut out = browser_open(json!({ "url": url }), ctx).await?;
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("venue".to_string(), json!(venue.label()));
+        obj.insert("access".to_string(), json!(format!("{:?}", venue.access())));
+        obj.insert("url".to_string(), json!(url));
+    }
+
+    // IPFS gateway mirrors are third-party infra that can serve altered page
+    // JS — never auto-connect the wallet there (human decision in the window).
+    let mut ipfs_connect_blocked = false;
+    if connect_wallet && is_ipfs_gateway_url(&url) {
+        connect_wallet = false;
+        ipfs_connect_blocked = true;
+    }
+
+    if (setup_tokens || connect_wallet)
+        && out.get("cdp_alive").and_then(|v| v.as_bool()) == Some(true)
+    {
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        if let Ok(Some(session)) = read_vb_session().map_err(wallet_err) {
+            match vb_cdp::cdp_dismiss_modals(&session.cdp_url).await {
+                Ok(dismiss) => {
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("dismiss_modals".to_string(), dismiss);
+                    }
+                }
+                Err(e) => {
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("dismiss_modals_error".to_string(), json!(e.user_message()));
+                    }
+                }
+            }
+            if connect_wallet {
+                match vb_cdp::cdp_connect_vaughan_wallet(&session.cdp_url).await {
+                    Ok(connect) => {
+                        if let Some(obj) = out.as_object_mut() {
+                            obj.insert("connect_wallet".to_string(), connect);
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    Err(e) => {
+                        if let Some(obj) = out.as_object_mut() {
+                            obj.insert("connect_wallet_error".to_string(), json!(e.user_message()));
+                        }
+                    }
+                }
+            }
+            if setup_tokens {
+                match vb_cdp::cdp_setup_swap(&session.cdp_url, &tin, &tout, &amount_in, true).await
+                {
+                    Ok(setup) => {
+                        if let Some(obj) = out.as_object_mut() {
+                            obj.insert("setup_swap".to_string(), setup);
+                            obj.insert("token_in".to_string(), json!(tin));
+                            obj.insert("token_out".to_string(), json!(tout));
+                            obj.insert("amount_in".to_string(), json!(amount_in));
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(obj) = out.as_object_mut() {
+                            obj.insert("setup_swap_error".to_string(), json!(e.user_message()));
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if let Ok(quote) =
+                    vb_cdp::cdp_read_quote(&session.cdp_url, Some(tout.as_str())).await
+                {
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("quote".to_string(), quote);
+                    }
+                }
+            }
+        }
+    }
+
+    if ipfs_connect_blocked {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert(
+                "connect_wallet".to_string(),
+                json!({
+                    "ok": false,
+                    "skipped": "ipfs_gateway",
+                    "note": "public IPFS gateway mirror — connect the wallet manually in the VB window if you trust this deployment",
+                }),
+            );
+        }
+    }
+
+    Ok(out)
 }
 
 pub async fn browser_navigate(args: Value, ctx: &McpContext) -> Result<Value, String> {
@@ -193,20 +580,17 @@ pub async fn browser_navigate(args: Value, ctx: &McpContext) -> Result<Value, St
     let session = read_vb_session().map_err(wallet_err)?.ok_or_else(|| {
         "browser_unavailable: no vb.session — run browser_open first with CDP enabled".to_string()
     })?;
-
-    if !cdp_alive(&session.cdp_url).await {
-        return Err(
-            "browser_unavailable: VB CDP endpoint not reachable — reopen with browser_open"
-                .to_string(),
-        );
-    }
+    verify_vb_session(&session).await?;
 
     let suffixes = suffixes_for_nav(ctx, url, &session.allow_suffixes);
     check_url_allowed(url, &suffixes).map_err(wallet_err)?;
 
-    cdp_open_url(&session.cdp_url, url)
+    let target = cdp_open_url(&session.cdp_url, url)
         .await
         .map_err(wallet_err)?;
+    if let Some(id) = target {
+        let _ = write_target_pin(&session.cdp_url, &id);
+    }
 
     Ok(json!({
         "status": "navigated",
@@ -229,6 +613,16 @@ pub async fn browser_status(ctx: &McpContext) -> Result<Value, String> {
             },
         }));
     };
+
+    if !vb_session_pid_matches(&session) {
+        clear_vb_session();
+        return Ok(json!({
+            "available": false,
+            "reason": "stale_session",
+            "agent_browser_control": agent_control,
+            "hint": "vb.session PID is gone or is not vaughan-dapp-browser — browser_open again",
+        }));
+    }
 
     let alive = cdp_alive(&session.cdp_url).await;
     if !alive {
@@ -279,19 +673,64 @@ async fn require_cdp_session(ctx: &McpContext) -> Result<String, String> {
     let session = read_vb_session().map_err(wallet_err)?.ok_or_else(|| {
         "browser_unavailable: no vb.session — run browser_open first with CDP enabled".to_string()
     })?;
-    if !cdp_alive(&session.cdp_url).await {
-        return Err(
-            "browser_unavailable: VB CDP endpoint not reachable — reopen with browser_open"
-                .to_string(),
-        );
-    }
+    verify_vb_session(&session).await?;
     Ok(session.cdp_url)
 }
 
-pub async fn browser_snapshot(ctx: &McpContext) -> Result<Value, String> {
+/// Mutating tools (click / type / keypress / connect / submit) additionally
+/// re-check the CURRENT page URL against the session allowlist before acting:
+/// the in-tab nav gate is the primary control, this catches a gate bypass or
+/// a tab the user manually steered somewhere the agent should not touch.
+/// Fail-closed when the current URL cannot be determined.
+async fn require_cdp_session_mut(ctx: &McpContext) -> Result<String, String> {
+    let session = read_vb_session().map_err(wallet_err)?.ok_or_else(|| {
+        "browser_unavailable: no vb.session — run browser_open first with CDP enabled".to_string()
+    })?;
+    require_agent_browser_control(&ctx.profile)?;
+    verify_vb_session(&session).await?;
+    let current = cdp_current_page_url(&session.cdp_url)
+        .await
+        .ok_or_else(|| {
+            "browser_unavailable: cannot read current page URL (fail-closed for mutating tools)"
+                .to_string()
+        })?;
+    check_url_allowed(&current, &session.allow_suffixes).map_err(|e| {
+        format!(
+            "refused: current page `{current}` is outside the VB allowlist ({})",
+            e.user_message()
+        )
+    })?;
+    Ok(session.cdp_url)
+}
+
+pub async fn browser_snapshot(args: Value, ctx: &McpContext) -> Result<Value, String> {
+    // token_out optional — inferred from the page's `Get <SYM>` leg when omitted.
+    let token_out = args.get("token_out").and_then(|v| v.as_str());
     let cdp_url = require_cdp_session(ctx).await?;
     let snap = vb_cdp::cdp_snapshot(&cdp_url).await.map_err(wallet_err)?;
-    Ok(json!({ "status": "snapshot", "cdp_url": cdp_url, "page": snap }))
+    let quote = vb_cdp::cdp_read_quote(&cdp_url, token_out)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({
+        "status": "snapshot",
+        "cdp_url": cdp_url,
+        "page": snap,
+        "quote": quote,
+    }))
+}
+
+pub async fn browser_read_quote(args: Value, ctx: &McpContext) -> Result<Value, String> {
+    // token_out optional — inferred from the page's `Get <SYM>` leg when omitted.
+    let token_out = args.get("token_out").and_then(|v| v.as_str());
+    let cdp_url = require_cdp_session(ctx).await?;
+    let quote = vb_cdp::cdp_read_quote(&cdp_url, token_out)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({
+        "status": "quote",
+        "cdp_url": cdp_url,
+        "quote": quote,
+    }))
 }
 
 pub async fn browser_click(args: Value, ctx: &McpContext) -> Result<Value, String> {
@@ -300,11 +739,23 @@ pub async fn browser_click(args: Value, ctx: &McpContext) -> Result<Value, Strin
         .and_then(|v| v.as_str())
         .ok_or_else(|| "missing ref".to_string())?;
     let element_ref = ElementRef::parse(ref_raw).map_err(wallet_err)?;
-    let cdp_url = require_cdp_session(ctx).await?;
+    let cdp_url = require_cdp_session_mut(ctx).await?;
     let result = vb_cdp::cdp_click(&cdp_url, element_ref)
         .await
         .map_err(wallet_err)?;
     Ok(json!({ "status": "clicked", "ref": ref_raw, "result": result }))
+}
+
+pub async fn browser_click_text(args: Value, ctx: &McpContext) -> Result<Value, String> {
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing text".to_string())?;
+    let cdp_url = require_cdp_session_mut(ctx).await?;
+    let result = vb_cdp::cdp_click_by_text(&cdp_url, text)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({ "status": "clicked_text", "text": text, "result": result }))
 }
 
 pub async fn browser_type(args: Value, ctx: &McpContext) -> Result<Value, String> {
@@ -316,9 +767,10 @@ pub async fn browser_type(args: Value, ctx: &McpContext) -> Result<Value, String
         .get("text")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "missing text".to_string())?;
+    let clear = args.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
     let element_ref = ElementRef::parse(ref_raw).map_err(wallet_err)?;
-    let cdp_url = require_cdp_session(ctx).await?;
-    let result = vb_cdp::cdp_type(&cdp_url, element_ref, text)
+    let cdp_url = require_cdp_session_mut(ctx).await?;
+    let result = vb_cdp::cdp_type(&cdp_url, element_ref, text, clear)
         .await
         .map_err(wallet_err)?;
     Ok(json!({
@@ -333,7 +785,7 @@ pub async fn browser_press(args: Value, ctx: &McpContext) -> Result<Value, Strin
         .get("key")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "missing key".to_string())?;
-    let cdp_url = require_cdp_session(ctx).await?;
+    let cdp_url = require_cdp_session_mut(ctx).await?;
     let result = vb_cdp::cdp_press(&cdp_url, key).await.map_err(wallet_err)?;
     Ok(json!({ "status": "pressed", "key": key, "result": result }))
 }
@@ -357,6 +809,86 @@ pub async fn browser_wait(args: Value, ctx: &McpContext) -> Result<Value, String
     .await
     .map_err(wallet_err)?;
     Ok(json!({ "status": "wait_met", "result": result }))
+}
+
+pub async fn browser_select_token(args: Value, ctx: &McpContext) -> Result<Value, String> {
+    let symbol = args
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing symbol".to_string())?;
+    let side_raw = args
+        .get("side")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing side (input | output)".to_string())?;
+    let side = parse_swap_side(side_raw)?;
+    let cdp_url = require_cdp_session_mut(ctx).await?;
+    let result = vb_cdp::cdp_select_swap_token(&cdp_url, symbol, side)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({
+        "status": "token_selected",
+        "symbol": vb_cdp::normalize_swap_symbol(symbol),
+        "side": side_raw,
+        "result": result,
+    }))
+}
+
+pub async fn browser_setup_swap(args: Value, ctx: &McpContext) -> Result<Value, String> {
+    let token_in = args
+        .get("token_in")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing token_in".to_string())?;
+    let token_out = args
+        .get("token_out")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing token_out".to_string())?;
+    let amount_in = args
+        .get("amount_in")
+        .and_then(|v| v.as_str())
+        .unwrap_or("1");
+    let submit_quote = args
+        .get("submit_quote")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let cdp_url = require_cdp_session_mut(ctx).await?;
+    let result = vb_cdp::cdp_setup_swap(&cdp_url, token_in, token_out, amount_in, submit_quote)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({
+        "status": "swap_setup",
+        "token_in": vb_cdp::normalize_swap_symbol(token_in),
+        "token_out": vb_cdp::normalize_swap_symbol(token_out),
+        "amount_in": amount_in,
+        "result": result,
+    }))
+}
+
+pub async fn browser_connect_wallet(_args: Value, ctx: &McpContext) -> Result<Value, String> {
+    let cdp_url = require_cdp_session_mut(ctx).await?;
+    if let Some(current) = cdp_current_page_url(&cdp_url).await {
+        if is_ipfs_gateway_url(&current) {
+            return Err(format!(
+                "refused: current page `{current}` is a public IPFS gateway mirror — \
+                 gateways can serve altered page JS, so wallet connection there is a \
+                 human decision in the VB window, not an agent action"
+            ));
+        }
+    }
+    let result = vb_cdp::cdp_connect_vaughan_wallet(&cdp_url)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({ "status": "connect_wallet", "result": result }))
+}
+
+pub async fn browser_submit_swap(_args: Value, ctx: &McpContext) -> Result<Value, String> {
+    let cdp_url = require_cdp_session_mut(ctx).await?;
+    let result = vb_cdp::cdp_click_swap_submit(&cdp_url)
+        .await
+        .map_err(wallet_err)?;
+    Ok(json!({
+        "status": "submitted",
+        "result": result,
+    }))
 }
 
 #[cfg(test)]

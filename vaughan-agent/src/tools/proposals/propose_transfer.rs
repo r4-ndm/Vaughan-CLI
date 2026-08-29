@@ -157,11 +157,16 @@ impl Tool for ProposeTransferTool {
     }
 }
 
+/// Time-millis + random suffix: time alone repeats every 100 s, well inside
+/// the 600 s pending TTL, so same-tool proposals could otherwise collide.
 pub fn rand_id() -> u32 {
+    use rand::RngCore;
     use std::time::{SystemTime, UNIX_EPOCH};
-    (SystemTime::now()
+    let millis = (SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
-        % 100_000) as u32
+        % 100_000) as u32;
+    let random = rand::rngs::OsRng.next_u32() % 1000;
+    millis * 1000 + random
 }

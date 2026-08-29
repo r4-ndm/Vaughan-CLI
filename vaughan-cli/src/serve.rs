@@ -86,10 +86,17 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
     } else {
         None
     };
+    // Bound concurrent connections and cap each connection's lifetime so a
+    // local process cannot exhaust fds/memory by trickling bytes.
+    let permits = Arc::new(tokio::sync::Semaphore::new(32));
     while !stop.load(Ordering::SeqCst) {
         let accept =
             tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept()).await;
         let Ok(Ok((stream, _))) = accept else {
+            continue;
+        };
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            eprintln!("vaughan serve: connection cap reached, dropping");
             continue;
         };
         let backend = ServeMcpBackend {
@@ -103,7 +110,12 @@ pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Resul
         let token = session.clone();
         let dir = profile_dir.clone();
         tokio::spawn(async move {
-            let _ = handle_ipc_connection(stream, token, dir, backend).await;
+            let _permit = permit;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                handle_ipc_connection(stream, token, dir, backend),
+            )
+            .await;
         });
     }
 
@@ -201,7 +213,19 @@ impl McpHostBackend for ServeMcpBackend {
                     .into(),
             );
         }
-        tokio::task::block_in_place(|| {
+        // Sweeps move the full note balance, so they must respect the same
+        // session breaker as proposals: trip state + failure tripwire.
+        let breaker = self
+            .breaker
+            .as_ref()
+            .ok_or_else(|| "sentient circuit breaker unavailable".to_string())?;
+        if breaker.is_tripped() {
+            return Err(format!(
+                "circuit_breaker_tripped: {}",
+                breaker.trip_reason().unwrap_or_else(|| "halted".into())
+            ));
+        }
+        let result = tokio::task::block_in_place(|| {
             let w = self
                 .wallet
                 .lock()
@@ -221,7 +245,14 @@ impl McpHostBackend for ServeMcpBackend {
                 .block_on(w.sweep_stealth_note(&note))
                 .map(|h| h.to_string())
                 .map_err(|e| e.to_string())
-        })
+        });
+        match &result {
+            Ok(_) => {
+                let _ = breaker.record_success(alloy::primitives::U256::ZERO);
+            }
+            Err(e) => breaker.record_failure(e),
+        }
+        result
     }
 }
 

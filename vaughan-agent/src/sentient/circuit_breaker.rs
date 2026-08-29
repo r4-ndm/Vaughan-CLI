@@ -163,6 +163,37 @@ impl CircuitBreaker {
         self.config.read().unwrap().clone()
     }
 
+    /// Pre-broadcast gas budget check: would spending `gas_wei` cross the
+    /// session ceiling? Rejects without tripping (the session stays open for
+    /// cheaper transactions); pair with [`record_success`] after broadcast.
+    pub fn check_gas_budget(&self, gas_wei: U256) -> Result<(), AgentError> {
+        if self.is_tripped() {
+            let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
+            return Err(AgentError::CircuitBreakerTripped(format!(
+                "Trading halted: {reason}"
+            )));
+        }
+        let cfg = self.config.read().unwrap().clone();
+        if cfg.enforcement == EnforcementMode::Disabled {
+            return Ok(());
+        }
+        let spent = *self.cumulative_gas_wei.read().unwrap();
+        let projected = spent.saturating_add(gas_wei);
+        if projected > cfg.max_session_gas_wei {
+            let msg = format!(
+                "Gas ceiling would be exceeded: spent {spent} + this tx {gas_wei} wei \
+                 > max {} wei — session stays open for cheaper transactions",
+                cfg.max_session_gas_wei
+            );
+            if cfg.enforcement == EnforcementMode::WarnOnly {
+                tracing::warn!(target: "vaughan_agent::sentient", "breaker warn-only: {msg}");
+                return Ok(());
+            }
+            return Err(AgentError::InvalidToolCall(msg));
+        }
+        Ok(())
+    }
+
     /// Record a successful transaction and gas expenditure.
     pub fn record_success(&self, gas_used_wei: U256) -> Result<(), AgentError> {
         self.consecutive_errors.store(0, Ordering::SeqCst);
@@ -172,7 +203,9 @@ impl CircuitBreaker {
         }
 
         let mut total_gas = self.cumulative_gas_wei.write().unwrap();
-        *total_gas += gas_used_wei;
+        // Saturating: an overflowing counter must fail closed (stuck at MAX,
+        // over every budget) rather than wrap to a small-looking number.
+        *total_gas = total_gas.saturating_add(gas_used_wei);
 
         if *total_gas > cfg.max_session_gas_wei {
             let msg = format!(

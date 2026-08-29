@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 use tokio::runtime::Handle;
-use vaughan_core::core::WalletState;
+use vaughan_core::core::{AgentAutonomyTier, OperatingMode, WalletState};
 use vaughan_provider::{EventBus, ProviderEvent};
 
 use crate::app::{KeyOutcome, Screen};
@@ -127,8 +127,34 @@ impl SettingsView {
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
+                let tier = wallet.agent_autonomy_tier();
+                let tier_label = match tier {
+                    AgentAutonomyTier::Advisor => "Agent autonomy: Advisor (manual Connect)",
+                    AgentAutonomyTier::Operator => {
+                        "Agent autonomy: Operator (auto-connect allowlisted dApps)"
+                    }
+                };
+                let tier_style = match tier {
+                    AgentAutonomyTier::Advisor => Style::default().fg(Color::DarkGray),
+                    AgentAutonomyTier::Operator => Style::default().fg(Color::Green),
+                };
+                let (mode_label, mode_style) = match wallet.operating_mode() {
+                    OperatingMode::SentientTrader => {
+                        let policy = crate::sentient_mcp::sentient_policy_line(wallet)
+                            .unwrap_or_else(|| "policy: unknown".into());
+                        (
+                            format!("Agent mode: Sentient (auto-exec) — {policy}"),
+                            Style::default().fg(Color::Magenta),
+                        )
+                    }
+                    _ => (
+                        "Agent mode: Advisor — switch: lock (l) → pick profile at unlock"
+                            .to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                };
                 let [list_area, footer_area] =
-                    Layout::vertical([Constraint::Min(4), Constraint::Length(5)]).areas(content);
+                    Layout::vertical([Constraint::Min(4), Constraint::Length(6)]).areas(content);
                 let inner =
                     brand::render_faded_box(frame, list_area, Some(brand::fade_line(" Networks ")));
                 frame.render_widget(list, inner);
@@ -136,10 +162,12 @@ impl SettingsView {
                 frame.render_widget(
                     Paragraph::new(vec![
                         Line::from(Span::styled(
-                            "↑↓ Enter · a add · e edit · r RPC · d delete · h udev · k Keys · p agent CDP · Esc",
+                            "↑↓ Enter · a add · e edit · r RPC · d delete · h udev · k Keys · p agent CDP · o autonomy · Esc",
                             Style::default().fg(Color::DarkGray),
                         )),
                         Line::from(Span::styled(cdp_label, cdp_style)),
+                        Line::from(Span::styled(tier_label, tier_style)),
+                        Line::from(Span::styled(mode_label, mode_style)),
                     ]),
                     footer_inner,
                 );
@@ -452,6 +480,27 @@ impl SettingsView {
                                 .into()
                         } else {
                             "Agent browser control (CDP) disabled — close VB if open.".into()
+                        };
+                    }
+                    Err(e) => self.status = e.user_message(),
+                }
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('o') => {
+                let next = match wallet.agent_autonomy_tier() {
+                    AgentAutonomyTier::Advisor => AgentAutonomyTier::Operator,
+                    AgentAutonomyTier::Operator => AgentAutonomyTier::Advisor,
+                };
+                match wallet.set_agent_autonomy_tier(next) {
+                    Ok(()) => {
+                        self.status = match next {
+                            AgentAutonomyTier::Operator => {
+                                "Operator tier — auto-connect on trusted dApp / Ag hosts (sign still manual)."
+                                    .into()
+                            }
+                            AgentAutonomyTier::Advisor => {
+                                "Advisor tier — manual Connect approval for every site.".into()
+                            }
                         };
                     }
                     Err(e) => self.status = e.user_message(),

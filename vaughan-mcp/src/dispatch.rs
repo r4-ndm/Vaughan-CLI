@@ -90,11 +90,18 @@ impl McpDispatcher {
             "scan_stealth_notes" => self.stealth_scan(&ctx).await,
             "sweep_stealth_note" => self.stealth_sweep(args, &ctx).await,
             "browser_open" => browser_bridge::browser_open(args, &ctx).await,
+            "browser_open_agg" => browser_bridge::browser_open_agg(args, &ctx).await,
             "browser_navigate" => browser_bridge::browser_navigate(args, &ctx).await,
             "browser_status" => browser_bridge::browser_status(&ctx).await,
-            "browser_snapshot" => browser_bridge::browser_snapshot(&ctx).await,
+            "browser_snapshot" => browser_bridge::browser_snapshot(args, &ctx).await,
+            "browser_read_quote" => browser_bridge::browser_read_quote(args, &ctx).await,
             "browser_click" => browser_bridge::browser_click(args, &ctx).await,
+            "browser_click_text" => browser_bridge::browser_click_text(args, &ctx).await,
             "browser_type" => browser_bridge::browser_type(args, &ctx).await,
+            "browser_select_token" => browser_bridge::browser_select_token(args, &ctx).await,
+            "browser_setup_swap" => browser_bridge::browser_setup_swap(args, &ctx).await,
+            "browser_submit_swap" => browser_bridge::browser_submit_swap(args, &ctx).await,
+            "browser_connect_wallet" => browser_bridge::browser_connect_wallet(args, &ctx).await,
             "browser_press" => browser_bridge::browser_press(args, &ctx).await,
             "browser_wait" => browser_bridge::browser_wait(args, &ctx).await,
             name if name.starts_with("propose_") => self.propose_tool(name, args, &ctx).await,
@@ -123,7 +130,9 @@ impl McpDispatcher {
                     "network_id": ctx.network_id,
                     "chain_id": ctx.chain_id,
                     "is_testnet": ctx.is_testnet,
-                    "rpc_url": ctx.rpc_url,
+                    // Redacted: RPC URLs can carry API keys in path/query —
+                    // agents need the endpoint identity, not the credential.
+                    "rpc_url": redact_rpc_url(&ctx.rpc_url),
                 });
                 if let Some(wiz) = vaughan_core::core::deployment_for_chain(ctx.chain_id) {
                     out["wiz4rd"] = json!({
@@ -253,12 +262,28 @@ impl McpDispatcher {
         }
     }
 
+    /// `import_token` mutates persisted wallet state (the token list shown in
+    /// the UI), so it requires a live wallet session — an MCP host with no
+    /// unlocked wallet must not plant token entries into a profile.
     async fn assist_side_effect(
         &self,
         name: &str,
         args: Value,
         ctx: &McpContext,
     ) -> Result<Value, String> {
+        let session = McpSessionToken::read(&self.profile_dir)
+            .map_err(|e| e.user_message())?
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "session_required: unlock Vaughan or run vaughan serve before import_token"
+                    .to_string()
+            })?;
+        if try_get_session(&session).await.ok().flatten().is_none() {
+            return Err(
+                "session_required: control plane unreachable or wallet locked — unlock Vaughan first"
+                    .to_string(),
+            );
+        }
         let tool_ctx = ToolContext {
             rpc_url: ctx.rpc_url.clone(),
             chain_id: ctx.chain_id,
@@ -354,8 +379,13 @@ impl McpDispatcher {
         let (reachable, unlocked, address) = if has_session_file {
             let reachable = ping(&session).await;
             match try_get_session(&session).await {
-                Ok(Some(info)) => (reachable, true, Some(info.address)),
-                Ok(None) => (false, false, None),
+                // A answered Session query proves reachability even if the
+                // (earlier, 2s) ping timed out.
+                Ok(Some(info)) => (true, true, Some(info.address)),
+                // Locked/offline session: preserve the ping result — reporting
+                // unreachable when the plane is actually up misleads agents
+                // into spawning duplicate serve processes.
+                Ok(None) => (reachable, false, None),
                 Err(_) => (reachable, false, None),
             }
         } else {
@@ -367,11 +397,14 @@ impl McpDispatcher {
             .and_then(|s| s.to_str())
             .unwrap_or("default");
         let auto_exec = vaughan_core::core::is_sentient_profile(profile_name);
+        let autonomy = StateManager::agent_autonomy_tier_for_profile(profile_name);
         Ok(json!({
             "control_plane_reachable": reachable,
             "session_file_present": has_session_file,
             "wallet_unlocked": unlocked,
             "agent_browser_control": StateManager::agent_browser_control_for_profile(profile_name),
+            "agent_autonomy_tier": autonomy.as_str(),
+            "operator_auto_connect": autonomy == vaughan_core::core::AgentAutonomyTier::Operator,
             "active_address": address.map(|a| format!("{a:#x}")),
             "profile": profile_name,
             "sentient_auto_exec": auto_exec,
@@ -382,6 +415,8 @@ impl McpDispatcher {
                 "Control plane is up but wallet is locked — unlock or restart serve"
             } else if auto_exec {
                 "Sentient profile: proposes auto-exec under policy"
+            } else if autonomy == vaughan_core::core::AgentAutonomyTier::Operator {
+                "Operator tier: auto-connect on allowlisted dApps; sign/propose still manual"
             } else {
                 "Adviser profile: proposes need human approval in TUI"
             },
@@ -430,6 +465,22 @@ fn agent_err(e: AgentError) -> String {
     match e {
         AgentError::InvalidToolCall(msg) => format!("invalid_tool_call: {msg}"),
         other => other.to_string(),
+    }
+}
+
+/// Strip an RPC URL down to `scheme://host[:port]` for display: provider URLs
+/// routinely embed API keys in the path or query (`/v3/<key>`, `?key=…`) and
+/// tool results land in agent transcripts.
+fn redact_rpc_url(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(u) => {
+            let mut out = format!("{}://{}", u.scheme(), u.host_str().unwrap_or("<redacted>"));
+            if let Some(port) = u.port() {
+                out.push_str(&format!(":{port}"));
+            }
+            out
+        }
+        Err(_) => "<unparseable rpc url>".to_string(),
     }
 }
 

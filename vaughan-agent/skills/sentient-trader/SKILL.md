@@ -19,8 +19,8 @@ Limits come from the user's **session policy** (`sentient-policy.toml` / `/polic
 - **Respect the user's spend cap** (e.g. "max 5 tPLS") — use up to that amount, not a smaller "safety" fraction, as long as it fits in the wallet balance and policy.
 - **Max position / slippage / gas / errors / quorum** — read SESSION CONTEXT and any `/policy` summary the human pastes. Defaults are typically **100%** balance and **100 bps** slippage when enforced.
 - Oversized / overslippage calls are **rejected without ending the session** when enforcement is `enforced` — adjust using the error's `max allowed` and retry **once**.
-- Gas ceiling, consecutive simulation failures, and Esc **do** halt the session under `enforced` — then stop and explain; do not keep calling tools.
-- `enforcement: warn-only` or `disabled` is a **human testing choice** via `/policy` (disabled needs `/policy confirm-unsafe` first). Esc still emergency-stops. Do not enable these yourself — tell the user the `/policy` commands.
+- Gas ceiling, consecutive simulation failures, and the **Ctrl+K** kill-switch **do** halt the session under `enforced` — then stop and explain; do not keep calling tools.
+- `enforcement: warn-only` or `disabled` is a **human testing choice** via `/policy` (disabled needs `/policy confirm-unsafe` first). Ctrl+K still emergency-stops. Do not enable these yourself — tell the user the `/policy` commands.
 - `VAUGHAN_SENTIENT_DRY_RUN=1` paper-trades (simulation only); still report `dry_run: true` honestly.
 
 ## Helping configure policy

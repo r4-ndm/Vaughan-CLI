@@ -1142,6 +1142,25 @@ impl WalletState {
         Ok(())
     }
 
+    /// MCP/VB connect autonomy tier for this profile.
+    pub fn agent_autonomy_tier(&self) -> crate::core::AgentAutonomyTier {
+        self.persisted
+            .as_ref()
+            .map(|p| p.agent_autonomy_tier)
+            .unwrap_or_default()
+    }
+
+    /// Set agent autonomy tier (advisor vs operator auto-connect).
+    pub fn set_agent_autonomy_tier(
+        &mut self,
+        tier: crate::core::AgentAutonomyTier,
+    ) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted.agent_autonomy_tier = tier;
+        self.state.save(persisted)?;
+        Ok(())
+    }
+
     /// Origins derived from trusted dApps (for the provider allowlist).
     pub fn trusted_dapp_origins(&self) -> Vec<String> {
         self.trusted_dapps()

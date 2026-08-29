@@ -57,7 +57,7 @@ For smoke without touching wallet settings, you may add `"VAUGHAN_DAPP_BROWSER_C
 
 Replace `VAUGHAN_DAPP_BROWSER_CHROME` with your browser path if different.
 
-**Restart Cursor MCP** (Settings → MCP → toggle `vaughan`, or restart Cursor).
+**Restart Cursor MCP** (Settings → MCP → toggle `vaughan`, or restart Cursor). Step-by-step: [`vaughan-agent/skills/mcp-connect/hosts/cursor.md`](../vaughan-agent/skills/mcp-connect/hosts/cursor.md).
 
 Confirm tools appear: `browser_open`, `browser_navigate`, `browser_status`,
 `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`, `browser_wait`.
@@ -156,6 +156,32 @@ VB MCP smoke Phase 2 — run in order:
 | 4 | Snapshot returns again without error |
 
 - [ ] Phase 2 pass
+
+---
+
+## Phase 2b — Ag quote open (`browser_open_agg`)
+
+Playbook: [`vaughan-agent/skills/vb-ag-quotes/SKILL.md`](../vaughan-agent/skills/vb-ag-quotes/SKILL.md)
+
+```
+VB MCP smoke Phase 2b:
+
+1. browser_open_agg { "venue": "switch", "pls_hex": true }
+2. browser_wait { "text": "Switch", "timeout_ms": 25000 }
+3. browser_snapshot {}
+```
+
+### Pass criteria
+
+| Step | Expected |
+|------|----------|
+| 1 | `"status": "opened"`, `"venue": "Switch.win"` (or similar label) |
+| 2 | `"matched": true` or page loaded |
+| 3 | Interactive refs include swap UI (not only nav) |
+
+Venue ids: [`venues/INDEX.md`](../vaughan-agent/skills/vb-ag-quotes/venues/INDEX.md)
+
+- [ ] Phase 2b pass (optional; needs Ag allowlist + unlocked TUI for wallet connect)
 
 ---
 

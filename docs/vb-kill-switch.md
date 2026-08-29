@@ -20,6 +20,11 @@ Enable CDP only when you need MCP `browser_*` navigation:
 
 Precedence: **env var > persisted toggle > off**.
 
+When enabled without an override, each VB spawn binds a **random loopback
+port** (not the well-known 9222). `vb.session` records the launcher PID; MCP
+tools refuse to drive a session whose PID is dead or no longer a
+`vaughan-dapp-browser` process, and delete the stale file.
+
 ## Soft disable (recommended)
 
 1. `vaughan config agent-browser off` (or Settings → **`p`**)
@@ -41,10 +46,13 @@ Precedence: **env var > persisted toggle > off**.
 
 1. Kill the VB Chromium child process
 2. Delete `~/.local/share/vaughan-cli/vb.session` (or `$XDG_DATA_HOME/vaughan-cli/vb.session`)
+   — also `vb.target` (pinned tab) if present
 3. `vaughan config agent-browser off`
 
 Note: a running Chromium process may keep CDP port open until the window closes —
 MCP tools re-check the toggle on each call, but loopback CDP remains reachable until exit.
+MCP tools also verify the `vb.session` PID before every call, so a killed browser's
+session is rejected (and the stale file removed) even without manual cleanup.
 
 ## What this does not disable
 

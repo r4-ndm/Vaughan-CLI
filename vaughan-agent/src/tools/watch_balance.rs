@@ -73,18 +73,20 @@ impl Tool for WatchBalanceTool {
                 .map_err(|e| AgentError::ProviderError(e.to_string()))?;
             (bal.raw, bal.token.symbol)
         };
-        let amount = U256::from_str(&raw).unwrap_or(U256::ZERO);
+        let amount = U256::from_str(&raw).map_err(|_| {
+            AgentError::ProviderError(format!("unparseable balance from RPC: {raw:?}"))
+        })?;
         let mut below_min = false;
         let mut above_max = false;
         if let Some(m) = args.get("min_wei").and_then(|v| v.as_str()) {
-            if let Ok(min) = U256::from_str(m) {
-                below_min = amount < min;
-            }
+            let min = U256::from_str(m)
+                .map_err(|_| AgentError::InvalidToolCall(format!("invalid min_wei: {m:?}")))?;
+            below_min = amount < min;
         }
         if let Some(m) = args.get("max_wei").and_then(|v| v.as_str()) {
-            if let Ok(max) = U256::from_str(m) {
-                above_max = amount > max;
-            }
+            let max = U256::from_str(m)
+                .map_err(|_| AgentError::InvalidToolCall(format!("invalid max_wei: {m:?}")))?;
+            above_max = amount > max;
         }
         Ok(json!({
             "address": format!("{owner:#x}"),

@@ -16,6 +16,21 @@ There is **no fire-and-forget cloud agent**. Signing always lives in a Vaughan
 process you control. Agents should call `get_control_plane_status` before
 propose loops.
 
+## Switching agent mode (TUI)
+
+The unlock screen doubles as the mode switch (FR-5.1: mode locks at unlock,
+never mid-session):
+
+- `vaughan --profile sentient` launches straight into the sentient vault.
+- With more than one profile on disk, the unlock screen opens a **profile
+  picker** — each row shows its mode (`Advisor — you approve` /
+  `Sentient — agent auto-exec`). Picking a profile loads that vault; an
+  uninitialized profile routes to onboarding to create it.
+- From inside the wallet: `l` locks → picker → pick profile → unlock.
+- The sentient password screen shows the live policy bounds (enforcement,
+  max %/trade, slippage cap) **before** you unlock; the F1 strip shows
+  `· Sentient` while a sentient session is active.
+
 ## Recommended sentient stack
 
 1. Create / fund profile: `vaughan --profile sentient create` (or restore).
@@ -55,6 +70,12 @@ get_proposal_status
 | `watch_balance` | Native/ERC-20 snapshot + min/max wei flags |
 | `watch_quote` | Aggregator quote snapshot + min/max out flags + `suggested_action` |
 | Circuit breakers / `sentient-policy.toml` | Hard stops on size, gas, slippage (sentient) |
+
+Auto-exec additionally re-checks at the gate: per-leg sizing for `Batch7702`
+(unsizeable raw calls are refused), fresh quote + slippage floor, audited DEX
+router allowlist, fresh fee estimate (fail-closed) + pre-broadcast gas-budget
+check, and the mainnet-write guard. Kill-switch: **Ctrl+K** in the TUI trips
+the session breaker.
 
 Vaughan does **not** run a background price daemon. The agent (or a cron that
 calls MCP) owns the poll interval.

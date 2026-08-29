@@ -135,11 +135,18 @@ pub struct ProviderServer {
     local_addr: SocketAddr,
     trusted_hosts: TrustedHosts,
     /// When set, every client must present this token — no per-origin
-    /// exemptions (Origin is forgeable by any local process).
-    session_token: Option<String>,
+    /// exemptions (Origin is forgeable by any local process). Shared with the
+    /// host so the token can be rotated on lock/unlock without restarting
+    /// the listener; read fresh at every handshake.
+    session_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Handshake origins allowed to assert `vaughan_page_origin` on requests
     /// (the attested dApp-browser extension). Empty: the field is ignored.
     page_origin_issuers: Vec<String>,
+    /// Per-launch extension seal key (hex, 32 bytes), shared with the host.
+    /// When set, issuer connections must prove `vaughan_page_origin` with a
+    /// valid AES-GCM seal (`vaughan_origin_seal`); when unset (standalone VB
+    /// launch), issuer-only attestation applies (legacy mode).
+    origin_seal_key: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Origins currently holding a Connect grant, shared with the host so the
     /// server can filter `accountsChanged` per connection.
     grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
@@ -158,8 +165,9 @@ impl ProviderServer {
             listener,
             local_addr,
             trusted_hosts: TrustedHosts::default(),
-            session_token: None,
+            session_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
             page_origin_issuers: Vec::new(),
+            origin_seal_key: std::sync::Arc::new(std::sync::RwLock::new(None)),
             grants: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashSet::new())),
         })
     }
@@ -179,10 +187,43 @@ impl ProviderServer {
 
     /// Require clients to present this session token (query `access_token` or
     /// `Authorization: Bearer`). Required for every origin when set.
-    pub fn with_session_token(mut self, token: impl Into<String>) -> Self {
+    pub fn with_session_token(self, token: impl Into<String>) -> Self {
         let t = token.into();
-        self.session_token = if t.is_empty() { None } else { Some(t) };
+        *self.session_token.write().unwrap() = if t.is_empty() { None } else { Some(t) };
         self
+    }
+
+    /// Live session-token slot: rotate or replace the required token while
+    /// the server is running (lock/unlock lifecycle). New handshakes read the
+    /// slot fresh; existing connections keep their already-authenticated
+    /// session. Never set `None` to "disable" auth — `None` means *no* token
+    /// required; rotate to a fresh unwritten token instead.
+    pub fn session_token_slot(&self) -> std::sync::Arc<std::sync::RwLock<Option<String>>> {
+        self.session_token.clone()
+    }
+
+    /// Use an externally-owned token slot (host rotates it on lock/unlock).
+    pub fn with_session_token_slot(
+        mut self,
+        slot: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    ) -> Self {
+        self.session_token = slot;
+        self
+    }
+
+    /// Live extension seal-key slot: the host learns the per-launch key from
+    /// `vb.session` and installs it here while the server keeps running.
+    pub fn with_origin_seal_key_slot(
+        mut self,
+        slot: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    ) -> Self {
+        self.origin_seal_key = slot;
+        self
+    }
+
+    /// The shared seal-key slot (host side).
+    pub fn origin_seal_key_slot(&self) -> std::sync::Arc<std::sync::RwLock<Option<String>>> {
+        self.origin_seal_key.clone()
     }
 
     /// Handshake origins permitted to assert `vaughan_page_origin` on a
@@ -255,6 +296,7 @@ impl ProviderServer {
             let trusted_hosts = self.trusted_hosts.clone();
             let session_token = self.session_token.clone();
             let page_origin_issuers = self.page_origin_issuers.clone();
+            let origin_seal_key = self.origin_seal_key.clone();
             let grants = self.grants.clone();
             tokio::spawn(async move {
                 // Held until the connection task ends, releasing the slot.
@@ -267,6 +309,7 @@ impl ProviderServer {
                     trusted_hosts,
                     session_token,
                     page_origin_issuers,
+                    origin_seal_key,
                     grants,
                 )
                 .await;
@@ -389,8 +432,9 @@ async fn handle_connection(
     handler: Arc<dyn RequestHandler>,
     events: EventBus,
     trusted_hosts: TrustedHosts,
-    session_token: Option<String>,
+    session_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     page_origin_issuers: Vec<String>,
+    origin_seal_key: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     grants: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
 ) {
     let handshake = Arc::new(Mutex::new(HandshakeMeta::default()));
@@ -426,7 +470,10 @@ async fn handle_connection(
         tracing::warn!(%peer, ?origin, "rejecting untrusted provider origin");
         return;
     }
-    if !session_ok(&session_token, meta.access_token.as_deref()) {
+    // Read the token slot fresh at handshake time so lock/unlock rotation
+    // takes effect without restarting the listener.
+    let expected_token = session_token.read().unwrap().clone();
+    if !session_ok(&expected_token, meta.access_token.as_deref()) {
         tracing::warn!(
             %peer,
             ?origin,
@@ -461,7 +508,7 @@ async fn handle_connection(
                         tracing::warn!(%peer, "provider frame rate limit exceeded; closing");
                         break;
                     }
-                    dispatch(&*handler, &ctx, &text, page_origin_allowed)
+                    dispatch(&*handler, &ctx, &text, page_origin_allowed, &origin_seal_key)
                         .await
                         .map(|reply| reply.into())
                 }
@@ -511,6 +558,7 @@ async fn dispatch(
     ctx: &RequestCtx,
     text: &str,
     page_origin_allowed: bool,
+    origin_seal_key: &std::sync::RwLock<Option<String>>,
 ) -> Option<String> {
     let request = match RpcRequest::from_json(text) {
         Ok(request) => request,
@@ -522,6 +570,35 @@ async fn dispatch(
         let page = page.trim().to_string();
         if !page.is_empty() {
             if page_origin_allowed {
+                // When a per-launch seal key is installed, the assertion must
+                // carry a valid AES-GCM seal of the origin — the handshake
+                // Origin header alone is forgeable by any token-holding local
+                // process. No key configured = standalone VB (legacy mode).
+                let key = origin_seal_key.read().unwrap().clone();
+                if let Some(key) = key {
+                    let ok = request
+                        .vaughan_origin_seal
+                        .as_deref()
+                        .is_some_and(|seal| crate::seal::verify_origin_seal(&key, seal, &page));
+                    if !ok {
+                        tracing::warn!(
+                            origin = ?ctx.origin,
+                            "rejecting vaughan_page_origin with missing/invalid origin seal"
+                        );
+                        if request.is_notification() {
+                            return None;
+                        }
+                        return Some(
+                            RpcResponse::failure(
+                                id,
+                                provider_error_to_rpc(ProviderError::Unauthorized(
+                                    "page-origin assertion failed seal verification".into(),
+                                )),
+                            )
+                            .to_json(),
+                        );
+                    }
+                }
                 req_ctx.page_origin = Some(page);
             } else {
                 tracing::warn!(

@@ -1,6 +1,8 @@
 # Vaughan Agent Skills
 
-Markdown playbooks injected into the AI system prompt for Assist / Sentient modes.
+Markdown playbooks for **any agent** (Cursor, Claude Code, Codex, Vaughan Assist/Sentient).
+
+**Find a skill:** [`INDEX.md`](INDEX.md) — intent → path lookup table.
 
 ## Layout
 
@@ -33,14 +35,29 @@ kind: must | guide
 | `assist-advisor` | must | assist |
 | `sentient-trader` | must | sentient |
 | `contract-inspection` | guide | all |
+| `mcp-connect` | guide | all |
 | `pulsechain-context` | guide | all |
 | `dapp-connect` | guide | all |
+| `vb-ag-quotes` | guide | all |
+
+### `mcp-connect`
+
+Wire Vaughan into **Cursor**, **Claude Desktop**, or **Claude Code**; reconnect MCP after
+config changes. Per-host UI steps under [`mcp-connect/hosts/`](mcp-connect/hosts/).
+Read before `vb-ag-quotes` when tools are missing or `wallet_locked`.
 
 ### `dapp-connect`
 
 Per-URL connect playbooks under [`dapp-connect/sites/`](dapp-connect/sites/)
 (SquirrelSwap, LibertySwap, PulseX IPFS directory, 9inch CSP, …). Read the site
 file before changing inject/provider code for a connect bug.
+
+### `vb-ag-quotes`
+
+Ag catalog **quote tours** via Vaughan Browser + MCP (`browser_open_agg`,
+snapshot/click/type). Per-venue steps under [`vb-ag-quotes/venues/`](vb-ag-quotes/venues/)
+(Switch.win without API key, PulseSwap deep links, EmpX/PortalX browserless-only).
+Read before running multi-venue PLS→HEX comparisons in VB.
 
 ## Sentient partner presets
 

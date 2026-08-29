@@ -25,14 +25,16 @@ use app::App;
 /// Start the interactive wallet TUI (ratatui event loop).
 ///
 /// Used by the `vaughan-tui` binary and by the unified `vaughan` entry point
-/// when no CLI subcommand is given.
-pub fn run_interactive() -> io::Result<()> {
+/// when no CLI subcommand is given. `profile` selects the vault profile
+/// (`default` = adviser; `sentient` = agent auto-exec) and pre-selects that
+/// profile on the unlock-screen picker.
+pub fn run_interactive(profile: &str) -> io::Result<()> {
     vaughan_core::logging::init_tui_logging();
     brand::load_persisted_theme();
 
     let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let mut terminal = ratatui::init();
-    let result = run_terminal(&mut terminal, runtime.handle().clone());
+    let result = run_terminal(&mut terminal, runtime.handle().clone(), profile);
     ratatui::restore();
     result
 }
@@ -40,7 +42,8 @@ pub fn run_interactive() -> io::Result<()> {
 fn run_terminal(
     terminal: &mut ratatui::DefaultTerminal,
     handle: tokio::runtime::Handle,
+    profile: &str,
 ) -> io::Result<()> {
-    let mut app = App::new(handle).map_err(|e| io::Error::other(e.user_message()))?;
+    let mut app = App::new(handle, profile).map_err(|e| io::Error::other(e.user_message()))?;
     app.run(terminal)
 }

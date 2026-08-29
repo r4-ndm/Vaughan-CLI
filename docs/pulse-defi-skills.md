@@ -48,3 +48,12 @@ Smoke WZRD: `0x29bab93456c0E97EE931C1554c7C215480aa7766` — see [`wiz4rd-addres
 Mainnet writes require `VAUGHAN_MCP_ALLOW_MAINNET=1`.
 
 Full checklist: [`defi-agent-parity.md`](defi-agent-parity.md).
+
+## Ag quotes in Vaughan Browser (VB)
+
+When `quote_swap` is gated (e.g. Switch.win API key) or the user wants UI parity,
+use MCP **`browser_open_agg`** + CDP snapshot/type. **Read first:**
+
+[`vaughan-agent/skills/vb-ag-quotes/SKILL.md`](../vaughan-agent/skills/vb-ag-quotes/SKILL.md)
+
+Venue table: [`vaughan-agent/skills/vb-ag-quotes/venues/INDEX.md`](../vaughan-agent/skills/vb-ag-quotes/venues/INDEX.md)
