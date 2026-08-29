@@ -189,6 +189,9 @@ async fn notifications_initialized_accepted() {
 
 #[tokio::test]
 async fn browser_status_unavailable_without_vb_session() {
+    // Isolate from any live VB session on the host machine.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("VAUGHAN_VB_STATE_DIR", tmp.path());
     let (_dispatcher, ctx) = harness().await;
     let body = vaughan_mcp::browser_bridge::browser_status(&ctx)
         .await
@@ -197,6 +200,7 @@ async fn browser_status_unavailable_without_vb_session() {
     assert_eq!(body["reason"], "no_vb_session");
     assert!(body["hint"].as_str().is_some());
     assert!(body.get("agent_browser_control").is_some());
+    std::env::remove_var("VAUGHAN_VB_STATE_DIR");
 }
 
 #[tokio::test]

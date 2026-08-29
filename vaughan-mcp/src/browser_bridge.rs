@@ -822,6 +822,13 @@ async fn sell_value_check(
         // 1k units: large enough to dodge rounding noise, small enough to
         // dodge price impact — this is a spot price, not a trade quote.
         let probe = U256::from(1000u128 * 10u128.pow(decimals as u32));
+        // Read-only price probe: the recipient only shapes calldata, so a
+        // locked wallet falls back to the dead address (zero address is
+        // rejected as a recipient by some routers).
+        let dead: Address = "0x000000000000000000000000000000000000dEaD"
+            .parse()
+            .unwrap_or(Address::ZERO);
+        let recipient = ctx.active_address.unwrap_or(dead);
         let req = AggQuoteRequest {
             token_in: token_addr,
             token_out: usdc_addr,
@@ -829,7 +836,7 @@ async fn sell_value_check(
             token_out_is_native: false,
             amount_in: probe,
             slippage_percent: 0.5,
-            account: None,
+            account: Some(recipient),
         };
         match quote_aggregator(AggVenue::Empseal, &req, ctx.chain_id, None, None).await {
             Ok(q) => {

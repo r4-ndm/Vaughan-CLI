@@ -62,19 +62,29 @@ pub struct VbTargetPin {
     pub updated_at: u64,
 }
 
+/// Vaughan data dir for VB session files. `VAUGHAN_VB_STATE_DIR` overrides
+/// the default — tests point it at a tempdir so a live VB session on the
+/// host machine can't contaminate assertions.
+fn vb_state_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("VAUGHAN_VB_STATE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    Some(dirs::data_dir()?.join("vaughan-cli"))
+}
+
 /// Path to `vb.session` under the Vaughan data dir.
 pub fn vb_session_path() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join("vaughan-cli").join("vb.session"))
+    Some(vb_state_dir()?.join("vb.session"))
 }
 
 /// Path to the MCP-side pinned target file (`vb.target`) under the data dir.
 pub fn vb_target_pin_path() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join("vaughan-cli").join("vb.target"))
+    Some(vb_state_dir()?.join("vb.target"))
 }
 
 /// Path to the VB spawn log (`vb.log`) under the Vaughan data dir.
 pub fn vb_log_path() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join("vaughan-cli").join("vb.log"))
+    Some(vb_state_dir()?.join("vb.log"))
 }
 
 /// Read the latest VB CDP session file, if present.
