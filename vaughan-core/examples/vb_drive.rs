@@ -83,9 +83,10 @@ async fn main() {
         }
         Some("snap") => cdp_snapshot(cdp).await,
         Some("quote") => cdp_read_quote(cdp, args.get(2).map(|s| s.as_str())).await,
+        Some("connect") => vb_cdp::cdp_connect_vaughan_wallet(cdp, Some(369)).await,
         _ => {
             eprintln!(
-                "usage: vb_drive <open URL | select-in SYM | select-out SYM | amount N | snap | quote [SYM]>"
+                "usage: vb_drive <open URL | connect | select-in SYM | select-out SYM | amount N | snap | quote [SYM]>"
             );
             std::process::exit(2);
         }

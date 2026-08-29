@@ -34,6 +34,12 @@ pub struct VbSession {
     /// learns it here and requires sealed page-origin assertions.
     #[serde(default)]
     pub extension_secret: String,
+    /// Provider `access_token` baked into the extension at launch. When the
+    /// TUI unlock rotates `provider.session`, a live VB with a stale token
+    /// cannot reach the bridge — [`vb_session_provider_token_stale`] detects
+    /// this so MCP respawns instead of reusing a dead session.
+    #[serde(default)]
+    pub provider_token: String,
     pub updated_at: u64,
 }
 
@@ -47,6 +53,7 @@ impl std::fmt::Debug for VbSession {
             .field("allow_suffixes", &self.allow_suffixes)
             .field("pid", &self.pid)
             .field("extension_secret", &"<redacted>")
+            .field("provider_token", &"<redacted>")
             .field("updated_at", &self.updated_at)
             .finish()
     }
@@ -240,6 +247,70 @@ pub fn clear_vb_session() {
         let _ = std::fs::remove_file(path);
     }
     clear_target_pin();
+}
+
+/// Extract `access_token` from a resolved provider WebSocket URL.
+pub fn extract_provider_access_token(ws_url: &str) -> Option<String> {
+    let (_, tail) = ws_url.split_once("access_token=")?;
+    let token = tail.split('&').next()?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
+/// Newest non-empty `provider.session` token across profile dirs (same rule as
+/// `vaughan-dapp-browser` launch). Absent when the wallet is locked.
+pub fn read_latest_provider_session_token() -> Option<String> {
+    let base = dirs::data_dir()?.join("vaughan-cli");
+    let mut paths = vec![base.join(crate::core::PROVIDER_SESSION_FILE)];
+    if let Ok(rd) = std::fs::read_dir(base.join("profiles")) {
+        for e in rd.flatten() {
+            paths.push(e.path().join(crate::core::PROVIDER_SESSION_FILE));
+        }
+    }
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for p in paths {
+        let Ok(meta) = std::fs::metadata(&p) else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(tok) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let tok = tok.trim().to_string();
+        if tok.is_empty() {
+            continue;
+        }
+        if best.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+            best = Some((modified, tok));
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
+/// True when VB's baked provider token no longer matches the live TUI session.
+pub fn vb_session_provider_token_stale(session: &VbSession) -> bool {
+    let Some(current) = read_latest_provider_session_token() else {
+        return false;
+    };
+    session.provider_token.is_empty() || session.provider_token != current
+}
+
+/// Best-effort terminate of a stale VB launcher (Unix `kill`; no-op elsewhere).
+pub fn terminate_vb_process(session: &VbSession) {
+    if session.pid > 0 {
+        #[cfg(unix)]
+        {
+            let _ = Command::new("kill")
+                .arg(session.pid.to_string())
+                .status();
+        }
+    }
+    clear_vb_session();
 }
 
 /// Chrome internals / empty loads — do not treat as allowlist violations.
@@ -696,5 +767,35 @@ mod tests {
         assert!(check_url_allowed("http://127.0.0.1:8080/", &[]).is_err());
         check_url_allowed("http://127.0.0.1:8080/", &["127.0.0.1".into()]).unwrap();
         assert!(check_url_allowed("http://evil.com/", &[]).is_err());
+    }
+
+    #[test]
+    fn provider_token_extract_and_stale_check() {
+        let url = "ws://127.0.0.1:8745?access_token=abc123&foo=bar";
+        assert_eq!(
+            extract_provider_access_token(url),
+            Some("abc123".to_string())
+        );
+        let base = VbSession {
+            cdp_url: "http://127.0.0.1:9222".into(),
+            cdp_token: String::new(),
+            allow_suffixes: vec![],
+            pid: 0,
+            extension_secret: String::new(),
+            provider_token: String::new(),
+            updated_at: 0,
+        };
+        if let Some(current) = read_latest_provider_session_token() {
+            let fresh = VbSession {
+                provider_token: current,
+                ..base.clone()
+            };
+            assert!(!vb_session_provider_token_stale(&fresh));
+            let stale = VbSession {
+                provider_token: "definitely-not-the-live-token".into(),
+                ..base
+            };
+            assert!(vb_session_provider_token_stale(&stale));
+        }
     }
 }

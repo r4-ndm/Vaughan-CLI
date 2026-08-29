@@ -101,6 +101,16 @@ pub fn redact_access_token(raw: &str) -> String {
     }
 }
 
+fn extract_access_token(raw: &str) -> Option<String> {
+    let (_, tail) = raw.split_once("access_token=")?;
+    let token = tail.split('&').next()?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
 /// Chromium-class binaries tried in order when `--chrome` is omitted.
 ///
 /// Prefer **Chromium** or **Google Chrome** (no built-in competing wallet).
@@ -214,6 +224,7 @@ fn write_vb_session(
     cdp_token: &str,
     allow: &Allowlist,
     extension_secret: &str,
+    provider_token: &str,
 ) -> Result<(), String> {
     let path = vb_session_path().ok_or_else(|| "no data dir for vb.session".to_string())?;
     if let Some(parent) = path.parent() {
@@ -240,6 +251,7 @@ fn write_vb_session(
         // Per-launch extension seal key; the provider learns it here and
         // requires sealed page-origin assertions from the extension.
         "extension_secret": extension_secret,
+        "provider_token": provider_token,
         "updated_at": updated_at,
     });
     let bytes = serde_json::to_vec(&body).map_err(|e| format!("vb.session json: {e}"))?;
@@ -369,6 +381,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     // that learned the bridge token. Generated even when CDP export is off —
     // the provider seal check does not depend on agent control.
     let extension_secret = random_session_token();
+    let provider_token = extract_access_token(&opts.provider_ws).unwrap_or_default();
     write_inject_extension(&ext, &opts.provider_ws, &opts.allow, &extension_secret)?;
 
     // vb.session is written on EVERY launch: it carries the PID binding and
@@ -394,7 +407,13 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     );
     if export_cdp {
         let token = cdp_token.as_deref().unwrap_or("");
-        write_vb_session(cdp_port, token, &opts.allow, &extension_secret)?;
+        write_vb_session(
+            cdp_port,
+            token,
+            &opts.allow,
+            &extension_secret,
+            &provider_token,
+        )?;
         println!(
             "{}",
             serde_json::json!({
@@ -407,7 +426,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
             "vaughan-dapp-browser: CDP on 127.0.0.1:{cdp_port} (loopback; session token in vb.session)"
         );
     } else {
-        write_vb_session(0, "", &opts.allow, &extension_secret)?;
+        write_vb_session(0, "", &opts.allow, &extension_secret, &provider_token)?;
         eprintln!("vaughan-dapp-browser: agent CDP off (pass --cdp-port N to enable)");
     }
     eprintln!("Look for a green top banner: “VB injected …”");

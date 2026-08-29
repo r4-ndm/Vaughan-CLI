@@ -13,7 +13,8 @@ use vaughan_core::core::persistence::{default_ipfs_gateway_hosts, StateManager};
 use vaughan_core::core::vb_browser::{
     allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_or_reuse,
     cdp_open_url, check_url_allowed, clear_target_pin, clear_vb_session, read_vb_session,
-    resolve_cdp_port, spawn_cdp_port, spawn_dapp_browser, vb_session_pid_matches, wait_for_cdp,
+    resolve_cdp_port, spawn_cdp_port, spawn_dapp_browser, terminate_vb_process,
+    vb_session_pid_matches, vb_session_provider_token_stale, wait_for_cdp,
     write_target_pin, VbSession,
 };
 use vaughan_core::core::vb_cdp::{self, ElementRef, SwapTokenSide};
@@ -334,6 +335,13 @@ async fn verify_vb_session(session: &VbSession) -> Result<(), String> {
     if !cdp_alive(&session.cdp_url).await {
         return Err(
             "browser_unavailable: VB CDP endpoint not reachable — reopen with browser_open"
+                .to_string(),
+        );
+    }
+    if vb_session_provider_token_stale(session) {
+        terminate_vb_process(session);
+        return Err(
+            "browser_unavailable: VB provider token stale (wallet was unlocked after VB launch) — reopen with browser_open"
                 .to_string(),
         );
     }
