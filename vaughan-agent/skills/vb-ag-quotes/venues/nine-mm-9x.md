@@ -30,10 +30,11 @@
   curated registry maps `USDC` to the pUSDC address.
 - **Amount entry (2026-08-29, corrected):** 9X's sell mask is ATM-style
   (last digit = smallest unit) for **every** input method — key events,
-  insertText, and setter all parse ÷1000. **Workaround: type intended
-  amount × 1000** (1M PLS → `1000000000`; display then values it correctly,
-  e.g. `≈ $11,956`). The URL's `sellAmount=` mirrors the *raw* field digits,
-  NOT the parsed amount — don't read it as confirmation of the parse.
+  insertText, and setter all parse ÷1000. Pass **human units** in `amount_in`
+  (1M PLS → `"1000000"`); the typing layer multiplies by 1000 before keying
+  into the field (1B digits typed → ~1M effective). The URL's `sellAmount=`
+  mirrors the *raw* field digits, NOT the parsed amount — don't read it as
+  confirmation of the parse.
 - **Layer divergence + `out_check`:** 9X's display layer and quote engine
   can disagree about the amount (sell `$` correct while MIN RECEIVED is
   1000× off). `browser_read_quote`'s sell-side check only validates the

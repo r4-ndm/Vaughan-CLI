@@ -53,11 +53,13 @@ Page title: *Switch.win - The Premiere DEX Aggregator* (or similar).
 - **Amount entry ÷1000 quirk (2026-08-29, updated):** Switch's mask is
   ATM-style with **every** input method (key events, insertText, setter):
   typed digits get an implicit decimal 3 from the right (`1000000` → 1,000.000
-  PLS state) while the field displays the raw digits. Workaround: type amount
-  × 1000 (`1000000000` for 1M PLS) and verify with
-  `browser_read_quote { expect_amount_in, expect_token_in }` →
+  PLS state) while the field displays the raw digits. **Always pass human units
+  in `amount_in`** (1M PLS → `"1000000"`, not `"1000000000"`). The typing layer
+  multiplies by 1000 internally before keying into the field (1M human → 1B
+  digits typed — the venue mask then yields ~1M effective). Verify with
+  `browser_read_quote { expect_amount_in: "1000000", expect_token_in: "PLS" }` →
   `sell_check.suspected_amount_misparse` (typing `verified: true` only proves
-  the *field* holds the digits, not how the venue parsed them). 9X differs —
+  the *field* holds the scaled digits, not how the venue parsed them). 9X differs —
   see its playbook.
 - One-shot output pick can fail (`token text not found`) when the open step hits
   the venue's **Switch** tab. Manual recovery: `browser_click_text` on the current

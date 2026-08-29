@@ -10,7 +10,40 @@ use serde_json::{json, Value};
 
 use super::client::{deep_click_in_all_frames, evaluate_in_all_frames, CdpPage};
 use super::js;
+use crate::core::vb_browser::cdp_current_page_url;
 use crate::error::WalletError;
+
+/// Venues whose sell-amount input silently ÷1000 typed digits (ATM-style mask).
+/// `amount_in` stays in **human units**; [`scale_amount_for_venue_field`] applies
+/// the ×1000 field typing so callers never pass "1 billion" for 1M PLS.
+pub fn venue_amount_mask_scale(page_url: &str) -> u64 {
+    let host = url::Url::parse(page_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if host.contains("switch.win") || host.ends_with("9mm.pro") {
+        1000
+    } else {
+        1
+    }
+}
+
+/// Map human `amount_in` to the digit string typed into the venue field.
+pub fn scale_amount_for_venue_field(human: &str, scale: u64) -> Result<String, WalletError> {
+    let human = human.trim();
+    if scale <= 1 {
+        return Ok(human.to_string());
+    }
+    let n: u64 = human.parse().map_err(|_| {
+        WalletError::InvalidTransaction(format!(
+            "amount `{human}` must be a whole number for ÷{scale} venue masks"
+        ))
+    })?;
+    n.checked_mul(scale)
+        .map(|v| v.to_string())
+        .ok_or_else(|| WalletError::InvalidTransaction("amount overflow".into()))
+}
 
 /// Which leg of a swap form to target (top ≈ input, bottom ≈ output on most UIs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,15 +191,24 @@ pub async fn cdp_set_swap_amount_with_strategy(
     amount: &str,
     strategy: super::interact::TypeStrategy,
 ) -> Result<Value, WalletError> {
+    let page_url = cdp_current_page_url(cdp_http_url).await.unwrap_or_default();
+    let scale = venue_amount_mask_scale(&page_url);
+    let field_amount = scale_amount_for_venue_field(amount, scale)?;
+
     let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
     let focused = evaluate_in_all_frames(&mut page, js::focus_amount()).await?;
     let focus_inner = focused.get("result").cloned().unwrap_or(focused.clone());
     if focus_inner.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return Ok(focus_inner);
     }
-    let mut out = super::interact::type_into_marked_with(&mut page, amount, strategy).await?;
+    let mut out =
+        super::interact::type_into_marked_with(&mut page, &field_amount, strategy).await?;
     if let Some(obj) = out.as_object_mut() {
-        obj.insert("amount".to_string(), json!(amount));
+        obj.insert("amount_in".to_string(), json!(amount));
+        obj.insert("field_amount".to_string(), json!(field_amount));
+        if scale > 1 {
+            obj.insert("venue_mask_scale".to_string(), json!(scale));
+        }
     }
     Ok(out)
 }
@@ -259,5 +301,25 @@ mod tests {
         assert_eq!(normalize_swap_symbol("native"), "PLS");
         assert_eq!(normalize_swap_symbol("pls"), "PLS");
         assert_eq!(normalize_swap_symbol("HEX"), "HEX");
+    }
+
+    #[test]
+    fn venue_mask_scale_switch_and_9mm() {
+        assert_eq!(
+            venue_amount_mask_scale("https://www.switch.win/dapp"),
+            1000
+        );
+        assert_eq!(venue_amount_mask_scale("https://9x.9mm.pro/"), 1000);
+        assert_eq!(venue_amount_mask_scale("https://app.piteas.io/"), 1);
+    }
+
+    #[test]
+    fn scale_human_amount_for_div1000_masks() {
+        assert_eq!(
+            scale_amount_for_venue_field("1000000", 1000).unwrap(),
+            "1000000000"
+        );
+        assert_eq!(scale_amount_for_venue_field("1", 1000).unwrap(), "1000");
+        assert_eq!(scale_amount_for_venue_field("1000000", 1).unwrap(), "1000000");
     }
 }
