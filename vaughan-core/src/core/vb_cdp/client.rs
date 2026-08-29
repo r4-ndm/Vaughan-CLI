@@ -335,6 +335,48 @@ impl CdpPage {
         .await?;
         Ok(())
     }
+
+    /// Insert text at the focused element through the browser's real input
+    /// pipeline (`Input.insertText` — same path as IME/paste). Masked React
+    /// inputs apply their own formatting to this, unlike a foreign
+    /// `value =` set which two venues were observed mangling (÷1000).
+    pub(crate) async fn insert_text(&mut self, text: &str) -> Result<(), WalletError> {
+        self.call("Input.insertText", json!({ "text": text }))
+            .await?;
+        Ok(())
+    }
+
+    /// Type a single character as a real key press (keyDown carrying `text`,
+    /// then keyUp) — indistinguishable from human typing, so masked inputs
+    /// must treat it exactly like a user's keystroke.
+    pub(crate) async fn type_char(&mut self, ch: char) -> Result<(), WalletError> {
+        let (code, vk) = char_key_definition(ch)?;
+        let key = ch.to_string();
+        self.call(
+            "Input.dispatchKeyEvent",
+            json!({
+                "type": "keyDown",
+                "key": key,
+                "code": code,
+                "text": key,
+                "windowsVirtualKeyCode": vk,
+                "nativeVirtualKeyCode": vk,
+            }),
+        )
+        .await?;
+        self.call(
+            "Input.dispatchKeyEvent",
+            json!({
+                "type": "keyUp",
+                "key": key,
+                "code": code,
+                "windowsVirtualKeyCode": vk,
+                "nativeVirtualKeyCode": vk,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 /// WebSocket debugger URL for the agent's page target.
@@ -533,6 +575,27 @@ fn key_definition(key: &str) -> Result<(&'static str, u32), WalletError> {
         "Space" | " " => Ok(("Space", 32)),
         other => Err(WalletError::InvalidTransaction(format!(
             "unsupported key `{other}` — use Enter, Tab, Escape, Arrow*, Space, Backspace, Delete"
+        ))),
+    }
+}
+
+/// CDP `code` + Windows virtual-key code for a typed character. ASCII
+/// alphanumerics double as their own VK codes ('0'=0x30 … 'A'=0x41).
+fn char_key_definition(ch: char) -> Result<(String, u32), WalletError> {
+    match ch {
+        '0'..='9' => Ok((format!("Digit{ch}"), ch as u32)),
+        'a'..='z' => Ok((
+            format!("Key{}", ch.to_ascii_uppercase()),
+            ch.to_ascii_uppercase() as u32,
+        )),
+        'A'..='Z' => Ok((format!("Key{ch}"), ch as u32)),
+        '.' => Ok(("Period".into(), 190)),
+        ',' => Ok(("Comma".into(), 188)),
+        '-' => Ok(("Minus".into(), 189)),
+        '_' => Ok(("Minus".into(), 189)),
+        ' ' => Ok(("Space".into(), 32)),
+        other => Err(WalletError::InvalidTransaction(format!(
+            "browser_type: unsupported character `{other}`"
         ))),
     }
 }

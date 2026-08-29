@@ -1,6 +1,7 @@
-// Set the sell amount on the swap form (React-safe native setter + events).
+// Find the swap amount input, mark it as the agent's type target, focus it.
+// Sell leg is the topmost amount-shaped input on standard swap forms.
 (() => {
-  const amount = __VB_AMOUNT__;
+  document.querySelectorAll('[data-vb-type-target]').forEach(x => x.removeAttribute('data-vb-type-target'));
   const inSwap = el => !el.closest('nav, header, footer, [role=navigation]');
   const inputs = [...document.querySelectorAll('input')]
     .filter(inSwap)
@@ -21,14 +22,8 @@
   if (!target) return { ok: false, error: 'no amount input' };
   target.focus();
   target.click();
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-  if (setter) setter.call(target, '');
-  else target.value = '';
-  target.dispatchEvent(new Event('input', { bubbles: true }));
-  if (setter) setter.call(target, amount);
-  else target.value = amount;
-  target.dispatchEvent(new Event('input', { bubbles: true }));
-  target.dispatchEvent(new Event('change', { bubbles: true }));
-  target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-  return { ok: true, amount, value: target.value };
+  target.setAttribute('data-vb-type-target', '1');
+  try { target.select(); } catch (_) {}
+  try { target.setSelectionRange(0, (target.value || '').length); } catch (_) {}
+  return { ok: true, value_before: target.value ?? null };
 })()

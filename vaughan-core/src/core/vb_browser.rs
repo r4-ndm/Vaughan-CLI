@@ -438,6 +438,15 @@ pub fn spawn_dapp_browser(
         }
         None => Command::new(&bin),
     };
+    // Headless MCP hosts (cursor-agent, Claude Desktop) spawn us without a
+    // display; Chromium then exits at launch and CDP never comes up. Adopt
+    // the local X server's default display when one is present.
+    if std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+        && std::path::Path::new("/tmp/.X11-unix/X0").exists()
+    {
+        cmd.env("DISPLAY", ":0");
+    }
     cmd.arg("--url").arg(url);
     for h in allow_hosts {
         let t = h.trim();

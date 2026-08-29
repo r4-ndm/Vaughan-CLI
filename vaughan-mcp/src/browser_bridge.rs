@@ -6,7 +6,9 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use vaughan_core::core::aggregator::{AggVenue, AGG_VENUES};
+use alloy::primitives::{Address, U256};
+use vaughan_core::chains::evm::tokens_for_chain;
+use vaughan_core::core::aggregator::{quote_aggregator, AggQuoteRequest, AggVenue, AGG_VENUES};
 use vaughan_core::core::persistence::{default_ipfs_gateway_hosts, StateManager};
 use vaughan_core::core::vb_browser::{
     allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_url,
@@ -106,13 +108,23 @@ pub fn browser_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "browser_read_quote",
-            "description": "Read visible swap quote text from the active VB page (all frames — includes non-interactive labels agents miss in browser_snapshot refs). Never signs.",
+            "description": "Read visible swap quote text from the active VB page (all frames — includes non-interactive labels agents miss in browser_snapshot refs). \
+                Pass expect_amount_in + expect_token_in to cross-check the page's sell-side $ valuation against an oracle price — flags suspected_amount_misparse \
+                (venue input masks that silently shift the typed amount, e.g. ÷1000). Never signs.",
             "inputSchema": json!({
                 "type": "object",
                 "properties": {
                     "token_out": {
                         "type": "string",
                         "description": "Output token symbol to parse (default HEX)"
+                    },
+                    "expect_amount_in": {
+                        "type": "string",
+                        "description": "Intended sell amount in human units (e.g. \"1000000\") — enables the misparse cross-check"
+                    },
+                    "expect_token_in": {
+                        "type": "string",
+                        "description": "Sell token symbol or address (e.g. PLS) — enables the misparse cross-check"
                     }
                 }
             }),
@@ -723,14 +735,122 @@ pub async fn browser_read_quote(args: Value, ctx: &McpContext) -> Result<Value, 
     // token_out optional — inferred from the page's `Get <SYM>` leg when omitted.
     let token_out = args.get("token_out").and_then(|v| v.as_str());
     let cdp_url = require_cdp_session(ctx).await?;
-    let quote = vb_cdp::cdp_read_quote(&cdp_url, token_out)
+    let mut quote = vb_cdp::cdp_read_quote(&cdp_url, token_out)
         .await
         .map_err(wallet_err)?;
+    if let (Some(amount), Some(token)) = (
+        args.get("expect_amount_in").and_then(|v| v.as_str()),
+        args.get("expect_token_in").and_then(|v| v.as_str()),
+    ) {
+        let check = sell_value_check(&quote, amount, token, ctx).await;
+        if let Some(obj) = quote.as_object_mut() {
+            obj.insert("sell_check".to_string(), check);
+        }
+    }
     Ok(json!({
         "status": "quote",
         "cdp_url": cdp_url,
         "quote": quote,
     }))
+}
+
+/// Cross-check the page's sell-side `$` valuation against the intended amount
+/// priced by a browserless oracle quote (EmpX). Venue-agnostic misparse
+/// detection: input masks that silently shift the typed amount (observed
+/// ÷1000) show up as a ratio far from 1. Never fails the read — problems
+/// come back as `{ ok: false, note }`.
+async fn sell_value_check(
+    quote: &Value,
+    expect_amount_in: &str,
+    expect_token_in: &str,
+    ctx: &McpContext,
+) -> Value {
+    let fail = |note: String| json!({ "ok": false, "note": note });
+    let sell_usd = match quote.get("sell_usd").and_then(|v| v.as_f64()) {
+        Some(v) => v,
+        None => return fail("no sell-side $ estimate visible on page".into()),
+    };
+    let intended: f64 = match expect_amount_in.trim().parse::<f64>() {
+        Ok(v) if v > 0.0 && v.is_finite() => v,
+        _ => return fail(format!("unparseable expect_amount_in `{expect_amount_in}`")),
+    };
+
+    // Resolve the sell token: native, registry symbol, or registry address.
+    let raw = expect_token_in.trim();
+    let (token_addr, token_native, decimals, symbol) = {
+        let registry = tokens_for_chain(ctx.chain_id);
+        let by_symbol = |sym: &str| registry.iter().find(|t| t.symbol.eq_ignore_ascii_case(sym));
+        if raw.eq_ignore_ascii_case("native") || raw.eq_ignore_ascii_case("pls") {
+            (Address::ZERO, true, 18u8, "PLS".to_string())
+        } else if let Some(t) = by_symbol(raw) {
+            match t.address.parse::<Address>() {
+                Ok(a) => (a, false, t.decimals, t.symbol.to_string()),
+                Err(_) => return fail(format!("bad registry address for {raw}")),
+            }
+        } else if let Ok(a) = raw.parse::<Address>() {
+            match registry
+                .iter()
+                .find(|t| t.address.eq_ignore_ascii_case(raw))
+            {
+                Some(t) => (a, false, t.decimals, t.symbol.to_string()),
+                None => {
+                    return fail(format!(
+                        "`{raw}` not in the curated registry — pass a known symbol"
+                    ))
+                }
+            }
+        } else {
+            return fail(format!("unknown expect_token_in `{raw}`"));
+        }
+    };
+
+    // Stablecoins price themselves; everything else goes through EmpX.
+    let unit_price_usd = if matches!(symbol.as_str(), "USDC" | "USDT" | "DAI") {
+        1.0
+    } else {
+        let usdc = match tokens_for_chain(ctx.chain_id)
+            .into_iter()
+            .find(|t| t.symbol == "USDC")
+        {
+            Some(t) => t,
+            None => return fail("no USDC in chain registry — cannot price".into()),
+        };
+        let usdc_addr: Address = match usdc.address.parse() {
+            Ok(a) => a,
+            Err(_) => return fail("bad registry USDC address".into()),
+        };
+        // 1k units: large enough to dodge rounding noise, small enough to
+        // dodge price impact — this is a spot price, not a trade quote.
+        let probe = U256::from(1000u128 * 10u128.pow(decimals as u32));
+        let req = AggQuoteRequest {
+            token_in: token_addr,
+            token_out: usdc_addr,
+            token_in_is_native: token_native,
+            token_out_is_native: false,
+            amount_in: probe,
+            slippage_percent: 0.5,
+            account: None,
+        };
+        match quote_aggregator(AggVenue::Empseal, &req, ctx.chain_id, None, None).await {
+            Ok(q) => {
+                let out: f64 = match q.amount_out.to_string().parse() {
+                    Ok(v) => v,
+                    Err(_) => return fail("oracle amount_out unparseable".into()),
+                };
+                out / 1e6 / 1000.0
+            }
+            Err(e) => return fail(format!("oracle quote failed: {e}")),
+        }
+    };
+
+    let expected_usd = intended * unit_price_usd;
+    let mut check = vb_cdp::assess_sell_value(sell_usd, expected_usd);
+    if let Some(obj) = check.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
+        obj.insert("unit_price_usd".to_string(), json!(unit_price_usd));
+        obj.insert("expect_token_in".to_string(), json!(symbol));
+    }
+    check
 }
 
 pub async fn browser_click(args: Value, ctx: &McpContext) -> Result<Value, String> {

@@ -25,6 +25,12 @@ kind: guide
    Wallet connect runs **only when the control plane is unlocked** (`connect_wallet` defaults to that).
 4. **Browserless fast path** (Squirrel / PulseSwap / Piteas / EmpX): MCP `quote_swap` with `amount_in` in **wei**.
 5. **Read quote:** `browser_snapshot` or `browser_read_quote` (visible body text, all frames) or parse `setup_swap` in the `browser_open_agg` response.
+6. **Verify the amount landed:** pass `expect_amount_in` + `expect_token_in` to
+   `browser_read_quote` — it cross-checks the page's sell-side `$` valuation
+   against an oracle price (EmpX) and returns `quote.sell_check` with
+   `suspected_amount_misparse: true` when the venue's input mask silently
+   shifted your digits (e.g. ÷1000). Generic — works on any venue that shows
+   a sell `$` estimate. Always use it for large amounts.
 
 Never auto-sign swaps — user approves in the TUI (or sentient policy on `serve`).
 

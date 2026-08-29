@@ -144,12 +144,61 @@ pub fn infer_token_out(lines: &[String]) -> Option<String> {
     None
 }
 
+/// Extract `$`-denominated valuations from visible lines (`$12,060`,
+/// `≈ $5,242`). The sell-side valuation is the largest on standard swap
+/// forms: buy = sell discounted by fees and price impact. `$0` balance
+/// lines drop out via `parse_amount_token`'s positive-only filter.
+pub fn extract_usd_values(lines: &[String]) -> Vec<f64> {
+    let mut out = Vec::new();
+    for line in lines {
+        let bytes = line.as_bytes();
+        for (i, _) in line.match_indices('$') {
+            if let Some(rest) = line.get(i..) {
+                if i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                    if let Some(v) = parse_amount_token(rest) {
+                        out.push(v);
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    out
+}
+
+/// Compare the page's sell-side USD valuation against the intended trade's
+/// expected value (`intended_amount × oracle unit price`).
+///
+/// Venue-side amount misparse (e.g. an ATM-style mask shifting the decimal
+/// three places) shows up as a ratio far from 1, while spot-price drift
+/// between the venue's feed and the oracle is a few percent — so a wide
+/// band keeps false positives near zero. Generic: no venue names, works for
+/// any dApp that renders a sell-side `$` estimate.
+pub fn assess_sell_value(page_sell_usd: f64, expected_usd: f64) -> Value {
+    let ratio = if expected_usd > 0.0 {
+        page_sell_usd / expected_usd
+    } else {
+        0.0
+    };
+    let suspected = !(0.5..=2.0).contains(&ratio);
+    json!({
+        "page_sell_usd": page_sell_usd,
+        "expected_usd": expected_usd,
+        "ratio": ratio,
+        "suspected_amount_misparse": suspected,
+    })
+}
+
 /// Labeled output rows (`Expected Output` → value on same or following line).
 fn extract_labeled_outputs(lines: &[String]) -> serde_json::Map<String, Value> {
-    const LABELS: [(&str, &str); 3] = [
+    const LABELS: [(&str, &str); 5] = [
         ("total output", "total_output"),
         ("expected output", "expected_output"),
         ("minimum output", "minimum_output"),
+        // 9mm 9X style.
+        ("minimum received", "minimum_output"),
+        ("min received", "minimum_output"),
     ];
     let mut out = serde_json::Map::new();
     for (i, line) in lines.iter().enumerate() {
@@ -205,6 +254,9 @@ pub fn parse_quote_hints(lines: &[String], token_out: &str) -> Value {
     }
 
     let labeled = extract_labeled_outputs(lines);
+    // Largest `$` valuation on the form — the sell-side estimate heuristic
+    // used by the amount-misparse cross-check.
+    let sell_usd = extract_usd_values(lines).into_iter().next();
     // Expected output is the post-fee number the user actually receives;
     // minimum output is the worst case — never the headline quote.
     let labeled_best = labeled
@@ -228,6 +280,7 @@ pub fn parse_quote_hints(lines: &[String], token_out: &str) -> Value {
         "amounts": amounts,
         "status_lines": status_lines,
         "connect_wallet_visible": connect_wallet,
+        "sell_usd": sell_usd,
         "line_count": lines.len(),
     })
 }
@@ -271,7 +324,7 @@ pub async fn cdp_read_quote(
     if let Some(obj) = hints.as_object_mut() {
         obj.insert(
             "lines_sample".to_string(),
-            json!(lines.iter().take(40).collect::<Vec<_>>()),
+            json!(lines.iter().take(80).collect::<Vec<_>>()),
         );
         obj.insert("expanded_swap_details".to_string(), json!(expanded));
     }
@@ -334,6 +387,54 @@ mod tests {
     fn infer_token_out_ignores_amounts_and_words() {
         let lines = vec!["Get".into(), "$0".into(), "0.00".into(), "Balance 0".into()];
         assert_eq!(infer_token_out(&lines), None);
+    }
+
+    #[test]
+    fn usd_values_pick_sell_side_as_max() {
+        // Real Switch.win lines from 2026-08-29: sell $12,060 / buy $11,898.62.
+        let lines = vec![
+            "Sell".into(),
+            "PLS".into(),
+            "$12,060".into(),
+            "USD".into(),
+            "Balance 0 PLS".into(),
+            "$0".into(),
+            "Get".into(),
+            "USDC".into(),
+            "$11,898.62".into(),
+        ];
+        let usd = extract_usd_values(&lines);
+        assert_eq!(usd.first().copied(), Some(12060.0));
+        assert!(usd.contains(&11898.62));
+        // "$0" balance lines are dropped.
+        assert!(!usd.contains(&0.0));
+        let q = parse_quote_hints(&lines, "USDC");
+        assert_eq!(q.get("sell_usd").and_then(|v| v.as_f64()), Some(12060.0));
+    }
+
+    #[test]
+    fn sell_value_check_flags_thousandfold_misparse_only() {
+        // Venue parsed 1,000 PLS instead of 1,000,000 → ratio ≈ 0.001.
+        let flagged = assess_sell_value(12.06, 12060.0);
+        assert_eq!(
+            flagged
+                .get("suspected_amount_misparse")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // Correct parse with a few % of price-feed drift → no flag.
+        let ok = assess_sell_value(12060.0, 12069.20);
+        assert_eq!(
+            ok.get("suspected_amount_misparse")
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            ok.get("ratio")
+                .and_then(|v| v.as_f64())
+                .map(|r| (r * 1000.0).round() / 1000.0),
+            Some(0.999)
+        );
     }
 
     #[test]

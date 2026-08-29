@@ -26,7 +26,9 @@
     if (notToken(first)) return false;
     if (avoid && norm(first) === norm(avoid)) return false;
     if (/select.*token|choose.*token/i.test(t)) return true;
-    return /^[A-Z][A-Z0-9]{1,9}$/i.test(first);
+    // Digit-leading tickers exist (9MM, 1INCH) — require a letter anywhere,
+    // not necessarily first.
+    return /^(?=.*[A-Z])[A-Z0-9]{2,10}$/i.test(first);
   };
   // Some venues (Switch.win) use div/span selectors, not <button> — climb to
   // a clickable ancestor when one exists, else click the element itself.

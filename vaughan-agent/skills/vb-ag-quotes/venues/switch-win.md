@@ -50,3 +50,17 @@ Page title: *Switch.win - The Premiere DEX Aggregator* (or similar).
 - Token picker drives the modal **search box** — long-tail tokens (M3M3, …) work via one-shot `browser_open_agg`; no manual steps.
 - The venue's own **Switch** tab matches ticker-shaped buttons — the picker open step skips it (`notToken`) and retries with `avoid` when a click opens no modal.
 - Quote amounts render only after expanding **Swap details** — `browser_read_quote` auto-expands it and parses `Total/Expected/Minimum Output` rows (`quote.labeled`).
+- **Amount entry ÷1000 quirk (2026-08-29, updated):** Switch's mask is
+  ATM-style with **every** input method (key events, insertText, setter):
+  typed digits get an implicit decimal 3 from the right (`1000000` → 1,000.000
+  PLS state) while the field displays the raw digits. Workaround: type amount
+  × 1000 (`1000000000` for 1M PLS) and verify with
+  `browser_read_quote { expect_amount_in, expect_token_in }` →
+  `sell_check.suspected_amount_misparse` (typing `verified: true` only proves
+  the *field* holds the digits, not how the venue parsed them). 9X differs —
+  see its playbook.
+- One-shot output pick can fail (`token text not found`) when the open step hits
+  the venue's **Switch** tab. Manual recovery: `browser_click_text` on the current
+  output symbol (e.g. `HEX`) → `browser_type` the search box → `browser_click_text USDC`.
+- Quotes render **without** wallet connect (Connect Wallet stays visible) — fine
+  for read-only quote tours.

@@ -22,8 +22,12 @@ const CLICK_SNAPSHOT_REF: &str = include_str!("js/click_snapshot_ref.js");
 const OPEN_TOKEN_PICKER: &str = include_str!("js/open_token_picker.js");
 const SEARCH_TOKEN: &str = include_str!("js/search_token.js");
 const PICK_TOKEN: &str = include_str!("js/pick_token.js");
-const SET_AMOUNT: &str = include_str!("js/set_amount.js");
-const TYPE_INTO_REF: &str = include_str!("js/type_into_ref.js");
+const FOCUS_REF: &str = include_str!("js/focus_ref.js");
+const FOCUS_AMOUNT: &str = include_str!("js/focus_amount.js");
+const READ_TYPE_TARGET: &str = include_str!("js/read_type_target.js");
+const RESELECT_TYPE_TARGET: &str = include_str!("js/reselect_type_target.js");
+const SET_MARKED_VALUE: &str = include_str!("js/set_marked_value.js");
+const CONNECT_STATE: &str = include_str!("js/connect_state.js");
 const WAIT_PROBE: &str = include_str!("js/wait_probe.js");
 
 /// Snapshot of interactive refs (`{ title, url, refs }`).
@@ -63,19 +67,38 @@ pub(crate) fn pick_token(symbol_json: &str) -> String {
     PICK_TOKEN.replace("__VB_SYMBOL__", symbol_json)
 }
 
-/// Set the sell amount (`amount_json` is a JSON string).
-pub(crate) fn set_amount(amount_json: &str) -> String {
-    SET_AMOUNT.replace("__VB_AMOUNT__", amount_json)
-}
-
-/// Focus snapshot ref `idx` and type `text_json`; `clear` replaces first.
-pub(crate) fn type_into_ref(idx: u32, text_json: &str, clear: bool, typed_len: usize) -> String {
-    TYPE_INTO_REF
+/// Focus snapshot ref `idx` and mark it as the type target; `clear` selects
+/// any existing text so the following `Input.insertText` replaces it.
+pub(crate) fn focus_ref(idx: u32, clear: bool) -> String {
+    FOCUS_REF
         .replace("__VB_INTERACTIVE_ELS__", INTERACTIVE_ELS)
         .replace("__VB_IDX__", &idx.to_string())
-        .replace("__VB_TEXT__", text_json)
         .replace("__VB_CLEAR__", if clear { "true" } else { "false" })
-        .replace("__VB_TYPED_LEN__", &typed_len.to_string())
+}
+
+/// Find the swap amount input, mark it as the type target, focus + select.
+pub(crate) fn focus_amount() -> &'static str {
+    FOCUS_AMOUNT
+}
+
+/// Read back the marked type target's value (post-mask truth).
+pub(crate) fn read_type_target() -> &'static str {
+    READ_TYPE_TARGET
+}
+
+/// Re-focus the marked type target and select its contents (replace-ready).
+pub(crate) fn reselect_type_target() -> &'static str {
+    RESELECT_TYPE_TARGET
+}
+
+/// Last-resort native-setter write into the marked type target.
+pub(crate) fn set_marked_value(text_json: &str) -> String {
+    SET_MARKED_VALUE.replace("__VB_TEXT__", text_json)
+}
+
+/// Connected-state probe (address chip / Connect CTA presence).
+pub(crate) fn connect_state() -> &'static str {
+    CONNECT_STATE
 }
 
 /// Wait probe for text / selector / URL substring (each a JSON literal or `null`).

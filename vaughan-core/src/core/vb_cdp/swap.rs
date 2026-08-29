@@ -143,10 +143,22 @@ pub async fn cdp_select_swap_token(
 }
 
 /// Set the sell amount on the swap form.
+///
+/// Uses the same verified real-pipeline typing as `browser_type` — the
+/// response carries `value` (post-mask read-back) and `verified`, so a
+/// mis-parsed amount is visible instead of silently quoting the wrong size.
 pub async fn cdp_set_swap_amount(cdp_http_url: &str, amount: &str) -> Result<Value, WalletError> {
-    let amount_json = json_string(amount)?;
     let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
-    evaluate_in_all_frames(&mut page, &js::set_amount(&amount_json)).await
+    let focused = evaluate_in_all_frames(&mut page, js::focus_amount()).await?;
+    let focus_inner = focused.get("result").cloned().unwrap_or(focused.clone());
+    if focus_inner.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(focus_inner);
+    }
+    let mut out = super::interact::type_into_marked(&mut page, amount).await?;
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("amount".to_string(), json!(amount));
+    }
+    Ok(out)
 }
 
 /// Click the primary quote/swap CTA after tokens + amount (e.g. Switch.win "Switch Now").

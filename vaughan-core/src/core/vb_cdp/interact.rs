@@ -47,6 +47,11 @@ pub async fn cdp_dismiss_modals(cdp_http_url: &str) -> Result<Value, WalletError
 }
 
 /// Connect wallet on a dApp: open Connect → pick Vaughan/Injected (shadow DOM + snapshot refs).
+///
+/// After the provider click, the page is polled for connected state (address
+/// chip / Connect CTA gone). Clicking "Vaughan" only *requests* accounts —
+/// `eth_requestAccounts` may await TUI approval or never fire — so the result
+/// reports `connected` separately from click success.
 pub async fn cdp_connect_vaughan_wallet(cdp_http_url: &str) -> Result<Value, WalletError> {
     let mut steps = Vec::new();
     let mut modal_open = false;
@@ -67,11 +72,17 @@ pub async fn cdp_connect_vaughan_wallet(cdp_http_url: &str) -> Result<Value, Wal
         steps.push(json!({ "step": "pick_provider", "provider": provider, "result": r.clone() }));
         if click_result_ok(&r) {
             tokio::time::sleep(Duration::from_millis(1200)).await;
+            let connected = poll_connect_state(cdp_http_url, Duration::from_secs(8)).await;
             return Ok(json!({
                 "ok": true,
                 "provider": provider,
                 "steps": steps,
-                "note": "approve eth_requestAccounts in Vaughan TUI if prompted",
+                "connected": connected,
+                "note": if connected {
+                    "dApp sees the wallet"
+                } else {
+                    "no connected state observed — approve eth_requestAccounts in the Vaughan TUI if prompted; some dApps also require a chain switch"
+                },
             }));
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -79,7 +90,136 @@ pub async fn cdp_connect_vaughan_wallet(cdp_http_url: &str) -> Result<Value, Wal
     Ok(json!({ "ok": false, "error": "wallet provider not found", "steps": steps }))
 }
 
+/// Poll the page for post-connect state (address chip visible / Connect CTA gone).
+async fn poll_connect_state(cdp_http_url: &str, max_wait: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < max_wait {
+        if let Ok(mut page) = CdpPage::connect_first_page(cdp_http_url).await {
+            if let Ok(r) = evaluate_in_all_frames(&mut page, js::connect_state()).await {
+                let inner = r.get("result").cloned().unwrap_or(r);
+                if inner
+                    .get("connected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// Numeric-aware comparison for amount inputs: masks add thousands separators
+/// and trailing decimals, so compare parsed values rather than raw strings.
+fn amount_value_matches(intended: &str, actual: &str) -> bool {
+    let norm = |s: &str| -> Option<f64> {
+        let t: String = s
+            .trim()
+            .chars()
+            .filter(|c| !matches!(c, ',' | '_' | ' '))
+            .collect();
+        if t.is_empty() {
+            return None;
+        }
+        t.parse::<f64>().ok().filter(|v| v.is_finite())
+    };
+    match (norm(intended), norm(actual)) {
+        (Some(a), Some(b)) => (a - b).abs() <= 1e-9 * a.abs().max(1.0),
+        _ => intended.trim() == actual.trim(),
+    }
+}
+
+/// Read the marked type target's value from whichever frame holds it.
+async fn read_marked_value(page: &mut CdpPage) -> Option<String> {
+    let r = evaluate_in_all_frames(page, js::read_type_target())
+        .await
+        .ok()?;
+    let inner = r.get("result").cloned().unwrap_or(r);
+    inner
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Read the marked field after masks settle, then re-read after debounced /
+/// async reformatting would have fired. Returns the final value and whether
+/// it matches the intended text.
+///
+/// The delayed second read matters: Switch.win was observed showing the typed
+/// `1000000` correctly at +450ms, then a debounced mask rewrote it to
+/// `1000.000` and quoted a 1000× smaller trade.
+async fn verify_marked_value(page: &mut CdpPage, text: &str) -> (Option<String>, bool) {
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    let first = read_marked_value(page).await;
+    if !first
+        .as_deref()
+        .map(|v| amount_value_matches(text, v))
+        .unwrap_or(false)
+    {
+        return (first, false);
+    }
+    tokio::time::sleep(Duration::from_millis(1400)).await;
+    let settled = read_marked_value(page).await;
+    let ok = settled
+        .as_deref()
+        .map(|v| amount_value_matches(text, v))
+        .unwrap_or(false);
+    (settled.or(first), ok)
+}
+
+/// Type into the marked element as faithfully as a human, then verify the
+/// settled value matches. Strategy order: real per-char key events →
+/// whole-string `Input.insertText` → legacy native-setter write. The first
+/// strategy whose value survives the delayed re-verify wins; if none does,
+/// the result reports `verified: false` with the field's final value so the
+/// agent knows the quote is for the wrong amount.
+pub(crate) async fn type_into_marked(page: &mut CdpPage, text: &str) -> Result<Value, WalletError> {
+    let text_json =
+        serde_json::to_string(text).map_err(|e| WalletError::Serialization(e.to_string()))?;
+
+    // Strategy 1: per-char real key events (indistinguishable from typing).
+    for ch in text.chars() {
+        page.type_char(ch).await?;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    let (value, verified) = verify_marked_value(page, text).await;
+    if verified {
+        return Ok(
+            json!({ "ok": true, "value": value, "verified": true, "strategy": "key-events" }),
+        );
+    }
+    let mut last = value;
+
+    // Strategy 2: whole-string insertText (paste-like, real input events).
+    let _ = evaluate_in_all_frames(page, js::reselect_type_target()).await;
+    page.insert_text(text).await?;
+    let (value, verified) = verify_marked_value(page, text).await;
+    if verified {
+        return Ok(
+            json!({ "ok": true, "value": value, "verified": true, "strategy": "insert-text" }),
+        );
+    }
+    last = value.or(last);
+
+    // Strategy 3: legacy native-setter write (unmasked inputs only, really).
+    let _ = evaluate_in_all_frames(page, &js::set_marked_value(&text_json)).await;
+    let (value, verified) = verify_marked_value(page, text).await;
+    Ok(json!({
+        "ok": true,
+        "value": value.clone().or(last),
+        "verified": verified,
+        "strategy": "native-setter",
+        "warning": if verified { Value::Null } else { json!("field value does not match intended input — quote may be for the wrong amount") },
+    }))
+}
+
 /// Focus ref and type text (`browser_type`). When `clear` is true, replace value first.
+///
+/// The write goes through the real input pipeline and is verified by reading
+/// the field back; the result carries `value` and `verified` so agents can
+/// trust (or catch) what the dApp actually parsed.
 pub async fn cdp_type(
     cdp_http_url: &str,
     element_ref: super::ElementRef,
@@ -87,19 +227,18 @@ pub async fn cdp_type(
     clear: bool,
 ) -> Result<Value, WalletError> {
     let mut page = CdpPage::connect_first_page(cdp_http_url).await?;
-    let text_json =
-        serde_json::to_string(text).map_err(|e| WalletError::Serialization(e.to_string()))?;
-    let react = js::type_into_ref(element_ref.0, &text_json, clear, text.chars().count());
-    let result = evaluate_in_all_frames(&mut page, &react).await?;
-    if result.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-        if let Some(inner) = result.get("result") {
-            return Ok(inner.clone());
-        }
+    let focus = js::focus_ref(element_ref.0, clear);
+    let focused = evaluate_in_all_frames(&mut page, &focus).await?;
+    let focus_inner = focused.get("result").cloned().unwrap_or(focused.clone());
+    if focus_inner.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(focus_inner);
     }
-    if result.get("ref").is_some() {
-        return Ok(result);
+    let mut out = type_into_marked(&mut page, text).await?;
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("ref".to_string(), json!(format!("e{}", element_ref.0)));
+        obj.insert("typed_len".to_string(), json!(text.chars().count()));
     }
-    page.evaluate(&format!("(() => {react})()")).await
+    Ok(out)
 }
 
 /// Press a key on the focused page (`browser_press`).
@@ -154,4 +293,24 @@ fn build_wait_expression(
         .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()))
         .unwrap_or_else(|| "null".into());
     js::wait_probe(&text_lit, &sel_lit, &url_lit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::amount_value_matches;
+
+    #[test]
+    fn amount_match_tolerates_mask_formatting() {
+        assert!(amount_value_matches("1000000", "1,000,000"));
+        assert!(amount_value_matches("1000000", "1000000.000"));
+        assert!(amount_value_matches("1.5", "1.50"));
+    }
+
+    #[test]
+    fn amount_match_catches_mask_misparse() {
+        // The observed ÷1000 failure: typed 1000000, field settled on 1000.000.
+        assert!(!amount_value_matches("1000000", "1000.000"));
+        assert!(!amount_value_matches("5000", "5.000"));
+        assert!(!amount_value_matches("1000000", ""));
+    }
 }
