@@ -914,28 +914,23 @@ async fn sell_value_check(
         };
         match quote_aggregator(AggVenue::Empseal, &req, ctx.chain_id, None, None).await {
             Ok(q) => {
-                let out: f64 = match q.amount_out.to_string().parse() {
+                let out_raw = q.amount_out.to_string();
+                let out_human: f64 = match vaughan_core::core::transaction::format_base_units(
+                    &out_raw,
+                    usdc.decimals,
+                )
+                .parse()
+                {
                     Ok(v) => v,
                     Err(_) => return fail("oracle amount_out unparseable".into()),
                 };
-                out / 1e6 / 1000.0
+                out_human / 1000.0
             }
             Err(e) => return fail(format!("oracle quote failed: {e}")),
         }
     };
 
     let expected_usd = intended * unit_price_usd;
-    let mut check = vb_cdp::assess_sell_value(sell_usd, expected_usd);
-    if let Some(obj) = check.as_object_mut() {
-        obj.insert("ok".to_string(), json!(true));
-        obj.insert("unit_price_usd".to_string(), json!(unit_price_usd));
-        obj.insert("expect_token_in".to_string(), json!(symbol));
-    }
-
-    // Output-leg cross-check: when the buy token is a stablecoin, the quote's
-    // best output should land near the expected value too. This catches
-    // venues whose display layer and quote engine parse the amount
-    // differently (9X: sell $ correct, quote computed on raw digits).
     let token_out_sym = quote
         .get("token_out")
         .and_then(|v| v.as_str())
@@ -944,27 +939,40 @@ async fn sell_value_check(
         token_out_sym.to_ascii_uppercase().as_str(),
         "USDC" | "USDT" | "DAI"
     );
+    let page_out = quote.get("best").and_then(|v| v.as_f64());
+
+    // Stablecoin buy legs: compare sell-side `$` to the quoted output on the
+    // same page. Ag UIs can disagree with EmpX spot by orders of magnitude;
+    // internal leg consistency catches ÷1000 masks (sell ~$12, out ~12k).
     if out_stable {
-        if let Some(best) = quote.get("best").and_then(|v| v.as_f64()) {
-            let out_ratio = if expected_usd > 0.0 {
-                best / expected_usd
+        if let Some(best) = page_out {
+            let leg_ratio = if sell_usd > 0.0 {
+                best / sell_usd
             } else {
                 0.0
             };
-            let out_flag = !(0.5..=2.0).contains(&out_ratio);
-            if let Some(obj) = check.as_object_mut() {
-                obj.insert(
-                    "out_check".to_string(),
-                    json!({
-                        "page_out": best,
-                        "token_out": token_out_sym,
-                        "expected_usd": expected_usd,
-                        "ratio": out_ratio,
-                        "suspected_amount_misparse": out_flag,
-                    }),
-                );
-            }
+            let suspected = !(0.5..=2.0).contains(&leg_ratio);
+            return json!({
+                "ok": true,
+                "expect_token_in": symbol,
+                "page_sell_usd": sell_usd,
+                "page_out": best,
+                "token_out": token_out_sym,
+                "ratio": leg_ratio,
+                "suspected_amount_misparse": suspected,
+                "unit_price_usd": unit_price_usd,
+                "oracle_expected_usd": expected_usd,
+                "check": "sell_vs_out",
+            });
         }
+    }
+
+    let mut check = vb_cdp::assess_sell_value(sell_usd, expected_usd);
+    if let Some(obj) = check.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
+        obj.insert("unit_price_usd".to_string(), json!(unit_price_usd));
+        obj.insert("expect_token_in".to_string(), json!(symbol));
+        obj.insert("check".to_string(), json!("oracle"));
     }
     check
 }

@@ -13,19 +13,62 @@ use super::snapshot::collect_visible_lines_all_frames;
 use crate::error::WalletError;
 
 fn parse_amount_token(raw: &str) -> Option<f64> {
-    let raw = raw.trim().trim_matches(|c: char| {
-        matches!(
-            c,
-            ',' | '$' | '~' | '≈' | '(' | ')' | '[' | ']' | '←' | '→' | '⇒'
-        )
-    });
+    let mut s = raw
+        .trim()
+        .trim_start_matches(['$', '~', '≈'])
+        .trim();
+    s = s.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '←' | '→' | '⇒'));
+    if s.is_empty() {
+        return None;
+    }
+
+    let parsed = parse_amount_core(s)?;
+    Some(parsed).filter(|v| *v > 0.0 && v.is_finite() && *v < 1e15)
+}
+
+/// Parse a numeric token that may use US or Switch-style grouping.
+///
+/// Switch.win sell-side USD often uses a **comma as the decimal separator**
+/// (`$12,160` → $12.160, not $12,160). US thousands use comma without a
+/// period only when the fractional chunk is exactly `000` (`12,000` → 12000).
+/// Amounts with a period treat commas as thousands (`11,898.62`, `1,611,295.2965`).
+fn parse_amount_core(s: &str) -> Option<f64> {
+    if s.contains('.') {
+        let normalized: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+        // Drop thousands commas already removed; keep single decimal point.
+        let mut num = String::new();
+        for c in normalized.chars() {
+            if c.is_ascii_digit() || c == '.' {
+                num.push(c);
+            } else if !num.is_empty() {
+                break;
+            }
+        }
+        return num.parse().ok();
+    }
+
+    if s.matches(',').count() >= 2 {
+        let merged: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+        return merged.parse().ok();
+    }
+
+    if let Some((left, right)) = s.split_once(',') {
+        if !left.is_empty()
+            && !right.is_empty()
+            && left.chars().all(|c| c.is_ascii_digit())
+            && right.chars().all(|c| c.is_ascii_digit())
+        {
+            if right == "000" {
+                return format!("{left}{right}").parse().ok();
+            }
+            return format!("{left}.{right}").parse().ok();
+        }
+    }
+
     let mut num = String::new();
-    for c in raw.chars() {
+    for c in s.chars() {
         if c.is_ascii_digit() || c == '.' {
             num.push(c);
-        } else if c == ',' {
-            // Thousands separator inside a formatted amount (1,611,295.2965).
-            continue;
         } else if !num.is_empty() {
             break;
         }
@@ -33,9 +76,7 @@ fn parse_amount_token(raw: &str) -> Option<f64> {
     if num.is_empty() {
         return None;
     }
-    num.parse::<f64>()
-        .ok()
-        .filter(|v: &f64| *v > 0.0 && v.is_finite() && *v < 1e15)
+    num.parse().ok()
 }
 
 fn extract_amounts_near_token(line: &str, token: &str) -> Vec<f64> {
@@ -145,9 +186,7 @@ pub fn infer_token_out(lines: &[String]) -> Option<String> {
 }
 
 /// Extract `$`-denominated valuations from visible lines (`$12,060`,
-/// `≈ $5,242`). The sell-side valuation is the largest on standard swap
-/// forms: buy = sell discounted by fees and price impact. `$0` balance
-/// lines drop out via `parse_amount_token`'s positive-only filter.
+/// `≈ $5,242`). Commas are parsed per [`parse_amount_core`].
 pub fn extract_usd_values(lines: &[String]) -> Vec<f64> {
     let mut out = Vec::new();
     for line in lines {
@@ -165,6 +204,23 @@ pub fn extract_usd_values(lines: &[String]) -> Vec<f64> {
     out.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     out
+}
+
+/// Sell-leg USD estimate: first `$` line after `Sell` and before `Get`.
+///
+/// Do not use the largest `$` on the page — Switch renders sell USD as
+/// `~$12,160` (twelve dollars, comma decimal) while the buy leg shows
+/// thousands of USDC (`$11,898.62`).
+pub fn extract_sell_usd(lines: &[String]) -> Option<f64> {
+    let lower: Vec<String> = lines.iter().map(|l| l.trim().to_ascii_lowercase()).collect();
+    let sell_idx = lower.iter().position(|l| l.as_str() == "sell")?;
+    let get_idx = lower.iter().position(|l| l.as_str() == "get").unwrap_or(lower.len());
+    for line in lines.iter().take(get_idx).skip(sell_idx) {
+        if line.contains('$') {
+            return extract_usd_values(std::slice::from_ref(line)).into_iter().next();
+        }
+    }
+    None
 }
 
 /// Compare the page's sell-side USD valuation against the intended trade's
@@ -254,9 +310,7 @@ pub fn parse_quote_hints(lines: &[String], token_out: &str) -> Value {
     }
 
     let labeled = extract_labeled_outputs(lines);
-    // Largest `$` valuation on the form — the sell-side estimate heuristic
-    // used by the amount-misparse cross-check.
-    let sell_usd = extract_usd_values(lines).into_iter().next();
+    let sell_usd = extract_sell_usd(lines);
     // Expected output is the post-fee number the user actually receives;
     // minimum output is the worst case — never the headline quote.
     let labeled_best = labeled
@@ -391,7 +445,6 @@ mod tests {
 
     #[test]
     fn usd_values_pick_sell_side_as_max() {
-        // Real Switch.win lines from 2026-08-29: sell $12,060 / buy $11,898.62.
         let lines = vec![
             "Sell".into(),
             "PLS".into(),
@@ -403,19 +456,28 @@ mod tests {
             "USDC".into(),
             "$11,898.62".into(),
         ];
-        let usd = extract_usd_values(&lines);
-        assert_eq!(usd.first().copied(), Some(12060.0));
-        assert!(usd.contains(&11898.62));
-        // "$0" balance lines are dropped.
-        assert!(!usd.contains(&0.0));
+        let sell = extract_sell_usd(&lines).unwrap();
+        assert!((sell - 12.06).abs() < 0.001);
+        let all = extract_usd_values(&lines);
+        assert!(all.iter().any(|v| (*v - 11898.62).abs() < 0.01));
+        assert!(!all.contains(&0.0));
         let q = parse_quote_hints(&lines, "USDC");
-        assert_eq!(q.get("sell_usd").and_then(|v| v.as_f64()), Some(12060.0));
+        assert!((q.get("sell_usd").and_then(|v| v.as_f64()).unwrap_or(0.0) - 12.06).abs() < 0.001);
+    }
+
+    #[test]
+    fn switch_comma_decimal_vs_thousands() {
+        assert!((parse_amount_token("$12,1563").unwrap() - 12.1563).abs() < 1e-9);
+        assert!((parse_amount_token("$12,160").unwrap() - 12.160).abs() < 1e-9);
+        assert!((parse_amount_token("$12,000").unwrap() - 12000.0).abs() < 1e-9);
+        assert!((parse_amount_token("$11,898.62").unwrap() - 11898.62).abs() < 1e-9);
+        assert!((parse_amount_token("1,611,295.2965").unwrap() - 1_611_295.2965).abs() < 1e-4);
     }
 
     #[test]
     fn sell_value_check_flags_thousandfold_misparse_only() {
         // Venue parsed 1,000 PLS instead of 1,000,000 → ratio ≈ 0.001.
-        let flagged = assess_sell_value(12.06, 12060.0);
+        let flagged = assess_sell_value(0.012, 12.06);
         assert_eq!(
             flagged
                 .get("suspected_amount_misparse")
@@ -423,7 +485,7 @@ mod tests {
             Some(true)
         );
         // Correct parse with a few % of price-feed drift → no flag.
-        let ok = assess_sell_value(12060.0, 12069.20);
+        let ok = assess_sell_value(12.06, 12.069);
         assert_eq!(
             ok.get("suspected_amount_misparse")
                 .and_then(|v| v.as_bool()),
