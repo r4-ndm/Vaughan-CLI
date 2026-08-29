@@ -25,10 +25,11 @@
 - Browserless path may be limited — prefer VB for parity with human UX.
 - **`buyToken` deep-link param is ignored** (2026-08-29): SPA reverts BUY to 9MM.
   Use the picker: click the BUY token button → search → select.
-- **Two USDC entries:** `USDC` = `0x15D38573…1f07` (canonical bridged) vs
-  `pUSDC` = `0xA0b86991…06eB48` (deep PulseX liquidity). Vaughan's curated
-  registry maps `USDC` → pUSDC; the token picker now prefers rows whose label
-  contains that address when multiple tickers match.
+- **Many fake `USDC` labels:** 9X lists a dozen tickers containing "USDC"
+  (Pump.tires, Unstable Dick Coin, …). The picker reads **full row text**
+  (ticker + name + `0x…` address) and selects the row matching Vaughan's
+  registry contract (`USDC` → pUSDC `0xA0b86991…06eB48`). It refuses to
+  deep-click a bare "USDC" label when the registry address is known.
 - **Amount entry (2026-08-29):** 9X's sell mask is ATM-style (implicit ÷1000).
   Pass **human units** in `amount_in` (1M PLS → `"1000000"`). The URL's
   `sellAmount=` mirrors raw field digits, not the parsed amount.

@@ -5,18 +5,28 @@
   const symbol = __VB_SYMBOL__;
   const term = __VB_TERM__;
   const collect = (root, out) => {
+    if (!root) return;
     root.querySelectorAll('input').forEach(e => out.push(e));
     root.querySelectorAll('*').forEach(el => { if (el.shadowRoot) collect(el.shadowRoot, out); });
   };
+  const inModal = e => e.closest(
+    '[role=dialog], [class*="Modal" i], [class*="modal" i], [class*="TokenList" i], [class*="token-list" i], [class*="CurrencySearch" i], w3m-modal, appkit-modal'
+  );
   const pool = [];
   collect(document, pool);
-  const inModal = e => e.closest('[role=dialog], [class*="Modal" i], [class*="modal" i], [class*="TokenList" i], [class*="token-list" i], [class*="CurrencySearch" i]');
   const search = pool.find(e =>
-    (e.placeholder || '').toLowerCase().includes('search') ||
-    e.type === 'search' ||
-    ((e.placeholder || '').toLowerCase().includes('name') && (e.placeholder || '').toLowerCase().includes('address'))
-  ) || pool.find(e => e.type === 'text' && inModal(e));
-  if (!search) return { ok: false, searched: false, symbol, reason: 'no search input in frame' };
+    inModal(e) &&
+    ((e.placeholder || '').toLowerCase().includes('search') ||
+      ((e.placeholder || '').toLowerCase().includes('name') &&
+        (e.placeholder || '').toLowerCase().includes('address')))
+  ) || pool.find(e => inModal(e) && e.type === 'text');
+  if (!search) {
+    const bodyHasPicker = (document.body?.innerText || '').toUpperCase().includes('SELECT_TOKEN');
+    if (bodyHasPicker) {
+      search = pool.find(e => (e.placeholder || '').toLowerCase().includes('search'));
+    }
+  }
+  if (!search) return { ok: false, searched: false, symbol, reason: 'no search input in modal' };
   search.focus();
   search.click();
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;

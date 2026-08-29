@@ -485,6 +485,79 @@ pub(crate) fn click_result_ok(r: &Value) -> bool {
         || r.pointer("/result/ok").and_then(|v| v.as_bool()) == Some(true)
 }
 
+/// CDP frame id from an `evaluate_in_all_frames` / picker step payload.
+pub(crate) fn step_frame_id(v: &Value) -> Option<&str> {
+    v.get("frame").and_then(|f| f.as_str())
+}
+
+fn picker_inner(v: &Value) -> &Value {
+    v.get("result").unwrap_or(v)
+}
+
+fn picker_result_score(v: &Value) -> i32 {
+    let r = picker_inner(v);
+    if r.get("ok").and_then(|x| x.as_bool()) == Some(true) {
+        if r.get("matched_address").and_then(|x| x.as_bool()) == Some(true) {
+            return 10_000;
+        }
+        return 5_000;
+    }
+    let rows = r.get("rows").and_then(|x| x.as_u64()).unwrap_or(0) as i32;
+    let vis = r
+        .get("visible_rows")
+        .and_then(|x| x.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0) as i32;
+    rows * 100 + vis + (r.get("modal_len").and_then(|x| x.as_u64()).unwrap_or(0) as i32)
+}
+
+/// Picker eval: prefer `prefer_frame` (from a prior search/open step), else the
+/// frame whose result scores highest (row count / matched address).
+pub(crate) async fn evaluate_picker_step(
+    page: &mut CdpPage,
+    expression: &str,
+    prefer_frame: Option<&str>,
+) -> Result<Value, WalletError> {
+    let wrapped = format!("(() => {expression})()");
+    let mut best: Option<Value> = None;
+    let mut best_score = -1i32;
+
+    let mut consider = |fid: &str, r: Value| {
+        let payload = json!({ "frame": fid, "result": r });
+        let score = picker_result_score(&payload);
+        if score > best_score {
+            best_score = score;
+            best = Some(payload);
+        }
+    };
+
+    if let Some(fid) = prefer_frame {
+        if let Ok(r) = page.evaluate_in_frame(fid, &wrapped).await {
+            consider(fid, r);
+        }
+    }
+
+    if let Ok(frame_ids) = page.frame_ids().await {
+        for fid in frame_ids {
+            if prefer_frame == Some(fid.as_str()) {
+                continue;
+            }
+            if let Ok(r) = page.evaluate_in_frame(&fid, &wrapped).await {
+                consider(&fid, r);
+            }
+        }
+    }
+
+    if let Some(b) = best {
+        return Ok(b);
+    }
+
+    if let Ok(r) = page.evaluate(&wrapped).await {
+        return Ok(json!({ "frame": "main", "result": r }));
+    }
+    Ok(json!({ "ok": false, "error": "picker evaluate failed in all frames" }))
+}
+
 /// Run a JS IIFE in every frame; return first `{ ok: true }` payload.
 pub(crate) async fn evaluate_in_all_frames(
     page: &mut CdpPage,

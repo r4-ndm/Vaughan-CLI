@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::client::{deep_click_in_all_frames, evaluate_in_all_frames, CdpPage};
+use super::client::{
+    deep_click_in_all_frames, evaluate_in_all_frames, evaluate_picker_step, step_frame_id,
+    CdpPage,
+};
 use super::js;
 use crate::chains::evm::tokens_for_chain;
 use crate::error::WalletError;
@@ -71,6 +74,12 @@ fn pick_matched_registry_address(pick: &Value) -> bool {
         == Some(true)
 }
 
+fn pick_step_ok(pick: &Value) -> Option<bool> {
+    pick.pointer("/result/ok")
+        .or_else(|| pick.get("ok"))
+        .and_then(|v| v.as_bool())
+}
+
 fn pick_address_json(chain_id: u64, symbol: &str) -> Result<String, WalletError> {
     match registry_address_for_symbol(chain_id, symbol) {
         Some(addr) => json_string(&addr),
@@ -119,7 +128,7 @@ pub async fn cdp_select_swap_token(
         return Ok(open_inner);
     }
 
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     if !picker_modal_open(&mut page).await {
         let shown = open_inner
             .get("shown")
@@ -154,30 +163,54 @@ pub async fn cdp_select_swap_token(
         .pointer("/result/searched")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    tokio::time::sleep(Duration::from_millis(if searched { 700 } else { 200 })).await;
+    tokio::time::sleep(Duration::from_millis(if searched { 1200 } else { 400 })).await;
 
     let pick_js = js::pick_token(&sym_json, &addr_json);
-    let mut pick = evaluate_in_all_frames(&mut page, &pick_js).await?;
-    if pick.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+    let mut search_frame = step_frame_id(&search);
+    let mut pick = evaluate_picker_step(&mut page, &pick_js, search_frame).await?;
+    let mut pick_ok = pick_step_ok(&pick);
+    if pick_ok != Some(true) {
         tokio::time::sleep(Duration::from_millis(900)).await;
-        pick = evaluate_in_all_frames(&mut page, &pick_js).await?;
+        pick = evaluate_picker_step(&mut page, &pick_js, search_frame).await?;
+        pick_ok = pick_step_ok(&pick);
     }
     if registry_addr.is_some()
-        && pick.get("ok").and_then(|v| v.as_bool()) == Some(true)
+        && pick_ok == Some(true)
         && !pick_matched_registry_address(&pick)
     {
         if let Some(tail) = registry_addr.as_deref().and_then(address_search_tail) {
             let tail_json = json_string(&tail)?;
             search =
                 evaluate_in_all_frames(&mut page, &js::search_token(&sym_json, &tail_json)).await?;
-            tokio::time::sleep(Duration::from_millis(700)).await;
-            pick = evaluate_in_all_frames(&mut page, &pick_js).await?;
+            search_frame = step_frame_id(&search);
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            pick = evaluate_picker_step(&mut page, &pick_js, search_frame).await?;
+            pick_ok = pick_step_ok(&pick);
         }
     }
-    if pick.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+    if pick_ok != Some(true) {
+        if registry_addr.is_some() {
+            return Ok(json!({
+                "open": open,
+                "search": search,
+                "pick": pick,
+                "symbol": sym,
+                "side": side_js,
+                "error": "registry address row not found — refusing deep-click fallback for ambiguous ticker",
+            }));
+        }
         pick = deep_click_in_all_frames(&mut page, &sym).await?;
+    } else if registry_addr.is_some() && !pick_matched_registry_address(&pick) {
+        return Ok(json!({
+            "open": open,
+            "search": search,
+            "pick": pick,
+            "symbol": sym,
+            "side": side_js,
+            "error": "picked row does not match registry contract",
+        }));
     }
-    if pick.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+    if pick_step_ok(&pick) == Some(true) {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let _ = page.dispatch_key("Escape", true).await;
         let _ = page.dispatch_key("Escape", false).await;
