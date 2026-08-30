@@ -48,6 +48,15 @@ pub struct AggQuote {
     pub tx: AggExecTx,
     /// ERC-20 spend allowance target (usually the router / `tx.to`).
     pub spender: Address,
+    /// Indicative rate only (`/swap/price`) — must refresh before sign/broadcast.
+    pub preview_only: bool,
+}
+
+impl AggQuote {
+    /// True when calldata is ready for approve → swap.
+    pub fn is_executable(&self) -> bool {
+        !self.preview_only
+    }
 }
 
 /// One venue's result from a parallel compare pass.

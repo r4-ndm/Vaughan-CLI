@@ -7,7 +7,7 @@
 //! in the status strip). Recovery phrase is the vault HD seed (all HD wallets).
 //! Hardware accounts cannot export keys; use option 4 to add a Ledger watch.
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
@@ -307,7 +307,7 @@ impl KeysView {
     ) -> KeyOutcome {
         match self.stage {
             Stage::Menu => match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('1') => {
                     self.menu = MenuItem::ExportPhrase;
                     KeyOutcome::Consumed

@@ -21,7 +21,7 @@ use vaughan_core::core::{format_base_units, parse_native_amount, WalletState};
 use vaughan_core::security::stealth::{StealthAnnouncement, StealthMetaAddress};
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, ChromeSnapshot, UiJob, UiJobResult};
@@ -528,7 +528,7 @@ impl SendView {
                                 self.focus = Focus::Idle;
                                 KeyOutcome::Consumed
                             } else {
-                                KeyOutcome::Navigate(Screen::Dashboard)
+                                KeyOutcome::Back
                             };
                         }
                         if key.code == KeyCode::Tab {
@@ -688,7 +688,7 @@ impl SendView {
                         *self = Self::home();
                         KeyOutcome::Consumed
                     } else {
-                        KeyOutcome::Navigate(Screen::Dashboard)
+                        KeyOutcome::Back
                     }
                 }
                 _ => KeyOutcome::NotHandled,

@@ -225,6 +225,7 @@ impl SquirrelSwapClient {
                 value: parse_u256(&tx.value)?,
             },
             spender,
+            preview_only: false,
         })
     }
 }

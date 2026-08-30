@@ -151,6 +151,8 @@ listed here requires approval before it is added.
 | Stream/sink utilities for WS | `futures-util` |
 | Multi-provider LLM chat client | ~~`genai`~~ — **removed**; agents use external MCP hosts |
 | secp256k1 arithmetic (ERC-5564) | `k256` |
+| Uniswap V3 tick/swap math (via `wiz4rd-math`) | `uniswap-v3-sdk` (=7.0.0, pinned) |
+| V3 pool address + swap/LP tx builders | `wiz4rd-sdk`, `wiz4rd-math` (workspace path crates) |
 | Privacy / stealth (Phase 3) | `vaughan-core::security::stealth` (not Kohaku) |
 | Test temp dirs (dev only) | `tempfile` |
 

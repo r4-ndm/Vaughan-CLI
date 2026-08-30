@@ -17,7 +17,7 @@ use vaughan_core::chains::AllowanceEntry;
 use vaughan_core::core::{format_base_units, WalletState};
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::dex_calldata::build_revoke_tx;
@@ -191,7 +191,7 @@ impl ApprovalsView {
     ) -> KeyOutcome {
         if matches!(self.busy, Busy::Scanning | Busy::Revoking) {
             return match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::Consumed,
             };
         }
@@ -205,7 +205,7 @@ impl ApprovalsView {
                 _ => KeyOutcome::Consumed,
             },
             Stage::List => match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     self.busy = Busy::Scanning;
                     self.status = "scanning…".into();

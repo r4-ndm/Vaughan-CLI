@@ -6,6 +6,8 @@ pub mod agent_autonomy;
 pub mod aggregator;
 pub mod bridge;
 pub mod broadcasts;
+pub mod dex_catalog;
+pub mod dex_lp;
 pub mod dex_quote;
 pub mod dex_routers;
 pub mod mcp_host;
@@ -43,8 +45,16 @@ pub use broadcasts::{
     mark_replaced, push_recent, BroadcastEntry, BroadcastReceipt, ReplaceKind,
     MAX_RECENT_BROADCASTS,
 };
+pub use dex_catalog::{
+    chain_label, missing_router_hint, venue_position_manager, venue_swap_router, DexContractRole,
+    DexProtocol, DexVenue, DEX_VENUES,
+};
+pub use dex_lp::{
+    build_v3_collect_evm, build_v3_decrease_evm, build_v3_increase_evm, build_v3_mint_evm,
+    default_full_range_ticks, list_v3_lp_positions, wiz4rd_sdk_config, V3PositionInfo,
+};
 pub use dex_quote::{
-    min_out_after_slippage, quote_v2_exact_in, quote_v3_exact_in, DexQuote,
+    min_out_after_slippage, quote_v2_exact_in, quote_v3_exact_in, quote_v3_path_exact_in, DexQuote,
     DEFAULT_DEX_SLIPPAGE_BPS,
 };
 pub use dex_routers::{

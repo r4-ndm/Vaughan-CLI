@@ -5,6 +5,7 @@
 
 mod catalog;
 mod empx;
+mod nine_mm;
 mod pulseswap;
 mod routers;
 mod squirrelswap;
@@ -12,6 +13,7 @@ mod types;
 
 pub use catalog::{AggAccess, AggVenue, AGG_VENUES};
 pub use empx::{EmpxClient, EMPX_ROUTER_369};
+pub use nine_mm::{NineMmClient, NineMmPreview, NINEMM_API_URL, NATIVE_EEEE as NINEMM_NATIVE_EEEE};
 pub use pulseswap::{PulseSwapClient, PULSESWAP_QUOTE_URL};
 pub use routers::{assert_agg_exec_targets, is_allowed_agg_router, OFFICIAL_AGG_ROUTERS};
 pub use squirrelswap::{SquirrelPreview, SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
@@ -42,6 +44,7 @@ pub async fn quote_aggregator(
             AggVenue::SquirrelSwap => SquirrelSwapClient::public()?.prepare_swap(req).await,
             AggVenue::PulseSwap => PulseSwapClient::public()?.quote(req).await,
             AggVenue::Piteas => quote_piteas(req, piteas_dir, vault_password).await,
+            AggVenue::NineMm9x => NineMmClient::for_chain(chain_id)?.quote(req).await,
             AggVenue::Empseal => {
                 let rpc = std::env::var("VAUGHAN_EMPX_RPC")
                     .unwrap_or_else(|_| "https://rpc.pulsechain.com".into());
@@ -59,6 +62,24 @@ pub async fn quote_aggregator(
     }
 }
 
+/// Compare/rank quotes — uses indicative pricing where exec quotes need a funded wallet.
+///
+/// 9mm 9X uses `/swap/price` (no PLS required). Other live venues use the normal exec path.
+pub async fn quote_aggregator_compare(
+    venue: AggVenue,
+    req: &AggQuoteRequest,
+    chain_id: u64,
+    piteas_dir: Option<&std::path::Path>,
+    vault_password: Option<&SecretString>,
+) -> Result<AggQuote, WalletError> {
+    if venue == AggVenue::NineMm9x {
+        let client = NineMmClient::for_chain(chain_id)?;
+        let preview = client.preview_price(req).await?;
+        return Ok(NineMmClient::preview_to_agg_quote(req, preview));
+    }
+    quote_aggregator(venue, req, chain_id, piteas_dir, vault_password).await
+}
+
 /// Fetch quotes from every [`AggVenue::is_live`] aggregator in parallel.
 pub async fn quote_live_aggregators(
     req: &AggQuoteRequest,
@@ -72,7 +93,14 @@ pub async fn quote_live_aggregators(
         async move {
             AggQuoteOutcome {
                 venue,
-                result: quote_aggregator(venue, &req, chain_id, piteas_dir, vault_password).await,
+                result: quote_aggregator_compare(
+                    venue,
+                    &req,
+                    chain_id,
+                    piteas_dir,
+                    vault_password,
+                )
+                .await,
             }
         }
     });
@@ -131,6 +159,7 @@ async fn quote_piteas(
             value: quote.method_parameters.value_u256()?,
         },
         spender: to,
+        preview_only: false,
     })
 }
 
@@ -151,7 +180,42 @@ mod compare_tests {
                 value: U256::ZERO,
             },
             spender: Address::ZERO,
+            preview_only: false,
         }
+    }
+
+    #[test]
+    fn rank_includes_nine_mm_preview_only_quote() {
+        let outcomes = vec![
+            AggQuoteOutcome {
+                venue: AggVenue::SquirrelSwap,
+                result: Ok(dummy_quote(AggVenue::SquirrelSwap, 100)),
+            },
+            AggQuoteOutcome {
+                venue: AggVenue::NineMm9x,
+                result: Ok(AggQuote {
+                    venue: AggVenue::NineMm9x,
+                    amount_in: U256::from(1u64),
+                    amount_out: U256::from(250),
+                    gas_estimate: Some(500_000),
+                    tx: AggExecTx {
+                        to: Address::ZERO,
+                        data: Bytes::new(),
+                        value: U256::ZERO,
+                    },
+                    spender: Address::ZERO,
+                    preview_only: true,
+                }),
+            },
+            AggQuoteOutcome {
+                venue: AggVenue::Piteas,
+                result: Ok(dummy_quote(AggVenue::Piteas, 200)),
+            },
+        ];
+        let ranked = rank_agg_quote_outcomes(&outcomes);
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(outcomes[ranked[0]].venue, AggVenue::NineMm9x);
+        assert_eq!(outcomes[ranked[1]].venue, AggVenue::Piteas);
     }
 
     #[test]

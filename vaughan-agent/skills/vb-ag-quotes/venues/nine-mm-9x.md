@@ -1,5 +1,9 @@
 # 9mm 9X — VB Ag quote
 
+Browserless quotes are also available via **`api.9mm.pro`** (see `docs/aggregator.md` —
+Ag screen + MCP `quote_swap` with `venue: 9mm`). VB remains the cross-check path when the
+HTTP API errors on a pair.
+
 ## Identity
 
 - **Venue id:** `9mm` / `NineMm9X`

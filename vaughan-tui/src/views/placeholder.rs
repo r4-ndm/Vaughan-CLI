@@ -74,7 +74,7 @@ impl PlaceholderView {
         _events: &EventBus,
     ) -> KeyOutcome {
         match key.code {
-            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Esc => KeyOutcome::Back,
             _ => KeyOutcome::NotHandled,
         }
     }

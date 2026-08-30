@@ -14,7 +14,7 @@ use vaughan_core::core::{format_display_amount, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob};
@@ -193,7 +193,7 @@ impl AssetsView {
                 }
             }
             Stage::List => match key.code {
-                KeyCode::Esc | KeyCode::Char('d') => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('r') => KeyOutcome::StartJob(UiJob::RefreshAssets),
                 KeyCode::Char('i') => {
                     self.stage = Stage::Import;

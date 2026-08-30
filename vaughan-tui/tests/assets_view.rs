@@ -98,14 +98,14 @@ fn assets_view_refresh_and_navigation() {
         "refresh must populate the list:\\n{text}"
     );
 
-    // `Esc` and `d` navigate back to the dashboard.
+    // Esc navigates back; `d` is left to the footer (Dex).
     assert!(matches!(
         view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events),
-        KeyOutcome::Navigate(Screen::Dashboard)
+        KeyOutcome::Back
     ));
     assert!(matches!(
         view.handle_key(key(KeyCode::Char('d')), &mut wallet, &handle, &events),
-        KeyOutcome::Navigate(Screen::Dashboard)
+        KeyOutcome::NotHandled
     ));
 }
 

@@ -20,6 +20,7 @@ pub mod dex;
 pub mod dex_calldata;
 pub mod history;
 pub mod keys;
+pub mod lp;
 pub mod onboarding;
 pub mod placeholder;
 pub mod receive;
@@ -41,6 +42,7 @@ pub use dashboard::DashboardView;
 pub use dex::DexView;
 pub use history::HistoryView;
 pub use keys::KeysView;
+pub use lp::LpView;
 pub use onboarding::OnboardingView;
 pub use placeholder::PlaceholderView;
 pub use receive::ReceiveView;
@@ -66,20 +68,22 @@ use alloy::primitives::U256;
 use vaughan_core::chains::Balance;
 use vaughan_core::core::{format_display_amount, parse_native_amount, OperatingMode};
 
-/// True when `key` matches a footer chip (`v`/`d`/`g`, Tab, Esc, `x`, …).
+/// True when `key` matches a footer chip (`v`/`d`/`g`, `x`, …).
+///
+/// Tab and Esc are intentionally excluded — Tab cycles field focus; Esc is
+/// handled per view (deselect) then globally (Back).
 pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     if key.modifiers.contains(KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT) {
         return false;
     }
     match key.code {
-        KeyCode::Tab | KeyCode::Esc => true,
         KeyCode::Char('x') | KeyCode::Char('X') => !ctrl,
         KeyCode::Char(c) if c.is_ascii_alphabetic() => {
             matches!(
                 c.to_ascii_lowercase(),
                 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' | 'l' | 'm'
-                    | 'n' | 'o' | 'r' | 's' | 't' | 'v' | 'w'
+                    | 'n' | 'o' | 'p' | 'r' | 's' | 't' | 'v' | 'w'
             )
         }
         _ => false,
@@ -522,16 +526,17 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("f", "Bridge"),
         ("j", "Appr"),
         ("m", "Hist"),
+        ("p", "LP"),
         ("o", "NFT"),
         ("r", "Refresh"),
         ("l", "Lock"),
-        ("tab", "Next"),
+        ("tab", "Field"),
         ("esc", "Back"),
         ("x", "Quit"),
     ];
 
     let n = keys.len();
-    debug_assert_eq!(n, 21);
+    debug_assert_eq!(n, 22);
     let row1_n = 7;
     let row2_n = 7;
     let [row1, row2, row3] = Layout::vertical([

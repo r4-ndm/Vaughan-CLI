@@ -19,18 +19,19 @@ use vaughan_core::chains::{Balance, EvmTransaction, Fee, FeeSpeed};
 use vaughan_core::core::is_allowed_dex_router;
 use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
-    format_base_units, format_display_amount, min_out_after_slippage, WalletState,
-    DEFAULT_DEX_SLIPPAGE_BPS,
+    chain_label, format_base_units, format_display_amount, min_out_after_slippage,
+    missing_router_hint, venue_swap_router, wpls_for_chain, DexProtocol, DexVenue,
+    WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJobResult};
 use crate::views::dex_calldata::{
-    build_approve_tx, build_swap_tx, encode_v3_path, hop_tokens, DexProtocol, DexSwapRequest,
+    build_approve_tx, build_swap_tx, encode_v3_path, hop_tokens, DexSwapRequest,
 };
 use crate::views::{
     body_areas, cycle_token_picker, manual_edit_resets_token_pick, native_pls_label,
@@ -46,229 +47,6 @@ const SWAP_LABEL_WIDTH: usize = 16;
 
 /// Max fractional digits for Expected / Minimum received display (DEX-style).
 const SWAP_DISPLAY_FRAC: usize = 5;
-
-/// PulseChain DEX venues (↑/↓). AMM Uni-forks get routers; OTC/Balancer are listed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum DexVenue {
-    /// Vaughan’s Pancake V3 fork on Pulse testnet (see `vaughan_core::core::wiz4rd`).
-    Wiz4rd,
-    PulseX,
-    PulseXV1,
-    NineMm,
-    NineInch,
-    SparkSwap,
-    Dextop,
-    UniHedron,
-    PDex,
-    Phux,
-    Tide,
-    FiDex,
-    Bistro,
-    AgoraX,
-    Curv,
-    Custom,
-}
-
-const VENUES: &[DexVenue] = &[
-    DexVenue::Wiz4rd,
-    DexVenue::PulseX,
-    DexVenue::PulseXV1,
-    DexVenue::NineMm,
-    DexVenue::NineInch,
-    DexVenue::SparkSwap,
-    DexVenue::Dextop,
-    DexVenue::UniHedron,
-    DexVenue::PDex,
-    DexVenue::Phux,
-    DexVenue::Tide,
-    DexVenue::FiDex,
-    DexVenue::Bistro,
-    DexVenue::AgoraX,
-    DexVenue::Curv,
-    DexVenue::Custom,
-];
-
-impl DexVenue {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Wiz4rd => "Wiz4rd",
-            Self::PulseX => "PulseX",
-            Self::PulseXV1 => "PulseX V1",
-            Self::NineMm => "9mm",
-            Self::NineInch => "9inch",
-            Self::SparkSwap => "SparkSwap",
-            Self::Dextop => "Dextop",
-            Self::UniHedron => "Uniswap",
-            Self::PDex => "pDex",
-            Self::Phux => "PHUX",
-            Self::Tide => "0xTide",
-            Self::FiDex => "FiDex",
-            Self::Bistro => "0xBistro",
-            Self::AgoraX => "AgoraX",
-            Self::Curv => "CURV",
-            Self::Custom => "Custom",
-        }
-    }
-
-    /// One-line blurb for status (what this venue is).
-    fn blurb(self) -> &'static str {
-        match self {
-            Self::Wiz4rd => "Vaughan Pancake V3 fork · Pulse testnet 943",
-            Self::PulseX => "largest PLS DEX · V2 AMM + V3 SwapRouter",
-            Self::PulseXV1 => "legacy PulseX V1 AMM router",
-            Self::NineMm => "Uni V3-fork concentrated liquidity",
-            Self::NineInch => "V2 + V3 DEX (limit orders on site)",
-            Self::SparkSwap => "dexSWAP / Spark Swap (V2-style)",
-            Self::Dextop => "Uni V3-style · zkzx frontend",
-            Self::UniHedron => "Uniswap V3 periphery on PulseChain",
-            Self::PDex => "pDex V3 router",
-            Self::Phux => "Balancer-style weighted pools — not wired",
-            Self::Tide => "Balancer-fork dynamic fees — not wired",
-            Self::FiDex => "Function Island — paste router (unknown)",
-            Self::Bistro => "OTC — not AMM swap yet",
-            Self::AgoraX => "OTC marketplace — not AMM swap yet",
-            Self::Curv => "OTC + aggregator — not AMM swap yet",
-            Self::Custom => "paste any Uni V2/V3-compatible router",
-        }
-    }
-
-    /// Why Vaughan cannot build a swap tx yet (if any).
-    fn unsupported(self) -> Option<&'static str> {
-        match self {
-            Self::Phux => Some("Balancer vault — need Balancer swap path"),
-            Self::Tide => Some("Balancer-fork — need vault swap path"),
-            Self::Bistro | Self::AgoraX | Self::Curv => Some("OTC desk — not an AMM router"),
-            Self::FiDex => Some("no published router in catalog yet"),
-            _ => None,
-        }
-    }
-
-    fn next(self) -> Self {
-        let i = VENUES.iter().position(|v| *v == self).unwrap_or(0);
-        VENUES[(i + 1) % VENUES.len()]
-    }
-
-    fn prev(self) -> Self {
-        let i = VENUES.iter().position(|v| *v == self).unwrap_or(0);
-        VENUES[(i + VENUES.len() - 1) % VENUES.len()]
-    }
-}
-
-impl DexProtocol {
-    fn label(self) -> &'static str {
-        match self {
-            Self::V2 => "V2",
-            Self::V3 => "V3",
-        }
-    }
-
-    fn toggle(self) -> Self {
-        match self {
-            Self::V2 => Self::V3,
-            Self::V3 => Self::V2,
-        }
-    }
-}
-
-/// WPLS / tWPLS for hop routing.
-fn wpls_for_chain(chain_id: u64) -> &'static str {
-    match chain_id {
-        369 => "0xA1077a294dDE1B09bB078844df40758a5D0f9a27",
-        943 => "0x70499adEBB11Efd915E3b69E700c331778628707",
-        _ => "",
-    }
-}
-
-fn chain_label(chain_id: u64) -> &'static str {
-    match chain_id {
-        369 => "PulseChain mainnet",
-        943 => "PulseChain testnet",
-        _ => "this network",
-    }
-}
-
-/// Known Uni-compatible router for `(venue, protocol, chain)`.
-///
-/// Sources: PulseX docs, 9mm `deployments/pulsechain`, scan.pulsechain.com,
-/// pulsechainramp `.env.example` (9inch V3, Dextop, pDex, Tide). Balancer /
-/// OTC venues intentionally return `None`.
-fn venue_router(venue: DexVenue, protocol: DexProtocol, chain_id: u64) -> Option<&'static str> {
-    if venue.unsupported().is_some() {
-        return None;
-    }
-    match (venue, protocol, chain_id) {
-        // wiz4rd-swap — V3 only on Pulse testnet (docs/wiz4rd-addresses.md)
-        (DexVenue::Wiz4rd, DexProtocol::V3, 943) => {
-            Some(vaughan_core::core::wiz4rd::SWAP_ROUTER_943)
-        }
-        // PulseX
-        (DexVenue::PulseX, DexProtocol::V2, 369) => {
-            Some("0x165C3410fC91EF562C50559f7d2289fEbed552d9")
-        }
-        (DexVenue::PulseX, DexProtocol::V2, 943) => {
-            Some("0xDaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7")
-        }
-        (DexVenue::PulseX, DexProtocol::V3, 369) => {
-            Some("0xDA9aBA4eACF54E0273f56dfFee6B8F1e20B23Bba")
-        }
-        (DexVenue::PulseXV1, DexProtocol::V2, 369) => {
-            Some("0x98bf93ebf5c380C0e6Ae8e192A7e2AE08edAcc02")
-        }
-        // 9mm — V2 factory router + V3 SwapRouter (not SmartRouter)
-        (DexVenue::NineMm, DexProtocol::V2, 369) => {
-            Some("0xcC73b59F8D7b7c532703bDfea2808a28a488cF47")
-        }
-        (DexVenue::NineMm, DexProtocol::V3, 369) => {
-            Some("0x7bE8fbe502191bBBCb38b02f2d4fA0D628301bEA")
-        }
-        // 9inch
-        (DexVenue::NineInch, DexProtocol::V2, 369) => {
-            Some("0xeB45a3c4aedd0F47F345fB4c8A1802BB5740d725")
-        }
-        (DexVenue::NineInch, DexProtocol::V3, 369) => {
-            Some("0x42556A17EF0Bd815bF21aD628DFd2e2f3b5F9ac7")
-        }
-        // SparkSwap / dexSWAP
-        (DexVenue::SparkSwap, DexProtocol::V2, 369) => {
-            Some("0x76C08825b4A675FD6a17A244660BabeB4ADA79d5")
-        }
-        // Dextop (+ zkzx UI) · pDex — V3-style
-        (DexVenue::Dextop, DexProtocol::V3, 369) => {
-            Some("0x1f849694Ef24a2245bCa415FE47500216B24d7FF")
-        }
-        (DexVenue::PDex, DexProtocol::V3, 369) => {
-            Some("0x1eC2eaA62117486c9b2a05F098a7bF2568e19204")
-        }
-        // Bridged Uniswap V3 SwapRouter on PulseChain (Hedron frontend)
-        (DexVenue::UniHedron, DexProtocol::V3, 369) => {
-            Some("0xE592427A0AEce92De3Edee1F18E0157C05861564")
-        }
-        _ => None,
-    }
-}
-
-fn missing_router_hint(venue: DexVenue, protocol: DexProtocol, chain_id: u64) -> String {
-    if let Some(why) = venue.unsupported() {
-        return format!("{} — {} · {}", venue.label(), venue.blurb(), why);
-    }
-    let other = protocol.toggle();
-    let other_ok = venue_router(venue, other, chain_id).is_some();
-    let mainnet_ok = chain_id != 369 && venue_router(venue, protocol, 369).is_some();
-    let mut parts = vec![format!(
-        "{} {} — no catalogued router on {}",
-        venue.label(),
-        protocol.label(),
-        chain_label(chain_id)
-    )];
-    if other_ok {
-        parts.push(format!("try ←/→ for {}", other.label()));
-    }
-    if mainnet_ok {
-        parts.push("or Settings→Net → PulseChain mainnet".into());
-    }
-    parts.push("Custom = paste any Uni V2/V3 router".into());
-    parts.join(" · ")
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfirmFocus {
@@ -436,11 +214,8 @@ impl DexView {
     }
 
     fn apply_venue_defaults(&mut self, overwrite_router: bool) {
-        let wpls = wpls_for_chain(self.chain_id);
-        if !wpls.is_empty() {
-            if let Ok(addr) = Address::from_str(wpls) {
-                self.wpls = Some(addr);
-            }
+        if let Some(wpls) = wpls_for_chain(self.chain_id) {
+            self.wpls = Some(wpls);
         }
 
         if self.venue == DexVenue::Custom && !overwrite_router {
@@ -452,10 +227,10 @@ impl DexView {
             self.protocol = DexProtocol::V3;
         }
 
-        match venue_router(self.venue, self.protocol, self.chain_id) {
+        match venue_swap_router(self.venue, self.protocol, self.chain_id) {
             Some(router) => {
                 if overwrite_router || self.venue != DexVenue::Custom {
-                    self.router.set_value(router);
+                    self.router.set_value(format!("{router}"));
                 }
             }
             None if self.venue != DexVenue::Custom => {
@@ -854,7 +629,7 @@ impl DexView {
         wallet: &WalletState,
         quote_gen: u64,
     ) -> Result<crate::jobs::UiJob, String> {
-        if self.venue.unsupported().is_some() {
+        if self.venue.unsupported_reason().is_some() {
             return Err("venue not supported for swap".into());
         }
         let router = self.router.value().trim();
@@ -866,9 +641,6 @@ impl DexView {
             return Err("enter an amount to quote".into());
         }
         let hops = self.parsed_hops()?;
-        if self.protocol == DexProtocol::V3 && hops.len() != 2 {
-            return Err("multi-hop V3 quote not supported yet — use single-hop pair".into());
-        }
         let path: Vec<String> = hops.iter().map(|a| a.to_string()).collect();
         let net = wallet.networks().active();
         let (rpc_url, _) = wallet.rpc_endpoints_for(net);
@@ -1197,7 +969,7 @@ impl DexView {
                     *self = Self::for_chain(chain_id);
                     KeyOutcome::Consumed
                 }
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::NotHandled,
             },
         }
@@ -1305,15 +1077,22 @@ impl DexView {
 
     fn handle_input_key(&mut self, key: KeyEvent, wallet: &WalletState) -> KeyOutcome {
         match key.code {
-            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Esc => {
+                if self.focus != Focus::None {
+                    self.deselect_focus();
+                    KeyOutcome::Consumed
+                } else {
+                    KeyOutcome::Back
+                }
+            }
             KeyCode::Up | KeyCode::Down if self.focus == Focus::Dex => {
                 self.venue = if matches!(key.code, KeyCode::Down) {
                     self.venue.next()
                 } else {
                     self.venue.prev()
                 };
-                if venue_router(self.venue, self.protocol, self.chain_id).is_none()
-                    && venue_router(self.venue, self.protocol.toggle(), self.chain_id).is_some()
+                if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none()
+                    && venue_swap_router(self.venue, self.protocol.toggle(), self.chain_id).is_some()
                 {
                     self.protocol = self.protocol.toggle();
                 }
@@ -1323,7 +1102,7 @@ impl DexView {
                 }
                 if self.venue == DexVenue::Custom {
                     self.status = "Paste a Uni V2/V3-compatible router address".into();
-                } else if venue_router(self.venue, self.protocol, self.chain_id).is_none() {
+                } else if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none() {
                     self.status = missing_router_hint(self.venue, self.protocol, self.chain_id);
                 } else {
                     self.status.clear();
@@ -1343,7 +1122,7 @@ impl DexView {
                         }
                         if self.venue == DexVenue::Custom {
                             self.status = "Paste a Uni V2/V3-compatible router address".into();
-                        } else if venue_router(self.venue, self.protocol, self.chain_id).is_none() {
+                        } else if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none() {
                             self.status =
                                 missing_router_hint(self.venue, self.protocol, self.chain_id);
                         } else {
@@ -1865,62 +1644,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn venue_cycle_starts_pulsex_ends_custom() {
-        assert_eq!(DexVenue::Wiz4rd.next(), DexVenue::PulseX);
-        assert_eq!(DexVenue::PulseX.next(), DexVenue::PulseXV1);
-        assert_eq!(DexVenue::NineMm.next(), DexVenue::NineInch);
-        assert_eq!(DexVenue::Curv.next(), DexVenue::Custom);
-        assert_eq!(DexVenue::Custom.next(), DexVenue::Wiz4rd);
-        assert_eq!(VENUES.len(), 16);
-    }
-
-    #[test]
-    fn pulsex_has_v2_and_v3_mainnet() {
-        assert!(venue_router(DexVenue::PulseX, DexProtocol::V2, 369).is_some());
-        assert_eq!(
-            venue_router(DexVenue::PulseX, DexProtocol::V3, 369),
-            Some("0xDA9aBA4eACF54E0273f56dfFee6B8F1e20B23Bba")
-        );
-    }
-
-    #[test]
-    fn nine_mm_v3_mainnet_only() {
-        assert!(venue_router(DexVenue::NineMm, DexProtocol::V3, 369).is_some());
-        assert!(venue_router(DexVenue::NineMm, DexProtocol::V3, 943).is_none());
-        let hint = missing_router_hint(DexVenue::NineMm, DexProtocol::V3, 943);
-        assert!(hint.contains("testnet"));
-        assert!(hint.contains("mainnet"));
-    }
-
-    #[test]
-    fn nine_mm_has_v2_and_v3_mainnet() {
-        assert!(venue_router(DexVenue::NineMm, DexProtocol::V2, 369).is_some());
-        assert_eq!(
-            venue_router(DexVenue::NineMm, DexProtocol::V3, 369),
-            Some("0x7bE8fbe502191bBBCb38b02f2d4fA0D628301bEA")
-        );
-    }
-
-    #[test]
-    fn nine_inch_v2_and_v3_routers() {
-        assert_eq!(
-            venue_router(DexVenue::NineInch, DexProtocol::V2, 369),
-            Some("0xeB45a3c4aedd0F47F345fB4c8A1802BB5740d725")
-        );
-        assert_eq!(
-            venue_router(DexVenue::NineInch, DexProtocol::V3, 369),
-            Some("0x42556A17EF0Bd815bF21aD628DFd2e2f3b5F9ac7")
-        );
-    }
-
-    #[test]
-    fn spark_dextop_uni_catalogued() {
-        assert!(venue_router(DexVenue::SparkSwap, DexProtocol::V2, 369).is_some());
-        assert!(venue_router(DexVenue::Dextop, DexProtocol::V3, 369).is_some());
-        assert!(venue_router(DexVenue::UniHedron, DexProtocol::V3, 369).is_some());
-    }
-
-    #[test]
     fn validate_requires_positive_amount() {
         let mut v = DexView::for_chain(943);
         v.amount.set_value("0");
@@ -1946,15 +1669,5 @@ mod tests {
     fn fee_tier_display_formats_percent() {
         assert_eq!(fee_tier_display(500), "0.05%");
         assert_eq!(fee_tier_display(3000), "0.30%");
-    }
-
-    #[test]
-    fn balancer_and_otc_are_listed_but_unsupported() {
-        assert!(DexVenue::Phux.unsupported().is_some());
-        assert!(DexVenue::Tide.unsupported().is_some());
-        assert!(DexVenue::Bistro.unsupported().is_some());
-        assert!(venue_router(DexVenue::Phux, DexProtocol::V2, 369).is_none());
-        let hint = missing_router_hint(DexVenue::Phux, DexProtocol::V2, 369);
-        assert!(hint.contains("Balancer"));
     }
 }

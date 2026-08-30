@@ -18,7 +18,7 @@ use vaughan_core::core::{
 };
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::{body_areas, status_paragraph};
@@ -305,7 +305,7 @@ impl HistoryView {
     ) -> KeyOutcome {
         if self.loading && self.pane == Pane::Transfers && self.stage == Stage::List {
             return match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::Consumed,
             };
         }
@@ -332,7 +332,7 @@ impl HistoryView {
         }
 
         match key.code {
-            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Esc => KeyOutcome::Back,
             KeyCode::Tab => {
                 self.pane = match self.pane {
                     Pane::Broadcasts => Pane::Transfers,

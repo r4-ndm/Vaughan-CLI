@@ -117,6 +117,16 @@ impl WalletError {
             Self::NotInitialized => "The wallet has not been set up yet.".to_string(),
             Self::WalletLocked => "The wallet is locked. Unlock it first.".to_string(),
             Self::Other(msg) => msg.clone(),
+            Self::NetworkError(msg)
+                if msg.starts_with("9mm")
+                    || msg.starts_with("squirrelswap")
+                    || msg.starts_with("pulseswap")
+                    || msg.starts_with("piteas")
+                    || msg.starts_with("liberty")
+                    || msg.starts_with("empx") =>
+            {
+                msg.clone()
+            }
             Self::NetworkError(_) => {
                 "Could not reach the network. Check your connection and RPC URL.".to_string()
             }
@@ -208,6 +218,12 @@ mod tests {
         for v in variants {
             assert!(!v.user_message().is_empty());
         }
+    }
+
+    #[test]
+    fn user_message_passes_through_aggregator_api_errors() {
+        let e = WalletError::NetworkError("9mm [109]: insufficient funds".into());
+        assert_eq!(e.user_message(), "9mm [109]: insufficient funds");
     }
 
     #[test]

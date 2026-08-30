@@ -5955,6 +5955,7 @@ dependencies = [
  "vaughan-agent",
  "vaughan-core",
  "vaughan-provider",
+ "wiz4rd-sdk",
  "zeroize",
 ]
 

@@ -99,7 +99,7 @@ fn receive_view_esc_navigates_to_dashboard() {
     let mut view = ReceiveView::default();
 
     let outcome = view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
-    assert!(matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)));
+    assert!(matches!(outcome, KeyOutcome::Back));
 }
 
 /// After a stealth payment, `s` scans announcer logs and lists the funded note.

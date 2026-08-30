@@ -21,7 +21,7 @@ use vaughan_core::core::{
 };
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
@@ -253,9 +253,10 @@ impl AgView {
         let out_amt = fmt_swap_wei_amount(&q.amount_out, 18);
         let ok = self.compare_ranked.len();
         self.status = format!(
-            "{ok}/{} quotes · ~{out_amt} {out_sym} via {} — ↑↓ pick · Enter confirm",
+            "{ok}/{} quotes · ~{out_amt} {out_sym} via {}{} — ↑↓ pick · Enter confirm",
             self.compare.len(),
             q.venue.label(),
+            if q.preview_only { " (price)" } else { "" },
         );
     }
 
@@ -459,8 +460,12 @@ impl AgView {
             if pick_i == self.compare_pick {
                 style = style.fg(brand::accent_color()).add_modifier(Modifier::BOLD);
             }
+            let price_tag = if q.preview_only { " (price)" } else { "" };
             lines.push(Line::from(Span::styled(
-                format!("{marker} {:<10} ~{amt} {out_sym}", o.venue.label()),
+                format!(
+                    "{marker} {:<10}{price_tag} ~{amt} {out_sym}",
+                    o.venue.label()
+                ),
                 style,
             )));
         }
@@ -619,7 +624,7 @@ impl AgView {
                     *self = Self::for_chain(chain_id);
                     KeyOutcome::Consumed
                 }
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::Consumed,
             },
             Stage::Confirm(step) => match key.code {
@@ -652,6 +657,9 @@ impl AgView {
                     KeyOutcome::Consumed
                 }
                 KeyCode::Enter => {
+                    if self.quote.as_ref().is_some_and(|q| q.preview_only) {
+                        return self.spawn_executable_quote(wallet);
+                    }
                     self.enter_confirm();
                     KeyOutcome::Consumed
                 }
@@ -663,7 +671,14 @@ impl AgView {
 
     fn handle_input_key(&mut self, key: KeyEvent, wallet: &WalletState) -> KeyOutcome {
         match key.code {
-            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Esc => {
+                if self.focus != Focus::None {
+                    self.deselect_focus();
+                    KeyOutcome::Consumed
+                } else {
+                    KeyOutcome::Back
+                }
+            }
             KeyCode::Up | KeyCode::Down if self.focus == Focus::Venue => {
                 self.venue_choice = if matches!(key.code, KeyCode::Down) {
                     self.venue_choice.next()
@@ -856,6 +871,60 @@ impl AgView {
         }
     }
 
+    /// Refresh a compare pick (`/swap/price`) into an executable quote before confirm.
+    fn spawn_executable_quote(&mut self, wallet: &WalletState) -> KeyOutcome {
+        let Some(q) = self.quote.as_ref() else {
+            return KeyOutcome::Consumed;
+        };
+        if self.chain_id != 369 {
+            self.status = "Aggregators need PulseChain mainnet (369)".into();
+            return KeyOutcome::Consumed;
+        }
+        let token_out = match parse_token_address(self.token_out.value(), "Token out") {
+            Ok(a) => a,
+            Err(msg) => {
+                self.status = msg;
+                return KeyOutcome::Consumed;
+            }
+        };
+        let token_in = if self.native_in {
+            Address::ZERO
+        } else {
+            match parse_token_address(self.token_in.value(), "Token in") {
+                Ok(a) => a,
+                Err(msg) => {
+                    self.status = msg;
+                    return KeyOutcome::Consumed;
+                }
+            }
+        };
+        let amount = match parse_swap_amount(self.amount.value(), "amount", 18) {
+            Ok(a) => a,
+            Err(e) => {
+                self.status = e;
+                return KeyOutcome::Consumed;
+            }
+        };
+        let slippage: f64 = self.slippage.value().trim().parse().unwrap_or(0.5);
+        let account = wallet
+            .active_address()
+            .ok()
+            .and_then(|s| Address::from_str(s).ok());
+
+        self.busy = Busy::Quoting;
+        self.status = format!("fetching executable {} quote…", q.venue.label());
+        KeyOutcome::StartJob(UiJob::AggQuote {
+            venue: q.venue,
+            token_in: token_in.to_string(),
+            token_out: token_out.to_string(),
+            amount: amount.to_string(),
+            slippage,
+            native_in: self.native_in,
+            native_out: false,
+            account: account.map(|a| a.to_string()),
+        })
+    }
+
     fn enter_confirm(&mut self) {
         let Some(q) = self.quote.as_ref() else {
             return;
@@ -881,6 +950,14 @@ impl AgView {
             self.stage = Stage::Input;
             return KeyOutcome::Consumed;
         };
+        if q.preview_only {
+            self.status = format!(
+                "{} quote is price-only — Enter again to fetch executable calldata",
+                q.venue.label()
+            );
+            self.stage = Stage::Input;
+            return KeyOutcome::Consumed;
+        }
         let from = match wallet.active_address() {
             Ok(a) => a.to_string(),
             Err(e) => {

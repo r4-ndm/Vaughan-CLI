@@ -126,6 +126,12 @@ pub enum UiJob {
         entry: BroadcastEntry,
         kind: ReplaceKind,
     },
+    /// List wiz4rd V3 LP NFT positions for `owner`.
+    LpListPositions {
+        chain_id: u64,
+        rpc_url: String,
+        owner: String,
+    },
 }
 
 /// Cached need-to-know strip shared across every unlocked screen.
@@ -220,6 +226,8 @@ pub enum UiJobResult {
     TxStatus(Result<vaughan_core::chains::TxStatus, WalletError>),
     /// Updated statuses for session broadcasts `(hash, status)`.
     BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),
+    /// V3 LP positions from NPM scan.
+    LpPositions(Result<Vec<vaughan_core::core::V3PositionInfo>, WalletError>),
 }
 
 /// Successful off-thread unlock: derived accounts plus the session mode picked

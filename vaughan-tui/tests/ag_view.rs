@@ -1,9 +1,9 @@
-//! Anvil tests for Aggregator (Ag) / SquirrelSwap broadcast path.
+//! Anvil tests for Aggregator (Ag) broadcast paths (SquirrelSwap + 9mm 9X).
 //!
-//! Brain HTTP stays out of CI — we replay a real `/swap` response shape
-//! ([`vaughan_core::core::aggregator`] fixture), plant a mock router at the
+//! Brain / 9mm HTTP stays out of CI — we replay real `/swap` response shapes
+//! ([`vaughan_core::core::aggregator`] fixtures), plant mock routers at the
 //! returned `tx.to`, and send through the same `EvmTransaction` layout the
-//! Ag view builds. Proves approve → swap without calling `api.squirrelswap.pro`.
+//! Ag view builds. Proves approve → swap without calling live quote APIs.
 //!
 //! ```sh
 //! cargo test -p vaughan-tui --test ag_view -- --nocapture
@@ -23,12 +23,19 @@ use vaughan_tui::views::dex_calldata::{build_approve_tx, erc20_approve_selector}
 
 /// Router from the SquirrelSwap Brain `/swap` fixture (see squirrelswap unit test).
 const SQUIRREL_ROUTER: Address = address!("0xDa8953Fc615d6E816b9647Afd5536123dcE70B78");
+/// 9mm 9X unified API execution router (see nine_mm unit fixture + allowlist).
+const NINEMM_ROUTER: Address = address!("0xd5b775d1f15a864a5f6b94624e049cf758d013f7");
 /// WPLS mainnet — used as ERC-20 in for the approve+swap case.
 const WPLS_369: Address = address!("0xA1077a294dDE1B09bB078844df40758a5D0f9a27");
 
 /// Selector from fixture calldata `0xc563dcec…`.
 fn squirrel_fixture_selector() -> [u8; 4] {
     [0xc5, 0x63, 0xdc, 0xec]
+}
+
+/// Selector from 9mm `/swap/quote` unit fixture (`0x415565b0…`).
+fn nine_mm_fixture_selector() -> [u8; 4] {
+    [0x41, 0x55, 0x65, 0xb0]
 }
 
 fn ret_u256(v: u64) -> Vec<u8> {
@@ -137,6 +144,47 @@ fn squirrel_fixture_quote(amount_in: U256, native_value: bool) -> AggQuote {
             value,
         },
         spender: SQUIRREL_ROUTER,
+        preview_only: false,
+    }
+}
+
+/// Same shape as `nine_mm` `/swap/quote` unit fixture → executable [`AggQuote`].
+fn nine_mm_exec_fixture_quote(amount_in: U256, native_value: bool) -> AggQuote {
+    let data = Bytes::from(vec![0x41, 0x55, 0x65, 0xb0]);
+    let value = if native_value {
+        amount_in
+    } else {
+        U256::ZERO
+    };
+    AggQuote {
+        venue: AggVenue::NineMm9x,
+        amount_in,
+        amount_out: U256::from(2_870_748u64),
+        gas_estimate: Some(535_929),
+        tx: AggExecTx {
+            to: NINEMM_ROUTER,
+            data,
+            value,
+        },
+        spender: NINEMM_ROUTER,
+        preview_only: false,
+    }
+}
+
+/// Compare-only `/swap/price` mapping — must not reach broadcast unchanged.
+fn nine_mm_preview_fixture_quote(amount_in: U256) -> AggQuote {
+    AggQuote {
+        venue: AggVenue::NineMm9x,
+        amount_in,
+        amount_out: U256::from(2_870_748u64),
+        gas_estimate: Some(535_929),
+        tx: AggExecTx {
+            to: Address::ZERO,
+            data: Bytes::new(),
+            value: U256::ZERO,
+        },
+        spender: Address::ZERO,
+        preview_only: true,
     }
 }
 
@@ -217,4 +265,77 @@ fn anvil_squirrel_token_approve_then_swap_broadcasts() {
         .block_on(wallet.send_transaction(swap))
         .unwrap_or_else(|e| panic!("squirrel token swap failed: {}", e.user_message()));
     wait_receipt(&anvil, &hash.to_string());
+}
+
+#[test]
+fn anvil_nine_mm_native_swap_from_fixture_broadcasts() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let rt = Runtime::new().unwrap();
+
+    plant_code(
+        &anvil,
+        NINEMM_ROUTER,
+        &assemble_dispatcher(&[(nine_mm_fixture_selector(), Vec::new())]),
+    );
+
+    let from = wallet.active_address().unwrap().to_string();
+    let amount_in = U256::from_str("1000000000000000000").unwrap();
+    let quote = nine_mm_exec_fixture_quote(amount_in, true);
+    let tx = ag_swap_tx(&quote, &from, 943);
+
+    assert_eq!(tx.to.to_lowercase(), format!("{NINEMM_ROUTER:#x}"));
+    assert_eq!(tx.value, amount_in.to_string());
+
+    let hash = rt
+        .block_on(wallet.send_transaction(tx))
+        .unwrap_or_else(|e| panic!("9mm native swap failed: {}", e.user_message()));
+    wait_receipt(&anvil, &hash.to_string());
+}
+
+#[test]
+fn anvil_nine_mm_token_approve_then_swap_broadcasts() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+    let rt = Runtime::new().unwrap();
+
+    plant_code(
+        &anvil,
+        WPLS_369,
+        &assemble_dispatcher(&[(erc20_approve_selector(), ret_u256(1))]),
+    );
+    plant_code(
+        &anvil,
+        NINEMM_ROUTER,
+        &assemble_dispatcher(&[(nine_mm_fixture_selector(), Vec::new())]),
+    );
+
+    let from = wallet.active_address().unwrap().to_string();
+    let amount_in = U256::from_str("1000000000000000000").unwrap();
+    let quote = nine_mm_exec_fixture_quote(amount_in, false);
+
+    let approve = build_approve_tx(WPLS_369, quote.spender, quote.amount_in, &from, 943);
+    let ah = rt
+        .block_on(wallet.send_transaction(approve))
+        .unwrap_or_else(|e| panic!("9mm approve failed: {}", e.user_message()));
+    wait_receipt(&anvil, &ah.to_string());
+
+    let swap = ag_swap_tx(&quote, &from, 943);
+    let hash = rt
+        .block_on(wallet.send_transaction(swap))
+        .unwrap_or_else(|e| panic!("9mm token swap failed: {}", e.user_message()));
+    wait_receipt(&anvil, &hash.to_string());
+}
+
+#[test]
+fn nine_mm_preview_fixture_is_not_allowlisted_for_broadcast() {
+    use vaughan_core::core::assert_agg_exec_targets;
+
+    let amount_in = U256::from_str("1000000000000000000").unwrap();
+    let quote = nine_mm_preview_fixture_quote(amount_in);
+    assert!(quote.preview_only);
+    assert!(!quote.is_executable());
+    assert!(assert_agg_exec_targets(quote.tx.to, quote.spender).is_err());
 }

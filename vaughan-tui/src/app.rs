@@ -28,8 +28,8 @@ use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
     AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
-    DashboardView, DexView, HistoryView, KeysView, OnboardingView, PlaceholderView, ReceiveView,
-    SettingsView, UnlockView, WrapView,
+    DashboardView, DexView, HistoryView, KeysView, LpView, OnboardingView, PlaceholderView,
+    ReceiveView, SettingsView, UnlockView, WrapView,
 };
 
 /// The active screen.
@@ -49,7 +49,7 @@ pub enum Screen {
     Aggregator,
     SoonNft,
     Bridge,
-    SoonStake,
+    Lp,
     History,
     Approvals,
     Wrap,
@@ -73,7 +73,7 @@ impl Screen {
             Self::Aggregator => "Aggregator",
             Self::SoonNft => "NFT",
             Self::Bridge => "Bridge",
-            Self::SoonStake => "Stake",
+            Self::Lp => "LP",
             Self::History => "History",
             Self::Approvals => "Approvals",
             Self::Wrap => "Wrap",
@@ -94,6 +94,8 @@ pub enum KeyOutcome {
     NotHandled,
     /// The view wants to navigate to a new screen.
     Navigate(Screen),
+    /// Pop the navigation stack (Esc); falls back to Dashboard when empty.
+    Back,
     /// Spawn a background RPC job; keep the current screen responsive.
     StartJob(crate::jobs::UiJob),
     /// Open Send prefilled for an Assets row.
@@ -115,6 +117,7 @@ impl std::fmt::Debug for KeyOutcome {
             Self::Consumed => write!(f, "Consumed"),
             Self::NotHandled => write!(f, "NotHandled"),
             Self::Navigate(s) => f.debug_tuple("Navigate").field(s).finish(),
+            Self::Back => write!(f, "Back"),
             Self::StartJob(_) => write!(f, "StartJob(..)"),
             Self::SendAsset(_) => write!(f, "SendAsset(..)"),
             Self::Intent(i) => f.debug_tuple("Intent").field(i).finish(),
@@ -143,6 +146,7 @@ pub enum View {
     History(HistoryView),
     Approvals(ApprovalsView),
     Wrap(WrapView),
+    Lp(LpView),
     Placeholder(PlaceholderView),
     Approve(ApproveView),
 }
@@ -166,6 +170,7 @@ impl View {
             Self::History(_) => Screen::History,
             Self::Approvals(_) => Screen::Approvals,
             Self::Wrap(_) => Screen::Wrap,
+            Self::Lp(_) => Screen::Lp,
             Self::Placeholder(v) => v.screen(),
             Self::Approve(_) => Screen::Approve,
         }
@@ -196,6 +201,7 @@ impl View {
             Self::History(v) => v.render(frame, area, wallet),
             Self::Approvals(v) => v.render(frame, area, wallet),
             Self::Wrap(v) => v.render(frame, area, wallet),
+            Self::Lp(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
@@ -225,6 +231,7 @@ impl View {
             Self::History(v) => v.handle_key(key, wallet, handle, events),
             Self::Approvals(v) => v.handle_key(key, wallet, handle, events),
             Self::Wrap(v) => v.handle_key(key, wallet, handle, events),
+            Self::Lp(v) => v.handle_key(key, wallet, handle, events),
             Self::Placeholder(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
@@ -249,6 +256,7 @@ impl View {
             Self::History(v) => v.allows_footer_shortcuts(),
             Self::Approvals(v) => v.allows_footer_shortcuts(),
             Self::Wrap(v) => v.allows_footer_shortcuts(),
+            Self::Lp(v) => v.allows_footer_shortcuts(),
             Self::Placeholder(v) => v.allows_footer_shortcuts(),
             Self::Approve(v) => v.allows_footer_shortcuts(),
         }
@@ -323,6 +331,8 @@ pub struct App {
     /// rotates on every lock/unlock edge so a stolen token dies at lock, and
     /// the origin-seal key tracks the running VB launch.
     provider_slots: provider::ProviderBridgeSlots,
+    /// Esc / Back stack — footer jumps push; Esc pops (Dashboard clears it).
+    nav_back: Vec<Screen>,
     /// Tracks the last lock state the provider token was synced to (edge
     /// detection for rotation).
     provider_session_unlocked: bool,
@@ -398,6 +408,7 @@ impl App {
             sentient_breaker: None,
             provider_slots,
             provider_session_unlocked: false,
+            nav_back: Vec::new(),
         };
         app.navigate(screen);
         Ok(app)
@@ -529,6 +540,9 @@ impl App {
             if let View::Wrap(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
+            if let View::Lp(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
             if let View::Dashboard(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
@@ -606,28 +620,15 @@ impl App {
                 self.quit_confirm = Some(true);
                 return;
             }
-            GlobalAction::CycleScreens => {
-                let next = match self.screen() {
-                    Screen::Dashboard => Screen::AaSend,
-                    Screen::AaSend => Screen::Receive,
-                    Screen::Receive => Screen::Settings,
-                    Screen::Settings => Screen::Keys,
-                    Screen::Keys => Screen::Dapps,
-                    Screen::Dapps => Screen::Assets,
-                    Screen::Assets => Screen::Browser,
-                    Screen::Browser => Screen::Dex,
-                    Screen::Dex => Screen::Aggregator,
-                    Screen::Aggregator => Screen::Dashboard,
-                    other => other,
-                };
-                if next != self.screen() {
-                    self.navigate(next);
-                }
-                return;
-            }
             GlobalAction::Navigate(screen) => {
                 if self.wallet().is_unlocked() && screen != self.screen() {
                     self.navigate(screen);
+                }
+                return;
+            }
+            GlobalAction::Back => {
+                if self.wallet().is_unlocked() {
+                    self.navigate_back();
                 }
                 return;
             }
@@ -684,6 +685,7 @@ impl App {
 
         match outcome {
             KeyOutcome::Navigate(screen) => self.navigate(screen),
+            KeyOutcome::Back => self.navigate_back(),
             KeyOutcome::StartJob(job) => self.spawn_job(job),
             KeyOutcome::SendAsset(balance) => {
                 // Align F2 with the asset the user picked from Assets.
@@ -1538,9 +1540,44 @@ impl App {
             .unwrap_or_else(|| format!("chain {id}"))
     }
 
+    fn records_back_stack(screen: Screen) -> bool {
+        !matches!(screen, Screen::Onboarding | Screen::Unlock | Screen::Approve)
+    }
+
     /// Build the default view for `screen`. Chrome/asset RPC refresh is limited
     /// to screens that need fresh data — other views reuse cached chrome.
     fn navigate(&mut self, screen: Screen) {
+        let from = self.screen();
+        if matches!(
+            screen,
+            Screen::Dashboard | Screen::Onboarding | Screen::Unlock
+        ) {
+            self.nav_back.clear();
+        } else if from != screen
+            && Self::records_back_stack(from)
+            && Self::records_back_stack(screen)
+            && self.nav_back.last() != Some(&from)
+        {
+            self.nav_back.push(from);
+        }
+        self.mount_screen(screen);
+    }
+
+    /// Esc: return to the screen we came from, or Dashboard when the stack is empty.
+    fn navigate_back(&mut self) {
+        let Some(dest) = self.nav_back.pop() else {
+            if self.screen() != Screen::Dashboard && Self::records_back_stack(self.screen()) {
+                self.navigate(Screen::Dashboard);
+            }
+            return;
+        };
+        if dest == Screen::Dashboard {
+            self.nav_back.clear();
+        }
+        self.mount_screen(dest);
+    }
+
+    fn mount_screen(&mut self, screen: Screen) {
         self.settle_chrome_before_navigate();
 
         let view = match screen {
@@ -1588,11 +1625,10 @@ impl App {
                 let chain_id = self.wallet().networks().active().chain_id;
                 View::Bridge(BridgeView::for_wallet_chain(chain_id))
             }
-            Screen::SoonStake => View::Placeholder(PlaceholderView::new(
-                Screen::SoonStake,
-                "Stake",
-                "Staking / liquid stake UI will land here.",
-            )),
+            Screen::Lp => {
+                let chain_id = self.wallet().networks().active().chain_id;
+                View::Lp(LpView::for_chain(chain_id))
+            }
             Screen::History => {
                 View::History(HistoryView::with_broadcasts(self.recent_broadcasts.clone()))
             }
@@ -1632,6 +1668,20 @@ impl App {
             Screen::Approvals => {
                 self.refresh_chrome();
                 self.spawn_job(ApprovalsView::initial_job());
+            }
+            Screen::Lp => {
+                self.refresh_chrome();
+                let job = {
+                    let wallet = self.wallet();
+                    if let View::Lp(v) = &self.view {
+                        v.initial_job(&wallet)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(job) = job {
+                    self.spawn_job(job);
+                }
             }
             Screen::Dashboard => {
                 self.refresh_chrome();
@@ -2130,7 +2180,7 @@ impl App {
                 } => {
                     use alloy::primitives::{Address, U256};
                     use std::str::FromStr;
-                    use vaughan_core::core::{quote_v2_exact_in, quote_v3_exact_in};
+                    use vaughan_core::core::{quote_v2_exact_in, quote_v3_path_exact_in};
 
                     let parsed = (|| -> Result<vaughan_core::core::DexQuote, WalletError> {
                         let amount_in = U256::from_str(&amount_in)
@@ -2150,13 +2200,8 @@ impl App {
                             })?;
                             handle.block_on(quote_v2_exact_in(&rpc_url, router, amount_in, &hops))
                         } else {
-                            if hops.len() != 2 {
-                                return Err(WalletError::Other(
-                                    "V3 quote requires a single-hop path".into(),
-                                ));
-                            }
-                            handle.block_on(quote_v3_exact_in(
-                                &rpc_url, chain_id, hops[0], hops[1], amount_in, fee,
+                            handle.block_on(quote_v3_path_exact_in(
+                                &rpc_url, chain_id, &hops, amount_in, fee,
                             ))
                         }
                     })();
@@ -2246,6 +2291,28 @@ impl App {
                 UiJob::ReplaceBroadcast { entry, kind } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Send(handle.block_on(w.replace_broadcast(&entry, kind)))
+                }
+                UiJob::LpListPositions {
+                    chain_id,
+                    rpc_url,
+                    owner,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::list_v3_lp_positions;
+                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
+                        WalletError::InvalidTransaction("invalid owner address".into())
+                    });
+                    UiJobResult::LpPositions(match parsed_owner {
+                        Err(e) => Err(e),
+                        Ok(addr) => handle.block_on(list_v3_lp_positions(
+                            &rpc_url,
+                            chain_id,
+                            addr,
+                            None,
+                            None,
+                        )),
+                    })
                 }
             };
             // Plain std thread: blocking_send applies backpressure if the UI
@@ -2400,6 +2467,10 @@ impl App {
                             v.apply_job_result(other);
                             None
                         }
+                        View::Lp(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
                         View::Browser(v) => {
                             v.apply_job_result(other);
                             None
@@ -2445,10 +2516,10 @@ enum GlobalAction {
     None,
     /// Quit the app.
     Quit,
-    /// Cycle to the next screen (Tab navigation).
-    CycleScreens,
     /// Jump to a common task screen (when the view did not consume the key).
     Navigate(Screen),
+    /// Pop the navigation stack (Esc).
+    Back,
     /// Refresh status chrome (balance + gas).
     RefreshChrome,
     /// Lock the vault and return to the unlock screen.
@@ -2471,7 +2542,7 @@ fn defer_footer_shortcut(outcome: KeyOutcome, key: KeyEvent, allows: bool) -> Ke
 /// Decide global shortcuts for `key` given how the active view handled it.
 ///
 /// Pure and unit-tested: this is where the "typing into a field must not
-/// navigate" and "Tab inside a form must not switch screens" rules live.
+/// navigate" rule lives. Tab is reserved for per-view field/box focus.
 fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -2494,12 +2565,8 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
         return GlobalAction::Quit;
     }
 
-    if key.code == KeyCode::Tab {
-        return GlobalAction::CycleScreens;
-    }
-
     if key.code == KeyCode::Esc {
-        return GlobalAction::Navigate(Screen::Dashboard);
+        return GlobalAction::Back;
     }
 
     // Footer shortcuts — available from every unlocked view when idle.
@@ -2516,6 +2583,7 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'n' | 'i' => GlobalAction::Navigate(Screen::Settings),
             'k' => GlobalAction::Navigate(Screen::Keys),
             'e' => GlobalAction::Navigate(Screen::Wrap),
+            'p' => GlobalAction::Navigate(Screen::Lp),
             'f' => GlobalAction::Navigate(Screen::Bridge),
             'j' => GlobalAction::Navigate(Screen::Approvals),
             'm' => GlobalAction::Navigate(Screen::History),
@@ -2644,21 +2712,21 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_only_when_unhandled() {
+    fn tab_is_never_global() {
         assert_eq!(
             global_action(tab(), &KeyOutcome::Consumed),
             GlobalAction::None
         );
         assert_eq!(
             global_action(tab(), &KeyOutcome::NotHandled),
-            GlobalAction::CycleScreens
+            GlobalAction::None
         );
     }
 
     #[test]
     fn other_keys_are_inert() {
         assert_eq!(
-            global_action(press('p'), &KeyOutcome::NotHandled),
+            global_action(press('z'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
         assert_eq!(
@@ -2727,7 +2795,7 @@ mod tests {
         );
         assert_eq!(
             global_action(key(KeyCode::Esc), &KeyOutcome::NotHandled),
-            GlobalAction::Navigate(Screen::Dashboard)
+            GlobalAction::Back
         );
         assert_eq!(
             global_action(press('s'), &KeyOutcome::Consumed),

@@ -166,7 +166,7 @@ fn settings_view_esc_navigates_to_dashboard() {
     let mut view = SettingsView::new(0);
 
     let outcome = view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
-    assert!(matches!(outcome, KeyOutcome::Navigate(Screen::Dashboard)));
+    assert!(matches!(outcome, KeyOutcome::Back));
 }
 
 /// `p` toggles agent browser control and persists across reload.

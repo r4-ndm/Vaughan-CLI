@@ -1,0 +1,397 @@
+//! PulseChain DEX venue catalog — single source for routers, NPM, and allowlists.
+//!
+//! Dex TUI, MCP propose tools, and Sentient gates import from here so addresses
+//! never drift between UI picker and `is_allowed_dex_router`.
+
+use alloy::primitives::Address;
+use std::str::FromStr;
+
+use super::wiz4rd::{POSITION_MANAGER_943, SWAP_ROUTER_943};
+
+/// Uni V2-style router vs V3 SwapRouter periphery.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum DexProtocol {
+    V2,
+    V3,
+}
+
+impl DexProtocol {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::V2 => "V2",
+            Self::V3 => "V3",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::V2 => Self::V3,
+            Self::V3 => Self::V2,
+        }
+    }
+}
+
+/// PulseChain DEX venues. AMM Uni-forks have catalogued routers; OTC/Balancer listed only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum DexVenue {
+    Wiz4rd,
+    PulseX,
+    PulseXV1,
+    NineMm,
+    NineInch,
+    SparkSwap,
+    Dextop,
+    UniHedron,
+    PDex,
+    Phux,
+    Tide,
+    FiDex,
+    Bistro,
+    AgoraX,
+    Curv,
+    Custom,
+}
+
+/// ↑/↓ venue picker order (matches legacy Dex TUI).
+pub const DEX_VENUES: &[DexVenue] = &[
+    DexVenue::Wiz4rd,
+    DexVenue::PulseX,
+    DexVenue::PulseXV1,
+    DexVenue::NineMm,
+    DexVenue::NineInch,
+    DexVenue::SparkSwap,
+    DexVenue::Dextop,
+    DexVenue::UniHedron,
+    DexVenue::PDex,
+    DexVenue::Phux,
+    DexVenue::Tide,
+    DexVenue::FiDex,
+    DexVenue::Bistro,
+    DexVenue::AgoraX,
+    DexVenue::Curv,
+    DexVenue::Custom,
+];
+
+impl DexVenue {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wiz4rd => "Wiz4rd",
+            Self::PulseX => "PulseX",
+            Self::PulseXV1 => "PulseX V1",
+            Self::NineMm => "9mm",
+            Self::NineInch => "9inch",
+            Self::SparkSwap => "SparkSwap",
+            Self::Dextop => "Dextop",
+            Self::UniHedron => "Uniswap",
+            Self::PDex => "pDex",
+            Self::Phux => "PHUX",
+            Self::Tide => "0xTide",
+            Self::FiDex => "FiDex",
+            Self::Bistro => "0xBistro",
+            Self::AgoraX => "AgoraX",
+            Self::Curv => "CURV",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Wiz4rd => "Vaughan Pancake V3 fork · Pulse testnet 943",
+            Self::PulseX => "largest PLS DEX · V2 AMM + V3 SwapRouter",
+            Self::PulseXV1 => "legacy PulseX V1 AMM router",
+            Self::NineMm => "Uni V3-fork concentrated liquidity",
+            Self::NineInch => "V2 + V3 DEX (limit orders on site)",
+            Self::SparkSwap => "dexSWAP / Spark Swap (V2-style)",
+            Self::Dextop => "Uni V3-style · zkzx frontend",
+            Self::UniHedron => "Uniswap V3 periphery on PulseChain",
+            Self::PDex => "pDex V3 router",
+            Self::Phux => "Balancer-style weighted pools — not wired",
+            Self::Tide => "Balancer-fork dynamic fees — not wired",
+            Self::FiDex => "Function Island — paste router (unknown)",
+            Self::Bistro => "OTC — not AMM swap yet",
+            Self::AgoraX => "OTC marketplace — not AMM swap yet",
+            Self::Curv => "OTC + aggregator — not AMM swap yet",
+            Self::Custom => "paste any Uni V2/V3-compatible router",
+        }
+    }
+
+    pub fn unsupported_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Phux => Some("Balancer vault — need Balancer swap path"),
+            Self::Tide => Some("Balancer-fork — need vault swap path"),
+            Self::Bistro | Self::AgoraX | Self::Curv => Some("OTC desk — not an AMM router"),
+            Self::FiDex => Some("no published router in catalog yet"),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = DEX_VENUES.iter().position(|v| *v == self).unwrap_or(0);
+        DEX_VENUES[(i + 1) % DEX_VENUES.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let i = DEX_VENUES.iter().position(|v| *v == self).unwrap_or(0);
+        DEX_VENUES[(i + DEX_VENUES.len() - 1) % DEX_VENUES.len()]
+    }
+}
+
+/// On-chain contract role within a venue deploy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DexContractRole {
+    SwapRouter,
+    PositionManager,
+}
+
+struct CatalogEntry {
+    venue: DexVenue,
+    chain_id: u64,
+    protocol: Option<DexProtocol>,
+    role: DexContractRole,
+    address: &'static str,
+}
+
+/// Verified deploy facts — keep in sync with block explorers / venue docs.
+const CATALOG: &[CatalogEntry] = &[
+    // wiz4rd-swap (943)
+    CatalogEntry {
+        venue: DexVenue::Wiz4rd,
+        chain_id: 943,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: SWAP_ROUTER_943,
+    },
+    CatalogEntry {
+        venue: DexVenue::Wiz4rd,
+        chain_id: 943,
+        protocol: None,
+        role: DexContractRole::PositionManager,
+        address: POSITION_MANAGER_943,
+    },
+    // PulseX
+    CatalogEntry {
+        venue: DexVenue::PulseX,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x165C3410fC91EF562C50559f7d2289fEbed552d9",
+    },
+    CatalogEntry {
+        venue: DexVenue::PulseX,
+        chain_id: 943,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0xDaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7",
+    },
+    CatalogEntry {
+        venue: DexVenue::PulseX,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0xDA9aBA4eACF54E0273f56dfFee6B8F1e20B23Bba",
+    },
+    CatalogEntry {
+        venue: DexVenue::PulseXV1,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x98bf93ebf5c380C0e6Ae8e192A7e2AE08edAcc02",
+    },
+    // 9mm
+    CatalogEntry {
+        venue: DexVenue::NineMm,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0xcC73b59F8D7b7c532703bDfea2808a28a488cF47",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineMm,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0x7bE8fbe502191bBBCb38b02f2d4fA0D628301bEA",
+    },
+    // 9inch
+    CatalogEntry {
+        venue: DexVenue::NineInch,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0xeB45a3c4aedd0F47F345fB4c8A1802BB5740d725",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineInch,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0x42556A17EF0Bd815bF21aD628DFd2e2f3b5F9ac7",
+    },
+    // SparkSwap
+    CatalogEntry {
+        venue: DexVenue::SparkSwap,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x76C08825b4A675FD6a17A244660BabeB4ADA79d5",
+    },
+    // Dextop / pDex V3
+    CatalogEntry {
+        venue: DexVenue::Dextop,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0x1f849694Ef24a2245bCa415FE47500216B24d7FF",
+    },
+    CatalogEntry {
+        venue: DexVenue::PDex,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0x1eC2eaA62117486c9b2a05F098a7bF2568e19204",
+    },
+    // Uni V3 Hedron
+    CatalogEntry {
+        venue: DexVenue::UniHedron,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+];
+
+fn parse_static_addr(s: &str) -> Option<Address> {
+    Address::from_str(s).ok()
+}
+
+pub fn chain_label(chain_id: u64) -> &'static str {
+    match chain_id {
+        369 => "PulseChain mainnet",
+        943 => "PulseChain testnet",
+        _ => "this network",
+    }
+}
+
+/// Swap router for `(venue, protocol, chain)` when catalogued and supported.
+pub fn venue_swap_router(
+    venue: DexVenue,
+    protocol: DexProtocol,
+    chain_id: u64,
+) -> Option<Address> {
+    if venue.unsupported_reason().is_some() || venue == DexVenue::Custom {
+        return None;
+    }
+    CATALOG.iter().find_map(|e| {
+        if e.venue == venue
+            && e.chain_id == chain_id
+            && e.protocol == Some(protocol)
+            && e.role == DexContractRole::SwapRouter
+        {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
+/// NPM for concentrated LP when catalogued (wiz4rd 943 today).
+pub fn venue_position_manager(venue: DexVenue, chain_id: u64) -> Option<Address> {
+    CATALOG.iter().find_map(|e| {
+        if e.venue == venue
+            && e.chain_id == chain_id
+            && e.role == DexContractRole::PositionManager
+        {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
+/// All write-gated DEX contract addresses for `chain_id` (routers + NPM).
+pub fn write_allowed_addresses(chain_id: u64) -> impl Iterator<Item = Address> {
+    let effective = if chain_id == 31337 { 369 } else { chain_id };
+    CATALOG.iter().filter_map(move |e| {
+        if e.chain_id != effective {
+            return None;
+        }
+        match e.role {
+            DexContractRole::SwapRouter | DexContractRole::PositionManager => {
+                parse_static_addr(e.address)
+            }
+        }
+    })
+}
+
+/// Human hint when no router is catalogued for the picker selection.
+pub fn missing_router_hint(venue: DexVenue, protocol: DexProtocol, chain_id: u64) -> String {
+    if let Some(why) = venue.unsupported_reason() {
+        return format!("{} — {} · {}", venue.label(), venue.blurb(), why);
+    }
+    let other = protocol.toggle();
+    let other_ok = venue_swap_router(venue, other, chain_id).is_some();
+    let mainnet_ok = chain_id != 369 && venue_swap_router(venue, protocol, 369).is_some();
+    let mut parts = vec![format!(
+        "{} {} — no catalogued router on {}",
+        venue.label(),
+        protocol.label(),
+        chain_label(chain_id)
+    )];
+    if other_ok {
+        parts.push(format!("try ←/→ for {}", other.label()));
+    }
+    if mainnet_ok {
+        parts.push("or Settings→Net → PulseChain mainnet".into());
+    }
+    parts.push("Custom = paste any Uni V2/V3 router".into());
+    parts.join(" · ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    #[test]
+    fn venue_cycle_order() {
+        assert_eq!(DexVenue::Wiz4rd.next(), DexVenue::PulseX);
+        assert_eq!(DexVenue::Custom.next(), DexVenue::Wiz4rd);
+        assert_eq!(DEX_VENUES.len(), 16);
+    }
+
+    #[test]
+    fn pulsex_v2_v3_mainnet() {
+        assert!(venue_swap_router(DexVenue::PulseX, DexProtocol::V2, 369).is_some());
+        assert_eq!(
+            venue_swap_router(DexVenue::PulseX, DexProtocol::V3, 369),
+            Some(address!("0xDA9aBA4eACF54E0273f56dfFee6B8F1e20B23Bba"))
+        );
+    }
+
+    #[test]
+    fn nine_mm_v3_mainnet_only() {
+        assert!(venue_swap_router(DexVenue::NineMm, DexProtocol::V3, 369).is_some());
+        assert!(venue_swap_router(DexVenue::NineMm, DexProtocol::V3, 943).is_none());
+    }
+
+    #[test]
+    fn wiz4rd_npm_on_943() {
+        assert_eq!(
+            venue_position_manager(DexVenue::Wiz4rd, 943),
+            Some(address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745"))
+        );
+    }
+
+    #[test]
+    fn write_allowed_includes_routers_and_npm() {
+        let addrs: Vec<_> = write_allowed_addresses(943).collect();
+        assert!(addrs.contains(&address!("0xfC656c95eCd418536844FeeaA46949bb9365BEaF")));
+        assert!(addrs.contains(&address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745")));
+    }
+
+    #[test]
+    fn balancer_listed_but_no_router() {
+        assert!(DexVenue::Phux.unsupported_reason().is_some());
+        assert!(venue_swap_router(DexVenue::Phux, DexProtocol::V2, 369).is_none());
+    }
+}

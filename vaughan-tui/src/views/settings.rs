@@ -474,7 +474,7 @@ impl SettingsView {
     ) -> KeyOutcome {
         let len = wallet.networks().networks().len();
         match key.code {
-            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Esc => KeyOutcome::Back,
             KeyCode::Char('k') => KeyOutcome::Navigate(Screen::Keys),
             KeyCode::Char('w') => KeyOutcome::Navigate(Screen::Dapps),
             KeyCode::Char('h') => {

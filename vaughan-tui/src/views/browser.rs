@@ -23,7 +23,7 @@ use vaughan_core::chains::{EvmTransaction, Fee};
 use vaughan_core::core::{TransactionService, WalletState};
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::intent::parse_intent;
@@ -388,7 +388,7 @@ impl BrowserView {
                     self.input.take_string();
                     KeyOutcome::Consumed
                 } else {
-                    KeyOutcome::Navigate(Screen::Dashboard)
+                    KeyOutcome::Back
                 }
             }
             KeyCode::PageUp => {

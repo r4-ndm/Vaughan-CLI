@@ -64,7 +64,7 @@ impl AggVenue {
             Self::Piteas => "Pathfinder DEX aggregator · public SDK beta",
             Self::SwitchWin => "aggregator + limit orders · needs x-api-key",
             Self::Empseal => "EmpX · on-chain Alloy path-find",
-            Self::NineMm9x => "9mm multi-chain aggregator · no public developer quote API",
+            Self::NineMm9x => "9mm 9X · public API at api.9mm.pro (anon tier, no key)",
             Self::Curv => "Jolt / CURV · Switch routing (needs Switch API key)",
             Self::InternetMoney => "multi-chain wallet aggregator · not wired",
             Self::LibertyX => "use Bridge (f) — LibertySwap cross-chain",
@@ -74,11 +74,12 @@ impl AggVenue {
 
     pub fn access(self) -> AggAccess {
         match self {
-            Self::SquirrelSwap | Self::PulseSwap | Self::Piteas | Self::Empseal => {
-                AggAccess::LiveNoKey
-            }
+            Self::SquirrelSwap
+            | Self::PulseSwap
+            | Self::Piteas
+            | Self::Empseal
+            | Self::NineMm9x => AggAccess::LiveNoKey,
             Self::SwitchWin => AggAccess::NeedsApiKey("requires Switch x-api-key"),
-            Self::NineMm9x => AggAccess::ListedOnly("no public developer quote API"),
             Self::Curv => AggAccess::NeedsApiKey("Switch routing — same x-api-key as Switch.win"),
             Self::LibertyX => AggAccess::ListedOnly("Bridge screen · LibertySwap"),
             Self::InternetMoney | Self::PortalX => {
@@ -153,6 +154,7 @@ mod tests {
         assert!(matches!(AggVenue::Curv.access(), AggAccess::NeedsApiKey(_)));
         assert!(AggVenue::Empseal.is_live());
         assert!(matches!(AggVenue::Empseal.access(), AggAccess::LiveNoKey));
+        assert!(AggVenue::NineMm9x.is_live());
     }
 
     #[test]

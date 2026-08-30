@@ -75,11 +75,7 @@ sol! {
 }
 
 /// V2 vs Uniswap-V3-style SwapRouter periphery.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DexProtocol {
-    V2,
-    V3,
-}
+pub use vaughan_core::core::DexProtocol;
 
 /// Parameters for [`build_swap_tx`].
 #[derive(Clone, Debug)]

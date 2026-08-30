@@ -15,7 +15,7 @@ use tokio::runtime::Handle;
 use vaughan_core::core::{StealthNote, WalletState};
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::clipboard;
 
@@ -154,7 +154,7 @@ impl ReceiveView {
     ) -> KeyOutcome {
         match self.stage {
             Stage::Address => match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('s') => {
                     self.scan(wallet, handle);
                     KeyOutcome::Consumed

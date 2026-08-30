@@ -19,6 +19,8 @@ pub const OFFICIAL_AGG_ROUTERS: &[&str] = &[
     "0x0Cf6D948Cf09ac83a6bf40C7AD7b44657A9F2A52",
     // Piteas public router (PulseChain mainnet)
     "0x6BF228eb7F8ad948d37deD07E595EfddfaAF88A6",
+    // 9mm 9X unified API (`api.9mm.pro`) — execution router + ERC-20 allowance target
+    "0xd5b775d1f15a864a5f6b94624e049cf758d013f7",
 ];
 
 fn router_set() -> &'static HashSet<[u8; 20]> {
@@ -60,7 +62,7 @@ mod tests {
     use alloy::primitives::address;
 
     #[test]
-    fn squirrel_pulseswap_empx_piteas_routers_allowed() {
+    fn squirrel_pulseswap_empx_piteas_nine_mm_routers_allowed() {
         assert!(is_allowed_agg_router(address!(
             "0xDa8953Fc615d6E816b9647Afd5536123dcE70B78"
         )));
@@ -72,6 +74,9 @@ mod tests {
         )));
         assert!(is_allowed_agg_router(address!(
             "0x6BF228eb7F8ad948d37deD07E595EfddfaAF88A6"
+        )));
+        assert!(is_allowed_agg_router(address!(
+            "0xd5b775d1f15a864a5f6b94624e049cf758d013f7"
         )));
     }
 

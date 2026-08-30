@@ -29,7 +29,7 @@ use vaughan_core::core::{parse_native_amount, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
@@ -315,7 +315,7 @@ impl AaSendView {
                 match self.focus {
                     Focus::Recipient => {
                         if key.code == KeyCode::Esc {
-                            return KeyOutcome::Navigate(Screen::Dashboard);
+                            return KeyOutcome::Back;
                         }
                         match self.active_row_mut().recipient.handle_key(key) {
                             InputAction::Ignored => KeyOutcome::NotHandled,
@@ -359,7 +359,7 @@ impl AaSendView {
                 _ => KeyOutcome::NotHandled,
             },
             Stage::Done => match key.code {
-                KeyCode::Enter | KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Enter | KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::NotHandled,
             },
         }

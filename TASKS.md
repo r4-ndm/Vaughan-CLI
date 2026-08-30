@@ -347,7 +347,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Contract browser gated writes: `write` / `writeraw` from REPL → fee confirm → broadcast (same path as Send)
 
 ### P3 — Earn / advanced (only when real)
-- [ ] LP positions (V2 balance + remove liquidity); V3 only if demand is proven
+- [x] **Browserless DEX parity (no web):** TUI LP screen (mint / collect / list on wiz4rd 943) — `LpView`, `dex_lp`, Anvil tests (`vaughan-tui/tests/lp_view.rs`)
+- [x] Dex swap polish: multi-hop V3 quote (local chained math on 943; exact-out still open)
+- [ ] Generic V3 NPM on Pulse mainnet 369 (PulseX / 9mm factory + allowlist) — after 943 LP TUI proven
+- [ ] LP positions (V2 balance + remove liquidity); V3 increase/decrease TUI when demand is proven
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred
 - [x] Local EIP-712: paste/load typed-data JSON → Approve view — `vaughan sign-typed-data`, browser `sign-typed`

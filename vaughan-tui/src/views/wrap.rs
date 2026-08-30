@@ -16,7 +16,7 @@ use tokio::runtime::Handle;
 use vaughan_core::core::{format_base_units, parse_native_amount, wpls_for_chain, WalletState};
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
@@ -178,7 +178,7 @@ impl WrapView {
     ) -> KeyOutcome {
         if matches!(self.busy, Busy::Sending) {
             return match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::Consumed,
             };
         }
@@ -193,7 +193,7 @@ impl WrapView {
                 _ => KeyOutcome::Consumed,
             },
             Stage::Input => match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Left | KeyCode::Right => {
                     self.mode = self.mode.toggle();
                     KeyOutcome::Consumed

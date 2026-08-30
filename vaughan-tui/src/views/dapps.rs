@@ -16,7 +16,7 @@ use tokio::runtime::Handle;
 use vaughan_core::core::{trusted_dapp_allow_hosts, TrustedDapp, WalletState};
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::freedom;
 use crate::input::{Input, InputAction};
@@ -169,7 +169,7 @@ impl DappsView {
     ) -> KeyOutcome {
         match self.stage {
             Stage::List => match key.code {
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('a') => {
                     self.stage = Stage::Add;
                     self.focus = 0;

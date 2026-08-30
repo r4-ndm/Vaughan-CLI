@@ -141,6 +141,7 @@ impl PulseSwapClient {
                 value,
             },
             spender: to_addr,
+            preview_only: false,
         })
     }
 }

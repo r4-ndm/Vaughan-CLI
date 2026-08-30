@@ -21,7 +21,7 @@ use vaughan_core::core::{
 };
 use vaughan_provider::EventBus;
 
-use crate::app::{KeyOutcome, Screen};
+use crate::app::KeyOutcome;
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
@@ -359,7 +359,7 @@ impl BridgeView {
                     *self = Self::for_wallet_chain(chain_id);
                     KeyOutcome::Consumed
                 }
-                KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+                KeyCode::Esc => KeyOutcome::Back,
                 _ => KeyOutcome::Consumed,
             },
             Stage::Confirm(step) => match key.code {
@@ -377,7 +377,14 @@ impl BridgeView {
 
     fn handle_input_key(&mut self, key: KeyEvent, wallet: &WalletState) -> KeyOutcome {
         match key.code {
-            KeyCode::Esc => KeyOutcome::Navigate(Screen::Dashboard),
+            KeyCode::Esc => {
+                if self.focus != Focus::None {
+                    self.focus = Focus::None;
+                    KeyOutcome::Consumed
+                } else {
+                    KeyOutcome::Back
+                }
+            }
             KeyCode::Up | KeyCode::Down
                 if matches!(self.focus, Focus::SrcChain | Focus::DstChain) =>
             {
