@@ -304,6 +304,57 @@ pub fn chain_label(chain_id: u64) -> &'static str {
     }
 }
 
+/// Stable slug for MCP / agent tool args (e.g. `wiz4rd`, `9mm`).
+pub fn venue_slug(venue: DexVenue) -> &'static str {
+    match venue {
+        DexVenue::Wiz4rd => "wiz4rd",
+        DexVenue::PulseX => "pulsex",
+        DexVenue::PulseXV1 => "pulsex_v1",
+        DexVenue::NineMm => "9mm",
+        DexVenue::NineInch => "9inch",
+        DexVenue::SparkSwap => "sparkswap",
+        DexVenue::Dextop => "dextop",
+        DexVenue::UniHedron => "uniswap",
+        DexVenue::PDex => "pdex",
+        DexVenue::Phux => "phux",
+        DexVenue::Tide => "0xtide",
+        DexVenue::FiDex => "fidex",
+        DexVenue::Bistro => "0xbistro",
+        DexVenue::AgoraX => "agorax",
+        DexVenue::Curv => "curv",
+        DexVenue::Custom => "custom",
+    }
+}
+
+fn normalize_venue_label(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Parse a venue slug or label from MCP / agent args.
+pub fn parse_dex_venue_label(raw: &str) -> Option<DexVenue> {
+    let key = normalize_venue_label(raw);
+    if key.is_empty() {
+        return None;
+    }
+    for &venue in DEX_VENUES {
+        let slug = normalize_venue_label(venue_slug(venue));
+        let label = normalize_venue_label(venue.label());
+        if key == slug || key == label {
+            return Some(venue);
+        }
+    }
+    match key.as_str() {
+        "ninemm" | "nine_mm" => Some(DexVenue::NineMm),
+        "nineinch" | "nine_inch" => Some(DexVenue::NineInch),
+        "pulsexv1" | "pulsexlegacy" => Some(DexVenue::PulseXV1),
+        _ => None,
+    }
+}
+
 /// Swap router for `(venue, protocol, chain)` when catalogued and supported.
 pub fn venue_swap_router(venue: DexVenue, protocol: DexProtocol, chain_id: u64) -> Option<Address> {
     if venue.unsupported_reason().is_some() || venue == DexVenue::Custom {
@@ -463,6 +514,17 @@ mod tests {
         let on_943: Vec<_> = lp_v3_venues(943).collect();
         assert_eq!(on_943, vec![DexVenue::Wiz4rd]);
         assert!(lp_v3_venues(369).any(|v| v == DexVenue::NineMm));
+    }
+
+    #[test]
+    fn venue_slug_and_parse_roundtrip() {
+        assert_eq!(venue_slug(DexVenue::Wiz4rd), "wiz4rd");
+        assert_eq!(venue_slug(DexVenue::NineMm), "9mm");
+        assert_eq!(parse_dex_venue_label("wiz4rd"), Some(DexVenue::Wiz4rd));
+        assert_eq!(parse_dex_venue_label("9mm"), Some(DexVenue::NineMm));
+        assert_eq!(parse_dex_venue_label("nine_mm"), Some(DexVenue::NineMm));
+        assert_eq!(parse_dex_venue_label("Wiz4rd"), Some(DexVenue::Wiz4rd));
+        assert!(parse_dex_venue_label("unknown").is_none());
     }
 
     #[test]

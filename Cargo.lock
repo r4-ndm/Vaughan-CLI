@@ -5823,6 +5823,7 @@ dependencies = [
  "url",
  "vaughan-aa",
  "vaughan-core",
+ "vaughan-mcp",
  "wiz4rd-math",
  "wiz4rd-sdk",
  "zeroize",

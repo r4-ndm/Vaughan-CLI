@@ -17,6 +17,7 @@ pub mod registry;
 pub mod resolve_token;
 pub mod search_pairs;
 pub mod simulate_call;
+pub mod v3_lp;
 pub mod watch_balance;
 pub mod watch_quote;
 pub mod wiz4rd_common;
@@ -31,9 +32,9 @@ pub use list_transfers::ListTransfersTool;
 pub use list_v3_positions::ListV3PositionsTool;
 pub use proposals::{
     ProposeAggSwapTool, ProposeApproveTool, ProposeBatch7702Tool, ProposeContractCallTool,
-    ProposeRevokeTool, ProposeStealthSendTool, ProposeSwapTool, ProposeTransferTool,
-    ProposeUnwrapTool, ProposeV3CollectTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
-    ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
+    ProposeRevokeTool, ProposeStealthSendTool, ProposeSwapTool, ProposeTokenLaunchTool,
+    ProposeTransferTool, ProposeUnwrapTool, ProposeV3CollectTool, ProposeV3DecreaseTool,
+    ProposeV3IncreaseTool, ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
@@ -109,6 +110,7 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry.register(Arc::new(ProposeStealthSendTool::new()));
     registry.register(Arc::new(ProposeBatch7702Tool::new()));
     registry.register(Arc::new(ProposeContractCallTool::new()));
+    registry.register(Arc::new(ProposeTokenLaunchTool::new()));
     if let Some(dir) = profile_dir {
         registry.register(Arc::new(ImportTokenTool::new(dir.to_path_buf())));
     }

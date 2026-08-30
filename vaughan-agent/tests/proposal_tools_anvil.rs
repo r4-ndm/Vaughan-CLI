@@ -74,7 +74,31 @@ async fn test_assist_registry_and_proposals_with_anvil() {
     assert!(prop.simulation_success);
     assert_eq!(prop.explanation, "Sending 1 ETH to second test account");
 
-    // 2. Propose Batch 7702
+    // 2. Propose Token Launch (testnet)
+    let launch_raw = registry
+        .execute(
+            "propose_token_launch",
+            json!({
+                "name": "Test Meme",
+                "symbol": "MEME",
+                "supply": "1000000",
+                "explanation": "Anvil proposal smoke"
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let launch: TxProposal = serde_json::from_value(launch_raw).unwrap();
+    assert_eq!(
+        launch.to,
+        address!("0000000000000000000000000000000000000000")
+    );
+    assert!(matches!(
+        launch.proposal_type,
+        vaughan_agent::proposal::ProposalType::TokenLaunch { .. }
+    ));
+
+    // 3. Propose Batch 7702
     let batch_raw = registry
         .execute(
             "propose_batch_7702",

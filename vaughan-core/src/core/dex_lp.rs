@@ -17,6 +17,8 @@ use crate::core::dex_catalog::{
 use crate::core::dex_routers::is_allowed_dex_router;
 use crate::error::WalletError;
 use wiz4rd_sdk::config::Config;
+use wiz4rd_sdk::pool::{get_pool_info, PoolInfo};
+use wiz4rd_sdk::pool_address::get_pool_key;
 use wiz4rd_sdk::positions::{list_positions_from, PositionInfo};
 use wiz4rd_sdk::tx::liquidity::{
     build_collect_tx, build_decrease_liquidity_tx, build_increase_liquidity_tx, build_mint_tx,
@@ -109,6 +111,29 @@ fn tx_to_evm(
         nonce: None,
         chain_id,
     })
+}
+
+/// Load on-chain pool state for a catalogued V3 LP venue (mint preview / tick range).
+pub async fn load_v3_lp_pool(
+    rpc_url: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    token_a: Address,
+    token_b: Address,
+    fee: u32,
+) -> Result<(Config, PoolInfo), WalletError> {
+    let cfg = v3_lp_sdk_config(venue, chain_id, rpc_url)?;
+    let key = get_pool_key(token_a, token_b, fee);
+    let provider = connect_http(rpc_url)?;
+    let info = get_pool_info(&provider, &cfg, key)
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("get_pool_info: {e}")))?;
+    if info.pool.is_zero() {
+        return Err(WalletError::NetworkError(
+            "pool does not exist for this pair/fee".into(),
+        ));
+    }
+    Ok((cfg, info))
 }
 
 /// List V3 LP NFT positions for `owner` (Transfer-log scan + `positions()`).

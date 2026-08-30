@@ -1,4 +1,4 @@
-//! Phase E: wiz4rd V3 increase / decrease / collect LP proposals.
+//! V3 increase / decrease / collect LP proposals (catalog venues: wiz4rd 943, 9mm 369).
 
 use alloy::primitives::U256;
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
-use crate::tools::wiz4rd_common::config_for_context;
+use crate::tools::v3_lp::{lp_config, proposal_network_id, resolve_lp_venue, venue_param_schema};
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::is_allowed_dex_router;
 
@@ -95,7 +95,7 @@ async fn proposal_from_npm(
             true,
             explanation,
         )
-        .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into())),
+        .with_chain(context.chain_id, proposal_network_id(context)),
         context,
     )
     .await;
@@ -118,7 +118,7 @@ impl Tool for ProposeV3IncreaseTool {
     }
 
     fn description(&self) -> &str {
-        "Draft wiz4rd V3 increaseLiquidity for an existing LP NFT. Never signs."
+        "Draft V3 increaseLiquidity for an existing LP NFT (wiz4rd 943 or 9mm 369). Never signs."
     }
 
     fn parameters(&self) -> Value {
@@ -129,6 +129,7 @@ impl Tool for ProposeV3IncreaseTool {
                 "amount0_desired": { "type": "string" },
                 "amount1_desired": { "type": "string" },
                 "slippage_bps": { "type": "integer", "default": 50 },
+                "venue": venue_param_schema()["venue"],
                 "explanation": { "type": "string" }
             },
             "required": ["token_id", "amount0_desired", "amount1_desired", "explanation"]
@@ -155,7 +156,8 @@ impl Tool for ProposeV3IncreaseTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as u32;
         let explanation = require_explanation(&args)?;
-        let cfg = config_for_context(context)?;
+        let venue = resolve_lp_venue(&args, context.chain_id)?;
+        let cfg = lp_config(context, venue)?;
         let tx = build_increase_liquidity_tx(
             &cfg,
             token_id,
@@ -172,7 +174,10 @@ impl Tool for ProposeV3IncreaseTool {
             npm,
             calldata,
             400_000,
-            format!("{explanation} [increase token_id={token_id} amt0={amount0} amt1={amount1}]"),
+            format!(
+                "{explanation} [{} increase token_id={token_id} amt0={amount0} amt1={amount1}]",
+                venue.label()
+            ),
             context,
         )
         .await
@@ -195,7 +200,7 @@ impl Tool for ProposeV3DecreaseTool {
     }
 
     fn description(&self) -> &str {
-        "Draft wiz4rd V3 decreaseLiquidity for an LP NFT. Never signs. Follow with propose_v3_collect."
+        "Draft V3 decreaseLiquidity for an LP NFT. Never signs. Follow with propose_v3_collect."
     }
 
     fn parameters(&self) -> Value {
@@ -209,6 +214,7 @@ impl Tool for ProposeV3DecreaseTool {
                 },
                 "amount0_min": { "type": "string", "default": "0" },
                 "amount1_min": { "type": "string", "default": "0" },
+                "venue": venue_param_schema()["venue"],
                 "explanation": { "type": "string" }
             },
             "required": ["token_id", "liquidity", "explanation"]
@@ -239,7 +245,8 @@ impl Tool for ProposeV3DecreaseTool {
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid amount1_min: {e}")))?
             .unwrap_or(U256::ZERO);
         let explanation = require_explanation(&args)?;
-        let cfg = config_for_context(context)?;
+        let venue = resolve_lp_venue(&args, context.chain_id)?;
+        let cfg = lp_config(context, venue)?;
         let tx = build_decrease_liquidity_tx(
             &cfg,
             token_id,
@@ -255,7 +262,10 @@ impl Tool for ProposeV3DecreaseTool {
             npm,
             calldata,
             300_000,
-            format!("{explanation} [decrease token_id={token_id} liquidity={liquidity}]"),
+            format!(
+                "{explanation} [{} decrease token_id={token_id} liquidity={liquidity}]",
+                venue.label()
+            ),
             context,
         )
         .await
@@ -278,7 +288,7 @@ impl Tool for ProposeV3CollectTool {
     }
 
     fn description(&self) -> &str {
-        "Draft wiz4rd V3 collect (fees + owed tokens) for an LP NFT. Never signs."
+        "Draft V3 collect (fees + owed tokens) for an LP NFT. Never signs."
     }
 
     fn parameters(&self) -> Value {
@@ -294,6 +304,7 @@ impl Tool for ProposeV3CollectTool {
                     "type": "string",
                     "description": "Max token1 to collect (default: u128::MAX)"
                 },
+                "venue": venue_param_schema()["venue"],
                 "explanation": { "type": "string" }
             },
             "required": ["token_id", "explanation"]
@@ -318,7 +329,8 @@ impl Tool for ProposeV3CollectTool {
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid amount1_max: {e}")))?
             .unwrap_or(u128::MAX);
         let explanation = require_explanation(&args)?;
-        let cfg = config_for_context(context)?;
+        let venue = resolve_lp_venue(&args, context.chain_id)?;
+        let cfg = lp_config(context, venue)?;
         let tx = build_collect_tx(&cfg, token_id, recipient, amount0_max, amount1_max)
             .map_err(|e| AgentError::InvalidToolCall(e.to_string()))?;
         let (npm, calldata) = extract_npm_calldata(context, tx)?;
@@ -327,7 +339,10 @@ impl Tool for ProposeV3CollectTool {
             npm,
             calldata,
             200_000,
-            format!("{explanation} [collect token_id={token_id}]"),
+            format!(
+                "{explanation} [{} collect token_id={token_id}]",
+                venue.label()
+            ),
             context,
         )
         .await

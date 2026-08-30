@@ -351,6 +351,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Dex swap polish: multi-hop V3 quote (local chained math on 943; exact-out still open)
 - [x] 9mm V3 NPM + QuoterV2 on Pulse mainnet 369 (catalog + Quoter quotes; PulseX V3 is hybrid router — no CL NPM)
 - [x] LP Phase 1: venue picker + catalog NPM (`wiz4rd` 943, `9mm` 369) — `v3_lp_sdk_config`, `lp_v3_venues`
+- [x] MCP/agent V3 LP venue parity — optional `venue` on `list_v3_positions` / `propose_v3_*`; shared `vaughan-agent::tools::v3_lp`
+- [x] Token launch v1 — testnet fixed-supply ERC-20 (name/ticker/supply); `TokenLaunchView`, `vaughan-core::token_launch`
 - [ ] PulseX / other mainnet V3 NPM (9inch, …) when addresses verified
 - [ ] LP positions (V2 balance + remove liquidity); V3 increase/decrease TUI when demand is proven
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above

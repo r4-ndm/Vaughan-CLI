@@ -165,7 +165,7 @@ fn anvil_browserless_sign_typed_data_matches_foundry() {
 
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let rt = Runtime::new().unwrap();
     let handle = rt.handle().clone();
 
@@ -188,7 +188,7 @@ fn anvil_browserless_sign_typed_data_matches_foundry() {
         address: sender.clone(),
         typed_data: typed_data.clone(),
     };
-    let signature = execute_approval_sync(&kind, &wallet, &handle)
+    let signature = execute_approval_sync(&kind, &mut wallet, &handle)
         .unwrap_or_else(|e| panic!("browserless sign typed data failed: {e}"));
     assert!(signature.starts_with("0x"));
     assert_eq!(signature.len(), 2 + 65 * 2);

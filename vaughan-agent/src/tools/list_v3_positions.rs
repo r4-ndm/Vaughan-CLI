@@ -1,15 +1,14 @@
-//! Sensory tool: list wiz4rd V3 LP NFTs for an address.
+//! Sensory tool: list V3 LP NFTs for an address (catalog venues: wiz4rd 943, 9mm 369).
 
 use alloy::primitives::Address;
-use alloy::providers::ProviderBuilder;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::str::FromStr;
-use wiz4rd_sdk::positions::list_positions_from;
 
 use crate::error::AgentError;
-use crate::tools::wiz4rd_common::config_for_context;
+use crate::tools::v3_lp::{resolve_lp_venue, venue_param_schema};
 use crate::tools::{Tool, ToolContext};
+use vaughan_core::core::{list_v3_lp_positions, venue_slug};
 
 #[derive(Default)]
 pub struct ListV3PositionsTool;
@@ -27,7 +26,7 @@ impl Tool for ListV3PositionsTool {
     }
 
     fn description(&self) -> &str {
-        "List wiz4rd V3 LP NFT positions for an address (Pulse testnet 943). \
+        "List V3 LP NFT positions for an address. Optional venue (wiz4rd on 943, 9mm on 369). \
          Optional from_block/to_block to bound log scans."
     }
 
@@ -40,7 +39,8 @@ impl Tool for ListV3PositionsTool {
                     "description": "Owner (default: unlocked session address)"
                 },
                 "from_block": { "type": "integer" },
-                "to_block": { "type": "integer" }
+                "to_block": { "type": "integer" },
+                "venue": venue_param_schema()["venue"]
             }
         })
     }
@@ -58,17 +58,18 @@ impl Tool for ListV3PositionsTool {
         };
         let from_block = args.get("from_block").and_then(|v| v.as_u64());
         let to_block = args.get("to_block").and_then(|v| v.as_u64());
+        let venue = resolve_lp_venue(&args, context.chain_id)?;
 
-        let cfg = config_for_context(context)?;
-        let provider = ProviderBuilder::new().connect_http(
-            cfg.rpc_url()
-                .parse()
-                .map_err(|e| AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}")))?,
-        );
-
-        let positions = list_positions_from(&provider, &cfg, owner, from_block, to_block)
-            .await
-            .map_err(|e| AgentError::ProviderError(format!("list_positions: {e}")))?;
+        let positions = list_v3_lp_positions(
+            &context.rpc_url,
+            venue,
+            context.chain_id,
+            owner,
+            from_block,
+            to_block,
+        )
+        .await
+        .map_err(|e| AgentError::ProviderError(format!("list_positions: {}", e.user_message())))?;
 
         let rows: Vec<_> = positions
             .iter()
@@ -90,6 +91,7 @@ impl Tool for ListV3PositionsTool {
         Ok(json!({
             "owner": format!("{owner:#x}"),
             "chain_id": context.chain_id,
+            "venue": venue_slug(venue),
             "positions": rows,
         }))
     }

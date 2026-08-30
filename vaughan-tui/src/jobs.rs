@@ -135,6 +135,12 @@ pub enum UiJob {
         rpc_url: String,
         owner: String,
     },
+    /// Deploy fixed-supply ERC-20 on testnet (meme coin launcher).
+    DeployToken {
+        name: String,
+        symbol: String,
+        supply: String,
+    },
 }
 
 /// Cached need-to-know strip shared across every unlocked screen.
@@ -231,6 +237,8 @@ pub enum UiJobResult {
     BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),
     /// V3 LP positions from NPM scan.
     LpPositions(Result<Vec<vaughan_core::core::V3PositionInfo>, WalletError>),
+    /// Meme-coin deploy + auto-import.
+    DeployToken(Result<vaughan_core::core::TokenLaunchOutcome, WalletError>),
 }
 
 /// Successful off-thread unlock: derived accounts plus the session mode picked

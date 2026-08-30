@@ -95,7 +95,7 @@ async fn run_approval_consumer(
                 };
                 seen.lock().unwrap().push(summary.clone());
                 let result = match decide(&kind) {
-                    Ok(()) => vaughan_tui::provider::execute_approval(&kind, &wallet).await,
+                    Ok(()) => vaughan_tui::provider::execute_approval(&kind, &mut wallet).await,
                     Err(e) => Err(e),
                 };
                 let _ = reply.send(result);
@@ -789,7 +789,7 @@ async fn approve_send_preserves_explicit_eip1559_fees() {
 async fn approve_send_with_fee_override_signs_adjusted_gas_price() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
     let sender = wallet.active_address().unwrap().to_string();
     let recipient = anvil_dev_address(4);
     let before = anvil.wei_balance(&recipient);
@@ -818,11 +818,11 @@ async fn approve_send_with_fee_override_signs_adjusted_gas_price() {
                         vaughan_tui::provider::apply_fee_override(&mut tx, &fee);
                         vaughan_tui::provider::execute_approval(
                             &ApprovalKind::SendTransaction(tx),
-                            &wallet,
+                            &mut wallet,
                         )
                         .await
                     }
-                    other => vaughan_tui::provider::execute_approval(&other, &wallet).await,
+                    other => vaughan_tui::provider::execute_approval(&other, &mut wallet).await,
                 };
                 let _ = reply.send(result);
             }

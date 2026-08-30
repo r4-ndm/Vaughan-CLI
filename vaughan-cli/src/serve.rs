@@ -288,8 +288,8 @@ fn execute_propose(
 
     if mcp_auto_exec_enabled(profile_name) {
         let breaker = breaker.ok_or_else(|| "sentient circuit breaker unavailable".to_string())?;
-        let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
-        let hash = sentient_mcp::auto_exec_mcp_proposal(&w, handle, breaker, &kind)
+        let mut w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
+        let hash = sentient_mcp::auto_exec_mcp_proposal(&mut w, handle, breaker, &kind)
             .map_err(|e| e.to_string())?;
         return Ok(McpProposeOutcome::Approved { tx_hash: hash });
     }

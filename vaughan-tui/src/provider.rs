@@ -22,7 +22,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
 use vaughan_core::chains::{EvmTransaction, Fee};
-use vaughan_core::core::proposal::{apply_proposal, ProposalQueue, TxProposal};
+use vaughan_core::core::proposal::{apply_proposal, ProposalQueue, ProposalType, TxProposal};
 use vaughan_core::core::{format_base_units, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::server::DEFAULT_PORT;
@@ -629,6 +629,30 @@ pub fn describe_approval_with_fee(
         ApprovalKind::McpProposal {
             proposal, source, ..
         } => {
+            if let ProposalType::TokenLaunch {
+                name,
+                symbol,
+                supply_human,
+            } = &proposal.proposal_type
+            {
+                let net = wallet.networks().active();
+                let testnet = if net.is_testnet { " (testnet)" } else { "" };
+                let lines = vec![
+                    format!("Source:  MCP ({source})"),
+                    "Action:  Deploy fixed-supply ERC-20".into(),
+                    format!("Name:    {name}"),
+                    format!("Symbol:  {symbol}"),
+                    format!("Supply:  {supply_human} (18 decimals)"),
+                    format!("Mint to: active wallet"),
+                    format!("Network: {}{testnet}", net.name),
+                    format!("Gas:     {}", proposal.gas_limit),
+                    mcp_proposal_fee_line(wallet, proposal, handle),
+                    "Sim (agent): skipped — contract creation".into(),
+                    "Note:    Token auto-imports after deploy".into(),
+                    format!("Agent:   {}", proposal.explanation),
+                ];
+                return Ok(("MCP token launch".into(), lines, None));
+            }
             let net = wallet.networks().active();
             let to = format!("{:#x}", proposal.to);
             let value = format_base_units(&proposal.value_wei.to_string(), net.decimals);
@@ -813,7 +837,7 @@ fn fee_from_explicit_tx_params(tx: &TxParams, wallet: &WalletState) -> Option<Fe
 /// callers (integration tests) can drive the same code.
 pub async fn execute_approval(
     kind: &ApprovalKind,
-    wallet: &WalletState,
+    wallet: &mut WalletState,
 ) -> Result<String, ProviderError> {
     // A locked wallet never prompts, never signs: reject cleanly (EIP-1193
     // 4100). The UI skips the prompt for locked wallets too (see app.rs), so
@@ -865,6 +889,25 @@ pub async fn execute_approval(
             ..
         } => {
             use vaughan_core::core::proposal::ProposalType;
+            if let ProposalType::TokenLaunch {
+                name,
+                symbol,
+                supply_human,
+            } = &proposal.proposal_type
+            {
+                let outcome = wallet
+                    .deploy_fixed_supply_token(name, symbol, supply_human)
+                    .await
+                    .map_err(map_wallet_error)?;
+                if let Some(parent) = wallet.path().parent() {
+                    if let Ok(Some(token)) = vaughan_core::core::McpSessionToken::read(parent) {
+                        let queue = ProposalQueue::new(parent);
+                        let _ =
+                            queue.mark_approved(proposal_id, &outcome.tx_hash, token.as_bytes());
+                    }
+                }
+                return Ok(outcome.tx_hash);
+            }
             if matches!(proposal.proposal_type, ProposalType::Batch7702 { .. }) {
                 // Ambire self-pay path: dummy draft signature cannot eth_call.
                 // Integrity check = abi-decode execute(txns) then submit_batch (fresh sig).
@@ -925,7 +968,9 @@ pub async fn execute_approval(
                 }
                 return Ok(result.tx_hash.to_string());
             }
-            resimulate_mcp_proposal(wallet, proposal).await?;
+            if !matches!(proposal.proposal_type, ProposalType::TokenLaunch { .. }) {
+                resimulate_mcp_proposal(wallet, proposal).await?;
+            }
             let evm = apply_proposal(wallet, proposal).map_err(map_wallet_error)?;
             if let Ok(fresh_fee) = wallet.estimate_transaction_fee(evm.clone()).await {
                 if let Some(fresh_wei) = fresh_fee.total_wei_evm() {
@@ -1024,7 +1069,7 @@ async fn resimulate_mcp_proposal(
 /// safe (matching the existing view pattern).
 pub fn execute_approval_sync(
     kind: &ApprovalKind,
-    wallet: &WalletState,
+    wallet: &mut WalletState,
     handle: &Handle,
 ) -> Result<String, ProviderError> {
     handle.block_on(execute_approval(kind, wallet))

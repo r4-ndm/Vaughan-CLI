@@ -10,11 +10,11 @@ use ratatui::{
 };
 use tokio::runtime::Handle;
 use vaughan_core::chains::Balance;
-use vaughan_core::core::{format_display_amount, WalletState};
+use vaughan_core::core::{format_display_amount, token_launch_allowed, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
 
-use crate::app::KeyOutcome;
+use crate::app::{KeyOutcome, Screen};
 use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob};
@@ -143,7 +143,7 @@ impl AssetsView {
                 };
 
                 let title = format!(
-                    " Assets — {}{testnet} (↑↓ select, Enter send, i import, r refresh, d back) ",
+                    " Assets — {}{testnet} (↑↓ · Enter send · i import · u launch · r refresh · Esc) ",
                     net.name
                 );
                 let inner = brand::render_faded_box(frame, content, Some(brand::fade_line(&title)));
@@ -199,6 +199,9 @@ impl AssetsView {
                     self.stage = Stage::Import;
                     self.status.clear();
                     KeyOutcome::Consumed
+                }
+                KeyCode::Char('u') if token_launch_allowed(wallet.networks().active().chain_id) => {
+                    KeyOutcome::Navigate(Screen::TokenLaunch)
                 }
                 KeyCode::Up => {
                     self.selected = self.selected.saturating_sub(1);

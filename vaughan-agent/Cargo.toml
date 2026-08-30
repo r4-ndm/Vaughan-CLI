@@ -28,3 +28,4 @@ wiz4rd-sdk = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+vaughan-mcp = { workspace = true }

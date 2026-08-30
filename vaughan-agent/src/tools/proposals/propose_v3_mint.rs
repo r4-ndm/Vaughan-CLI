@@ -1,4 +1,4 @@
-//! Proposal tool: wiz4rd V3 mint (open concentrated LP) → TxProposal.
+//! Proposal tool: V3 mint (open concentrated LP) → TxProposal.
 
 use alloy::primitives::U256;
 use async_trait::async_trait;
@@ -14,7 +14,10 @@ use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
-use crate::tools::wiz4rd_common::{load_pool, resolve_token};
+use crate::tools::v3_lp::{
+    load_lp_pool, proposal_network_id, resolve_lp_venue, venue_param_schema,
+};
+use crate::tools::wiz4rd_common::resolve_token;
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::is_allowed_dex_router;
 
@@ -34,9 +37,8 @@ impl Tool for ProposeV3MintTool {
     }
 
     fn description(&self) -> &str {
-        "Draft a wiz4rd V3 mint (open LP NFT) for Vaughan approval. \
-         Prefer get_v3_pool first. Pulse testnet 943. Never signs. \
-         May need ERC-20 approve to the position manager separately."
+        "Draft a V3 mint (open LP NFT) for Vaughan approval. Prefer get_v3_pool first on 943; \
+         on 369 use venue 9mm. Never signs. May need ERC-20 approve to the position manager separately."
     }
 
     fn parameters(&self) -> Value {
@@ -45,7 +47,7 @@ impl Tool for ProposeV3MintTool {
             "properties": {
                 "token_a": {
                     "type": "string",
-                    "description": "First token (address, WPLS, WZRD)"
+                    "description": "First token (address, WPLS, WZRD on 943)"
                 },
                 "token_b": {
                     "type": "string",
@@ -78,6 +80,7 @@ impl Tool for ProposeV3MintTool {
                     "description": "Floor amounts = desired × (1 − bps/10000); default 50",
                     "default": 50
                 },
+                "venue": venue_param_schema()["venue"],
                 "explanation": { "type": "string" }
             },
             "required": ["token_a", "token_b", "amount_a", "amount_b", "explanation"]
@@ -119,6 +122,7 @@ impl Tool for ProposeV3MintTool {
             .get("explanation")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::InvalidToolCall("Missing explanation".into()))?;
+        let venue = resolve_lp_venue(&args, context.chain_id)?;
 
         let (token_a, _) = resolve_token(token_a_s, context.chain_id)?;
         let (token_b, _) = resolve_token(token_b_s, context.chain_id)?;
@@ -128,7 +132,7 @@ impl Tool for ProposeV3MintTool {
             ));
         }
 
-        let (cfg, pool) = load_pool(context, token_a, token_b, fee).await?;
+        let (cfg, pool) = load_lp_pool(context, venue, token_a, token_b, fee).await?;
 
         // Map amounts into pool token0/token1 order.
         let (amount0_desired, amount1_desired) = if token_a == pool.token0 && token_b == pool.token1
@@ -180,7 +184,6 @@ impl Tool for ProposeV3MintTool {
             }
         };
 
-        // Floor desired amounts by slippage (mint uses amount*Min).
         let amount0_min = apply_slippage(amount0_desired, slippage_bps);
         let amount1_min = apply_slippage(amount1_desired, slippage_bps);
 
@@ -235,11 +238,12 @@ impl Tool for ProposeV3MintTool {
                 600_000,
                 true,
                 format!(
-                    "{explanation} [wiz4rd mint fee {fee} ticks [{tick_lower},{tick_upper}] \
-                     amt0={amount0_desired} amt1={amount1_desired}]"
+                    "{explanation} [{} mint fee {fee} ticks [{tick_lower},{tick_upper}] \
+                     amt0={amount0_desired} amt1={amount1_desired}]",
+                    venue.label()
                 ),
             )
-            .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into())),
+            .with_chain(context.chain_id, proposal_network_id(context)),
             context,
         )
         .await;

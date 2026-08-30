@@ -58,7 +58,7 @@ async fn run_approval_consumer(mut rx: mpsc::Receiver<HostRequest>, mut wallet: 
                     )));
                     continue;
                 }
-                let result = vaughan_tui::provider::execute_approval(&kind, &wallet).await;
+                let result = vaughan_tui::provider::execute_approval(&kind, &mut wallet).await;
                 let _ = reply.send(result);
             }
             HostRequest::Accounts { site, reply } => {

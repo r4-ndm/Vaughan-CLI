@@ -27,6 +27,7 @@ pub mod receive;
 pub mod send;
 pub mod settings;
 pub mod swap_form;
+pub mod token_launch;
 pub mod unlock;
 pub mod wrap;
 
@@ -48,6 +49,7 @@ pub use placeholder::PlaceholderView;
 pub use receive::ReceiveView;
 pub use send::SendView;
 pub use settings::SettingsView;
+pub use token_launch::TokenLaunchView;
 pub use unlock::UnlockView;
 pub use wrap::WrapView;
 
@@ -103,8 +105,10 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
                     | 'r'
                     | 's'
                     | 't'
+                    | 'u'
                     | 'v'
                     | 'w'
+                    | 'y'
             )
         }
         _ => false,
@@ -330,9 +334,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     }
 
-    // Status boxes + blank gap + three rows of footer key chips when unlocked.
+    // Status boxes + blank gap + four rows of footer key chips when unlocked.
     let status_h = 3u16;
-    let footer_h = 9u16;
+    let footer_h = 12u16;
 
     let [logo, _gap_above, addr_row, flash_row, status_bar, _gap_below_status, body, footer] =
         Layout::vertical([
@@ -528,39 +532,44 @@ fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focu
 }
 
 fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
-    // No `s Send` chip — Send stays available via global `s`.
-    // Theme (`t`) is intentionally omitted from the footer.
-    // 21 chips → three rows of 7.
+    // Theme (`t`) and Send (`s`) are shown in row 4 / row 1; both still work globally.
+    // 28 chips → four rows of 7.
     let keys: &[(&str, &str)] = &[
         ("v", "Recv"),
         ("a", "Assets"),
+        ("h", "Home"),
+        ("s", "Send"),
         ("b", "Batch"),
         ("w", "Web"),
         ("c", "Browse"),
         ("d", "Dex"),
         ("g", "Ag"),
-        ("h", "Home"),
+        ("e", "Wrap"),
+        ("f", "Bridge"),
+        ("p", "LP"),
+        ("j", "Appr"),
+        ("m", "Hist"),
         ("n", "Net"),
         ("i", "Settings"),
         ("k", "Keys"),
-        ("e", "Wrap"),
-        ("f", "Bridge"),
-        ("j", "Appr"),
-        ("m", "Hist"),
-        ("p", "LP"),
         ("o", "NFT"),
+        ("u", "Launch"),
         ("r", "Refresh"),
         ("l", "Lock"),
+        ("t", "Theme"),
+        ("y", "Copy"),
         ("tab", "Field"),
         ("esc", "Back"),
         ("x", "Quit"),
+        ("", ""), // reserved slot
+        ("", ""), // reserved slot
     ];
 
     let n = keys.len();
-    debug_assert_eq!(n, 22);
-    let row1_n = 7;
-    let row2_n = 7;
-    let [row1, row2, row3] = Layout::vertical([
+    debug_assert_eq!(n, 28);
+    let row_n = 7;
+    let [row1, row2, row3, row4] = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(3),
@@ -568,9 +577,10 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     .spacing(0)
     .areas(area);
 
-    render_chip_row(frame, row1, &keys[..row1_n]);
-    render_chip_row(frame, row2, &keys[row1_n..row1_n + row2_n]);
-    render_chip_row(frame, row3, &keys[row1_n + row2_n..]);
+    render_chip_row(frame, row1, &keys[..row_n]);
+    render_chip_row(frame, row2, &keys[row_n..row_n * 2]);
+    render_chip_row(frame, row3, &keys[row_n * 2..row_n * 3]);
+    render_chip_row(frame, row4, &keys[row_n * 3..]);
 }
 
 /// Evenly spaced faded boxes, one per key chip.
@@ -589,6 +599,9 @@ fn render_chip_row(frame: &mut Frame, area: Rect, chips: &[(&str, &str)]) {
 
 fn render_key_chip(frame: &mut Frame, area: Rect, key: &str, label: &str) {
     let inner = brand::render_faded_box_with(frame, area, None, brand::FadePalette::Footer);
+    if key.is_empty() && label.is_empty() {
+        return;
+    }
     let line = Line::from(vec![
         Span::styled(
             key.to_string(),

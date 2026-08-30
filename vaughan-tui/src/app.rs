@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
 use vaughan_core::chains::Balance;
-use vaughan_core::core::proposal::ProposalQueue;
+use vaughan_core::core::proposal::{ProposalQueue, ProposalType};
+use vaughan_core::core::token_launch::TokenLaunchOutcome;
 use vaughan_core::core::{
     mark_replaced, operator_connect_allowed, push_recent, tui_mode_for_profile, AgentAutonomyTier,
     BroadcastEntry, McpSessionToken, OperatingMode, StateManager, WalletState,
@@ -29,7 +30,7 @@ use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
     AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
     DashboardView, DexView, HistoryView, KeysView, LpView, OnboardingView, PlaceholderView,
-    ReceiveView, SettingsView, UnlockView, WrapView,
+    ReceiveView, SettingsView, TokenLaunchView, UnlockView, WrapView,
 };
 
 /// The active screen.
@@ -53,6 +54,7 @@ pub enum Screen {
     History,
     Approvals,
     Wrap,
+    TokenLaunch,
     Approve,
 }
 
@@ -77,6 +79,7 @@ impl Screen {
             Self::History => "History",
             Self::Approvals => "Approvals",
             Self::Wrap => "Wrap",
+            Self::TokenLaunch => "Launch",
             Self::Approve => "Approve",
         }
     }
@@ -147,6 +150,7 @@ pub enum View {
     Approvals(ApprovalsView),
     Wrap(WrapView),
     Lp(LpView),
+    TokenLaunch(TokenLaunchView),
     Placeholder(PlaceholderView),
     Approve(ApproveView),
 }
@@ -171,6 +175,7 @@ impl View {
             Self::Approvals(_) => Screen::Approvals,
             Self::Wrap(_) => Screen::Wrap,
             Self::Lp(_) => Screen::Lp,
+            Self::TokenLaunch(_) => Screen::TokenLaunch,
             Self::Placeholder(v) => v.screen(),
             Self::Approve(_) => Screen::Approve,
         }
@@ -202,6 +207,7 @@ impl View {
             Self::Approvals(v) => v.render(frame, area, wallet),
             Self::Wrap(v) => v.render(frame, area, wallet),
             Self::Lp(v) => v.render(frame, area, wallet),
+            Self::TokenLaunch(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
         }
@@ -232,6 +238,7 @@ impl View {
             Self::Approvals(v) => v.handle_key(key, wallet, handle, events),
             Self::Wrap(v) => v.handle_key(key, wallet, handle, events),
             Self::Lp(v) => v.handle_key(key, wallet, handle, events),
+            Self::TokenLaunch(v) => v.handle_key(key, wallet, handle, events),
             Self::Placeholder(v) => v.handle_key(key, wallet, handle, events),
             Self::Approve(v) => v.handle_key(key, wallet, handle, events),
         }
@@ -257,6 +264,7 @@ impl View {
             Self::Approvals(v) => v.allows_footer_shortcuts(),
             Self::Wrap(v) => v.allows_footer_shortcuts(),
             Self::Lp(v) => v.allows_footer_shortcuts(),
+            Self::TokenLaunch(v) => v.allows_footer_shortcuts(),
             Self::Placeholder(v) => v.allows_footer_shortcuts(),
             Self::Approve(v) => v.allows_footer_shortcuts(),
         }
@@ -280,6 +288,12 @@ enum PendingReply {
     /// File-queue MCP proposal (`reply: None`): no channel — approve/deny is
     /// written back to the queue files (`mark_approved` / `mark_rejected`).
     Queued,
+}
+
+/// MCP token launch approved on-card but deploy runs off-thread (receipt wait).
+struct PendingMcpTokenLaunch {
+    proposal_id: String,
+    reply: Option<oneshot::Sender<Result<String, ProviderError>>>,
 }
 
 /// Discard accidental keypresses for this long after an approve prompt appears.
@@ -309,6 +323,8 @@ pub struct App {
     tick: u64,
     /// The approval currently on screen, if any.
     pending_approval: Option<PendingApproval>,
+    /// When set, the next [`UiJobResult::DeployToken`] finalizes MCP queue / IPC reply.
+    pending_mcp_token_launch: Option<PendingMcpTokenLaunch>,
     /// Screen to return to after the pending approval resolves.
     approve_return: Screen,
     /// Always-on status strip: native balance + gas price.
@@ -395,6 +411,7 @@ impl App {
             job_rx,
             tick: 0,
             pending_approval: None,
+            pending_mcp_token_launch: None,
             approve_return: Screen::Dashboard,
             chrome: ChromeSnapshot {
                 loading: false,
@@ -541,6 +558,9 @@ impl App {
                 v.set_tick(self.tick);
             }
             if let View::Lp(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            if let View::TokenLaunch(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
             if let View::Dashboard(v) = &mut self.view {
@@ -1034,6 +1054,87 @@ impl App {
         }
     }
 
+    fn mcp_token_launch_fields(kind: &ApprovalKind) -> Option<(String, String, String, String)> {
+        let ApprovalKind::McpProposal {
+            proposal_id,
+            proposal,
+            ..
+        } = kind
+        else {
+            return None;
+        };
+        let ProposalType::TokenLaunch {
+            name,
+            symbol,
+            supply_human,
+        } = &proposal.proposal_type
+        else {
+            return None;
+        };
+        Some((
+            proposal_id.clone(),
+            name.clone(),
+            symbol.clone(),
+            supply_human.clone(),
+        ))
+    }
+
+    fn begin_mcp_token_launch_deploy(
+        &mut self,
+        proposal_id: String,
+        reply: Option<oneshot::Sender<Result<String, ProviderError>>>,
+        name: String,
+        symbol: String,
+        supply: String,
+    ) {
+        self.pending_mcp_token_launch = Some(PendingMcpTokenLaunch { proposal_id, reply });
+        let chain_id = self.wallet().networks().active().chain_id;
+        let mut view = TokenLaunchView::for_chain(chain_id);
+        view.begin_deploying(name.clone(), symbol.clone(), supply.clone());
+        self.view = View::TokenLaunch(view);
+        self.spawn_job(UiJob::DeployToken {
+            name,
+            symbol,
+            supply,
+        });
+    }
+
+    fn finalize_mcp_token_launch(&mut self, result: &Result<TokenLaunchOutcome, WalletError>) {
+        let Some(pending) = self.pending_mcp_token_launch.take() else {
+            return;
+        };
+        let parent = self.wallet().path().parent().map(|p| p.to_path_buf());
+        match result {
+            Ok(outcome) => {
+                if let Some(dir) = parent.as_deref() {
+                    if let Ok(Some(token)) = McpSessionToken::read(dir) {
+                        let queue = ProposalQueue::new(dir);
+                        let _ = queue.mark_approved(
+                            &pending.proposal_id,
+                            &outcome.tx_hash,
+                            token.as_bytes(),
+                        );
+                    }
+                }
+                if let Some(reply) = pending.reply {
+                    let _ = reply.send(Ok(outcome.tx_hash.clone()));
+                }
+                let flash = format!(
+                    "Launched {} at {}",
+                    outcome.token.symbol, outcome.token.address
+                );
+                self.set_flash(flash);
+            }
+            Err(e) => {
+                let msg = e.user_message();
+                self.reject_queued_proposal(&pending.proposal_id, &msg);
+                if let Some(reply) = pending.reply {
+                    let _ = reply.send(Err(ProviderError::Internal(msg)));
+                }
+            }
+        }
+    }
+
     fn expire_stale_approval(&mut self) {
         let Some(pending) = self.pending_approval.as_ref() else {
             return;
@@ -1125,12 +1226,16 @@ impl App {
                             "sentient auto-exec MCP proposal"
                         );
                         let result = match self.sentient_breaker() {
-                            Ok(breaker) => crate::sentient_mcp::auto_exec_mcp_proposal(
-                                &self.wallet(),
-                                &self.handle,
-                                &breaker,
-                                &kind,
-                            ),
+                            Ok(breaker) => {
+                                let mut wallet =
+                                    self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                                crate::sentient_mcp::auto_exec_mcp_proposal(
+                                    &mut wallet,
+                                    &self.handle,
+                                    &breaker,
+                                    &kind,
+                                )
+                            }
                             Err(e) => Err(e),
                         };
                         if let Some(r) = reply {
@@ -1249,12 +1354,16 @@ impl App {
                     };
                     if crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name()) {
                         let result = match self.sentient_breaker() {
-                            Ok(breaker) => crate::sentient_mcp::auto_exec_stealth_sweep(
-                                &self.wallet(),
-                                &self.handle,
-                                &breaker,
-                                &kind,
-                            ),
+                            Ok(breaker) => {
+                                let mut wallet =
+                                    self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                                crate::sentient_mcp::auto_exec_stealth_sweep(
+                                    &mut wallet,
+                                    &self.handle,
+                                    &breaker,
+                                    &kind,
+                                )
+                            }
                             Err(e) => Err(e),
                         };
                         let _ = reply.send(result);
@@ -1437,6 +1546,18 @@ impl App {
             }
             PendingReply::Sign(reply) => {
                 let mut kind = pending.kind;
+                if let Some((proposal_id, name, symbol, supply)) =
+                    Self::mcp_token_launch_fields(&kind)
+                {
+                    self.begin_mcp_token_launch_deploy(
+                        proposal_id,
+                        Some(reply),
+                        name,
+                        symbol,
+                        supply,
+                    );
+                    return;
+                }
                 // Apply the fee the user adjusted in the prompt (if any) so
                 // what they saw is exactly what gets signed.
                 if let View::Approve(view) = &self.view {
@@ -1450,22 +1571,35 @@ impl App {
                         }
                     }
                 }
-                let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                let result = provider::execute_approval_sync(&kind, &mut wallet, &self.handle);
                 let _ = reply.send(result);
             }
             PendingReply::LocalSign => {
                 let kind = pending.kind;
-                let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                let result = {
+                    let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    provider::execute_approval_sync(&kind, &mut wallet, &self.handle)
+                };
                 match result {
                     Ok(sig) => self.set_flash(format!("EIP-712 signature: {sig}")),
                     Err(e) => self.set_flash(format!("Sign failed: {e}")),
                 }
             }
             PendingReply::Queued => {
+                let kind = pending.kind;
+                if let Some((proposal_id, name, symbol, supply)) =
+                    Self::mcp_token_launch_fields(&kind)
+                {
+                    self.begin_mcp_token_launch_deploy(proposal_id, None, name, symbol, supply);
+                    return;
+                }
                 // File-queue proposal: execute writes mark_approved back to
                 // the queue; surface the outcome as a flash.
-                let kind = pending.kind;
-                let result = provider::execute_approval_sync(&kind, &self.wallet(), &self.handle);
+                let result = {
+                    let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    provider::execute_approval_sync(&kind, &mut wallet, &self.handle)
+                };
                 match result {
                     Ok(hash) => self.set_flash(format!("Queued proposal executed: {hash}")),
                     Err(e) => self.set_flash(format!("Queued proposal failed: {e}")),
@@ -1639,6 +1773,10 @@ impl App {
             Screen::Wrap => {
                 let chain_id = self.wallet().networks().active().chain_id;
                 View::Wrap(WrapView::for_chain(chain_id))
+            }
+            Screen::TokenLaunch => {
+                let chain_id = self.wallet().networks().active().chain_id;
+                View::TokenLaunch(TokenLaunchView::for_chain(chain_id))
             }
             // Approve is entered directly from `poll_provider`
             // pending request + reply channel), never via navigation; this arm
@@ -2323,6 +2461,15 @@ impl App {
                         )),
                     })
                 }
+                UiJob::DeployToken {
+                    name,
+                    symbol,
+                    supply,
+                } => UiJobResult::DeployToken(handle.block_on(
+                    WalletState::deploy_fixed_supply_token_background(
+                        &wallet, &name, &symbol, &supply,
+                    ),
+                )),
             };
             // Plain std thread: blocking_send applies backpressure if the UI
             // queue is full; Err means the UI is gone, result is droppable.
@@ -2414,6 +2561,14 @@ impl App {
                     }
                 }
                 other => {
+                    if let UiJobResult::DeployToken(ref deploy_result) = other {
+                        self.finalize_mcp_token_launch(deploy_result);
+                    }
+                    if let UiJobResult::DeployToken(Ok(outcome)) = &other {
+                        self.chrome.pending_asset_address = Some(outcome.token.address.clone());
+                        self.spawn_refresh_assets();
+                        self.refresh_chrome();
+                    }
                     let send_ok = matches!(
                         &other,
                         UiJobResult::Send(Ok(_)) | UiJobResult::SendStealth(Ok(_))
@@ -2477,6 +2632,10 @@ impl App {
                             None
                         }
                         View::Lp(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
+                        View::TokenLaunch(v) => {
                             v.apply_job_result(other);
                             None
                         }
@@ -2597,10 +2756,12 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'j' => GlobalAction::Navigate(Screen::Approvals),
             'm' => GlobalAction::Navigate(Screen::History),
             'o' => GlobalAction::Navigate(Screen::SoonNft),
+            'u' => GlobalAction::Navigate(Screen::TokenLaunch),
             'r' => GlobalAction::RefreshChrome,
             'h' => GlobalAction::Navigate(Screen::Dashboard),
             'l' => GlobalAction::Lock,
             't' => GlobalAction::CycleTheme,
+            'y' => GlobalAction::CopyAddress,
             _ => GlobalAction::None,
         },
         _ => GlobalAction::None,

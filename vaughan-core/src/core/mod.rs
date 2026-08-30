@@ -20,6 +20,7 @@ pub mod proposal;
 pub mod provider_session;
 pub mod site_grants;
 pub mod stealth;
+pub mod token_launch;
 pub mod transaction;
 pub mod vault_secrets;
 pub mod vb_browser;
@@ -46,13 +47,14 @@ pub use broadcasts::{
     MAX_RECENT_BROADCASTS,
 };
 pub use dex_catalog::{
-    chain_label, default_lp_venue, lp_v3_venues, missing_router_hint, venue_position_manager,
-    venue_quoter_v2, venue_swap_router, DexContractRole, DexProtocol, DexVenue, DEX_VENUES,
+    chain_label, default_lp_venue, lp_v3_venues, missing_router_hint, parse_dex_venue_label,
+    venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router, DexContractRole,
+    DexProtocol, DexVenue, DEX_VENUES,
 };
 pub use dex_lp::{
     build_v3_collect_evm, build_v3_decrease_evm, build_v3_increase_evm, build_v3_mint_evm,
-    default_full_range_ticks, list_v3_lp_positions, v3_lp_sdk_config, wiz4rd_sdk_config,
-    V3PositionInfo,
+    default_full_range_ticks, list_v3_lp_positions, load_v3_lp_pool, v3_lp_sdk_config,
+    wiz4rd_sdk_config, V3PositionInfo,
 };
 pub use dex_quote::{
     min_out_after_slippage, quote_v2_exact_in, quote_v3_exact_in, quote_v3_path_exact_in, DexQuote,
@@ -90,6 +92,11 @@ pub use proposal::{
 };
 pub use provider_session::{ProviderSessionToken, PROVIDER_SESSION_FILE};
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
+pub use token_launch::{
+    build_erc20_deploy_evm, encode_erc20_deploy_calldata, parse_token_supply_human,
+    token_launch_allowed, validate_token_name, validate_token_symbol, TokenLaunchOutcome,
+    TOKEN_LAUNCH_DECIMALS,
+};
 pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,
 };

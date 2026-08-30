@@ -203,6 +203,15 @@ enum ProposeCmd {
         #[arg(long, default_value = "CLI transfer proposal")]
         explanation: String,
     },
+    /// Draft a fixed-supply testnet ERC-20 deploy (meme-coin launcher).
+    TokenLaunch {
+        name: String,
+        symbol: String,
+        /// Human supply (18 decimals), e.g. 1000000
+        supply: String,
+        #[arg(long, default_value = "CLI token launch")]
+        explanation: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -817,6 +826,47 @@ async fn run_cli(
                     json_out::print_json_value(json_mode, &data, || {
                         println!("proposal_id: {}", queued.proposal.proposal_id);
                         println!("status: pending_user (open Vaughan TUI to approve)");
+                    });
+                }
+                ProposeCmd::TokenLaunch {
+                    name,
+                    symbol,
+                    supply,
+                    explanation,
+                } => {
+                    let args = json!({
+                        "name": name,
+                        "symbol": symbol,
+                        "supply": supply,
+                        "explanation": explanation,
+                    });
+                    let raw = registry
+                        .execute("propose_token_launch", args, &context)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let proposal: TxProposal = serde_json::from_value(raw)?;
+                    guard_mainnet_write(net.is_testnet).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let prof = profile_dir(wallet.path());
+                    let secret = vaughan_core::core::McpSessionToken::read(&prof)?
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "MCP session token missing — unlock Vaughan TUI or run \
+                                 `vaughan serve` on this profile first"
+                            )
+                        })?;
+                    let queue = ProposalQueue::new(&prof);
+                    let queued = queue
+                        .enqueue(proposal.clone(), "cli", secret.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let data = json!({
+                        "proposal_id": queued.proposal.proposal_id,
+                        "status": "pending_user",
+                        "proposal": queued.proposal,
+                    });
+                    json_out::print_json_value(json_mode, &data, || {
+                        println!("proposal_id: {}", queued.proposal.proposal_id);
+                        println!("status: pending_user (open Vaughan TUI to approve token launch)");
                     });
                 }
             }

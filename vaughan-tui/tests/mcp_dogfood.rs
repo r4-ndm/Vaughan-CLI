@@ -97,7 +97,7 @@ async fn mcp_resim_blocks_insufficient_funds_before_sign() {
 
     let kind = mcp_proposal_kind(proposal);
 
-    let err = execute_approval(&kind, &wallet)
+    let err = execute_approval(&kind, &mut wallet)
         .await
         .expect_err("overspend must fail re-sim");
     let msg = err.to_string().to_lowercase();
@@ -132,7 +132,7 @@ async fn mcp_chain_mismatch_blocks_sign() {
     )
     .with_chain(369, Some("pulsechain".into()));
 
-    let err = execute_approval(&mcp_proposal_kind(proposal), &wallet)
+    let err = execute_approval(&mcp_proposal_kind(proposal), &mut wallet)
         .await
         .expect_err("wrong chain must not sign");
     let msg = err.to_string().to_lowercase();
@@ -168,7 +168,7 @@ async fn mcp_locked_wallet_blocks_sign() {
     )
     .with_chain(943, None);
 
-    let err = execute_approval(&mcp_proposal_kind(proposal), &wallet)
+    let err = execute_approval(&mcp_proposal_kind(proposal), &mut wallet)
         .await
         .expect_err("locked wallet must not sign");
     assert!(err.to_string().to_lowercase().contains("locked"));
@@ -178,7 +178,7 @@ async fn mcp_locked_wallet_blocks_sign() {
 async fn mcp_expired_proposal_blocks_sign() {
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
-    let wallet = funded_wallet(dir.path(), &anvil);
+    let mut wallet = funded_wallet(dir.path(), &anvil);
 
     let recipient: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         .parse()
@@ -201,7 +201,7 @@ async fn mcp_expired_proposal_blocks_sign() {
         .created_at_unix
         .saturating_sub(PROPOSAL_TTL_SECS + 60);
 
-    let err = execute_approval(&mcp_proposal_kind(proposal), &wallet)
+    let err = execute_approval(&mcp_proposal_kind(proposal), &mut wallet)
         .await
         .expect_err("expired proposal must not sign");
     let msg = err.to_string().to_lowercase();
@@ -239,7 +239,7 @@ async fn mcp_fee_spike_blocks_sign() {
     // Agent stamped a trivial fee; fresh estimate at approve must exceed 110%.
     proposal.estimated_fee_wei = Some(U256::from(1u64));
 
-    let err = execute_approval(&mcp_proposal_kind(proposal), &wallet)
+    let err = execute_approval(&mcp_proposal_kind(proposal), &mut wallet)
         .await
         .expect_err("fee spike must block sign");
     let msg = err.to_string().to_lowercase();

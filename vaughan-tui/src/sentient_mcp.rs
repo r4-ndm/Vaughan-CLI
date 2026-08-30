@@ -284,6 +284,7 @@ fn sizeable_legs(
                 Ok(Vec::new())
             }
         }
+        ProposalType::TokenLaunch { .. } => Ok(Vec::new()),
     }
 }
 
@@ -380,7 +381,7 @@ fn unparseable(raw: &str) -> ProviderError {
 /// against the gas ceiling on success (never the agent-stamped field), and
 /// the consecutive-error tripwire on failure.
 pub fn auto_exec_mcp_proposal(
-    wallet: &WalletState,
+    wallet: &mut WalletState,
     handle: &Handle,
     breaker: &CircuitBreaker,
     kind: &ApprovalKind,
@@ -408,7 +409,7 @@ pub fn auto_exec_mcp_proposal(
 /// Sweeps move the full note balance by construction, so position sizing does
 /// not apply; the trip state and failure tripwire still do.
 pub fn auto_exec_stealth_sweep(
-    wallet: &WalletState,
+    wallet: &mut WalletState,
     handle: &Handle,
     breaker: &CircuitBreaker,
     kind: &ApprovalKind,

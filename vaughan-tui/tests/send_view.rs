@@ -82,7 +82,8 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::PollTxStatus { .. }
         | UiJob::RefreshBroadcastStatuses { .. }
         | UiJob::ReplaceBroadcast { .. }
-        | UiJob::LpListPositions { .. } => return,
+        | UiJob::LpListPositions { .. }
+        | UiJob::DeployToken { .. } => return,
     };
     view.apply_job_result(result);
 }

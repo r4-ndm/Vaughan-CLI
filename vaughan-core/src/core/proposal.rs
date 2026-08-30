@@ -77,6 +77,12 @@ pub enum ProposalType {
         target: Address,
         function_name: Option<String>,
     },
+    /// Fixed-supply ERC-20 deploy (testnet meme-coin launcher).
+    TokenLaunch {
+        name: String,
+        symbol: String,
+        supply_human: String,
+    },
 }
 
 /// A structured transaction proposal from an external agent.

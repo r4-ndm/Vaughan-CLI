@@ -1,4 +1,6 @@
-//! Shared helpers for wiz4rd V3 MCP / agent tools.
+//! Shared helpers for wiz4rd V3 MCP / agent tools (swap / quote on 943 deploy).
+//!
+//! V3 LP list/mint/lifecycle tools use [`super::v3_lp`] + catalog venues instead.
 
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::providers::ProviderBuilder;

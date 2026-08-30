@@ -1352,6 +1352,104 @@ impl WalletState {
         })
     }
 
+    /// Broadcast a fixed-supply token deploy and return RPC context for receipt polling.
+    async fn token_launch_broadcast(
+        &mut self,
+        name: &str,
+        symbol: &str,
+        supply_human: &str,
+    ) -> Result<
+        (
+            crate::core::broadcasts::BroadcastReceipt,
+            String,
+            Vec<String>,
+            u64,
+            String,
+        ),
+        WalletError,
+    > {
+        use crate::core::token_launch::build_erc20_deploy_evm;
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+
+        let accounts = self.require_unlocked()?;
+        let net = self.networks.active();
+        let from = accounts.active_address();
+        let recipient = Address::from_str(from)
+            .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
+        let tx = build_erc20_deploy_evm(from, net.chain_id, name, symbol, supply_human, recipient)?;
+        let receipt = self.broadcast(tx, "Token launch").await?;
+        let (rpc_url, fallback_rpc_urls) = self.rpc_endpoints_for(net);
+        Ok((
+            receipt,
+            rpc_url,
+            fallback_rpc_urls,
+            net.chain_id,
+            net.name.clone(),
+        ))
+    }
+
+    /// Deploy a fixed-supply ERC-20 (testnet meme launch), wait for the contract
+    /// address, and import it into the profile asset list.
+    pub async fn deploy_fixed_supply_token(
+        &mut self,
+        name: &str,
+        symbol: &str,
+        supply_human: &str,
+    ) -> Result<crate::core::token_launch::TokenLaunchOutcome, WalletError> {
+        use crate::core::token_launch::{wait_for_deployed_address, TokenLaunchOutcome};
+        use std::time::Duration;
+
+        let (receipt, rpc_url, fallback_rpc_urls, chain_id, network_name) = self
+            .token_launch_broadcast(name, symbol, supply_human)
+            .await?;
+        let adapter =
+            EvmAdapter::new(&rpc_url, chain_id, &network_name, &fallback_rpc_urls).await?;
+        let contract =
+            wait_for_deployed_address(&adapter, &receipt.hash, Duration::from_secs(90)).await?;
+        let token = self.import_custom_token(&format!("{contract:#x}")).await?;
+        Ok(TokenLaunchOutcome {
+            tx_hash: receipt.hash,
+            contract,
+            token,
+        })
+    }
+
+    /// Like [`Self::deploy_fixed_supply_token`] but releases the wallet mutex while
+    /// waiting for the deploy receipt (background TUI jobs must not freeze the UI).
+    #[allow(clippy::await_holding_lock)] // lock is scoped to sign/broadcast and import only; receipt poll is unlocked
+    pub async fn deploy_fixed_supply_token_background(
+        wallet: &std::sync::Mutex<Self>,
+        name: &str,
+        symbol: &str,
+        supply_human: &str,
+    ) -> Result<crate::core::token_launch::TokenLaunchOutcome, WalletError> {
+        use crate::core::token_launch::{wait_for_deployed_address, TokenLaunchOutcome};
+        use std::time::Duration;
+
+        let (receipt, rpc_url, fallback_rpc_urls, chain_id, network_name) = {
+            let mut w = wallet
+                .lock()
+                .map_err(|_| WalletError::InvalidTransaction("wallet lock unavailable".into()))?;
+            w.token_launch_broadcast(name, symbol, supply_human).await?
+        };
+        let adapter =
+            EvmAdapter::new(&rpc_url, chain_id, &network_name, &fallback_rpc_urls).await?;
+        let contract =
+            wait_for_deployed_address(&adapter, &receipt.hash, Duration::from_secs(90)).await?;
+        let token = {
+            let mut w = wallet
+                .lock()
+                .map_err(|_| WalletError::InvalidTransaction("wallet lock unavailable".into()))?;
+            w.import_custom_token(&format!("{contract:#x}")).await?
+        };
+        Ok(TokenLaunchOutcome {
+            tx_hash: receipt.hash,
+            contract,
+            token,
+        })
+    }
+
     /// Cancel or speed-up a pending [`BroadcastEntry`] (same nonce, bumped fees).
     pub async fn replace_broadcast(
         &self,
