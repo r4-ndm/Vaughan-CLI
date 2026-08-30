@@ -74,6 +74,9 @@ pub async fn get_pool_info<P: Provider>(
     };
     let raw = call_view(provider, factory, get_pool.abi_encode()).await?;
     let pool = Address::abi_decode(&raw).map_err(SdkError::Decode)?;
+    if pool.is_zero() {
+        return Err(SdkError::PoolNotFound);
+    }
 
     // slot0
     let raw = call_view(provider, pool, IPancakeV3Pool::slot0Call {}.abi_encode()).await?;

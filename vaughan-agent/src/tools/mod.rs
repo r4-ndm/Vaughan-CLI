@@ -7,6 +7,7 @@ pub mod get_v3_pool;
 pub mod inspect_contract;
 pub mod list_allowances;
 pub mod list_transfers;
+pub mod list_v2_positions;
 pub mod list_v3_positions;
 pub mod proposals;
 pub mod propose_policy;
@@ -29,12 +30,14 @@ pub use get_v3_pool::GetV3PoolTool;
 pub use inspect_contract::InspectContractTool;
 pub use list_allowances::ListAllowancesTool;
 pub use list_transfers::ListTransfersTool;
+pub use list_v2_positions::ListV2PositionsTool;
 pub use list_v3_positions::ListV3PositionsTool;
 pub use proposals::{
     ProposeAggSwapTool, ProposeApproveTool, ProposeBatch7702Tool, ProposeContractCallTool,
     ProposeRevokeTool, ProposeStealthSendTool, ProposeSwapTool, ProposeTokenLaunchTool,
-    ProposeTransferTool, ProposeUnwrapTool, ProposeV3CollectTool, ProposeV3DecreaseTool,
-    ProposeV3IncreaseTool, ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
+    ProposeTransferTool, ProposeUnwrapTool, ProposeV2AddTool, ProposeV2RemoveTool,
+    ProposeV3CollectTool, ProposeV3CreatePoolTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
+    ProposeV3InitializePoolTool, ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
@@ -78,6 +81,7 @@ pub fn default_sensory_registry() -> ToolRegistry {
     registry.register(Arc::new(QuoteV3SwapTool::new()));
     registry.register(Arc::new(ListAllowancesTool::new()));
     registry.register(Arc::new(ListV3PositionsTool::new()));
+    registry.register(Arc::new(ListV2PositionsTool::new()));
     registry.register(Arc::new(ListTransfersTool::new()));
     registry.register(Arc::new(ResolveTokenTool::new()));
     registry.register(Arc::new(QuoteBridgeTool::new()));
@@ -99,9 +103,13 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry.register(Arc::new(ProposeAggSwapTool::new()));
     registry.register(Arc::new(ProposeV3SwapTool::new()));
     registry.register(Arc::new(ProposeV3MintTool::new()));
+    registry.register(Arc::new(ProposeV3CreatePoolTool::new()));
+    registry.register(Arc::new(ProposeV3InitializePoolTool::new()));
     registry.register(Arc::new(ProposeV3IncreaseTool::new()));
     registry.register(Arc::new(ProposeV3DecreaseTool::new()));
     registry.register(Arc::new(ProposeV3CollectTool::new()));
+    registry.register(Arc::new(ProposeV2AddTool::new()));
+    registry.register(Arc::new(ProposeV2RemoveTool::new()));
     registry.register(Arc::new(ProposeWrapTool::new()));
     registry.register(Arc::new(ProposeUnwrapTool::new()));
     registry.register(Arc::new(ProposeApproveTool::new()));

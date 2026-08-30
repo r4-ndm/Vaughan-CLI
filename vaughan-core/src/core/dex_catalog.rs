@@ -143,6 +143,8 @@ pub enum DexContractRole {
     PositionManager,
     /// Pancake/Uni V3 factory (`getPool` reads).
     V3Factory,
+    /// Uni V2 factory (`getPair` reads).
+    V2Factory,
     /// Read-only quote helper (`eth_call` only — not in write allowlist).
     QuoterV2,
 }
@@ -249,6 +251,13 @@ const CATALOG: &[CatalogEntry] = &[
         venue: DexVenue::NineInch,
         chain_id: 369,
         protocol: Some(DexProtocol::V2),
+        role: DexContractRole::V2Factory,
+        address: "0x5b9F077A77db37F3Be0A5b5d31BAeff4bc5C0bD7",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineInch,
+        chain_id: 369,
+        protocol: Some(DexProtocol::V2),
         role: DexContractRole::SwapRouter,
         address: "0xeB45a3c4aedd0F47F345fB4c8A1802BB5740d725",
     },
@@ -258,6 +267,20 @@ const CATALOG: &[CatalogEntry] = &[
         protocol: Some(DexProtocol::V3),
         role: DexContractRole::SwapRouter,
         address: "0x42556A17EF0Bd815bF21aD628DFd2e2f3b5F9ac7",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineInch,
+        chain_id: 369,
+        protocol: None,
+        role: DexContractRole::V3Factory,
+        address: "0xCfd33C867C9F031AadfF7939Cb8086Ee5ae88c41",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineInch,
+        chain_id: 369,
+        protocol: None,
+        role: DexContractRole::PositionManager,
+        address: "0x18A532b36A9F6B10b3FEC5BF225C00A0Ec89B79E",
     },
     // SparkSwap
     CatalogEntry {
@@ -396,6 +419,17 @@ pub fn venue_v3_factory(venue: DexVenue, chain_id: u64) -> Option<Address> {
     })
 }
 
+/// V2 factory for pair reads when catalogued (9inch 369).
+pub fn venue_v2_factory(venue: DexVenue, chain_id: u64) -> Option<Address> {
+    CATALOG.iter().find_map(|e| {
+        if e.venue == venue && e.chain_id == chain_id && e.role == DexContractRole::V2Factory {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
 /// QuoterV2 for browserless V3 quotes when catalogued (9mm 369 today).
 pub fn venue_quoter_v2(venue: DexVenue, chain_id: u64) -> Option<Address> {
     CATALOG.iter().find_map(|e| {
@@ -407,7 +441,7 @@ pub fn venue_quoter_v2(venue: DexVenue, chain_id: u64) -> Option<Address> {
     })
 }
 
-/// All write-gated DEX contract addresses for `chain_id` (routers + NPM).
+/// All write-gated DEX contract addresses for `chain_id` (routers, NPM, V3 factories).
 pub fn write_allowed_addresses(chain_id: u64) -> impl Iterator<Item = Address> {
     let effective = if chain_id == 31337 { 369 } else { chain_id };
     CATALOG.iter().filter_map(move |e| {
@@ -415,15 +449,15 @@ pub fn write_allowed_addresses(chain_id: u64) -> impl Iterator<Item = Address> {
             return None;
         }
         match e.role {
-            DexContractRole::SwapRouter | DexContractRole::PositionManager => {
-                parse_static_addr(e.address)
-            }
-            DexContractRole::V3Factory | DexContractRole::QuoterV2 => None,
+            DexContractRole::SwapRouter
+            | DexContractRole::PositionManager
+            | DexContractRole::V3Factory => parse_static_addr(e.address),
+            DexContractRole::V2Factory | DexContractRole::QuoterV2 => None,
         }
     })
 }
 
-/// Venues with a catalogued NPM on `chain_id` (LP TUI picker order).
+/// Venues with a catalogued NPM on `chain_id` (wiz4rd 943 focus).
 pub fn lp_v3_venues(chain_id: u64) -> impl Iterator<Item = DexVenue> {
     DEX_VENUES
         .iter()
@@ -431,14 +465,78 @@ pub fn lp_v3_venues(chain_id: u64) -> impl Iterator<Item = DexVenue> {
         .filter(move |venue| venue_position_manager(*venue, chain_id).is_some())
 }
 
-/// Default LP venue for `chain_id` (wiz4rd on 943, 9mm on 369).
-pub fn default_lp_venue(chain_id: u64) -> Option<DexVenue> {
-    if chain_id == 943 {
-        return Some(DexVenue::Wiz4rd);
+/// TUI ↑/↓ venue picker order. Includes Wiz4rd on mainnet as a hint-only slot
+/// (NPM lives on testnet 943 — see [`venue_position_manager`]).
+pub fn lp_v3_venue_picker(chain_id: u64) -> Vec<DexVenue> {
+    match chain_id {
+        369 => vec![DexVenue::NineInch, DexVenue::NineMm, DexVenue::Wiz4rd],
+        943 => vec![DexVenue::Wiz4rd],
+        _ => lp_v3_venues(chain_id).collect(),
+    }
+}
+
+/// V2 LP venue for `chain_id` (9inch on 369 only today).
+pub fn lp_v2_venue(chain_id: u64) -> Option<DexVenue> {
+    if chain_id == 369 && venue_v2_factory(DexVenue::NineInch, chain_id).is_some() {
+        return Some(DexVenue::NineInch);
+    }
+    None
+}
+
+/// Which LP stack the TUI should show: wiz4rd V3 on 943, 9inch V3 on 369.
+pub fn lp_stack_for_chain(chain_id: u64) -> Option<LpStack> {
+    if chain_id == 943 && venue_position_manager(DexVenue::Wiz4rd, chain_id).is_some() {
+        return Some(LpStack::V3 {
+            venue: DexVenue::Wiz4rd,
+        });
+    }
+    if chain_id == 369 && venue_position_manager(DexVenue::NineInch, chain_id).is_some() {
+        return Some(LpStack::V3 {
+            venue: DexVenue::NineInch,
+        });
+    }
+    if let Some(venue) = lp_v2_venue(chain_id) {
+        return Some(LpStack::V2 { venue });
     }
     lp_v3_venues(chain_id)
-        .find(|v| *v == DexVenue::NineMm)
-        .or_else(|| lp_v3_venues(chain_id).next())
+        .next()
+        .map(|venue| LpStack::V3 { venue })
+}
+
+/// Browserless LP mode for the active chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LpStack {
+    V3 { venue: DexVenue },
+    V2 { venue: DexVenue },
+}
+
+impl LpStack {
+    pub fn venue(self) -> DexVenue {
+        match self {
+            Self::V3 { venue } | Self::V2 { venue } => venue,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::V3 { .. } => "V3 CL",
+            Self::V2 { .. } => "V2 AMM",
+        }
+    }
+}
+
+/// Default V3 LP venue (wiz4rd 943, 9inch 369).
+pub fn default_lp_v3_venue(chain_id: u64) -> Option<DexVenue> {
+    match chain_id {
+        943 => venue_position_manager(DexVenue::Wiz4rd, chain_id).map(|_| DexVenue::Wiz4rd),
+        369 => venue_position_manager(DexVenue::NineInch, chain_id).map(|_| DexVenue::NineInch),
+        _ => lp_v3_venues(chain_id).next(),
+    }
+}
+
+/// Default LP venue for TUI stack picker.
+pub fn default_lp_venue(chain_id: u64) -> Option<DexVenue> {
+    lp_stack_for_chain(chain_id).map(|s| s.venue())
 }
 
 /// Human hint when no router is catalogued for the picker selection.
@@ -513,7 +611,40 @@ mod tests {
     fn lp_v3_venues_per_chain() {
         let on_943: Vec<_> = lp_v3_venues(943).collect();
         assert_eq!(on_943, vec![DexVenue::Wiz4rd]);
-        assert!(lp_v3_venues(369).any(|v| v == DexVenue::NineMm));
+        let on_369: Vec<_> = lp_v3_venues(369).collect();
+        assert!(on_369.contains(&DexVenue::NineMm));
+        assert!(on_369.contains(&DexVenue::NineInch));
+        assert_eq!(lp_v2_venue(369), Some(DexVenue::NineInch));
+        let picker_369 = lp_v3_venue_picker(369);
+        assert_eq!(
+            picker_369,
+            vec![DexVenue::NineInch, DexVenue::NineMm, DexVenue::Wiz4rd]
+        );
+        assert_eq!(lp_v3_venue_picker(943), vec![DexVenue::Wiz4rd]);
+        assert!(matches!(
+            lp_stack_for_chain(943),
+            Some(LpStack::V3 {
+                venue: DexVenue::Wiz4rd
+            })
+        ));
+        assert!(matches!(
+            lp_stack_for_chain(369),
+            Some(LpStack::V3 {
+                venue: DexVenue::NineInch
+            })
+        ));
+    }
+
+    #[test]
+    fn nine_inch_v3_factory_and_npm_on_369() {
+        assert_eq!(
+            venue_v3_factory(DexVenue::NineInch, 369),
+            Some(address!("0xCfd33C867C9F031AadfF7939Cb8086Ee5ae88c41"))
+        );
+        assert_eq!(
+            venue_position_manager(DexVenue::NineInch, 369),
+            Some(address!("0x18A532b36A9F6B10b3FEC5BF225C00A0Ec89B79E"))
+        );
     }
 
     #[test]
@@ -540,6 +671,9 @@ mod tests {
         let addrs: Vec<_> = write_allowed_addresses(943).collect();
         assert!(addrs.contains(&address!("0xfC656c95eCd418536844FeeaA46949bb9365BEaF")));
         assert!(addrs.contains(&address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745")));
+        assert!(addrs.contains(&address!("0x297BeFB564d3Bba2D1913613B84Fb743C259C6cf")));
+        let mainnet: Vec<_> = write_allowed_addresses(369).collect();
+        assert!(mainnet.contains(&address!("0xCfd33C867C9F031AadfF7939Cb8086Ee5ae88c41")));
     }
 
     #[test]

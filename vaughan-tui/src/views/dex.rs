@@ -17,7 +17,7 @@ use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee, FeeSpeed};
 use vaughan_core::core::is_allowed_dex_router;
-use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
+use vaughan_core::core::wiz4rd::{deployment_for_chain, WIZ4RD_FEE_TIERS, WZRD_SMOKE_943};
 use vaughan_core::core::{
     chain_label, format_base_units, format_display_amount, min_out_after_slippage,
     missing_router_hint, venue_quoter_v2, venue_swap_router, wpls_for_chain, DexProtocol, DexVenue,
@@ -31,7 +31,7 @@ use crate::brand;
 use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJobResult};
 use crate::views::dex_calldata::{
-    build_approve_tx, build_swap_tx, encode_v3_path, hop_tokens, DexSwapRequest,
+    build_approve_tx, build_swap_tx, encode_v3_path_hops, hop_tokens, DexSwapRequest,
 };
 use crate::views::{
     body_areas, cycle_token_picker, manual_edit_resets_token_pick, native_pls_label,
@@ -66,7 +66,7 @@ enum Stage {
     Done,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Focus {
     /// No field selected (Enter to leave edit mode).
     None,
@@ -83,6 +83,7 @@ enum Focus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Busy {
     Idle,
+    CheckingAllowance,
     EstimatingFee,
     Approving,
     Swapping,
@@ -119,12 +120,18 @@ pub struct DexView {
     pending_tx: Option<EvmTransaction>,
     base_fee: Option<Fee>,
     pending_auto_fee_estimate: bool,
+    /// After allowance RPC check, queue confirm + fee estimate.
+    pending_start_confirm: Option<ConfirmStep>,
     /// Debounced live quote (expected output amount).
     quote_gen: u64,
     quote_loading_gen: Option<u64>,
     quote_debounce: u8,
     expected_out: Option<U256>,
     quote_error: Option<String>,
+    /// V3 hop list from the last successful quote (must match swap calldata).
+    quote_path: Option<Vec<Address>>,
+    /// Per-hop fee tiers from quote (`path.len() - 1`).
+    quote_hop_fees: Option<Vec<u32>>,
 }
 
 impl Default for DexView {
@@ -160,11 +167,14 @@ impl Default for DexView {
             pending_tx: None,
             base_fee: None,
             pending_auto_fee_estimate: false,
+            pending_start_confirm: None,
             quote_gen: 0,
             quote_loading_gen: None,
             quote_debounce: 0,
             expected_out: None,
             quote_error: None,
+            quote_path: None,
+            quote_hop_fees: None,
         }
     }
 }
@@ -196,6 +206,8 @@ impl DexView {
     pub fn mark_quote_stale(&mut self) {
         if matches!(self.stage, Stage::Input) {
             self.quote_debounce = 4;
+            self.quote_path = None;
+            self.quote_hop_fees = None;
         }
     }
 
@@ -271,6 +283,13 @@ impl DexView {
                 if let Some(step) = self.pending_step.take() {
                     self.stage = Stage::Confirm(step);
                 }
+                if matches!(self.stage, Stage::Confirm(ConfirmStep::Swap)) {
+                    self.status = "Ready — confirm swap (Enter send · Esc cancel)".into();
+                } else if matches!(self.stage, Stage::Confirm(ConfirmStep::Approve)) {
+                    self.status = "Ready — confirm approve (Enter send · Esc cancel)".into();
+                } else {
+                    self.status.clear();
+                }
             }
             UiJobResult::Fee(Err(e)) => {
                 self.busy = Busy::Idle;
@@ -285,7 +304,7 @@ impl DexView {
                     let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
-                    self.status = format!("Approve sent ({hash}). Estimating swap fee…");
+                    self.status = "Approve sent — waiting for on-chain allowance…".into();
                     self.pending_auto_fee_estimate = true;
                 }
                 Busy::Swapping => {
@@ -295,12 +314,31 @@ impl DexView {
                     self.stage = Stage::Done;
                     self.status = "Swap broadcast.".into();
                 }
-                Busy::Idle | Busy::EstimatingFee => {}
+                Busy::Idle | Busy::EstimatingFee | Busy::CheckingAllowance => {}
             },
             UiJobResult::Send(Err(e)) => {
                 self.busy = Busy::Idle;
                 self.status = e.user_message();
                 self.stage = Stage::Input;
+            }
+            UiJobResult::DexAllowanceCheck(result) => {
+                self.busy = Busy::Idle;
+                match result {
+                    Ok(true) => {
+                        self.pending_start_confirm = Some(ConfirmStep::Swap);
+                        self.status = "Router allowance OK — preparing swap confirm…".into();
+                    }
+                    Ok(false) => {
+                        self.pending_start_confirm = Some(ConfirmStep::Approve);
+                        self.status = "Approve required (step 1/2)…".into();
+                    }
+                    Err(e) => {
+                        self.status = format!(
+                            "Allowance check failed — {} · retry with F4",
+                            e.user_message()
+                        );
+                    }
+                }
             }
             UiJobResult::DexQuote { quote_gen, result } => {
                 if self.quote_loading_gen != Some(quote_gen) {
@@ -311,6 +349,15 @@ impl DexView {
                     Ok(q) => {
                         self.quote_error = None;
                         self.expected_out = Some(q.amount_out);
+                        self.quote_path = Some(q.path);
+                        self.quote_hop_fees = Some(q.hop_fees.clone());
+                        if let Some(&fee) = q.hop_fees.first() {
+                            if fee > 0 {
+                                self.fee = fee;
+                            }
+                        } else if q.fee_tier > 0 {
+                            self.fee = q.fee_tier;
+                        }
                         if self.min_out.value().trim().is_empty()
                             || self.min_out.value().trim() == "0"
                         {
@@ -321,6 +368,8 @@ impl DexView {
                     }
                     Err(e) => {
                         self.expected_out = None;
+                        self.quote_path = None;
+                        self.quote_hop_fees = None;
                         self.quote_error = Some(e.user_message());
                     }
                 }
@@ -337,6 +386,9 @@ impl DexView {
             Stage::Done => self.render_done(frame, body),
         }
         let status_text = match self.busy {
+            Busy::CheckingAllowance => {
+                format!("{} checking router allowance…", spinner_frame(self.tick))
+            }
             Busy::EstimatingFee => format!("{} estimating fee…", spinner_frame(self.tick)),
             Busy::Approving => format!("{} approving router spend…", spinner_frame(self.tick)),
             Busy::Swapping => format!("{} broadcasting swap…", spinner_frame(self.tick)),
@@ -456,7 +508,7 @@ impl DexView {
         i += 1;
 
         if show_v3_fee {
-            let fee_style = if self.focus == Focus::Fee {
+            let fee_style = if self.focus == Focus::Fee && !self.v3_auto_fee() {
                 Style::default()
                     .fg(brand::accent_color())
                     .add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -464,11 +516,8 @@ impl DexView {
                 Style::default().fg(Color::DarkGray)
             };
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("Pool fee: {}  (←/→)", fee_tier_display(self.fee)),
-                    fee_style,
-                )))
-                .alignment(Alignment::Center),
+                Paragraph::new(Line::from(Span::styled(self.pool_fee_line(), fee_style)))
+                    .alignment(Alignment::Center),
                 chunks[i],
             );
             i += 1;
@@ -642,6 +691,8 @@ impl DexView {
         }
         let hops = self.parsed_hops()?;
         let path: Vec<String> = hops.iter().map(|a| a.to_string()).collect();
+        let token_in = self.resolve_token_in()?;
+        let token_out = parse_token_address(self.token_out.value(), "Token out")?;
         let net = wallet.networks().active();
         let (rpc_url, _) = wallet.rpc_endpoints_for(net);
         Ok(crate::jobs::UiJob::DexQuote {
@@ -657,6 +708,10 @@ impl DexView {
             amount_in: amount_in.to_string(),
             fee: self.fee,
             path,
+            token_in: token_in.to_string(),
+            token_out: token_out.to_string(),
+            wpls: self.wpls.map(|a| a.to_string()),
+            native_in: self.native_in,
         })
     }
 
@@ -930,13 +985,34 @@ impl DexView {
     fn render_done(&self, frame: &mut Frame, area: Rect) {
         let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(" Swap sent ")));
         let mut lines = Vec::new();
+        let amount_in = self.parse_amount_in().unwrap_or(U256::ZERO);
+        let min_out = self.parse_min_out().unwrap_or(U256::ZERO);
+        let in_sym = self.token_in_symbol();
+        let out_sym = self.token_out_symbol_str();
+        lines.push(Line::from(format!(
+            "swapped:  {} {} → {} {}",
+            format_base_units(&amount_in.to_string(), 18),
+            in_sym,
+            format_base_units(&min_out.to_string(), 18),
+            out_sym
+        )));
+        if self.protocol == DexProtocol::V3 {
+            lines.push(Line::from(format!(
+                "fee:      {}",
+                self.fee_tier_confirm_label()
+            )));
+        }
+        lines.push(Line::from(""));
         if let Some(a) = &self.approve_hash {
-            lines.push(Line::from(format!("approve: {a}")));
+            lines.push(Line::from(format!("approve:  {a}")));
         }
         let hash = self.tx_hash.as_deref().unwrap_or("(none)");
-        lines.push(Line::from(format!("swap:    {hash}")));
+        lines.push(Line::from(format!("swap:     {hash}")));
         lines.push(Line::from(""));
-        lines.push(Line::from("Enter new swap · Esc home"));
+        lines.push(Line::from(Span::styled(
+            "Enter new swap · Esc home",
+            Style::default().fg(brand::accent_color()),
+        )));
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
@@ -979,28 +1055,93 @@ impl DexView {
         }
     }
 
+    fn v3_auto_fee(&self) -> bool {
+        self.protocol == DexProtocol::V3 && deployment_for_chain(self.chain_id).is_some()
+    }
+
+    fn pool_fee_line(&self) -> String {
+        if self.v3_auto_fee() {
+            if self.quote_loading_gen.is_some() {
+                return "Pool fee: finding best route…".into();
+            }
+            if self.expected_out.is_some() {
+                if let Some(fees) = &self.quote_hop_fees {
+                    if fees.len() > 1 && fees.iter().any(|f| fees.first() != Some(f)) {
+                        let parts: Vec<String> =
+                            fees.iter().map(|f| fee_tier_display(*f)).collect();
+                        return format!("Pool fees: {} (best route)", parts.join(" → "));
+                    }
+                }
+                return format!("Pool fee: {} (best route)", fee_tier_display(self.fee));
+            }
+            return "Pool fee: auto (best quote)".into();
+        }
+        format!("Pool fee: {}  (←/→)", fee_tier_display(self.fee))
+    }
+
+    fn fee_tiers(&self) -> &'static [u32] {
+        if self.chain_id == 943 && self.protocol == DexProtocol::V3 {
+            WIZ4RD_FEE_TIERS
+        } else {
+            FEE_TIERS
+        }
+    }
+
     fn cycle_fee(&mut self, forward: bool) {
-        let Some(idx) = FEE_TIERS.iter().position(|f| *f == self.fee) else {
-            self.fee = 3000;
+        let tiers = self.fee_tiers();
+        let Some(idx) = tiers.iter().position(|f| *f == self.fee) else {
+            self.fee = tiers[0];
             return;
         };
         let next = if forward {
-            (idx + 1) % FEE_TIERS.len()
+            (idx + 1) % tiers.len()
         } else {
-            (idx + FEE_TIERS.len() - 1) % FEE_TIERS.len()
+            (idx + tiers.len() - 1) % tiers.len()
         };
-        self.fee = FEE_TIERS[next];
+        self.fee = tiers[next];
+    }
+
+    /// ↑/↓ on the venue row (default focus or venue focused). Called from the app
+    /// before the global token picker so DEX selection is not swallowed.
+    pub fn cycle_venue_selector(&mut self, forward: bool) -> bool {
+        if !matches!(self.stage, Stage::Input) || self.busy != Busy::Idle {
+            return false;
+        }
+        if !matches!(self.focus, Focus::None | Focus::Dex) {
+            return false;
+        }
+        self.venue = if forward {
+            self.venue.next()
+        } else {
+            self.venue.prev()
+        };
+        if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none()
+            && venue_swap_router(self.venue, self.protocol.toggle(), self.chain_id).is_some()
+        {
+            self.protocol = self.protocol.toggle();
+        }
+        self.apply_venue_defaults(true);
+        self.focus = Focus::Dex;
+        if self.venue == DexVenue::Custom {
+            self.status = "Paste a Uni V2/V3-compatible router address".into();
+        } else if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none() {
+            self.status = missing_router_hint(self.venue, self.protocol, self.chain_id);
+        } else {
+            self.status.clear();
+        }
+        self.mark_quote_stale();
+        true
     }
 
     fn focus_tab_forward(&self) -> Focus {
         match self.focus {
-            Focus::None => Focus::TokenIn,
+            Focus::None => Focus::Dex,
             Focus::Dex => Focus::TokenIn,
             Focus::TokenIn => Focus::Amount,
             Focus::Amount => Focus::TokenOut,
             Focus::TokenOut => Focus::MinOut,
             Focus::MinOut => {
-                if self.protocol == DexProtocol::V3 {
+                if self.protocol == DexProtocol::V3 && !self.v3_auto_fee() {
                     Focus::Fee
                 } else if self.venue == DexVenue::Custom {
                     Focus::Router
@@ -1022,17 +1163,9 @@ impl DexView {
     fn focus_tab_backward(&self) -> Focus {
         match self.focus {
             Focus::None => self.last_tab_focus(),
-            Focus::Dex => {
-                if self.venue == DexVenue::Custom {
-                    Focus::Router
-                } else if self.protocol == DexProtocol::V3 {
-                    Focus::Fee
-                } else {
-                    Focus::MinOut
-                }
-            }
+            Focus::Dex => Focus::None,
             Focus::Router => {
-                if self.protocol == DexProtocol::V3 {
+                if self.protocol == DexProtocol::V3 && !self.v3_auto_fee() {
                     Focus::Fee
                 } else {
                     Focus::MinOut
@@ -1042,15 +1175,17 @@ impl DexView {
             Focus::MinOut => Focus::TokenOut,
             Focus::TokenOut => Focus::Amount,
             Focus::Amount => Focus::TokenIn,
-            Focus::TokenIn => Focus::None,
+            Focus::TokenIn => Focus::Dex,
         }
     }
 
     fn last_tab_focus(&self) -> Focus {
         if self.venue == DexVenue::Custom {
             Focus::Router
-        } else if self.protocol == DexProtocol::V3 {
+        } else if self.protocol == DexProtocol::V3 && !self.v3_auto_fee() {
             Focus::Fee
+        } else if self.protocol == DexProtocol::V3 || self.venue == DexVenue::Custom {
+            Focus::MinOut
         } else {
             Focus::Dex
         }
@@ -1065,18 +1200,57 @@ impl DexView {
     fn confirm_swap(&mut self, wallet: &WalletState) -> KeyOutcome {
         match self.validate_fields() {
             Ok(()) => {
-                let step = if self.native_in {
-                    ConfirmStep::Swap
-                } else {
-                    ConfirmStep::Approve
+                if let Err(msg) = self.require_v3_quote_for_swap() {
+                    self.status = msg;
+                    return KeyOutcome::Consumed;
+                }
+                if self.native_in {
+                    return self.begin_confirm(wallet, ConfirmStep::Swap);
+                }
+                let Some(job) = self.build_allowance_check_job(wallet) else {
+                    self.status = "Could not start swap — check token, router, and amount".into();
+                    return KeyOutcome::Consumed;
                 };
-                self.begin_confirm(wallet, step)
+                self.busy = Busy::CheckingAllowance;
+                self.status = "Checking router allowance…".into();
+                KeyOutcome::StartJob(job)
             }
             Err(msg) => {
                 self.status = msg;
                 KeyOutcome::Consumed
             }
         }
+    }
+
+    fn build_allowance_check_job(&self, wallet: &WalletState) -> Option<crate::jobs::UiJob> {
+        let token_in = self.resolve_token_in().ok()?;
+        let router = Address::from_str(self.router.value().trim()).ok()?;
+        let amount_in = self.parse_amount_in().ok()?;
+        let owner = wallet.active_address().ok()?.to_string();
+        let (rpc_url, _) = wallet.rpc_endpoints_for(wallet.networks().active());
+        Some(crate::jobs::UiJob::DexAllowanceCheck {
+            rpc_url,
+            token_in: token_in.to_string(),
+            owner,
+            router: router.to_string(),
+            amount_in: amount_in.to_string(),
+        })
+    }
+
+    /// V3 swaps need a live pool quote — router simulation reverts without liquidity.
+    fn require_v3_quote_for_swap(&self) -> Result<(), String> {
+        if self.protocol != DexProtocol::V3 {
+            return Ok(());
+        }
+        if let Some(err) = &self.quote_error {
+            return Err(format!("No swap quote — {err}"));
+        }
+        if self.expected_out.is_none() {
+            return Err(
+                "Waiting for swap quote — enter amount and wait for Expected to fill".into(),
+            );
+        }
+        Ok(())
     }
 
     fn handle_input_key(&mut self, key: KeyEvent, wallet: &WalletState) -> KeyOutcome {
@@ -1089,31 +1263,12 @@ impl DexView {
                     KeyOutcome::Back
                 }
             }
-            KeyCode::Up | KeyCode::Down if self.focus == Focus::Dex => {
-                self.venue = if matches!(key.code, KeyCode::Down) {
-                    self.venue.next()
+            KeyCode::Up | KeyCode::Down => {
+                if self.cycle_venue_selector(matches!(key.code, KeyCode::Down)) {
+                    KeyOutcome::Consumed
                 } else {
-                    self.venue.prev()
-                };
-                if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none()
-                    && venue_swap_router(self.venue, self.protocol.toggle(), self.chain_id)
-                        .is_some()
-                {
-                    self.protocol = self.protocol.toggle();
+                    KeyOutcome::NotHandled
                 }
-                self.apply_venue_defaults(true);
-                if self.venue != DexVenue::Custom && self.focus == Focus::Router {
-                    self.focus = Focus::Dex;
-                }
-                if self.venue == DexVenue::Custom {
-                    self.status = "Paste a Uni V2/V3-compatible router address".into();
-                } else if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none() {
-                    self.status = missing_router_hint(self.venue, self.protocol, self.chain_id);
-                } else {
-                    self.status.clear();
-                }
-                self.mark_quote_stale();
-                KeyOutcome::Consumed
             }
             KeyCode::Left | KeyCode::Right => {
                 let forward = matches!(key.code, KeyCode::Right);
@@ -1138,7 +1293,7 @@ impl DexView {
                         self.mark_quote_stale();
                         KeyOutcome::Consumed
                     }
-                    Focus::Fee if self.protocol == DexProtocol::V3 => {
+                    Focus::Fee if self.protocol == DexProtocol::V3 && !self.v3_auto_fee() => {
                         self.cycle_fee(forward);
                         self.mark_quote_stale();
                         KeyOutcome::Consumed
@@ -1252,23 +1407,8 @@ impl DexView {
     }
 
     fn begin_confirm(&mut self, wallet: &WalletState, step: ConfirmStep) -> KeyOutcome {
-        self.enter_confirm_lines(step);
-        let tx = match step {
-            ConfirmStep::Approve => self.build_approve_tx(wallet),
-            ConfirmStep::Swap => self.build_swap_tx(wallet),
-        };
-        match tx {
-            Ok(evm) => {
-                self.pending_step = Some(step);
-                self.pending_tx = Some(evm.clone());
-                self.base_fee = None;
-                self.speed = FeeSpeed::Normal;
-                self.confirm_focus = ConfirmFocus::Speed;
-                self.custom_gas.set_value("");
-                self.busy = Busy::EstimatingFee;
-                self.status.clear();
-                KeyOutcome::StartJob(crate::jobs::UiJob::EstimateEvmFee { tx: evm })
-            }
+        match self.prepare_confirm_job(wallet, step) {
+            Ok(job) => KeyOutcome::StartJob(job),
             Err(msg) => {
                 self.status = msg;
                 KeyOutcome::Consumed
@@ -1276,29 +1416,80 @@ impl DexView {
         }
     }
 
-    fn format_amount_line(&self, label: &str, wei: U256, native_units: bool) -> String {
-        let human = format_base_units(&wei.to_string(), 18);
-        let suffix = if native_units {
-            native_pls_label(self.chain_id)
-        } else {
-            "tokens"
+    fn prepare_confirm_job(
+        &mut self,
+        wallet: &WalletState,
+        step: ConfirmStep,
+    ) -> Result<crate::jobs::UiJob, String> {
+        self.enter_confirm_lines(step);
+        let tx = match step {
+            ConfirmStep::Approve => self.build_approve_tx(wallet)?,
+            ConfirmStep::Swap => self.build_swap_tx(wallet)?,
         };
+        self.pending_step = Some(step);
+        self.pending_tx = Some(tx.clone());
+        self.base_fee = None;
+        self.speed = FeeSpeed::Normal;
+        self.confirm_focus = ConfirmFocus::Speed;
+        self.custom_gas.set_value("");
+        self.stage = Stage::Confirm(step);
+        self.busy = Busy::EstimatingFee;
+        self.status.clear();
+        Ok(crate::jobs::UiJob::EstimateEvmFee { tx })
+    }
+
+    fn format_amount_line(&self, label: &str, wei: U256, suffix: &str) -> String {
+        let human = format_base_units(&wei.to_string(), 18);
         format!("{label:<9} {human} {suffix}")
+    }
+
+    fn token_in_symbol(&self) -> String {
+        let raw = self.token_in.value().trim();
+        token_symbol_for_address(&[], raw)
+            .or_else(|| crate::views::token_symbol_hint(raw, self.chain_id))
+            .unwrap_or("TOKEN")
+            .to_string()
+    }
+
+    fn token_out_symbol_str(&self) -> String {
+        let raw = self.token_out.value().trim();
+        token_symbol_for_address(&[], raw)
+            .or_else(|| crate::views::token_symbol_hint(raw, self.chain_id))
+            .unwrap_or("TOKEN")
+            .to_string()
+    }
+
+    fn hop_display(&self, hops: &[Address]) -> String {
+        hops.iter()
+            .map(|a| {
+                let raw = format!("{a:#x}");
+                token_symbol_for_address(&[], &raw)
+                    .or_else(|| crate::views::token_symbol_hint(&raw, self.chain_id))
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{a:#x}"))
+            })
+            .collect::<Vec<_>>()
+            .join(" → ")
+    }
+
+    fn fee_tier_confirm_label(&self) -> String {
+        format!("{} ({})", fee_tier_display(self.fee), self.fee)
     }
 
     fn enter_confirm_lines(&mut self, step: ConfirmStep) {
         let hops = self
             .parsed_hops()
-            .map(|p| {
-                p.iter()
-                    .map(|a| format!("{a:#x}"))
-                    .collect::<Vec<_>>()
-                    .join(" → ")
-            })
+            .map(|p| self.hop_display(&p))
             .unwrap_or_else(|_| "(invalid path)".into());
 
         let amount_in = self.parse_amount_in().unwrap_or(U256::ZERO);
         let min_out = self.parse_min_out().unwrap_or(U256::ZERO);
+        let token_in_sym = self.token_in_symbol();
+        let token_out_sym = self.token_out_symbol_str();
+        let token_in_addr = self
+            .resolve_token_in()
+            .map(|a| format!("{a:#x}"))
+            .unwrap_or_else(|_| self.token_in.value().trim().to_string());
 
         self.confirm_lines = match step {
             ConfirmStep::Approve => vec![
@@ -1308,14 +1499,9 @@ impl DexView {
                     self.protocol.label()
                 ),
                 String::new(),
-                format!(
-                    "token:   {}",
-                    self.resolve_token_in()
-                        .map(|a| format!("{a:#x}"))
-                        .unwrap_or_else(|_| self.token_in.value().trim().to_string())
-                ),
+                format!("token:   {token_in_sym} ({token_in_addr})"),
                 format!("spender: {}", self.router.value().trim()),
-                self.format_amount_line("amount:", amount_in, false),
+                self.format_amount_line("amount:", amount_in, &token_in_sym),
                 format!("path:    {hops}"),
             ],
             ConfirmStep::Swap => {
@@ -1329,10 +1515,18 @@ impl DexView {
                     format!("path:     {hops}"),
                 ];
                 if self.protocol == DexProtocol::V3 {
-                    lines.push(format!("fee tier: {}", self.fee));
+                    lines.push(format!("fee tier: {}", self.fee_tier_confirm_label()));
                 }
-                lines.push(self.format_amount_line("amount:", amount_in, self.native_in));
-                lines.push(self.format_amount_line("min out:", min_out, false));
+                lines.push(self.format_amount_line(
+                    "amount:",
+                    amount_in,
+                    if self.native_in {
+                        native_pls_label(self.chain_id)
+                    } else {
+                        &token_in_sym
+                    },
+                ));
+                lines.push(self.format_amount_line("min out:", min_out, &token_out_sym));
                 if self.native_in {
                     lines.push(format!(
                         "value:    {} {}  (attached to tx, not gas)",
@@ -1500,6 +1694,11 @@ impl DexView {
     }
 
     fn parsed_hops(&self) -> Result<Vec<Address>, String> {
+        if self.protocol == DexProtocol::V3 {
+            if let Some(path) = &self.quote_path {
+                return Ok(path.clone());
+            }
+        }
         let token_in = self.resolve_token_in()?;
         let token_out = parse_token_address(self.token_out.value(), "Token out")?;
         hop_tokens(token_in, token_out, self.wpls, self.native_in)
@@ -1517,7 +1716,14 @@ impl DexView {
         }
         let hops = self.parsed_hops()?;
         if self.protocol == DexProtocol::V3 {
-            let _ = encode_v3_path(&hops, self.fee)?;
+            let fees = self
+                .quote_hop_fees
+                .clone()
+                .unwrap_or_else(|| vec![self.fee; hops.len().saturating_sub(1)]);
+            if fees.len() != hops.len().saturating_sub(1) {
+                return Err("quote hop fees out of sync — wait for Expected quote".into());
+            }
+            let _ = encode_v3_path_hops(&hops, &fees)?;
         }
         let amount_in = self.parse_amount_in()?;
         let _min_out = self.parse_min_out()?;
@@ -1570,29 +1776,92 @@ impl DexView {
             amount_in,
             min_out,
             fee: self.fee,
+            hop_fees: self.quote_hop_fees.clone(),
             recipient,
             from: to_addr.to_string(),
             chain_id,
+            hops: self.parsed_hops().ok(),
         })
     }
 
-    /// After approve broadcast, queue a swap fee estimate (called from the app loop).
+    /// After approve broadcast or allowance check, queue the next Dex job.
     pub fn followup_job(&mut self, wallet: &WalletState) -> Option<crate::jobs::UiJob> {
+        if let Some(step) = self.pending_start_confirm.take() {
+            match self.prepare_confirm_job(wallet, step) {
+                Ok(job) => return Some(job),
+                Err(e) => {
+                    self.stage = Stage::Input;
+                    self.status = e;
+                    return None;
+                }
+            }
+        }
         if !self.pending_auto_fee_estimate {
             return None;
         }
         self.pending_auto_fee_estimate = false;
         let step = ConfirmStep::Swap;
         self.enter_confirm_lines(step);
-        let tx = self.build_swap_tx(wallet).ok()?;
+        let tx = match self.build_swap_tx(wallet) {
+            Ok(tx) => tx,
+            Err(e) => {
+                self.stage = Stage::Input;
+                self.pending_step = None;
+                self.pending_tx = None;
+                self.status = format!("Swap prep failed after approve: {e}");
+                return None;
+            }
+        };
+        let token_in = match self.resolve_token_in() {
+            Ok(a) => a,
+            Err(e) => {
+                self.stage = Stage::Input;
+                self.status = e;
+                return None;
+            }
+        };
+        let router = match Address::from_str(self.router.value().trim()) {
+            Ok(a) => a,
+            Err(e) => {
+                self.stage = Stage::Input;
+                self.status = format!("bad router: {e}");
+                return None;
+            }
+        };
+        let amount_in = match self.parse_amount_in() {
+            Ok(a) => a,
+            Err(e) => {
+                self.stage = Stage::Input;
+                self.status = e;
+                return None;
+            }
+        };
+        let owner = match wallet.active_address() {
+            Ok(a) => a.to_string(),
+            Err(e) => {
+                self.stage = Stage::Input;
+                self.status = e.user_message();
+                return None;
+            }
+        };
+        let (rpc_url, _) = wallet.rpc_endpoints_for(wallet.networks().active());
         self.pending_step = Some(step);
         self.pending_tx = Some(tx.clone());
         self.base_fee = None;
         self.speed = FeeSpeed::Normal;
         self.confirm_focus = ConfirmFocus::Speed;
         self.custom_gas.set_value("");
+        self.stage = Stage::Confirm(step);
         self.busy = Busy::EstimatingFee;
-        Some(crate::jobs::UiJob::EstimateEvmFee { tx })
+        self.status = "Waiting for approve on chain…".into();
+        Some(crate::jobs::UiJob::DexSwapEstimateAfterApprove {
+            rpc_url,
+            token_in: token_in.to_string(),
+            owner,
+            router: router.to_string(),
+            amount_in: amount_in.to_string(),
+            tx,
+        })
     }
 }
 
@@ -1606,12 +1875,17 @@ fn dex_fee_estimate_error(err: &WalletError) -> String {
                     .into();
             }
             if lower.contains("insufficient funds") || lower.contains("insufficient balance") {
-                return "Swap would revert: not enough tPLS for swap value + gas — lower amount or fund the wallet."
+                return "Swap would revert: not enough tPLS/PLS for swap value + gas — lower amount or fund the wallet."
+                    .into();
+            }
+            if detail.contains("data: \"0x\"") || detail.trim() == "execution reverted" {
+                return "Swap would revert: no usable V3 liquidity for this pair. \
+                        Add LP on this pair or try a smaller amount."
                     .into();
             }
             format!(
                 "Could not estimate swap gas (router simulation reverted). \
-                 Try min receive 0, check fee tier, or lower the amount. ({detail})"
+                 Add LP, set Min receive to 0, or lower amount. ({detail})"
             )
         }
         _ => err.user_message(),
@@ -1675,6 +1949,31 @@ mod tests {
     #[test]
     fn fee_tier_display_formats_percent() {
         assert_eq!(fee_tier_display(500), "0.05%");
-        assert_eq!(fee_tier_display(3000), "0.30%");
+        assert_eq!(fee_tier_display(20_000), "2.0%");
+    }
+
+    #[test]
+    fn fee_tier_confirm_label_includes_bps() {
+        let v = DexView::for_chain(943);
+        assert_eq!(v.fee_tier_confirm_label(), "0.05% (500)");
+        let mut v2 = DexView::for_chain(943);
+        v2.fee = 20_000;
+        assert_eq!(v2.fee_tier_confirm_label(), "2.0% (20000)");
+    }
+
+    #[test]
+    fn up_down_cycles_venue_from_default_focus() {
+        let mut v = DexView::for_chain(369);
+        let start = v.venue;
+        assert!(v.cycle_venue_selector(true));
+        assert_ne!(v.venue, start);
+        assert_eq!(v.focus, Focus::Dex);
+    }
+
+    #[test]
+    fn tab_from_none_focuses_venue_row_first() {
+        let v = DexView::for_chain(369);
+        assert_eq!(v.focus, Focus::None);
+        assert_eq!(v.focus_tab_forward(), Focus::Dex);
     }
 }

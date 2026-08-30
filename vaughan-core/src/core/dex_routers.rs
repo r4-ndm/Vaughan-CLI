@@ -81,6 +81,11 @@ mod tests {
         assert!(is_allowed_dex_router(943, npm));
     }
 
+    fn nine_inch_npm_allowed_on_369() {
+        let npm = address!("0x18A532b36A9F6B10b3FEC5BF225C00A0Ec89B79E");
+        assert!(is_allowed_dex_router(369, npm));
+    }
+
     #[test]
     fn nine_mm_npm_allowed_on_369() {
         let npm = address!("0xCC05bf158202b4F461Ede8843d76dcd7Bbad07f2");

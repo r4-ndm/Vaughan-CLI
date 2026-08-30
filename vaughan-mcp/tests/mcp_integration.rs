@@ -98,6 +98,8 @@ fn mcp_tool_definitions_include_banned_absence() {
     assert!(names.contains(&"quote_v3_swap"));
     assert!(names.contains(&"propose_v3_swap"));
     assert!(names.contains(&"propose_v3_mint"));
+    assert!(names.contains(&"propose_v3_create_pool"));
+    assert!(names.contains(&"propose_v3_initialize_pool"));
     assert!(names.contains(&"propose_wrap"));
     assert!(names.contains(&"propose_unwrap"));
     assert!(names.contains(&"propose_revoke"));

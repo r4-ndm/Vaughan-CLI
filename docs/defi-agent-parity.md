@@ -94,8 +94,10 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | List my V3 positions | `list_v3_positions` | [x] |
 | Increase / decrease liquidity | `propose_v3_increase` / `_decrease` | [x] Phase E |
 | Collect fees | `propose_v3_collect` | [x] Phase E |
-| V2 add / remove LP | — | [ ] only if product demand |
-| TUI positions screen | — | [ ] Phase E UI |
+| Create V3 pool | `propose_v3_create_pool` / `propose_v3_initialize_pool` | [x] wiz4rd 943, 9inch 369 |
+| V2 add / remove LP | `propose_v2_add` / `propose_v2_remove` | [x] 9inch 369 |
+| List V2 positions | `list_v2_positions` | [x] 9inch 369 |
+| TUI positions screen (`p`) | wiz4rd V3 943 + 9inch V3 369 | [x] |
 
 ---
 

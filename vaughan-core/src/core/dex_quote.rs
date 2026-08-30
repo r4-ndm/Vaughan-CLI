@@ -2,8 +2,14 @@
 //!
 //! - **V3 (943):** local exact-in math via [`wiz4rd-sdk`] on the wiz4rd deploy.
 //! - **V3 (369+):** venue `QuoterV2` via `eth_call` when catalogued (9mm today).
-//!   Single- and multi-hop paths share the same fee tier per hop (Dex TUI packed path).
+//!   Multi-hop paths use Uniswap V3 packed `token | fee | token | …` bytes.
 //! - **V2:** `router.getAmountsOut` via `eth_call` (Uni V2–compatible routers).
+//!
+//! **Route discovery (943 auto-fee)** follows the Uniswap / MetaMask-family pattern:
+//! simulate exact-in quotes across catalog fee tiers (and WPLS hops), pick the
+//! path with the best `amountOut` for the user's size. Swap math comes from the
+//! pinned `uniswap-v3-sdk` crate via [`wiz4rd-math`]; router ABI matches the
+//! Pancake / wiz4rd SwapRouter (`exactInput` / `exactInputSingle`).
 
 use alloy::primitives::aliases::{U160, U24};
 use alloy::primitives::{Address, Bytes, U256};
@@ -11,10 +17,12 @@ use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
 use alloy::sol_types::SolCall;
+use std::time::{Duration, Instant};
 
-use crate::core::wiz4rd::{deployment_for_chain, parse_addr};
+use crate::core::wiz4rd::{deployment_for_chain, parse_addr, WIZ4RD_FEE_TIERS};
 use crate::error::WalletError;
 use wiz4rd_sdk::config::Config;
+use wiz4rd_sdk::error::SdkError;
 use wiz4rd_sdk::pool::{get_pool_info, PoolInfo};
 use wiz4rd_sdk::pool_address::get_pool_key;
 use wiz4rd_sdk::tx::swap::{apply_slippage, zero_for_one, BasisPoints};
@@ -60,6 +68,21 @@ sol! {
 /// Normalized exact-in quote for Dex / CLI (output token raw units).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DexQuote {
+    pub amount_out: U256,
+    /// Hop list used for the quote (matches swap calldata).
+    pub path: Vec<Address>,
+    /// One fee tier per hop (`path.len() - 1`); empty for V2.
+    pub hop_fees: Vec<u32>,
+    /// First-hop fee tier for display (`0` for V2).
+    pub fee_tier: u32,
+}
+
+/// Best V3 swap route for a token pair (auto fee-tier + path selection).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V3DiscoveredRoute {
+    pub path: Vec<Address>,
+    /// Fee tier per hop (`path.len() - 1`).
+    pub hop_fees: Vec<u32>,
     pub amount_out: U256,
 }
 
@@ -136,8 +159,12 @@ pub async fn quote_v3_path_exact_in(
         ));
     }
     if amount_in.is_zero() {
+        let hop_fees = vec![fee; path.len().saturating_sub(1)];
         return Ok(DexQuote {
             amount_out: U256::ZERO,
+            path: path.to_vec(),
+            hop_fees,
+            fee_tier: fee,
         });
     }
 
@@ -150,6 +177,247 @@ pub async fn quote_v3_path_exact_in(
             "V3 quote needs wiz4rd deploy or a catalogued QuoterV2 on chain {chain_id}"
         )))
     }
+}
+
+/// Simulate exact-in quotes across fee tiers and pick the best `amountOut`.
+///
+/// On wiz4rd (943) tries direct pools and independent per-hop fees on WPLS
+/// routes. Requires a non-zero `amount_in` so quotes reflect trade size.
+pub async fn discover_v3_swap_route(
+    rpc_url: &str,
+    chain_id: u64,
+    token_in: Address,
+    token_out: Address,
+    amount_in: U256,
+    wpls: Option<Address>,
+    native_in: bool,
+) -> Result<V3DiscoveredRoute, WalletError> {
+    if amount_in.is_zero() {
+        return Err(WalletError::InvalidAmount(
+            "route discovery needs amount > 0".into(),
+        ));
+    }
+    if native_in {
+        let w = wpls.ok_or_else(|| {
+            WalletError::InvalidTransaction(
+                "native→token needs WPLS on PulseChain — switch network".into(),
+            )
+        })?;
+        if token_out == w {
+            return Err(WalletError::InvalidTransaction(
+                "token out cannot be WPLS for native→token".into(),
+            ));
+        }
+        return discover_v3_single_hop_route(rpc_url, chain_id, w, token_out, amount_in).await;
+    }
+    if token_in == token_out {
+        return Err(WalletError::InvalidTransaction(
+            "token in and token out must differ".into(),
+        ));
+    }
+
+    let cfg = wiz4rd_config(chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    let mut best: Option<V3DiscoveredRoute> = None;
+
+    for &fee in WIZ4RD_FEE_TIERS {
+        if let Some(out) =
+            v3_quote_hop(&provider, &cfg, token_in, token_out, fee, amount_in).await?
+        {
+            consider_quote(&mut best, out, vec![token_in, token_out], vec![fee]);
+        }
+    }
+
+    if let Some(w) = wpls {
+        if token_in != w && token_out != w {
+            for &fee_ab in WIZ4RD_FEE_TIERS {
+                let mid =
+                    match v3_quote_hop(&provider, &cfg, token_in, w, fee_ab, amount_in).await? {
+                        Some(m) if !m.is_zero() => m,
+                        _ => continue,
+                    };
+                for &fee_bc in WIZ4RD_FEE_TIERS {
+                    if let Some(out) =
+                        v3_quote_hop(&provider, &cfg, w, token_out, fee_bc, mid).await?
+                    {
+                        consider_quote(
+                            &mut best,
+                            out,
+                            vec![token_in, w, token_out],
+                            vec![fee_ab, fee_bc],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    best.ok_or_else(|| {
+        WalletError::Other(format!(
+            "no swappable V3 pool for {token_in:#x} ↔ {token_out:#x} — add LP or pick another pair"
+        ))
+    })
+}
+
+/// Prefer higher `amount_out`; on tie prefer fewer hops (direct over WPLS).
+fn consider_quote(
+    best: &mut Option<V3DiscoveredRoute>,
+    amount_out: U256,
+    path: Vec<Address>,
+    hop_fees: Vec<u32>,
+) {
+    let route = V3DiscoveredRoute {
+        path,
+        hop_fees,
+        amount_out,
+    };
+    match best {
+        Some(prev) if prev.amount_out > amount_out => {}
+        Some(prev) if prev.amount_out == amount_out && prev.path.len() <= route.path.len() => {}
+        _ => *best = Some(route),
+    }
+}
+
+async fn discover_v3_single_hop_route(
+    rpc_url: &str,
+    chain_id: u64,
+    token_in: Address,
+    token_out: Address,
+    amount_in: U256,
+) -> Result<V3DiscoveredRoute, WalletError> {
+    let cfg = wiz4rd_config(chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    let mut best: Option<V3DiscoveredRoute> = None;
+    for &fee in WIZ4RD_FEE_TIERS {
+        if let Some(out) =
+            v3_quote_hop(&provider, &cfg, token_in, token_out, fee, amount_in).await?
+        {
+            consider_quote(&mut best, out, vec![token_in, token_out], vec![fee]);
+        }
+    }
+    best.ok_or_else(|| {
+        WalletError::Other(format!(
+            "no swappable V3 pool for {token_in:#x} → {token_out:#x}"
+        ))
+    })
+}
+
+async fn v3_quote_hop(
+    provider: &impl Provider,
+    cfg: &Config,
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    amount_in: U256,
+) -> Result<Option<U256>, WalletError> {
+    let pool = match v3_load_pool_with(provider, cfg, token_in, token_out, fee).await? {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    Ok(Some(quote_v3_hop_exact_in(&pool, token_in, amount_in)?))
+}
+
+fn map_pool_read_error(e: SdkError) -> WalletError {
+    match e {
+        SdkError::PoolNotFound => {
+            WalletError::Other("no V3 pool for this pair and fee tier".into())
+        }
+        e => WalletError::NetworkError(format!("pool read: {e}")),
+    }
+}
+
+async fn v3_load_pool_with(
+    provider: &impl Provider,
+    cfg: &Config,
+    token_a: Address,
+    token_b: Address,
+    fee: u32,
+) -> Result<Option<PoolInfo>, WalletError> {
+    let key = get_pool_key(token_a, token_b, fee);
+    let pool = match get_pool_info(provider, cfg, key).await {
+        Ok(p) => p,
+        Err(SdkError::PoolNotFound) => return Ok(None),
+        Err(e) => return Err(map_pool_read_error(e)),
+    };
+    if pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
+        return Ok(None);
+    }
+    Ok(Some(pool))
+}
+
+async fn v3_load_pool(
+    rpc_url: &str,
+    chain_id: u64,
+    token_a: Address,
+    token_b: Address,
+    fee: u32,
+) -> Result<Option<PoolInfo>, WalletError> {
+    if deployment_for_chain(chain_id).is_none() {
+        return Ok(None);
+    }
+    let cfg = wiz4rd_config(chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    v3_load_pool_with(&provider, &cfg, token_a, token_b, fee).await
+}
+
+/// Resolve a V3 swap hop list: prefer a direct pool at `fee`, else WPLS routing.
+pub async fn resolve_v3_swap_path(
+    rpc_url: &str,
+    chain_id: u64,
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    wpls: Option<Address>,
+    native_in: bool,
+) -> Result<Vec<Address>, WalletError> {
+    if native_in {
+        let w = wpls.ok_or_else(|| {
+            WalletError::InvalidTransaction(
+                "native→token needs WPLS on PulseChain — switch network".into(),
+            )
+        })?;
+        if token_out == w {
+            return Err(WalletError::InvalidTransaction(
+                "token out cannot be WPLS for native→token".into(),
+            ));
+        }
+        return Ok(vec![w, token_out]);
+    }
+    if token_in == token_out {
+        return Err(WalletError::InvalidTransaction(
+            "token in and token out must differ".into(),
+        ));
+    }
+
+    if v3_pool_exists(rpc_url, chain_id, token_in, token_out, fee).await? {
+        return Ok(vec![token_in, token_out]);
+    }
+
+    if let Some(w) = wpls {
+        if token_in != w && token_out != w {
+            let via_wpls = v3_pool_exists(rpc_url, chain_id, token_in, w, fee).await?
+                && v3_pool_exists(rpc_url, chain_id, w, token_out, fee).await?;
+            if via_wpls {
+                return Ok(vec![token_in, w, token_out]);
+            }
+        }
+    }
+
+    Err(WalletError::Other(format!(
+        "no V3 pool for {token_in:#x} ↔ {token_out:#x} at fee {fee}"
+    )))
+}
+
+async fn v3_pool_exists(
+    rpc_url: &str,
+    chain_id: u64,
+    token_a: Address,
+    token_b: Address,
+    fee: u32,
+) -> Result<bool, WalletError> {
+    Ok(v3_load_pool(rpc_url, chain_id, token_a, token_b, fee)
+        .await?
+        .is_some())
 }
 
 async fn quote_v3_path_wiz4rd_local(
@@ -175,7 +443,7 @@ async fn quote_v3_path_wiz4rd_local(
         let key = get_pool_key(token_in, token_out, fee);
         let pool = get_pool_info(&provider, &cfg, key)
             .await
-            .map_err(|e| WalletError::NetworkError(format!("pool read: {e}")))?;
+            .map_err(map_pool_read_error)?;
         if pool.pool.is_zero() {
             return Err(WalletError::Other(format!(
                 "no V3 pool for {token_in:#x} → {token_out:#x} at fee {fee}"
@@ -185,31 +453,46 @@ async fn quote_v3_path_wiz4rd_local(
         amount = quote_v3_hop_exact_in(&pool, token_in, amount)?;
     }
 
-    Ok(DexQuote { amount_out: amount })
+    Ok(DexQuote {
+        amount_out: amount,
+        path: path.to_vec(),
+        hop_fees: vec![fee; path.len() - 1],
+        fee_tier: fee,
+    })
 }
 
-/// Packed V3 path bytes (token + fee + token + …) — matches Dex TUI swap encoding.
-fn encode_v3_path(tokens: &[Address], fee: u32) -> Result<Bytes, WalletError> {
+/// Uniswap V3 packed path: `token (20) || fee (3) || token (20) || …`.
+pub fn encode_v3_packed_path(tokens: &[Address], hop_fees: &[u32]) -> Result<Bytes, WalletError> {
     if tokens.len() < 2 {
         return Err(WalletError::InvalidTransaction(
             "V3 path needs at least two tokens".into(),
         ));
     }
-    if fee > 0xFF_FFFF {
+    if hop_fees.len() != tokens.len() - 1 {
         return Err(WalletError::InvalidTransaction(
-            "fee tier out of uint24 range".into(),
+            "hop_fees length must equal path hops".into(),
         ));
     }
     let mut out = Vec::with_capacity(tokens.len() * 20 + (tokens.len() - 1) * 3);
     for (i, token) in tokens.iter().enumerate() {
         out.extend_from_slice(token.as_slice());
         if i + 1 < tokens.len() {
+            let fee = hop_fees[i];
+            if fee > 0xFF_FFFF {
+                return Err(WalletError::InvalidTransaction(
+                    "fee tier out of uint24 range".into(),
+                ));
+            }
             out.push(((fee >> 16) & 0xff) as u8);
             out.push(((fee >> 8) & 0xff) as u8);
             out.push((fee & 0xff) as u8);
         }
     }
     Ok(Bytes::from(out))
+}
+
+fn encode_v3_path(tokens: &[Address], fee: u32) -> Result<Bytes, WalletError> {
+    encode_v3_packed_path(tokens, &vec![fee; tokens.len() - 1])
 }
 
 async fn quote_v3_path_via_quoter(
@@ -263,7 +546,66 @@ async fn quote_v3_path_via_quoter(
             .amountOut
     };
 
-    Ok(DexQuote { amount_out })
+    Ok(DexQuote {
+        amount_out,
+        path: path.to_vec(),
+        hop_fees: vec![fee; path.len() - 1],
+        fee_tier: fee,
+    })
+}
+
+const ALLOWANCE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const ALLOWANCE_WAIT_POLL: Duration = Duration::from_millis(750);
+
+/// Whether `spender` already has enough ERC-20 allowance for an exact-in swap.
+pub async fn erc20_allowance_covers(
+    rpc_url: &str,
+    token: Address,
+    owner: Address,
+    spender: Address,
+    need: U256,
+) -> Result<bool, WalletError> {
+    use wiz4rd_sdk::allowance::get_allowance;
+
+    if need.is_zero() {
+        return Ok(true);
+    }
+    let provider = connect_http(rpc_url)?;
+    let cur = get_allowance(&provider, token, owner, spender)
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
+    Ok(cur >= need)
+}
+
+/// Poll ERC-20 `allowance` until `spender` can pull at least `need` (post-approve Dex step).
+pub async fn wait_erc20_allowance(
+    rpc_url: &str,
+    token: Address,
+    owner: Address,
+    spender: Address,
+    need: U256,
+) -> Result<(), WalletError> {
+    use wiz4rd_sdk::allowance::get_allowance;
+
+    if need.is_zero() {
+        return Ok(());
+    }
+    let provider = connect_http(rpc_url)?;
+    let start = Instant::now();
+    loop {
+        let cur = get_allowance(&provider, token, owner, spender)
+            .await
+            .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
+        if cur >= need {
+            return Ok(());
+        }
+        if start.elapsed() >= ALLOWANCE_WAIT_TIMEOUT {
+            return Err(WalletError::NetworkError(
+                "approve not confirmed within 60s — wait for the block, then press F4 again".into(),
+            ));
+        }
+        tokio::time::sleep(ALLOWANCE_WAIT_POLL).await;
+    }
 }
 
 fn quote_v3_hop_exact_in(
@@ -295,6 +637,9 @@ pub async fn quote_v2_exact_in(
     if amount_in.is_zero() {
         return Ok(DexQuote {
             amount_out: U256::ZERO,
+            path: path.to_vec(),
+            hop_fees: vec![],
+            fee_tier: 0,
         });
     }
     if path.len() < 2 {
@@ -321,7 +666,12 @@ pub async fn quote_v2_exact_in(
         .last()
         .copied()
         .ok_or_else(|| WalletError::NetworkError("getAmountsOut returned empty amounts".into()))?;
-    Ok(DexQuote { amount_out })
+    Ok(DexQuote {
+        amount_out,
+        path: path.to_vec(),
+        hop_fees: vec![],
+        fee_tier: 0,
+    })
 }
 
 #[cfg(test)]
@@ -389,6 +739,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn consider_quote_picks_best_output() {
+        let a = Address::repeat_byte(0x11);
+        let b = Address::repeat_byte(0x22);
+        let mut best: Option<V3DiscoveredRoute> = None;
+        consider_quote(&mut best, U256::from(100u64), vec![a, b], vec![500]);
+        consider_quote(&mut best, U256::from(200u64), vec![a, b], vec![20_000]);
+        let route = best.unwrap();
+        assert_eq!(route.hop_fees, vec![20_000]);
+        assert_eq!(route.amount_out, U256::from(200u64));
+    }
+
+    #[test]
+    fn consider_quote_prefers_shorter_path_on_tie() {
+        let a = Address::repeat_byte(0x11);
+        let b = Address::repeat_byte(0x22);
+        let w = Address::repeat_byte(0xaa);
+        let mut best: Option<V3DiscoveredRoute> = None;
+        consider_quote(&mut best, U256::from(100u64), vec![a, w, b], vec![500, 500]);
+        consider_quote(&mut best, U256::from(100u64), vec![a, b], vec![20_000]);
+        assert_eq!(best.unwrap().path, vec![a, b]);
+    }
+
     #[tokio::test]
     async fn v3_path_rejects_short_path() {
         let err = quote_v3_path_exact_in(
@@ -404,12 +777,53 @@ mod tests {
         assert!(matches!(err, WalletError::InvalidTransaction(_)));
     }
 
+    #[tokio::test]
+    #[ignore = "live PulseChain testnet 943 RPC"]
+    async fn live_discover_bob_jane_943() {
+        use std::str::FromStr;
+        let bob = Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap();
+        let jane = Address::from_str("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59").unwrap();
+        let wpls = Address::from_str("0x70499adEBB11Efd915E3b69E700c331778628707").unwrap();
+        let route = discover_v3_swap_route(
+            "https://rpc.v4.testnet.pulsechain.com",
+            943,
+            bob,
+            jane,
+            U256::from(1_000u64) * U256::from(10u128.pow(18)),
+            Some(wpls),
+            false,
+        )
+        .await
+        .expect("BOB→JANE should discover the 2% pool");
+        assert_eq!(route.hop_fees, vec![20_000]);
+        assert_eq!(route.path, vec![bob, jane]);
+        assert!(route.amount_out > U256::ZERO);
+    }
+
+    #[tokio::test]
+    async fn discover_errors_when_no_pool() {
+        let err = discover_v3_swap_route(
+            "http://127.0.0.1:1",
+            943,
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            U256::from(1_000u64),
+            Some(Address::repeat_byte(0xaa)),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(!matches!(err, WalletError::InvalidTransaction(_)));
+    }
+
     #[test]
-    fn encode_v3_path_matches_dex_tui_layout() {
+    fn encode_v3_packed_path_per_hop_fees() {
         let a = Address::repeat_byte(0x11);
         let b = Address::repeat_byte(0x22);
-        let packed = encode_v3_path(&[a, b], 3000).unwrap();
-        assert_eq!(packed.len(), 43);
-        assert_eq!(&packed[20..23], &[0x00, 0x0b, 0xb8]);
+        let c = Address::repeat_byte(0x33);
+        let packed = encode_v3_packed_path(&[a, b, c], &[500, 20_000]).unwrap();
+        assert_eq!(packed.len(), 66);
+        assert_eq!(&packed[20..23], &[0, 0x01, 0xf4]); // 500
+        assert_eq!(&packed[43..46], &[0, 0x4e, 0x20]); // 20000
     }
 }

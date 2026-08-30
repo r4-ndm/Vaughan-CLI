@@ -88,12 +88,24 @@ pub struct DexSwapRequest {
     pub native_in: bool,
     pub amount_in: U256,
     pub min_out: U256,
-    /// V3 fee tier (ignored for V2).
+    /// V3 fee tier (ignored for V2); first hop when [`hop_fees`] is set.
     pub fee: u32,
+    /// Per-hop V3 fee tiers from quote discovery (`path.len() - 1`).
+    pub hop_fees: Option<Vec<u32>>,
     pub recipient: Address,
     pub from: String,
     pub chain_id: u64,
+    /// When set (V3 quote path), overrides [`hop_tokens`].
+    pub hops: Option<Vec<Address>>,
 }
+
+/// TickMath bounds — matches `wiz4rd-sdk` swap router defaults (not `U160::ZERO`).
+const MIN_SQRT_RATIO_PLUS_ONE: U160 = U160::from_limbs([4_295_128_740, 0, 0]);
+const MAX_SQRT_RATIO_MINUS_ONE: U160 = U160::from_limbs([
+    6_743_328_256_752_651_557,
+    17_280_870_778_742_802_505,
+    4_294_805_859,
+]);
 
 /// Token hop list: native→token is WPLS→out; meme/meme is in→WPLS→out.
 pub fn hop_tokens(
@@ -123,22 +135,12 @@ pub fn hop_tokens(
 
 /// Uniswap V3 packed path: `token (20) || fee (3) || token (20) || …`.
 pub fn encode_v3_path(tokens: &[Address], fee: u32) -> Result<Bytes, String> {
-    if tokens.len() < 2 {
-        return Err("V3 path needs ≥2 tokens".into());
-    }
-    if fee > 0xFF_FFFF {
-        return Err("fee tier out of uint24 range".into());
-    }
-    let mut out = Vec::with_capacity(tokens.len() * 20 + (tokens.len() - 1) * 3);
-    for (i, token) in tokens.iter().enumerate() {
-        out.extend_from_slice(token.as_slice());
-        if i + 1 < tokens.len() {
-            out.push(((fee >> 16) & 0xff) as u8);
-            out.push(((fee >> 8) & 0xff) as u8);
-            out.push((fee & 0xff) as u8);
-        }
-    }
-    Ok(Bytes::from(out))
+    let hop_fees = vec![fee; tokens.len().saturating_sub(1)];
+    vaughan_core::core::encode_v3_packed_path(tokens, &hop_fees).map_err(|e| e.user_message())
+}
+
+pub fn encode_v3_path_hops(tokens: &[Address], hop_fees: &[u32]) -> Result<Bytes, String> {
+    vaughan_core::core::encode_v3_packed_path(tokens, hop_fees).map_err(|e| e.user_message())
 }
 
 /// ERC-20 `approve(router, amount)` against `token_in`.
@@ -231,7 +233,10 @@ pub fn encode_balance_of_call(account: Address) -> String {
 
 /// Build a V2 or V3 swap transaction (no signing).
 pub fn build_swap_tx(req: &DexSwapRequest) -> Result<EvmTransaction, String> {
-    let hops = hop_tokens(req.token_in, req.token_out, req.wpls, req.native_in)?;
+    let hops = match &req.hops {
+        Some(path) => path.clone(),
+        None => hop_tokens(req.token_in, req.token_out, req.wpls, req.native_in)?,
+    };
     let deadline = U256::from(u64::MAX);
     let (value, data) = match req.protocol {
         DexProtocol::V2 => encode_v2_swap(
@@ -242,15 +247,7 @@ pub fn build_swap_tx(req: &DexSwapRequest) -> Result<EvmTransaction, String> {
             deadline,
             req.native_in,
         )?,
-        DexProtocol::V3 => encode_v3_swap(
-            &hops,
-            req.amount_in,
-            req.min_out,
-            req.recipient,
-            deadline,
-            req.fee,
-            req.native_in,
-        )?,
+        DexProtocol::V3 => encode_v3_swap(req, &hops, deadline)?,
     };
     Ok(EvmTransaction {
         from: req.from.clone(),
@@ -296,36 +293,51 @@ fn encode_v2_swap(
 }
 
 fn encode_v3_swap(
+    req: &DexSwapRequest,
     hops: &[Address],
-    amount_in: U256,
-    min_out: U256,
-    recipient: Address,
     deadline: U256,
-    fee: u32,
-    native_in: bool,
 ) -> Result<(U256, Bytes), String> {
-    let value = if native_in { amount_in } else { U256::ZERO };
+    let value = if req.native_in {
+        req.amount_in
+    } else {
+        U256::ZERO
+    };
     let data = if hops.len() == 2 {
-        let fee = U24::try_from(fee).map_err(|e| format!("bad fee: {e}"))?;
+        let hop_fee = req
+            .hop_fees
+            .as_deref()
+            .and_then(|f| f.first().copied())
+            .unwrap_or(req.fee);
+        let fee = U24::try_from(hop_fee).map_err(|e| format!("bad fee: {e}"))?;
+        // token0 < token1 in Uniswap V3 pools — token_in < token_out ⇒ zeroForOne.
+        let sqrt_price_limit = if hops[0] < hops[1] {
+            MIN_SQRT_RATIO_PLUS_ONE
+        } else {
+            MAX_SQRT_RATIO_MINUS_ONE
+        };
         let params = ISwapRouterV3::ExactInputSingleParams {
             tokenIn: hops[0],
             tokenOut: hops[1],
             fee,
-            recipient,
+            recipient: req.recipient,
             deadline,
-            amountIn: amount_in,
-            amountOutMinimum: min_out,
-            sqrtPriceLimitX96: U160::ZERO,
+            amountIn: req.amount_in,
+            amountOutMinimum: req.min_out,
+            sqrtPriceLimitX96: sqrt_price_limit,
         };
         Bytes::from(ISwapRouterV3::exactInputSingleCall { params }.abi_encode())
     } else {
-        let path = encode_v3_path(hops, fee)?;
+        let fees: Vec<u32> = req
+            .hop_fees
+            .clone()
+            .unwrap_or_else(|| vec![req.fee; hops.len() - 1]);
+        let path = encode_v3_path_hops(hops, &fees)?;
         let params = ISwapRouterV3::ExactInputParams {
             path,
-            recipient,
+            recipient: req.recipient,
             deadline,
-            amountIn: amount_in,
-            amountOutMinimum: min_out,
+            amountIn: req.amount_in,
+            amountOutMinimum: req.min_out,
         };
         Bytes::from(ISwapRouterV3::exactInputCall { params }.abi_encode())
     };
@@ -374,6 +386,17 @@ mod tests {
     }
 
     #[test]
+    fn v3_path_packing_per_hop_fees() {
+        let a = Address::repeat_byte(0x11);
+        let w = Address::repeat_byte(0xaa);
+        let b = Address::repeat_byte(0x22);
+        let packed = encode_v3_path_hops(&[a, w, b], &[500, 20_000]).unwrap();
+        assert_eq!(packed.len(), 66);
+        assert_eq!(&packed[20..23], &[0, 0x01, 0xf4]);
+        assert_eq!(&packed[43..46], &[0, 0x4e, 0x20]);
+    }
+
+    #[test]
     fn v3_path_packing_two_hops() {
         let a = Address::repeat_byte(0x11);
         let w = Address::repeat_byte(0xaa);
@@ -397,9 +420,11 @@ mod tests {
             amount_in: U256::from(1_000_000_000_000_000_000u64),
             min_out: U256::from(1u64),
             fee: 3000,
+            hop_fees: None,
             recipient: Address::repeat_byte(0x33),
             from: format!("{:#x}", Address::repeat_byte(0x33)),
             chain_id: 943,
+            hops: None,
         };
         let tx = build_swap_tx(&req).unwrap();
         let data = hex::decode(tx.data.as_ref().unwrap().trim_start_matches("0x")).unwrap();
@@ -421,9 +446,11 @@ mod tests {
             amount_in: U256::from(10u64),
             min_out: U256::from(1u64),
             fee: 3000,
+            hop_fees: None,
             recipient: Address::repeat_byte(0x33),
             from: format!("{:#x}", Address::repeat_byte(0x33)),
             chain_id: 943,
+            hops: None,
         };
         let tx = build_swap_tx(&req).unwrap();
         let data = hex::decode(tx.data.as_ref().unwrap().trim_start_matches("0x")).unwrap();

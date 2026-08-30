@@ -11,6 +11,8 @@ pub mod propose_stealth_send;
 pub mod propose_swap;
 pub mod propose_token_launch;
 pub mod propose_transfer;
+pub mod propose_v2_lp;
+pub mod propose_v3_create_pool;
 pub mod propose_v3_lp_lifecycle;
 pub mod propose_v3_mint;
 pub mod propose_v3_swap;
@@ -25,6 +27,8 @@ pub use propose_stealth_send::ProposeStealthSendTool;
 pub use propose_swap::ProposeSwapTool;
 pub use propose_token_launch::ProposeTokenLaunchTool;
 pub use propose_transfer::ProposeTransferTool;
+pub use propose_v2_lp::{ProposeV2AddTool, ProposeV2RemoveTool};
+pub use propose_v3_create_pool::{ProposeV3CreatePoolTool, ProposeV3InitializePoolTool};
 pub use propose_v3_lp_lifecycle::{
     ProposeV3CollectTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
 };

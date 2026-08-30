@@ -206,7 +206,7 @@ impl View {
             Self::History(v) => v.render(frame, area, wallet),
             Self::Approvals(v) => v.render(frame, area, wallet),
             Self::Wrap(v) => v.render(frame, area, wallet),
-            Self::Lp(v) => v.render(frame, area, wallet),
+            Self::Lp(v) => v.render(frame, area, wallet, assets),
             Self::TokenLaunch(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
             Self::Approve(v) => v.render(frame, area, wallet),
@@ -267,6 +267,15 @@ impl View {
             Self::TokenLaunch(v) => v.allows_footer_shortcuts(),
             Self::Placeholder(v) => v.allows_footer_shortcuts(),
             Self::Approve(v) => v.allows_footer_shortcuts(),
+        }
+    }
+
+    /// Swap / Add LP: ↑/↓ on the venue row before the global token asset picker.
+    fn try_cycle_venue_selector(&mut self, forward: bool) -> bool {
+        match self {
+            Self::Dex(v) => v.cycle_venue_selector(forward),
+            Self::Lp(v) => v.cycle_venue_selector(forward),
+            _ => false,
         }
     }
 }
@@ -619,6 +628,9 @@ impl App {
         if self.wallet().is_unlocked() {
             if matches!(key.code, KeyCode::Up | KeyCode::Down) {
                 let forward = matches!(key.code, KeyCode::Down);
+                if self.view.try_cycle_venue_selector(forward) {
+                    return;
+                }
                 if self.cycle_active_token_field(forward) {
                     return;
                 }
@@ -1856,13 +1868,14 @@ impl App {
 
     /// Dex / Ag: ↑/↓ on Token in or Token out cycles the wallet asset list.
     fn cycle_active_token_field(&mut self, forward: bool) -> bool {
-        if !matches!(self.screen(), Screen::Dex | Screen::Aggregator) {
+        if !matches!(self.screen(), Screen::Dex | Screen::Aggregator | Screen::Lp) {
             return false;
         }
         if self.chrome.assets.is_empty() {
             let on_token_field = match &mut self.view {
                 View::Dex(v) => v.cycle_focused_token_picker(&[], forward),
                 View::Aggregator(v) => v.cycle_focused_token_picker(&[], forward),
+                View::Lp(v) => v.cycle_focused_token_picker(&[], forward),
                 _ => false,
             };
             if !on_token_field {
@@ -1878,6 +1891,7 @@ impl App {
         match &mut self.view {
             View::Dex(v) => v.cycle_focused_token_picker(&assets, forward),
             View::Aggregator(v) => v.cycle_focused_token_picker(&assets, forward),
+            View::Lp(v) => v.cycle_focused_token_picker(&assets, forward),
             _ => false,
         }
     }
@@ -2222,6 +2236,60 @@ impl App {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Fee(handle.block_on(w.estimate_transaction_fee(tx)))
                 }
+                UiJob::DexSwapEstimateAfterApprove {
+                    rpc_url,
+                    token_in,
+                    owner,
+                    router,
+                    amount_in,
+                    tx,
+                } => {
+                    use alloy::primitives::{Address, U256};
+                    use std::str::FromStr;
+                    use vaughan_core::chains::Fee;
+                    use vaughan_core::core::wait_erc20_allowance;
+
+                    let parsed = (|| -> Result<Fee, WalletError> {
+                        let token = Address::from_str(token_in.trim())
+                            .map_err(|_| WalletError::InvalidTransaction("dex token in".into()))?;
+                        let owner = Address::from_str(owner.trim())
+                            .map_err(|_| WalletError::InvalidTransaction("dex owner".into()))?;
+                        let router = Address::from_str(router.trim())
+                            .map_err(|_| WalletError::InvalidTransaction("dex router".into()))?;
+                        let need = U256::from_str(&amount_in)
+                            .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
+                        handle
+                            .block_on(wait_erc20_allowance(&rpc_url, token, owner, router, need))?;
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        handle.block_on(w.estimate_transaction_fee(tx))
+                    })();
+                    UiJobResult::Fee(parsed)
+                }
+                UiJob::DexAllowanceCheck {
+                    rpc_url,
+                    token_in,
+                    owner,
+                    router,
+                    amount_in,
+                } => {
+                    use alloy::primitives::{Address, U256};
+                    use std::str::FromStr;
+                    use vaughan_core::core::erc20_allowance_covers;
+
+                    let parsed = (|| -> Result<bool, WalletError> {
+                        let token = Address::from_str(token_in.trim())
+                            .map_err(|_| WalletError::InvalidTransaction("dex token in".into()))?;
+                        let owner = Address::from_str(owner.trim())
+                            .map_err(|_| WalletError::InvalidTransaction("dex owner".into()))?;
+                        let router = Address::from_str(router.trim())
+                            .map_err(|_| WalletError::InvalidTransaction("dex router".into()))?;
+                        let need = U256::from_str(&amount_in)
+                            .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
+                        handle
+                            .block_on(erc20_allowance_covers(&rpc_url, token, owner, router, need))
+                    })();
+                    UiJobResult::DexAllowanceCheck(parsed)
+                }
                 UiJob::SendEvmWithFee { tx, fee } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Send(handle.block_on(w.send_evm_with_fee(tx, &fee)))
@@ -2319,29 +2387,50 @@ impl App {
                     amount_in,
                     fee,
                     path,
+                    token_in,
+                    token_out,
+                    wpls,
+                    native_in,
                 } => {
                     use alloy::primitives::{Address, U256};
                     use std::str::FromStr;
-                    use vaughan_core::core::{quote_v2_exact_in, quote_v3_path_exact_in};
+                    use vaughan_core::core::{
+                        discover_v3_swap_route, quote_v2_exact_in, quote_v3_path_exact_in,
+                        resolve_v3_swap_path,
+                    };
 
                     let parsed = (|| -> Result<vaughan_core::core::DexQuote, WalletError> {
                         let amount_in = U256::from_str(&amount_in)
                             .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
-                        let hops: Result<Vec<Address>, _> = path
-                            .iter()
-                            .map(|s| {
-                                Address::from_str(s.trim()).map_err(|_| {
-                                    WalletError::InvalidTransaction("dex path token".into())
-                                })
-                            })
-                            .collect();
-                        let hops = hops?;
                         if protocol_v2 {
+                            let hops: Result<Vec<Address>, _> = path
+                                .iter()
+                                .map(|s| {
+                                    Address::from_str(s.trim()).map_err(|_| {
+                                        WalletError::InvalidTransaction("dex path token".into())
+                                    })
+                                })
+                                .collect();
+                            let hops = hops?;
                             let router = Address::from_str(&router).map_err(|_| {
                                 WalletError::InvalidTransaction("dex router".into())
                             })?;
                             handle.block_on(quote_v2_exact_in(&rpc_url, router, amount_in, &hops))
                         } else {
+                            let token_in = Address::from_str(token_in.trim()).map_err(|_| {
+                                WalletError::InvalidTransaction("dex token in".into())
+                            })?;
+                            let token_out = Address::from_str(token_out.trim()).map_err(|_| {
+                                WalletError::InvalidTransaction("dex token out".into())
+                            })?;
+                            let wpls = match wpls {
+                                Some(s) if !s.trim().is_empty() => {
+                                    Some(Address::from_str(s.trim()).map_err(|_| {
+                                        WalletError::InvalidTransaction("dex WPLS".into())
+                                    })?)
+                                }
+                                _ => None,
+                            };
                             let quoter = match quoter {
                                 Some(s) if !s.trim().is_empty() => {
                                     Some(Address::from_str(s.trim()).map_err(|_| {
@@ -2350,9 +2439,33 @@ impl App {
                                 }
                                 _ => None,
                             };
-                            handle.block_on(quote_v3_path_exact_in(
-                                &rpc_url, chain_id, &hops, amount_in, fee, quoter,
-                            ))
+                            let (hops, hop_fees, amount_out) =
+                                if vaughan_core::core::deployment_for_chain(chain_id).is_some() {
+                                    let route = handle.block_on(discover_v3_swap_route(
+                                        &rpc_url, chain_id, token_in, token_out, amount_in, wpls,
+                                        native_in,
+                                    ))?;
+                                    (route.path, route.hop_fees, route.amount_out)
+                                } else {
+                                    let hops = handle.block_on(resolve_v3_swap_path(
+                                        &rpc_url, chain_id, token_in, token_out, fee, wpls,
+                                        native_in,
+                                    ))?;
+                                    let quote = handle.block_on(quote_v3_path_exact_in(
+                                        &rpc_url, chain_id, &hops, amount_in, fee, quoter,
+                                    ))?;
+                                    (
+                                        hops,
+                                        vec![fee; quote.path.len().saturating_sub(1)],
+                                        quote.amount_out,
+                                    )
+                                };
+                            Ok(vaughan_core::core::DexQuote {
+                                amount_out,
+                                path: hops,
+                                fee_tier: hop_fees.first().copied().unwrap_or(0),
+                                hop_fees,
+                            })
                         }
                     })();
                     UiJobResult::DexQuote {
@@ -2460,6 +2573,135 @@ impl App {
                             &rpc_url, venue, chain_id, addr, None, None,
                         )),
                     })
+                }
+                UiJob::LpListV2Positions {
+                    venue,
+                    chain_id,
+                    rpc_url,
+                    owner,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::{default_v2_watch_pairs, list_v2_lp_positions};
+                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
+                        WalletError::InvalidTransaction("invalid owner address".into())
+                    });
+                    UiJobResult::LpV2Positions(match parsed_owner {
+                        Err(e) => Err(e),
+                        Ok(addr) => {
+                            let watch = default_v2_watch_pairs(chain_id, venue);
+                            handle.block_on(list_v2_lp_positions(
+                                &rpc_url, venue, chain_id, addr, &watch,
+                            ))
+                        }
+                    })
+                }
+                UiJob::LpV3PoolDeployStep {
+                    venue,
+                    chain_id,
+                    rpc_url,
+                    from,
+                    token0,
+                    token1,
+                    fee,
+                    dec0,
+                    dec1,
+                    pool_initial_price,
+                    pool_min_price,
+                    pool_max_price,
+                    amount0,
+                    amount1,
+                    deploy_wait,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::{
+                        v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, V3LpDeployParams,
+                    };
+                    let parse_addr = |s: &str, label: &str| {
+                        Address::from_str(s.trim()).map_err(|_| {
+                            WalletError::InvalidTransaction(format!("invalid {label}"))
+                        })
+                    };
+                    UiJobResult::LpV3PoolDeployStep(handle.block_on(async {
+                        use tokio::time::{timeout, Duration};
+                        use vaughan_core::core::V3LpDeployWait;
+                        const DEPLOY_PREP_TIMEOUT: Duration = Duration::from_secs(15);
+                        const DEPLOY_ONCHAIN_WAIT: Duration = Duration::from_secs(60);
+                        let job_timeout = match deploy_wait {
+                            V3LpDeployWait::None => DEPLOY_PREP_TIMEOUT,
+                            _ => DEPLOY_ONCHAIN_WAIT + DEPLOY_PREP_TIMEOUT,
+                        };
+                        let t0 = parse_addr(&token0, "token0")?;
+                        let t1 = parse_addr(&token1, "token1")?;
+                        let params = V3LpDeployParams {
+                            from,
+                            venue,
+                            chain_id,
+                            rpc_url: rpc_url.clone(),
+                            token0: t0,
+                            token1: t1,
+                            fee,
+                            dec0,
+                            dec1,
+                            pool_initial_price,
+                            pool_min_price,
+                            pool_max_price,
+                            amount0,
+                            amount1,
+                        };
+                        timeout(job_timeout, async {
+                            v3_lp_run_deploy_wait(deploy_wait, &params).await?;
+                            v3_lp_prepare_deploy_step(&params).await
+                        })
+                        .await
+                        .map_err(|_| {
+                            WalletError::NetworkError(format!(
+                                "LP deploy step timed out ({}s)",
+                                job_timeout.as_secs()
+                            ))
+                        })?
+                    }))
+                }
+                UiJob::LpV3PoolQuote {
+                    venue,
+                    chain_id,
+                    rpc_url,
+                    token0,
+                    token1,
+                    fee,
+                    dec0,
+                    dec1,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::fetch_v3_lp_pool_quote;
+                    let parse_addr = |s: &str, label: &str| {
+                        Address::from_str(s.trim()).map_err(|_| {
+                            WalletError::InvalidTransaction(format!("invalid {label}"))
+                        })
+                    };
+                    UiJobResult::LpV3PoolQuote(handle.block_on(async {
+                        use tokio::time::{timeout, Duration};
+                        const POOL_QUOTE_TIMEOUT: Duration = Duration::from_secs(15);
+                        let t0 = parse_addr(&token0, "token0")?;
+                        let t1 = parse_addr(&token1, "token1")?;
+                        if t0 >= t1 {
+                            return Err(WalletError::InvalidTransaction(
+                                "internal: token0 must be sorted".into(),
+                            ));
+                        }
+                        timeout(
+                            POOL_QUOTE_TIMEOUT,
+                            fetch_v3_lp_pool_quote(
+                                &rpc_url, venue, chain_id, t0, t1, dec0, dec1, fee,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| {
+                            WalletError::NetworkError("pool lookup timed out (15s)".into())
+                        })?
+                    }))
                 }
                 UiJob::DeployToken {
                     name,
@@ -2653,7 +2895,15 @@ impl App {
                             None
                         }
                     };
-                    if let Some(job) = reload.or(dex_followup) {
+                    let lp_followup = {
+                        let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        if let View::Lp(v) = &mut self.view {
+                            v.followup_job(&wallet)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(job) = reload.or(dex_followup).or(lp_followup) {
                         self.spawn_job(job);
                     }
                     if send_ok {

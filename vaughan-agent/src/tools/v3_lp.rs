@@ -13,7 +13,7 @@ use crate::error::AgentError;
 use crate::tools::ToolContext;
 use vaughan_core::chains::evm::networks::get_network_by_chain_id;
 use vaughan_core::core::{
-    default_lp_venue, load_v3_lp_pool, lp_v3_venues, parse_dex_venue_label, v3_lp_sdk_config,
+    default_lp_v3_venue, load_v3_lp_pool, lp_v3_venues, parse_dex_venue_label, v3_lp_sdk_config,
     venue_position_manager, venue_slug, DexVenue,
 };
 use vaughan_core::error::WalletError;
@@ -49,10 +49,9 @@ pub fn resolve_lp_venue(args: &Value, chain_id: u64) -> Result<DexVenue, AgentEr
             ))
         })?
     } else {
-        default_lp_venue(chain_id).ok_or_else(|| {
+        default_lp_v3_venue(chain_id).ok_or_else(|| {
             AgentError::InvalidToolCall(format!(
-                "no V3 LP venue on chain {chain_id} (available: {})",
-                lp_venue_hints(chain_id)
+                "no V3 LP venue on chain {chain_id} (wiz4rd 943, 9inch 369; use list_v2_positions for 9inch V2)"
             ))
         })?
     };
@@ -114,22 +113,24 @@ mod tests {
     #[test]
     fn resolve_default_venue_per_chain() {
         assert_eq!(resolve_lp_venue(&json!({}), 943).unwrap(), DexVenue::Wiz4rd);
-        assert_eq!(resolve_lp_venue(&json!({}), 369).unwrap(), DexVenue::NineMm);
         assert_eq!(
-            resolve_lp_venue(&json!({"venue": "9mm"}), 369).unwrap(),
-            DexVenue::NineMm
+            resolve_lp_venue(&json!({}), 369).unwrap(),
+            DexVenue::NineInch
         );
+        assert!(resolve_lp_venue(&json!({"venue": "wiz4rd"}), 943).is_ok());
+        assert!(resolve_lp_venue(&json!({"venue": "9inch"}), 369).is_ok());
     }
 
     #[test]
-    fn reject_venue_without_npm_on_chain() {
+    fn reject_nine_mm_on_943() {
         let err = resolve_lp_venue(&json!({"venue": "9mm"}), 943).unwrap_err();
         assert!(err.to_string().contains("943"));
     }
 
     #[test]
-    fn lp_config_for_catalogued_venues() {
+    fn lp_config_wiz4rd_943_only() {
         assert!(lp_config(&ctx(943), DexVenue::Wiz4rd).is_ok());
+        assert!(lp_config(&ctx(369), DexVenue::NineInch).is_ok());
         assert!(lp_config(&ctx(369), DexVenue::NineMm).is_ok());
         assert!(lp_config(&ctx(943), DexVenue::NineMm).is_err());
     }

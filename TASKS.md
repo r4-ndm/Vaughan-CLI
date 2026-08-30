@@ -349,12 +349,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### P3 — Earn / advanced (only when real)
 - [x] **Browserless DEX parity (no web):** TUI LP screen (mint / collect / list on wiz4rd 943) — `LpView`, `dex_lp`, Anvil tests (`vaughan-tui/tests/lp_view.rs`)
 - [x] Dex swap polish: multi-hop V3 quote (local chained math on 943; exact-out still open)
+- [x] Dex swap UX polish (2026-08-30): direct-pool routing on 943, allowance wait after approve, skip approve when router allowance covers amount, confirm/done symbol labels, fee tier `% (bps)` copy, **auto pool fee discovery** (best-liquidity tier; no manual ←/→ on wiz4rd 943)
 - [x] 9mm V3 NPM + QuoterV2 on Pulse mainnet 369 (catalog + Quoter quotes; PulseX V3 is hybrid router — no CL NPM)
 - [x] LP Phase 1: venue picker + catalog NPM (`wiz4rd` 943, `9mm` 369) — `v3_lp_sdk_config`, `lp_v3_venues`
 - [x] MCP/agent V3 LP venue parity — optional `venue` on `list_v3_positions` / `propose_v3_*`; shared `vaughan-agent::tools::v3_lp`
 - [x] Token launch v1 — testnet fixed-supply ERC-20 (name/ticker/supply); `TokenLaunchView`, `vaughan-core::token_launch`
-- [ ] PulseX / other mainnet V3 NPM (9inch, …) when addresses verified
-- [ ] LP positions (V2 balance + remove liquidity); V3 increase/decrease TUI when demand is proven
+- [x] 9inch V3 factory + NPM on 369 — catalog + `propose_v3_create_pool` / `propose_v3_initialize_pool` + TUI Create tab
+- [ ] PulseX / other mainnet V3 NPM when addresses verified
+- [x] LP dual stack — wiz4rd V3 full lifecycle TUI on 943; 9inch V3 on 369 (Create/Mint/…); 9inch V2 via MCP `propose_v2_*`; core `v2_lp` + pool deploy
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred
 - [x] Local EIP-712: paste/load typed-data JSON → Approve view — `vaughan sign-typed-data`, browser `sign-typed`

@@ -22,6 +22,7 @@ pub mod site_grants;
 pub mod stealth;
 pub mod token_launch;
 pub mod transaction;
+pub mod v2_lp;
 pub mod vault_secrets;
 pub mod vb_browser;
 pub mod vb_cdp;
@@ -47,18 +48,26 @@ pub use broadcasts::{
     MAX_RECENT_BROADCASTS,
 };
 pub use dex_catalog::{
-    chain_label, default_lp_venue, lp_v3_venues, missing_router_hint, parse_dex_venue_label,
-    venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router, DexContractRole,
-    DexProtocol, DexVenue, DEX_VENUES,
+    chain_label, default_lp_v3_venue, default_lp_venue, lp_stack_for_chain, lp_v2_venue,
+    lp_v3_venue_picker, lp_v3_venues, missing_router_hint, parse_dex_venue_label,
+    venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router, venue_v2_factory,
+    venue_v3_factory, DexContractRole, DexProtocol, DexVenue, LpStack, DEX_VENUES,
 };
 pub use dex_lp::{
-    build_v3_collect_evm, build_v3_decrease_evm, build_v3_increase_evm, build_v3_mint_evm,
-    default_full_range_ticks, list_v3_lp_positions, load_v3_lp_pool, v3_lp_sdk_config,
-    wiz4rd_sdk_config, V3PositionInfo,
+    build_v3_collect_evm, build_v3_create_pool_evm, build_v3_decrease_evm, build_v3_increase_evm,
+    build_v3_initialize_pool_evm, build_v3_initialize_pool_from_human_price_evm,
+    build_v3_initialize_pool_from_tick_evm, build_v3_mint_evm, default_full_range_ticks,
+    display_price_range_from_preset, fetch_v3_lp_pool_quote, list_v3_lp_positions, load_v3_lp_pool,
+    sqrt_price_x96_from_tick, v3_initial_tick_from_human_price, v3_lp_prepare_deploy_step,
+    v3_lp_run_deploy_wait, v3_lp_sdk_config, v3_pool_lifecycle,
+    v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount1,
+    v3_range_ticks_from_human_prices, v3_sqrt_and_tick_for_preview, wiz4rd_sdk_config,
+    V3LpDeployParams, V3LpDeployWait, V3LpPoolQuote, V3PoolLifecycle, V3PositionInfo,
 };
 pub use dex_quote::{
-    min_out_after_slippage, quote_v2_exact_in, quote_v3_exact_in, quote_v3_path_exact_in, DexQuote,
-    DEFAULT_DEX_SLIPPAGE_BPS,
+    discover_v3_swap_route, encode_v3_packed_path, erc20_allowance_covers, min_out_after_slippage,
+    quote_v2_exact_in, quote_v3_exact_in, quote_v3_path_exact_in, resolve_v3_swap_path,
+    wait_erc20_allowance, DexQuote, V3DiscoveredRoute, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
@@ -99,6 +108,10 @@ pub use token_launch::{
 };
 pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,
+};
+pub use v2_lp::{
+    build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, default_v2_watch_pairs,
+    get_v2_pair_address, list_v2_lp_positions, V2LpPosition,
 };
 pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, UnlockPayload, WalletState};
 pub use wiz4rd::{

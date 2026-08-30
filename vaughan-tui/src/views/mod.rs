@@ -293,6 +293,14 @@ pub(crate) fn token_symbol_hint(addr: &str, chain_id: u64) -> Option<&'static st
     if !wpls.is_empty() && addr.eq_ignore_ascii_case(wpls) {
         return Some("WPLS");
     }
+    if chain_id == 943 {
+        if addr.eq_ignore_ascii_case("0x15de8ae884726f37ec90824f825d723ac93c8b77") {
+            return Some("BOB");
+        }
+        if addr.eq_ignore_ascii_case("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59") {
+            return Some("JANE");
+        }
+    }
     None
 }
 
@@ -765,7 +773,7 @@ pub(crate) fn manual_edit_resets_token_pick(code: KeyCode) -> bool {
     )
 }
 
-/// Render a labelled text input inside a faded square box (yellow title when focused).
+/// Render a labelled text input inside a square box (accent border + title when focused).
 pub(crate) fn render_labeled_input(
     frame: &mut Frame,
     area: Rect,
@@ -791,7 +799,7 @@ pub(crate) fn render_labeled_input_aligned(
     } else {
         brand::fade_line(&title_text)
     };
-    let inner = brand::render_faded_box(frame, area, Some(title));
+    let inner = brand::render_labeled_input_box(frame, area, Some(title), focused);
     if input.value().is_empty() {
         if focused {
             frame.render_widget(Paragraph::new(input.line()).alignment(align), inner);

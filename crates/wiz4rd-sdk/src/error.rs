@@ -31,6 +31,10 @@ pub enum SdkError {
     /// A view call returned data that failed ABI decoding.
     #[error("decode: {0}")]
     Decode(#[from] SolError),
+
+    /// No pool deployed for this token pair and fee tier (`getPool` returned zero).
+    #[error("pool not found")]
+    PoolNotFound,
 }
 
 pub type SdkResult<T> = Result<T, SdkError>;

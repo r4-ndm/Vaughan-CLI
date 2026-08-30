@@ -61,6 +61,23 @@ pub enum UiJob {
     EstimateEvmFee {
         tx: EvmTransaction,
     },
+    /// After a Dex approve broadcast: wait for allowance, then estimate swap gas.
+    DexSwapEstimateAfterApprove {
+        rpc_url: String,
+        token_in: String,
+        owner: String,
+        router: String,
+        amount_in: String,
+        tx: EvmTransaction,
+    },
+    /// Read-only: does the router already have enough ERC-20 allowance for this swap?
+    DexAllowanceCheck {
+        rpc_url: String,
+        token_in: String,
+        owner: String,
+        router: String,
+        amount_in: String,
+    },
     /// EVM call with a user-approved fee (matches Send confirm UX).
     SendEvmWithFee {
         tx: EvmTransaction,
@@ -98,7 +115,13 @@ pub enum UiJob {
         quoter: Option<String>,
         amount_in: String,
         fee: u32,
+        /// V2 hop addresses (from [`hop_tokens`]).
         path: Vec<String>,
+        /// Exact tokens for V3 path resolution (direct pool preferred over WPLS hop).
+        token_in: String,
+        token_out: String,
+        wpls: Option<String>,
+        native_in: bool,
     },
     /// LibertySwap cross-chain quote (no signing).
     BridgeQuote {
@@ -134,6 +157,43 @@ pub enum UiJob {
         chain_id: u64,
         rpc_url: String,
         owner: String,
+    },
+    /// List 9inch V2 LP pair balances for `owner`.
+    LpListV2Positions {
+        venue: vaughan_core::core::DexVenue,
+        chain_id: u64,
+        rpc_url: String,
+        owner: String,
+    },
+    /// Build createPool, initialize, or mint for V3 add-liquidity.
+    LpV3PoolDeployStep {
+        venue: vaughan_core::core::DexVenue,
+        chain_id: u64,
+        rpc_url: String,
+        from: String,
+        token0: String,
+        token1: String,
+        fee: u32,
+        dec0: u8,
+        dec1: u8,
+        pool_initial_price: String,
+        pool_min_price: String,
+        pool_max_price: String,
+        amount0: String,
+        amount1: String,
+        /// Wait for a prior on-chain step before building the next tx.
+        deploy_wait: vaughan_core::core::V3LpDeployWait,
+    },
+    /// On-chain pool price + lifecycle for V3 add-LP deposit coupling.
+    LpV3PoolQuote {
+        venue: vaughan_core::core::DexVenue,
+        chain_id: u64,
+        rpc_url: String,
+        token0: String,
+        token1: String,
+        fee: u32,
+        dec0: u8,
+        dec1: u8,
     },
     /// Deploy fixed-supply ERC-20 on testnet (meme coin launcher).
     DeployToken {
@@ -229,6 +289,8 @@ pub enum UiJobResult {
         quote_gen: u64,
         result: Result<vaughan_core::core::DexQuote, WalletError>,
     },
+    /// Dex F4 prep: true when router allowance already covers `amount_in`.
+    DexAllowanceCheck(Result<bool, WalletError>),
     BridgeQuote(Box<Result<vaughan_core::core::BridgeQuote, WalletError>>),
     Activity(Result<Vec<vaughan_core::chains::TxRecord>, WalletError>),
     Allowances(Result<Vec<vaughan_core::chains::AllowanceEntry>, WalletError>),
@@ -237,6 +299,12 @@ pub enum UiJobResult {
     BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),
     /// V3 LP positions from NPM scan.
     LpPositions(Result<Vec<vaughan_core::core::V3PositionInfo>, WalletError>),
+    /// V2 LP positions (9inch pair balances).
+    LpV2Positions(Result<Vec<vaughan_core::core::V2LpPosition>, WalletError>),
+    /// Prepared V3 createPool or initialize transaction + confirm label.
+    LpV3PoolDeployStep(Result<(vaughan_core::chains::EvmTransaction, String), WalletError>),
+    /// Live pool sqrt/tick for V3 deposit preview.
+    LpV3PoolQuote(Result<vaughan_core::core::V3LpPoolQuote, WalletError>),
     /// Meme-coin deploy + auto-import.
     DeployToken(Result<vaughan_core::core::TokenLaunchOutcome, WalletError>),
 }

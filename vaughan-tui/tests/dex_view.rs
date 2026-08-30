@@ -149,9 +149,11 @@ fn anvil_v2_native_swap_broadcasts() {
         amount_in: U256::from(10u64).pow(U256::from(16)), // 0.01 tPLS
         min_out: U256::from(1u64),
         fee: 3000,
+        hop_fees: None,
         recipient,
         from: from.clone(),
         chain_id: 943,
+        hops: None,
     })
     .unwrap();
 
@@ -200,9 +202,11 @@ fn anvil_v2_token_swap_after_approve() {
         amount_in: amount,
         min_out: U256::from(1u64),
         fee: 3000,
+        hop_fees: None,
         recipient,
         from,
         chain_id: 943,
+        hops: None,
     })
     .unwrap();
 
@@ -241,9 +245,11 @@ fn anvil_v3_exact_input_single_broadcasts() {
         amount_in: U256::from(10u64).pow(U256::from(15)),
         min_out: U256::from(1u64),
         fee: 3000,
+        hop_fees: None,
         recipient,
         from,
         chain_id: 943,
+        hops: None,
     })
     .unwrap();
 
@@ -293,9 +299,11 @@ fn anvil_v3_exact_input_multihop_broadcasts() {
         amount_in: amount,
         min_out: U256::from(1u64),
         fee: 3000,
+        hop_fees: None,
         recipient,
         from,
         chain_id: 943,
+        hops: None,
     })
     .unwrap();
 

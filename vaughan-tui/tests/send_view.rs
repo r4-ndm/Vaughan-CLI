@@ -72,6 +72,8 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::RefreshChrome
         | UiJob::SendEvm { .. }
         | UiJob::EstimateEvmFee { .. }
+        | UiJob::DexSwapEstimateAfterApprove { .. }
+        | UiJob::DexAllowanceCheck { .. }
         | UiJob::SendEvmWithFee { .. }
         | UiJob::AggQuote { .. }
         | UiJob::AggCompareQuote { .. }
@@ -83,6 +85,9 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::RefreshBroadcastStatuses { .. }
         | UiJob::ReplaceBroadcast { .. }
         | UiJob::LpListPositions { .. }
+        | UiJob::LpListV2Positions { .. }
+        | UiJob::LpV3PoolDeployStep { .. }
+        | UiJob::LpV3PoolQuote { .. }
         | UiJob::DeployToken { .. } => return,
     };
     view.apply_job_result(result);

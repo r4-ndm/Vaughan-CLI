@@ -1316,6 +1316,25 @@ pub fn render_faded_box_buf_with(
     }
 }
 
+/// Labelled input panel: faded border by default; solid accent border when `focused`.
+pub fn render_labeled_input_box(
+    frame: &mut Frame,
+    area: Rect,
+    title: Option<Line<'_>>,
+    focused: bool,
+) -> Rect {
+    if focused {
+        let buf = frame.buffer_mut();
+        let inner = render_accent_box_buf(buf, area);
+        if let Some(title) = title {
+            paint_title_on_top(buf, area, title, TitleAlign::Left);
+        }
+        inner
+    } else {
+        render_faded_box(frame, area, title)
+    }
+}
+
 /// Input field box: faded border by default, solid accent border when `focused`.
 pub fn render_field_box(frame: &mut Frame, area: Rect, focused: bool) -> Rect {
     if focused {

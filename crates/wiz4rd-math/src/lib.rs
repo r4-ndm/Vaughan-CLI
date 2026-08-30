@@ -14,6 +14,15 @@ mod parity;
 
 pub mod swap_math;
 
+pub mod mint_amounts;
+pub mod pool_price;
+
+pub use mint_amounts::{v3_mint_amounts_from_amount0, v3_mint_amounts_from_amount1, V3MintAmounts};
+pub use pool_price::{
+    display_price_range_from_preset, pool_price_range_to_usable_ticks, pool_price_to_usable_tick,
+    pool_tick_to_human_price,
+};
+
 /// The raw `uniswap-v3-sdk` utils module, re-exported so consumers can reach
 /// deeper helpers (e.g. `sqrt_price_math::get_next_sqrt_price_from_input`)
 /// without depending on the crate directly.
@@ -52,6 +61,8 @@ pub mod fee_tiers {
     pub const FEE_2500: u32 = 2500;
     /// 1% — tick spacing 200
     pub const FEE_10000: u32 = 10000;
+    /// 2% — tick spacing 400 (Pancake / wiz4rd / 9inch)
+    pub const FEE_20000: u32 = 20_000;
 
     /// Tick spacing for a fee tier, per the PancakeSwap V3 factory.
     pub const fn tick_spacing(fee: u32) -> Option<i32> {
@@ -60,6 +71,7 @@ pub mod fee_tiers {
             FEE_500 => Some(10),
             FEE_2500 => Some(50),
             FEE_10000 => Some(200),
+            FEE_20000 => Some(400),
             _ => None,
         }
     }
