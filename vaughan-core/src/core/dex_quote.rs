@@ -1,10 +1,12 @@
 //! Direct DEX swap quotes for the TUI (read-only, no signing).
 //!
-//! - **V3:** local exact-in math via [`wiz4rd-sdk`] on chains with a wiz4rd deploy (943 today).
+//! - **V3 (943):** local exact-in math via [`wiz4rd-sdk`] on the wiz4rd deploy.
+//! - **V3 (369+):** venue `QuoterV2` via `eth_call` when catalogued (9mm today).
 //!   Single- and multi-hop paths share the same fee tier per hop (Dex TUI packed path).
 //! - **V2:** `router.getAmountsOut` via `eth_call` (Uni V2–compatible routers).
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::aliases::{U160, U24};
+use alloy::primitives::{Address, Bytes, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
@@ -24,6 +26,34 @@ sol! {
             external
             view
             returns (uint256[] memory amounts);
+    }
+
+    interface IQuoterV2 {
+        struct QuoteExactInputSingleParams {
+            address tokenIn;
+            address tokenOut;
+            uint256 amountIn;
+            uint24 fee;
+            uint160 sqrtPriceLimitX96;
+        }
+
+        function quoteExactInputSingle(QuoteExactInputSingleParams memory params)
+            external
+            returns (
+                uint256 amountOut,
+                uint160 sqrtPriceX96After,
+                uint32 initializedTicksCrossed,
+                uint256 gasEstimate
+            );
+
+        function quoteExactInput(bytes memory path, uint256 amountIn)
+            external
+            returns (
+                uint256 amountOut,
+                uint160[] memory sqrtPriceX96AfterList,
+                uint32[] memory initializedTicksCrossedList,
+                uint256 gasEstimate
+            );
     }
 }
 
@@ -67,7 +97,7 @@ fn wiz4rd_config(chain_id: u64, rpc_url: &str) -> Result<Config, WalletError> {
     })
 }
 
-/// Single-hop V3 exact-in quote (local math on live pool state).
+/// Single-hop V3 exact-in quote.
 pub async fn quote_v3_exact_in(
     rpc_url: &str,
     chain_id: u64,
@@ -75,21 +105,30 @@ pub async fn quote_v3_exact_in(
     token_out: Address,
     amount_in: U256,
     fee: u32,
+    quoter: Option<Address>,
 ) -> Result<DexQuote, WalletError> {
-    quote_v3_path_exact_in(rpc_url, chain_id, &[token_in, token_out], amount_in, fee).await
+    quote_v3_path_exact_in(
+        rpc_url,
+        chain_id,
+        &[token_in, token_out],
+        amount_in,
+        fee,
+        quoter,
+    )
+    .await
 }
 
-/// Multi-hop V3 exact-in quote: chains local single-pool quotes along `path`.
+/// Multi-hop V3 exact-in quote.
 ///
-/// Uses the same fee tier for every hop (matches [`encode_v3_path`] / Dex TUI).
-/// Approximation caveats are the same as [`quote_exact_in`] — large swaps that
-/// cross ticks may diverge slightly from on-chain settlement.
+/// On wiz4rd chains (943) uses local pool math. Else uses `quoter` when set
+/// (catalogued venue QuoterV2 on mainnet). Uses the same fee tier for every hop.
 pub async fn quote_v3_path_exact_in(
     rpc_url: &str,
     chain_id: u64,
     path: &[Address],
     amount_in: U256,
     fee: u32,
+    quoter: Option<Address>,
 ) -> Result<DexQuote, WalletError> {
     if path.len() < 2 {
         return Err(WalletError::InvalidTransaction(
@@ -102,6 +141,24 @@ pub async fn quote_v3_path_exact_in(
         });
     }
 
+    if deployment_for_chain(chain_id).is_some() {
+        quote_v3_path_wiz4rd_local(rpc_url, chain_id, path, amount_in, fee).await
+    } else if let Some(q) = quoter {
+        quote_v3_path_via_quoter(rpc_url, q, path, amount_in, fee).await
+    } else {
+        Err(WalletError::Other(format!(
+            "V3 quote needs wiz4rd deploy or a catalogued QuoterV2 on chain {chain_id}"
+        )))
+    }
+}
+
+async fn quote_v3_path_wiz4rd_local(
+    rpc_url: &str,
+    chain_id: u64,
+    path: &[Address],
+    amount_in: U256,
+    fee: u32,
+) -> Result<DexQuote, WalletError> {
     let cfg = wiz4rd_config(chain_id, rpc_url)?;
     let provider = connect_http(rpc_url)?;
 
@@ -129,6 +186,84 @@ pub async fn quote_v3_path_exact_in(
     }
 
     Ok(DexQuote { amount_out: amount })
+}
+
+/// Packed V3 path bytes (token + fee + token + …) — matches Dex TUI swap encoding.
+fn encode_v3_path(tokens: &[Address], fee: u32) -> Result<Bytes, WalletError> {
+    if tokens.len() < 2 {
+        return Err(WalletError::InvalidTransaction(
+            "V3 path needs at least two tokens".into(),
+        ));
+    }
+    if fee > 0xFF_FFFF {
+        return Err(WalletError::InvalidTransaction(
+            "fee tier out of uint24 range".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(tokens.len() * 20 + (tokens.len() - 1) * 3);
+    for (i, token) in tokens.iter().enumerate() {
+        out.extend_from_slice(token.as_slice());
+        if i + 1 < tokens.len() {
+            out.push(((fee >> 16) & 0xff) as u8);
+            out.push(((fee >> 8) & 0xff) as u8);
+            out.push((fee & 0xff) as u8);
+        }
+    }
+    Ok(Bytes::from(out))
+}
+
+async fn quote_v3_path_via_quoter(
+    rpc_url: &str,
+    quoter: Address,
+    path: &[Address],
+    amount_in: U256,
+    fee: u32,
+) -> Result<DexQuote, WalletError> {
+    let provider = connect_http(rpc_url)?;
+    let raw = if path.len() == 2 {
+        let fee_u24 = U24::try_from(fee)
+            .map_err(|e| WalletError::InvalidTransaction(format!("bad V3 fee tier: {e}")))?;
+        let call = IQuoterV2::quoteExactInputSingleCall {
+            params: IQuoterV2::QuoteExactInputSingleParams {
+                tokenIn: path[0],
+                tokenOut: path[1],
+                amountIn: amount_in,
+                fee: fee_u24,
+                sqrtPriceLimitX96: U160::ZERO,
+            },
+        };
+        let tx = TransactionRequest::default()
+            .to(quoter)
+            .input(call.abi_encode().into());
+        provider.call(tx).await.map_err(|e| {
+            WalletError::NetworkError(format!("QuoterV2 quoteExactInputSingle: {e}"))
+        })?
+    } else {
+        let path_bytes = encode_v3_path(path, fee)?;
+        let call = IQuoterV2::quoteExactInputCall {
+            path: path_bytes,
+            amountIn: amount_in,
+        };
+        let tx = TransactionRequest::default()
+            .to(quoter)
+            .input(call.abi_encode().into());
+        provider
+            .call(tx)
+            .await
+            .map_err(|e| WalletError::NetworkError(format!("QuoterV2 quoteExactInput: {e}")))?
+    };
+
+    let amount_out = if path.len() == 2 {
+        IQuoterV2::quoteExactInputSingleCall::abi_decode_returns(&raw)
+            .map_err(|e| WalletError::NetworkError(format!("decode QuoterV2 single: {e}")))?
+            .amountOut
+    } else {
+        IQuoterV2::quoteExactInputCall::abi_decode_returns(&raw)
+            .map_err(|e| WalletError::NetworkError(format!("decode QuoterV2 path: {e}")))?
+            .amountOut
+    };
+
+    Ok(DexQuote { amount_out })
 }
 
 fn quote_v3_hop_exact_in(
@@ -204,8 +339,7 @@ mod tests {
     ) -> PoolInfo {
         use alloy::primitives::aliases::I24;
         use alloy::primitives::aliases::U160;
-        let sqrt: U160 =
-            wiz4rd_math::get_sqrt_ratio_at_tick(I24::try_from(tick).unwrap()).unwrap();
+        let sqrt: U160 = wiz4rd_math::get_sqrt_ratio_at_tick(I24::try_from(tick).unwrap()).unwrap();
         let limbs = sqrt.into_limbs();
         let sqrt_price_x96 = U256::from_limbs([limbs[0], limbs[1], limbs[2], 0]);
         PoolInfo {
@@ -247,10 +381,12 @@ mod tests {
         let one_hop = quote_v3_hop_exact_in(&pool_ab, token_a, amount_in).unwrap();
         assert!(one_hop > U256::ZERO);
 
-        let two_hop =
-            quote_v3_hop_exact_in(&pool_bc, token_b, one_hop).unwrap();
+        let two_hop = quote_v3_hop_exact_in(&pool_bc, token_b, one_hop).unwrap();
         assert!(two_hop > U256::ZERO);
-        assert!(two_hop < one_hop, "second hop should reduce output vs mid token");
+        assert!(
+            two_hop < one_hop,
+            "second hop should reduce output vs mid token"
+        );
     }
 
     #[tokio::test]
@@ -261,9 +397,19 @@ mod tests {
             &[Address::repeat_byte(0x01)],
             U256::from(1u64),
             500,
+            None,
         )
         .await
         .unwrap_err();
         assert!(matches!(err, WalletError::InvalidTransaction(_)));
+    }
+
+    #[test]
+    fn encode_v3_path_matches_dex_tui_layout() {
+        let a = Address::repeat_byte(0x11);
+        let b = Address::repeat_byte(0x22);
+        let packed = encode_v3_path(&[a, b], 3000).unwrap();
+        assert_eq!(packed.len(), 43);
+        assert_eq!(&packed[20..23], &[0x00, 0x0b, 0xb8]);
     }
 }

@@ -14,7 +14,11 @@ fn routers_for_chain(chain_id: u64) -> &'static HashSet<[u8; 20]> {
     static ANVIL: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
     static EMPTY: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
 
-    let build = |cid: u64| write_allowed_addresses(cid).map(|a| a.into_array()).collect();
+    let build = |cid: u64| {
+        write_allowed_addresses(cid)
+            .map(|a| a.into_array())
+            .collect()
+    };
 
     match chain_id {
         369 => MAIN.get_or_init(|| build(369)),
@@ -75,5 +79,11 @@ mod tests {
     fn wiz4rd_npm_allowed_on_943() {
         let npm = address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745");
         assert!(is_allowed_dex_router(943, npm));
+    }
+
+    #[test]
+    fn nine_mm_npm_allowed_on_369() {
+        let npm = address!("0xCC05bf158202b4F461Ede8843d76dcd7Bbad07f2");
+        assert!(is_allowed_dex_router(369, npm));
     }
 }

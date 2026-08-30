@@ -46,12 +46,13 @@ pub use broadcasts::{
     MAX_RECENT_BROADCASTS,
 };
 pub use dex_catalog::{
-    chain_label, missing_router_hint, venue_position_manager, venue_swap_router, DexContractRole,
-    DexProtocol, DexVenue, DEX_VENUES,
+    chain_label, default_lp_venue, lp_v3_venues, missing_router_hint, venue_position_manager,
+    venue_quoter_v2, venue_swap_router, DexContractRole, DexProtocol, DexVenue, DEX_VENUES,
 };
 pub use dex_lp::{
     build_v3_collect_evm, build_v3_decrease_evm, build_v3_increase_evm, build_v3_mint_evm,
-    default_full_range_ticks, list_v3_lp_positions, wiz4rd_sdk_config, V3PositionInfo,
+    default_full_range_ticks, list_v3_lp_positions, v3_lp_sdk_config, wiz4rd_sdk_config,
+    V3PositionInfo,
 };
 pub use dex_quote::{
     min_out_after_slippage, quote_v2_exact_in, quote_v3_exact_in, quote_v3_path_exact_in, DexQuote,

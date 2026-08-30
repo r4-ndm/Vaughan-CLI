@@ -6,7 +6,7 @@
 use alloy::primitives::Address;
 use std::str::FromStr;
 
-use super::wiz4rd::{POSITION_MANAGER_943, SWAP_ROUTER_943};
+use super::wiz4rd::{FACTORY_943, POSITION_MANAGER_943, SWAP_ROUTER_943};
 
 /// Uni V2-style router vs V3 SwapRouter periphery.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -141,6 +141,10 @@ impl DexVenue {
 pub enum DexContractRole {
     SwapRouter,
     PositionManager,
+    /// Pancake/Uni V3 factory (`getPool` reads).
+    V3Factory,
+    /// Read-only quote helper (`eth_call` only — not in write allowlist).
+    QuoterV2,
 }
 
 struct CatalogEntry {
@@ -167,6 +171,13 @@ const CATALOG: &[CatalogEntry] = &[
         protocol: None,
         role: DexContractRole::PositionManager,
         address: POSITION_MANAGER_943,
+    },
+    CatalogEntry {
+        venue: DexVenue::Wiz4rd,
+        chain_id: 943,
+        protocol: None,
+        role: DexContractRole::V3Factory,
+        address: FACTORY_943,
     },
     // PulseX
     CatalogEntry {
@@ -211,6 +222,27 @@ const CATALOG: &[CatalogEntry] = &[
         protocol: Some(DexProtocol::V3),
         role: DexContractRole::SwapRouter,
         address: "0x7bE8fbe502191bBBCb38b02f2d4fA0D628301bEA",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineMm,
+        chain_id: 369,
+        protocol: None,
+        role: DexContractRole::PositionManager,
+        address: "0xCC05bf158202b4F461Ede8843d76dcd7Bbad07f2",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineMm,
+        chain_id: 369,
+        protocol: None,
+        role: DexContractRole::QuoterV2,
+        address: "0xd6840a5f07d21e68383f159a19a9842af32bdcc5",
+    },
+    CatalogEntry {
+        venue: DexVenue::NineMm,
+        chain_id: 369,
+        protocol: None,
+        role: DexContractRole::V3Factory,
+        address: "0xe50DbDC88E87a2C92984d794bcF3D1d76f619C68",
     },
     // 9inch
     CatalogEntry {
@@ -273,11 +305,7 @@ pub fn chain_label(chain_id: u64) -> &'static str {
 }
 
 /// Swap router for `(venue, protocol, chain)` when catalogued and supported.
-pub fn venue_swap_router(
-    venue: DexVenue,
-    protocol: DexProtocol,
-    chain_id: u64,
-) -> Option<Address> {
+pub fn venue_swap_router(venue: DexVenue, protocol: DexProtocol, chain_id: u64) -> Option<Address> {
     if venue.unsupported_reason().is_some() || venue == DexVenue::Custom {
         return None;
     }
@@ -294,13 +322,33 @@ pub fn venue_swap_router(
     })
 }
 
-/// NPM for concentrated LP when catalogued (wiz4rd 943 today).
+/// NPM for concentrated LP when catalogued (wiz4rd 943; 9mm 369).
 pub fn venue_position_manager(venue: DexVenue, chain_id: u64) -> Option<Address> {
     CATALOG.iter().find_map(|e| {
-        if e.venue == venue
-            && e.chain_id == chain_id
-            && e.role == DexContractRole::PositionManager
+        if e.venue == venue && e.chain_id == chain_id && e.role == DexContractRole::PositionManager
         {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
+/// V3 factory for pool reads when catalogued.
+pub fn venue_v3_factory(venue: DexVenue, chain_id: u64) -> Option<Address> {
+    CATALOG.iter().find_map(|e| {
+        if e.venue == venue && e.chain_id == chain_id && e.role == DexContractRole::V3Factory {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
+/// QuoterV2 for browserless V3 quotes when catalogued (9mm 369 today).
+pub fn venue_quoter_v2(venue: DexVenue, chain_id: u64) -> Option<Address> {
+    CATALOG.iter().find_map(|e| {
+        if e.venue == venue && e.chain_id == chain_id && e.role == DexContractRole::QuoterV2 {
             parse_static_addr(e.address)
         } else {
             None
@@ -319,8 +367,27 @@ pub fn write_allowed_addresses(chain_id: u64) -> impl Iterator<Item = Address> {
             DexContractRole::SwapRouter | DexContractRole::PositionManager => {
                 parse_static_addr(e.address)
             }
+            DexContractRole::V3Factory | DexContractRole::QuoterV2 => None,
         }
     })
+}
+
+/// Venues with a catalogued NPM on `chain_id` (LP TUI picker order).
+pub fn lp_v3_venues(chain_id: u64) -> impl Iterator<Item = DexVenue> {
+    DEX_VENUES
+        .iter()
+        .copied()
+        .filter(move |venue| venue_position_manager(*venue, chain_id).is_some())
+}
+
+/// Default LP venue for `chain_id` (wiz4rd on 943, 9mm on 369).
+pub fn default_lp_venue(chain_id: u64) -> Option<DexVenue> {
+    if chain_id == 943 {
+        return Some(DexVenue::Wiz4rd);
+    }
+    lp_v3_venues(chain_id)
+        .find(|v| *v == DexVenue::NineMm)
+        .or_else(|| lp_v3_venues(chain_id).next())
 }
 
 /// Human hint when no router is catalogued for the picker selection.
@@ -372,6 +439,30 @@ mod tests {
     fn nine_mm_v3_mainnet_only() {
         assert!(venue_swap_router(DexVenue::NineMm, DexProtocol::V3, 369).is_some());
         assert!(venue_swap_router(DexVenue::NineMm, DexProtocol::V3, 943).is_none());
+    }
+
+    #[test]
+    fn nine_mm_npm_and_quoter_on_369() {
+        assert_eq!(
+            venue_position_manager(DexVenue::NineMm, 369),
+            Some(address!("0xCC05bf158202b4F461Ede8843d76dcd7Bbad07f2"))
+        );
+        assert_eq!(
+            venue_quoter_v2(DexVenue::NineMm, 369),
+            Some(address!("0xd6840a5f07d21e68383f159a19a9842af32bdcc5"))
+        );
+        assert_eq!(
+            venue_v3_factory(DexVenue::NineMm, 369),
+            Some(address!("0xe50DbDC88E87a2C92984d794bcF3D1d76f619C68"))
+        );
+        assert!(venue_quoter_v2(DexVenue::PulseX, 369).is_none());
+    }
+
+    #[test]
+    fn lp_v3_venues_per_chain() {
+        let on_943: Vec<_> = lp_v3_venues(943).collect();
+        assert_eq!(on_943, vec![DexVenue::Wiz4rd]);
+        assert!(lp_v3_venues(369).any(|v| v == DexVenue::NineMm));
     }
 
     #[test]

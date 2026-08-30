@@ -80,12 +80,10 @@ async fn main() {
                 .await
                 .map(|q| {
                     let out_raw = q.amount_out.to_string();
-                    let out_human: f64 = vaughan_core::core::transaction::format_base_units(
-                        &out_raw,
-                        6,
-                    )
-                    .parse()
-                    .unwrap_or(0.0);
+                    let out_human: f64 =
+                        vaughan_core::core::transaction::format_base_units(&out_raw, 6)
+                            .parse()
+                            .unwrap_or(0.0);
                     serde_json::json!({ "ok": true, "unit_price_usd": out_human / 1000.0 })
                 })
         }

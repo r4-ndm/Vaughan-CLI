@@ -302,14 +302,8 @@ fn picker_wallet_then_mode_for_regular_profiles() {
         !text.contains("Mode for savings"),
         "mode step uses short title:\n{text}"
     );
-    assert!(
-        text.contains("Human only"),
-        "human-only row:\n{text}"
-    );
-    assert!(
-        text.contains("Agent advisor"),
-        "advisor row:\n{text}"
-    );
+    assert!(text.contains("Human only"), "human-only row:\n{text}");
+    assert!(text.contains("Agent advisor"), "advisor row:\n{text}");
     assert!(
         !text.contains("Sentient"),
         "sentient is never offered on a regular wallet:\n{text}"
@@ -353,14 +347,8 @@ fn single_profile_offers_human_and_advisor_rows() {
     assert!(matches!(outcome, KeyOutcome::Consumed));
 
     let text = render(&view, &wallet);
-    assert!(
-        text.contains("Human only"),
-        "human-only row:\n{text}"
-    );
-    assert!(
-        text.contains("Agent advisor"),
-        "advisor row:\n{text}"
-    );
+    assert!(text.contains("Human only"), "human-only row:\n{text}");
+    assert!(text.contains("Agent advisor"), "advisor row:\n{text}");
     assert!(
         !text.contains("Sentient — agent auto-exec"),
         "sentient mode is never offered on a regular wallet:\n{text}"

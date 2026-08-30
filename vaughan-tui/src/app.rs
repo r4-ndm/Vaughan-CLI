@@ -1541,7 +1541,10 @@ impl App {
     }
 
     fn records_back_stack(screen: Screen) -> bool {
-        !matches!(screen, Screen::Onboarding | Screen::Unlock | Screen::Approve)
+        !matches!(
+            screen,
+            Screen::Onboarding | Screen::Unlock | Screen::Approve
+        )
     }
 
     /// Build the default view for `screen`. Chrome/asset RPC refresh is limited
@@ -2174,6 +2177,7 @@ impl App {
                     rpc_url,
                     protocol_v2,
                     router,
+                    quoter,
                     amount_in,
                     fee,
                     path,
@@ -2200,8 +2204,16 @@ impl App {
                             })?;
                             handle.block_on(quote_v2_exact_in(&rpc_url, router, amount_in, &hops))
                         } else {
+                            let quoter = match quoter {
+                                Some(s) if !s.trim().is_empty() => {
+                                    Some(Address::from_str(s.trim()).map_err(|_| {
+                                        WalletError::InvalidTransaction("dex quoter".into())
+                                    })?)
+                                }
+                                _ => None,
+                            };
                             handle.block_on(quote_v3_path_exact_in(
-                                &rpc_url, chain_id, &hops, amount_in, fee,
+                                &rpc_url, chain_id, &hops, amount_in, fee, quoter,
                             ))
                         }
                     })();
@@ -2293,6 +2305,7 @@ impl App {
                     UiJobResult::Send(handle.block_on(w.replace_broadcast(&entry, kind)))
                 }
                 UiJob::LpListPositions {
+                    venue,
                     chain_id,
                     rpc_url,
                     owner,
@@ -2306,11 +2319,7 @@ impl App {
                     UiJobResult::LpPositions(match parsed_owner {
                         Err(e) => Err(e),
                         Ok(addr) => handle.block_on(list_v3_lp_positions(
-                            &rpc_url,
-                            chain_id,
-                            addr,
-                            None,
-                            None,
+                            &rpc_url, venue, chain_id, addr, None, None,
                         )),
                     })
                 }

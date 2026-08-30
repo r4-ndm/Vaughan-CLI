@@ -8,6 +8,8 @@
 //! items used by only some binaries would otherwise warn as dead code.
 #![allow(dead_code)]
 
+pub mod mock_evm;
+
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};

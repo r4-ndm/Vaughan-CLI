@@ -151,11 +151,7 @@ fn squirrel_fixture_quote(amount_in: U256, native_value: bool) -> AggQuote {
 /// Same shape as `nine_mm` `/swap/quote` unit fixture → executable [`AggQuote`].
 fn nine_mm_exec_fixture_quote(amount_in: U256, native_value: bool) -> AggQuote {
     let data = Bytes::from(vec![0x41, 0x55, 0x65, 0xb0]);
-    let value = if native_value {
-        amount_in
-    } else {
-        U256::ZERO
-    };
+    let value = if native_value { amount_in } else { U256::ZERO };
     AggQuote {
         venue: AggVenue::NineMm9x,
         amount_in,

@@ -13,7 +13,7 @@ mod types;
 
 pub use catalog::{AggAccess, AggVenue, AGG_VENUES};
 pub use empx::{EmpxClient, EMPX_ROUTER_369};
-pub use nine_mm::{NineMmClient, NineMmPreview, NINEMM_API_URL, NATIVE_EEEE as NINEMM_NATIVE_EEEE};
+pub use nine_mm::{NineMmClient, NineMmPreview, NATIVE_EEEE as NINEMM_NATIVE_EEEE, NINEMM_API_URL};
 pub use pulseswap::{PulseSwapClient, PULSESWAP_QUOTE_URL};
 pub use routers::{assert_agg_exec_targets, is_allowed_agg_router, OFFICIAL_AGG_ROUTERS};
 pub use squirrelswap::{SquirrelPreview, SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
@@ -93,14 +93,8 @@ pub async fn quote_live_aggregators(
         async move {
             AggQuoteOutcome {
                 venue,
-                result: quote_aggregator_compare(
-                    venue,
-                    &req,
-                    chain_id,
-                    piteas_dir,
-                    vault_password,
-                )
-                .await,
+                result: quote_aggregator_compare(venue, &req, chain_id, piteas_dir, vault_password)
+                    .await,
             }
         }
     });

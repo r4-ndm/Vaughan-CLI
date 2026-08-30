@@ -184,10 +184,7 @@ impl UnlockView {
     }
 
     fn password_hint_h(&self) -> u16 {
-        if self.stage == Stage::Password
-            && self.password_back.is_some()
-            && !self.unlocking
-        {
+        if self.stage == Stage::Password && self.password_back.is_some() && !self.unlocking {
             1
         } else {
             0
@@ -280,12 +277,7 @@ impl UnlockView {
         let pad_total = w - n;
         let pad_left = pad_total / 2;
         let pad_right = pad_total - pad_left;
-        format!(
-            "{}{}{}",
-            " ".repeat(pad_left),
-            text,
-            " ".repeat(pad_right)
-        )
+        format!("{}{}{}", " ".repeat(pad_left), text, " ".repeat(pad_right))
     }
 
     fn picker_highlight_style() -> Style {
@@ -460,8 +452,7 @@ impl UnlockView {
             height: input_area.height,
         };
         if self.unlocking {
-            let inner =
-                brand::render_faded_box(frame, field, Some(brand::fade_line(" Password ")));
+            let inner = brand::render_faded_box(frame, field, Some(brand::fade_line(" Password ")));
             let gauge = Gauge::default()
                 .ratio(Self::unlock_progress(self.tick))
                 .gauge_style(

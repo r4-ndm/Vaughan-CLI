@@ -13,10 +13,7 @@ use super::snapshot::collect_visible_lines_all_frames;
 use crate::error::WalletError;
 
 fn parse_amount_token(raw: &str) -> Option<f64> {
-    let mut s = raw
-        .trim()
-        .trim_start_matches(['$', '~', '≈'])
-        .trim();
+    let mut s = raw.trim().trim_start_matches(['$', '~', '≈']).trim();
     s = s.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '←' | '→' | '⇒'));
     if s.is_empty() {
         return None;
@@ -34,7 +31,10 @@ fn parse_amount_token(raw: &str) -> Option<f64> {
 /// Amounts with a period treat commas as thousands (`11,898.62`, `1,611,295.2965`).
 fn parse_amount_core(s: &str) -> Option<f64> {
     if s.contains('.') {
-        let normalized: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+        let normalized: String = s
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         // Drop thousands commas already removed; keep single decimal point.
         let mut num = String::new();
         for c in normalized.chars() {
@@ -212,12 +212,20 @@ pub fn extract_usd_values(lines: &[String]) -> Vec<f64> {
 /// `~$12,160` (twelve dollars, comma decimal) while the buy leg shows
 /// thousands of USDC (`$11,898.62`).
 pub fn extract_sell_usd(lines: &[String]) -> Option<f64> {
-    let lower: Vec<String> = lines.iter().map(|l| l.trim().to_ascii_lowercase()).collect();
+    let lower: Vec<String> = lines
+        .iter()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .collect();
     let sell_idx = lower.iter().position(|l| l.as_str() == "sell")?;
-    let get_idx = lower.iter().position(|l| l.as_str() == "get").unwrap_or(lower.len());
+    let get_idx = lower
+        .iter()
+        .position(|l| l.as_str() == "get")
+        .unwrap_or(lower.len());
     for line in lines.iter().take(get_idx).skip(sell_idx) {
         if line.contains('$') {
-            return extract_usd_values(std::slice::from_ref(line)).into_iter().next();
+            return extract_usd_values(std::slice::from_ref(line))
+                .into_iter()
+                .next();
         }
     }
     None

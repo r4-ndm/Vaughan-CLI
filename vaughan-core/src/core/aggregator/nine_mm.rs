@@ -10,8 +10,8 @@
 //! Cloudflare rejects bare library User-Agents — always send our own.
 
 use alloy::primitives::{Address, Bytes, U256};
-use serde::Deserialize;
 use serde::de::{self, Deserializer};
+use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::error::WalletError;
@@ -196,8 +196,7 @@ impl NineMmClient {
             )));
         }
 
-        serde_json::from_str(&text)
-            .map_err(|e| WalletError::NetworkError(format!("9mm JSON: {e}")))
+        serde_json::from_str(&text).map_err(|e| WalletError::NetworkError(format!("9mm JSON: {e}")))
     }
 }
 
@@ -315,7 +314,9 @@ where
                     .map_err(|_| de::Error::custom(format!("9mm: invalid estimatedGas `{t}`")))
             }
         }
-        _ => Err(de::Error::custom("9mm: estimatedGas must be a number or string")),
+        _ => Err(de::Error::custom(
+            "9mm: estimatedGas must be a number or string",
+        )),
     }
 }
 

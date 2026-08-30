@@ -94,6 +94,8 @@ pub enum UiJob {
         rpc_url: String,
         protocol_v2: bool,
         router: String,
+        /// Catalog QuoterV2 for V3 on mainnet venues (9mm 369); ignored on wiz4rd 943.
+        quoter: Option<String>,
         amount_in: String,
         fee: u32,
         path: Vec<String>,
@@ -126,8 +128,9 @@ pub enum UiJob {
         entry: BroadcastEntry,
         kind: ReplaceKind,
     },
-    /// List wiz4rd V3 LP NFT positions for `owner`.
+    /// List V3 LP NFT positions for `owner` on a catalogued venue NPM.
     LpListPositions {
+        venue: vaughan_core::core::DexVenue,
         chain_id: u64,
         rpc_url: String,
         owner: String,

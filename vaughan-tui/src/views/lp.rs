@@ -1,8 +1,8 @@
-//! V3 concentrated liquidity view (wiz4rd NPM on Pulse testnet 943).
+//! V3 concentrated liquidity — venue picker + browserless List / Mint / Collect.
 //!
-//! Browserless LP: list positions, mint, and collect fees via [`dex_lp`].
+//! Supports every catalogued NPM on the active chain (wiz4rd 943, 9mm 369).
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -13,8 +13,9 @@ use ratatui::{
 use tokio::runtime::Handle;
 use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
-    build_v3_collect_evm, build_v3_mint_evm, default_full_range_ticks, min_out_after_slippage,
-    wpls_for_chain, V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    build_v3_collect_evm, build_v3_mint_evm, chain_label, default_full_range_ticks,
+    default_lp_venue, lp_v3_venues, min_out_after_slippage, venue_position_manager, wpls_for_chain,
+    DexVenue, V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_provider::EventBus;
 
@@ -23,6 +24,9 @@ use crate::brand;
 use crate::input::Input;
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::{body_areas, parse_swap_amount, parse_token_address, status_paragraph};
+
+/// HEX on PulseChain mainnet (token0 in WPLS/HEX pools — lower address).
+const HEX_MAINNET: &str = "0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -71,6 +75,7 @@ enum Busy {
 }
 
 pub struct LpView {
+    venue: DexVenue,
     tab: Tab,
     stage: Stage,
     busy: Busy,
@@ -79,7 +84,6 @@ pub struct LpView {
     chain_id: u64,
     positions: Vec<V3PositionInfo>,
     sel: usize,
-    /// Mint form
     token0: Input,
     token1: Input,
     fee: Input,
@@ -91,43 +95,86 @@ pub struct LpView {
 
 impl LpView {
     pub fn for_chain(chain_id: u64) -> Self {
-        let mut token0 = Input::new(false, "token0 address");
-        let mut token1 = Input::new(false, "token1 address");
-        let mut fee = Input::new(false, "500");
-        fee.set_value("500");
-        let mut amount0 = Input::new(false, "amount0");
-        amount0.set_value("1");
-        let mut amount1 = Input::new(false, "amount1");
-        amount1.set_value("1");
-        if chain_id == 943 {
-            // Uni V3 pool key requires token0 < token1 (WZRD < tWPLS on 943).
-            token0.set_value(WZRD_SMOKE_943);
-            if let Some(wpls) = wpls_for_chain(chain_id) {
-                token1.set_value(format!("{wpls}"));
-            }
-        }
-        let status = if chain_id == 943 {
-            "←/→ tab · r reload · Enter act · Esc back".into()
-        } else {
-            "V3 LP wired on Pulse testnet (943) — F1 Net".into()
-        };
-        Self {
+        let venue = default_lp_venue(chain_id).unwrap_or(DexVenue::Wiz4rd);
+        let mut v = Self {
+            venue,
             tab: Tab::List,
             stage: Stage::Input,
             busy: Busy::Idle,
             tick: 0,
-            status,
+            status: String::new(),
             chain_id,
             positions: Vec::new(),
             sel: 0,
-            token0,
-            token1,
-            fee,
-            amount0,
-            amount1,
+            token0: Input::new(false, "token0 address"),
+            token1: Input::new(false, "token1 address"),
+            fee: Input::new(false, "500"),
+            amount0: Input::new(false, "amount0"),
+            amount1: Input::new(false, "amount1"),
             confirm_lines: Vec::new(),
             pending_tx: None,
+        };
+        v.fee.set_value("500");
+        v.amount0.set_value("1");
+        v.amount1.set_value("1");
+        v.apply_venue_defaults();
+        v.status = v.default_status_hint();
+        v
+    }
+
+    fn lp_supported(&self) -> bool {
+        venue_position_manager(self.venue, self.chain_id).is_some()
+    }
+
+    fn default_status_hint(&self) -> String {
+        if self.lp_supported() {
+            "⇧↑↓ venue · ↑↓ select · ←→ tab · r reload · Enter act · Esc back".into()
+        } else {
+            format!(
+                "{} has no V3 NPM on {} — ⇧↑↓ venue or F1 Net",
+                self.venue.label(),
+                chain_label(self.chain_id)
+            )
         }
+    }
+
+    fn apply_venue_defaults(&mut self) {
+        match (self.venue, self.chain_id) {
+            (DexVenue::Wiz4rd, 943) => {
+                self.fee.set_value("500");
+                self.token0.set_value(WZRD_SMOKE_943);
+                if let Some(wpls) = wpls_for_chain(self.chain_id) {
+                    self.token1.set_value(format!("{wpls}"));
+                }
+            }
+            (DexVenue::NineMm, 369) => {
+                self.fee.set_value("2500");
+                self.token0.set_value(HEX_MAINNET);
+                if let Some(wpls) = wpls_for_chain(self.chain_id) {
+                    self.token1.set_value(format!("{wpls}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn cycle_venue(&mut self, down: bool) -> bool {
+        let venues: Vec<DexVenue> = lp_v3_venues(self.chain_id).collect();
+        if venues.len() < 2 {
+            return false;
+        }
+        let idx = venues.iter().position(|v| *v == self.venue).unwrap_or(0);
+        let next = if down {
+            (idx + 1) % venues.len()
+        } else {
+            (idx + venues.len() - 1) % venues.len()
+        };
+        self.venue = venues[next];
+        self.positions.clear();
+        self.sel = 0;
+        self.apply_venue_defaults();
+        self.status = self.default_status_hint();
+        true
     }
 
     pub fn set_tick(&mut self, tick: u64) {
@@ -143,12 +190,13 @@ impl LpView {
     }
 
     fn list_job(&self, wallet: &WalletState) -> Option<UiJob> {
-        if self.chain_id != 943 {
+        if !self.lp_supported() {
             return None;
         }
         let owner = wallet.active_address().ok()?.to_string();
         let rpc = wallet.active_rpc_url();
         Some(UiJob::LpListPositions {
+            venue: self.venue,
             chain_id: self.chain_id,
             rpc_url: rpc,
             owner,
@@ -163,7 +211,11 @@ impl LpView {
                 if self.sel >= self.positions.len() && !self.positions.is_empty() {
                     self.sel = 0;
                 }
-                self.status = format!("{} position(s)", self.positions.len());
+                self.status = format!(
+                    "{} · {} position(s)",
+                    self.venue.label(),
+                    self.positions.len()
+                );
             }
             UiJobResult::LpPositions(Err(e)) => {
                 self.busy = Busy::Idle;
@@ -207,59 +259,52 @@ impl LpView {
     }
 
     fn body_lines(&self) -> Vec<Line<'static>> {
+        let npm = venue_position_manager(self.venue, self.chain_id)
+            .map(|a| format!("{a:#x}"))
+            .unwrap_or_else(|| "—".into());
         let mut out = vec![
+            Line::from(vec![
+                Span::styled("Venue ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!(
+                    "{} · {} · NPM {npm}   (⇧↑↓ venue)",
+                    self.venue.label(),
+                    chain_label(self.chain_id)
+                )),
+            ]),
             Line::from(vec![
                 Span::styled("Tab ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(format!(
-                    "{} · {} · {}   (←/→)",
+                    "{} · {} · {}   (←→)",
                     Tab::List.label(),
                     Tab::Mint.label(),
                     Tab::Collect.label()
                 )),
             ]),
-            Line::from(format!(
-                "Active: {} · chain {}",
-                self.tab.label(),
-                self.chain_id
-            )),
+            Line::from(format!("Active: {}", self.tab.label())),
         ];
         match self.tab {
             Tab::List => {
-                if self.positions.is_empty() {
+                if !self.lp_supported() {
+                    out.push(Line::from("(no NPM on this chain for this venue)"));
+                } else if self.positions.is_empty() {
                     out.push(Line::from("(no positions — Mint tab or r reload)"));
                 } else {
                     for (i, p) in self.positions.iter().enumerate() {
                         let mark = if i == self.sel { "▸" } else { " " };
                         out.push(Line::from(format!(
                             "{mark} #{} fee={} liq={} owed0={} owed1={}",
-                            p.token_id,
-                            p.fee,
-                            p.liquidity,
-                            p.tokens_owed0,
-                            p.tokens_owed1
+                            p.token_id, p.fee, p.liquidity, p.tokens_owed0, p.tokens_owed1
                         )));
                     }
                 }
             }
             Tab::Mint => {
                 out.push(Line::from("Mint new NPM position (full range ticks)"));
-                out.push(Line::from(format!(
-                    "token0: {}",
-                    self.token0.value()
-                )));
-                out.push(Line::from(format!(
-                    "token1: {}",
-                    self.token1.value()
-                )));
+                out.push(Line::from(format!("token0: {}", self.token0.value())));
+                out.push(Line::from(format!("token1: {}", self.token1.value())));
                 out.push(Line::from(format!("fee: {}", self.fee.value())));
-                out.push(Line::from(format!(
-                    "amount0: {}",
-                    self.amount0.value()
-                )));
-                out.push(Line::from(format!(
-                    "amount1: {}",
-                    self.amount1.value()
-                )));
+                out.push(Line::from(format!("amount0: {}", self.amount0.value())));
+                out.push(Line::from(format!("amount1: {}", self.amount1.value())));
             }
             Tab::Collect => {
                 if let Some(p) = self.positions.get(self.sel) {
@@ -288,14 +333,18 @@ impl LpView {
         if self.stage == Stage::Confirm {
             return self.handle_confirm(key, wallet, handle, events);
         }
+
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Left => {
-                self.tab = self.tab.prev();
-                KeyOutcome::Consumed
-            }
-            KeyCode::Right => {
-                self.tab = self.tab.next();
-                KeyOutcome::Consumed
+            KeyCode::Up | KeyCode::Down if shift => {
+                self.cycle_venue(!matches!(key.code, KeyCode::Down));
+                if let Some(job) = self.list_job(wallet) {
+                    self.busy = Busy::Loading;
+                    self.status = format!("Loading {} positions…", self.venue.label());
+                    KeyOutcome::StartJob(job)
+                } else {
+                    KeyOutcome::Consumed
+                }
             }
             KeyCode::Up if self.tab == Tab::List && !self.positions.is_empty() => {
                 self.sel = self.sel.saturating_sub(1);
@@ -307,13 +356,21 @@ impl LpView {
                 }
                 KeyOutcome::Consumed
             }
+            KeyCode::Left => {
+                self.tab = self.tab.prev();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Right => {
+                self.tab = self.tab.next();
+                KeyOutcome::Consumed
+            }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 if let Some(job) = self.list_job(wallet) {
                     self.busy = Busy::Loading;
                     self.status = "Loading positions…".into();
                     KeyOutcome::StartJob(job)
                 } else {
-                    self.status = "LP list requires chain 943".into();
+                    self.status = self.default_status_hint();
                     KeyOutcome::Consumed
                 }
             }
@@ -324,8 +381,8 @@ impl LpView {
     }
 
     fn submit(&mut self, wallet: &WalletState) -> KeyOutcome {
-        if self.chain_id != 943 {
-            self.status = "Switch to PulseChain testnet (943)".into();
+        if !self.lp_supported() {
+            self.status = self.default_status_hint();
             return KeyOutcome::Consumed;
         }
         match self.tab {
@@ -337,7 +394,10 @@ impl LpView {
                 Ok(tx) => {
                     self.pending_tx = Some(tx);
                     self.confirm_lines = vec![
-                        Line::from("Confirm mint (Enter send · Esc cancel)"),
+                        Line::from(format!(
+                            "Confirm {} mint (Enter send · Esc cancel)",
+                            self.venue.label()
+                        )),
                         Line::from(format!("token0: {}", self.token0.value())),
                         Line::from(format!("token1: {}", self.token1.value())),
                         Line::from(format!("fee: {}", self.fee.value())),
@@ -356,7 +416,10 @@ impl LpView {
                 Ok(tx) => {
                     self.pending_tx = Some(tx);
                     self.confirm_lines = vec![
-                        Line::from("Confirm collect (Enter send · Esc cancel)"),
+                        Line::from(format!(
+                            "Confirm {} collect (Enter send · Esc cancel)",
+                            self.venue.label()
+                        )),
                         Line::from(format!(
                             "NFT #{}",
                             self.positions
@@ -376,7 +439,10 @@ impl LpView {
         }
     }
 
-    fn build_mint_tx(&self, wallet: &WalletState) -> Result<vaughan_core::chains::EvmTransaction, String> {
+    fn build_mint_tx(
+        &self,
+        wallet: &WalletState,
+    ) -> Result<vaughan_core::chains::EvmTransaction, String> {
         let from = wallet
             .active_address()
             .map_err(|e| e.user_message())?
@@ -398,6 +464,7 @@ impl LpView {
         let amount1_min = min_out_after_slippage(amount1, DEFAULT_DEX_SLIPPAGE_BPS);
         build_v3_mint_evm(
             &from,
+            self.venue,
             self.chain_id,
             &rpc,
             token0,
@@ -414,7 +481,10 @@ impl LpView {
         .map_err(|e| e.user_message())
     }
 
-    fn build_collect_tx(&self, wallet: &WalletState) -> Result<vaughan_core::chains::EvmTransaction, String> {
+    fn build_collect_tx(
+        &self,
+        wallet: &WalletState,
+    ) -> Result<vaughan_core::chains::EvmTransaction, String> {
         let pos = self
             .positions
             .get(self.sel)
@@ -426,6 +496,7 @@ impl LpView {
         let rpc = wallet.active_rpc_url();
         build_v3_collect_evm(
             &from,
+            self.venue,
             self.chain_id,
             &rpc,
             pos.token_id,

@@ -23,7 +23,7 @@ use vaughan_core::chains::EvmTransaction;
 use vaughan_core::core::wiz4rd::{POSITION_MANAGER_943, WPLS_943, WZRD_SMOKE_943};
 use vaughan_core::core::{
     build_v3_collect_evm, build_v3_mint_evm, default_full_range_ticks, list_v3_lp_positions,
-    min_out_after_slippage, DEFAULT_DEX_SLIPPAGE_BPS,
+    min_out_after_slippage, DexVenue, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use wiz4rd_sdk::abi::INonfungiblePositionManager;
 
@@ -212,6 +212,7 @@ fn anvil_v3_lp_mint_broadcasts() {
     let (tick_lower, tick_upper) = default_full_range_ticks(500).unwrap();
     let tx = build_v3_mint_evm(
         wallet.active_address().unwrap(),
+        DexVenue::Wiz4rd,
         943,
         &anvil.url(),
         TOKEN0,
@@ -253,6 +254,7 @@ fn anvil_v3_lp_collect_broadcasts() {
 
     let tx = build_v3_collect_evm(
         wallet.active_address().unwrap(),
+        DexVenue::Wiz4rd,
         943,
         &anvil.url(),
         U256::from(1u64),
@@ -298,7 +300,9 @@ fn anvil_list_v3_lp_positions_after_transfer_log() {
         .rpc("eth_getTransactionReceipt", json!([hash.to_string()]))
         .expect("receipt");
     assert!(
-        receipt["logs"].as_array().is_some_and(|logs| !logs.is_empty()),
+        receipt["logs"]
+            .as_array()
+            .is_some_and(|logs| !logs.is_empty()),
         "poke must emit Transfer log: {receipt}"
     );
 
@@ -328,6 +332,7 @@ fn anvil_list_v3_lp_positions_after_transfer_log() {
     let rows = rt
         .block_on(list_v3_lp_positions(
             &anvil.url(),
+            DexVenue::Wiz4rd,
             943,
             owner,
             None,

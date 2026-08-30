@@ -20,7 +20,7 @@ use vaughan_core::core::is_allowed_dex_router;
 use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
     chain_label, format_base_units, format_display_amount, min_out_after_slippage,
-    missing_router_hint, venue_swap_router, wpls_for_chain, DexProtocol, DexVenue,
+    missing_router_hint, venue_quoter_v2, venue_swap_router, wpls_for_chain, DexProtocol, DexVenue,
     WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
@@ -650,6 +650,10 @@ impl DexView {
             rpc_url,
             protocol_v2: self.protocol == DexProtocol::V2,
             router: router.to_string(),
+            quoter: (self.protocol == DexProtocol::V3)
+                .then(|| venue_quoter_v2(self.venue, self.chain_id))
+                .flatten()
+                .map(|a| a.to_string()),
             amount_in: amount_in.to_string(),
             fee: self.fee,
             path,
@@ -1092,7 +1096,8 @@ impl DexView {
                     self.venue.prev()
                 };
                 if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none()
-                    && venue_swap_router(self.venue, self.protocol.toggle(), self.chain_id).is_some()
+                    && venue_swap_router(self.venue, self.protocol.toggle(), self.chain_id)
+                        .is_some()
                 {
                     self.protocol = self.protocol.toggle();
                 }
@@ -1122,7 +1127,9 @@ impl DexView {
                         }
                         if self.venue == DexVenue::Custom {
                             self.status = "Paste a Uni V2/V3-compatible router address".into();
-                        } else if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none() {
+                        } else if venue_swap_router(self.venue, self.protocol, self.chain_id)
+                            .is_none()
+                        {
                             self.status =
                                 missing_router_hint(self.venue, self.protocol, self.chain_id);
                         } else {

@@ -326,9 +326,7 @@ pub fn terminate_vb_process(session: &VbSession) {
     if session.pid > 0 {
         #[cfg(unix)]
         {
-            let _ = Command::new("kill")
-                .arg(session.pid.to_string())
-                .status();
+            let _ = Command::new("kill").arg(session.pid.to_string()).status();
         }
     }
     clear_vb_session();

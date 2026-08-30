@@ -9,8 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::client::{
-    deep_click_in_all_frames, evaluate_in_all_frames, evaluate_picker_step, step_frame_id,
-    CdpPage,
+    deep_click_in_all_frames, evaluate_in_all_frames, evaluate_picker_step, step_frame_id, CdpPage,
 };
 use super::js;
 use crate::chains::evm::tokens_for_chain;
@@ -158,7 +157,8 @@ pub async fn cdp_select_swap_token(
     // Step 2–3: search the picker, pick a row (retry by address tail when labels
     // hide the contract — common on 9X duplicate tickers).
     let registry_addr = registry_address_for_symbol(chain_id, &sym);
-    let mut search = evaluate_in_all_frames(&mut page, &js::search_token(&sym_json, &sym_json)).await?;
+    let mut search =
+        evaluate_in_all_frames(&mut page, &js::search_token(&sym_json, &sym_json)).await?;
     let searched = search
         .pointer("/result/searched")
         .and_then(|v| v.as_bool())
@@ -174,10 +174,7 @@ pub async fn cdp_select_swap_token(
         pick = evaluate_picker_step(&mut page, &pick_js, search_frame).await?;
         pick_ok = pick_step_ok(&pick);
     }
-    if registry_addr.is_some()
-        && pick_ok == Some(true)
-        && !pick_matched_registry_address(&pick)
-    {
+    if registry_addr.is_some() && pick_ok == Some(true) && !pick_matched_registry_address(&pick) {
         if let Some(tail) = registry_addr.as_deref().and_then(address_search_tail) {
             let tail_json = json_string(&tail)?;
             search =

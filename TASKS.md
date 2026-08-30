@@ -349,7 +349,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### P3 — Earn / advanced (only when real)
 - [x] **Browserless DEX parity (no web):** TUI LP screen (mint / collect / list on wiz4rd 943) — `LpView`, `dex_lp`, Anvil tests (`vaughan-tui/tests/lp_view.rs`)
 - [x] Dex swap polish: multi-hop V3 quote (local chained math on 943; exact-out still open)
-- [ ] Generic V3 NPM on Pulse mainnet 369 (PulseX / 9mm factory + allowlist) — after 943 LP TUI proven
+- [x] 9mm V3 NPM + QuoterV2 on Pulse mainnet 369 (catalog + Quoter quotes; PulseX V3 is hybrid router — no CL NPM)
+- [x] LP Phase 1: venue picker + catalog NPM (`wiz4rd` 943, `9mm` 369) — `v3_lp_sdk_config`, `lp_v3_venues`
+- [ ] PulseX / other mainnet V3 NPM (9inch, …) when addresses verified
 - [ ] LP positions (V2 balance + remove liquidity); V3 increase/decrease TUI when demand is proven
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred

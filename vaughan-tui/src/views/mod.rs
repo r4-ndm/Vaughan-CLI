@@ -74,7 +74,10 @@ use vaughan_core::core::{format_display_amount, parse_native_amount, OperatingMo
 /// handled per view (deselect) then globally (Back).
 pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    if key.modifiers.contains(KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT) {
+    if key
+        .modifiers
+        .contains(KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT)
+    {
         return false;
     }
     match key.code {
@@ -82,8 +85,26 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
         KeyCode::Char(c) if c.is_ascii_alphabetic() => {
             matches!(
                 c.to_ascii_lowercase(),
-                'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' | 'l' | 'm'
-                    | 'n' | 'o' | 'p' | 'r' | 's' | 't' | 'v' | 'w'
+                'a' | 'b'
+                    | 'c'
+                    | 'd'
+                    | 'e'
+                    | 'f'
+                    | 'g'
+                    | 'h'
+                    | 'i'
+                    | 'j'
+                    | 'k'
+                    | 'l'
+                    | 'm'
+                    | 'n'
+                    | 'o'
+                    | 'p'
+                    | 'r'
+                    | 's'
+                    | 't'
+                    | 'v'
+                    | 'w'
             )
         }
         _ => false,
@@ -792,10 +813,7 @@ pub(crate) fn status_paragraph(status: &str) -> Paragraph<'static> {
     } else {
         Style::default().fg(Color::Red)
     };
-    Paragraph::new(Span::styled(
-        status.to_string(),
-        style,
-    ))
+    Paragraph::new(Span::styled(status.to_string(), style))
 }
 
 /// Split a view body into content + a status line.

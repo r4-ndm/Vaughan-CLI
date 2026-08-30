@@ -12,10 +12,10 @@ use vaughan_core::core::aggregator::{quote_aggregator, AggQuoteRequest, AggVenue
 use vaughan_core::core::persistence::{default_ipfs_gateway_hosts, StateManager};
 use vaughan_core::core::vb_browser::{
     allow_suffixes_for_profile, cdp_alive, cdp_current_page_url, cdp_list_pages, cdp_open_or_reuse,
-    cdp_open_url, check_url_allowed, clear_target_pin, clear_vb_session, read_vb_session,
-    patch_vb_session_provider_token, resolve_cdp_port, spawn_cdp_port, spawn_dapp_browser,
-    terminate_vb_process, vb_session_pid_matches, vb_session_provider_token_stale, wait_for_cdp,
-    write_target_pin, VbSession,
+    cdp_open_url, check_url_allowed, clear_target_pin, clear_vb_session,
+    patch_vb_session_provider_token, read_vb_session, resolve_cdp_port, spawn_cdp_port,
+    spawn_dapp_browser, terminate_vb_process, vb_session_pid_matches,
+    vb_session_provider_token_stale, wait_for_cdp, write_target_pin, VbSession,
 };
 use vaughan_core::core::vb_cdp::{self, ElementRef, SwapTokenSide};
 use vaughan_core::error::WalletError;
@@ -947,11 +947,7 @@ async fn sell_value_check(
     // internal leg consistency catches ÷1000 masks (sell ~$12, out ~12k).
     if out_stable {
         if let Some(best) = page_out {
-            let leg_ratio = if sell_usd > 0.0 {
-                best / sell_usd
-            } else {
-                0.0
-            };
+            let leg_ratio = if sell_usd > 0.0 { best / sell_usd } else { 0.0 };
             let suspected = !(0.5..=2.0).contains(&leg_ratio);
             return json!({
                 "ok": true,
