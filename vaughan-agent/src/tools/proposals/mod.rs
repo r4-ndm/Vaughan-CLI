@@ -13,6 +13,7 @@ pub mod propose_token_launch;
 pub mod propose_transfer;
 pub mod propose_v2_lp;
 pub mod propose_v3_create_pool;
+pub mod propose_v3_lp_deploy;
 pub mod propose_v3_lp_lifecycle;
 pub mod propose_v3_mint;
 pub mod propose_v3_swap;
@@ -32,6 +33,7 @@ pub use propose_v3_create_pool::{ProposeV3CreatePoolTool, ProposeV3InitializePoo
 pub use propose_v3_lp_lifecycle::{
     ProposeV3CollectTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
 };
+pub use propose_v3_lp_deploy::ProposeV3LpDeployTool;
 pub use propose_v3_mint::ProposeV3MintTool;
 pub use propose_v3_swap::ProposeV3SwapTool;
 pub use propose_wrap::{ProposeUnwrapTool, ProposeWrapTool};

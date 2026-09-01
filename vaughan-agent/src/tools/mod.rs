@@ -1,5 +1,6 @@
 //! Structured Sensory and Proposal Tool Engine.
 
+pub mod discover_v3_pool_fee;
 pub mod execute_sentient_swap;
 pub mod get_balance;
 pub mod get_dex_reserves;
@@ -23,6 +24,7 @@ pub mod watch_balance;
 pub mod watch_quote;
 pub mod wiz4rd_common;
 
+pub use discover_v3_pool_fee::DiscoverV3PoolFeeTool;
 pub use execute_sentient_swap::ExecuteSentientSwapTool;
 pub use get_balance::GetBalanceTool;
 pub use get_dex_reserves::GetDexReservesTool;
@@ -37,7 +39,7 @@ pub use proposals::{
     ProposeRevokeTool, ProposeStealthSendTool, ProposeSwapTool, ProposeTokenLaunchTool,
     ProposeTransferTool, ProposeUnwrapTool, ProposeV2AddTool, ProposeV2RemoveTool,
     ProposeV3CollectTool, ProposeV3CreatePoolTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
-    ProposeV3InitializePoolTool, ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
+    ProposeV3InitializePoolTool, ProposeV3LpDeployTool, ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
@@ -53,7 +55,7 @@ pub use watch_quote::WatchQuoteTool;
 use alloy::primitives::Address;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::AgentError;
@@ -66,6 +68,8 @@ pub struct ToolContext {
     pub rpc_url: String,
     pub chain_id: u64,
     pub active_address: Option<Address>,
+    /// Profile data dir for tools that persist jobs (`propose_v3_lp_deploy`, `import_token`).
+    pub profile_dir: Option<PathBuf>,
 }
 
 /// Construct a default [`ToolRegistry`] populated with all read-only sensory tools.
@@ -78,6 +82,7 @@ pub fn default_sensory_registry() -> ToolRegistry {
     registry.register(Arc::new(SimulateCallTool::new()));
     registry.register(Arc::new(QuoteSwapTool::new()));
     registry.register(Arc::new(GetV3PoolTool::new()));
+    registry.register(Arc::new(DiscoverV3PoolFeeTool::new()));
     registry.register(Arc::new(QuoteV3SwapTool::new()));
     registry.register(Arc::new(ListAllowancesTool::new()));
     registry.register(Arc::new(ListV3PositionsTool::new()));
@@ -105,6 +110,7 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry.register(Arc::new(ProposeV3MintTool::new()));
     registry.register(Arc::new(ProposeV3CreatePoolTool::new()));
     registry.register(Arc::new(ProposeV3InitializePoolTool::new()));
+    registry.register(Arc::new(ProposeV3LpDeployTool::new()));
     registry.register(Arc::new(ProposeV3IncreaseTool::new()));
     registry.register(Arc::new(ProposeV3DecreaseTool::new()));
     registry.register(Arc::new(ProposeV3CollectTool::new()));

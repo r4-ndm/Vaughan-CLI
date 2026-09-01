@@ -107,6 +107,7 @@ mod tests {
             rpc_url: "http://127.0.0.1:8545".into(),
             chain_id,
             active_address: None,
+            profile_dir: None,
         }
     }
 

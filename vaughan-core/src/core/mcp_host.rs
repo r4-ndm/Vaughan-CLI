@@ -24,6 +24,10 @@ pub struct McpSessionData {
     pub address: String,
     pub chain_id: u64,
     pub network_id: String,
+    /// F3-active HD/import index (`wallet 0`, …).
+    pub account_index: u32,
+    /// Display label for the active account (e.g. `wallet 0`).
+    pub account_label: String,
 }
 
 /// Outcome of a live `propose` IPC call.
@@ -122,6 +126,8 @@ pub async fn dispatch_ipc_request(
                     "address": data.address,
                     "chain_id": data.chain_id,
                     "network_id": data.network_id,
+                    "account_index": data.account_index,
+                    "account_label": data.account_label,
                 }))),
                 Err(msg) if msg.contains("locked") => McpIpcResponse::failure("wallet_locked", msg),
                 Err(msg) => McpIpcResponse::failure("session_error", msg),
@@ -258,6 +264,8 @@ mod tests {
                 address: "0x1".into(),
                 chain_id: 943,
                 network_id: "test".into(),
+                account_index: 0,
+                account_label: "wallet 0".into(),
             })
         }
 

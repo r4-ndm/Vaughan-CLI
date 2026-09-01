@@ -6,7 +6,7 @@
 use alloy::primitives::Address;
 use std::str::FromStr;
 
-use super::wiz4rd::{FACTORY_943, POSITION_MANAGER_943, SWAP_ROUTER_943};
+use super::wiz4rd::{FACTORY_943, POOL_DEPLOYER_943, POSITION_MANAGER_943, SWAP_ROUTER_943};
 
 /// Uni V2-style router vs V3 SwapRouter periphery.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -408,6 +408,20 @@ pub fn venue_position_manager(venue: DexVenue, chain_id: u64) -> Option<Address>
     })
 }
 
+/// True for catalogued V3 NonfungiblePositionManager contracts.
+///
+/// These are ERC-721 collections (LP receipt NFTs), not fungible assets. They
+/// can appear in Transfer-log discovery with the same topic as ERC-20; hide
+/// them from F2 / token pickers.
+pub fn is_v3_position_manager(chain_id: u64, token: Address) -> bool {
+    let effective = if chain_id == 31337 { 369 } else { chain_id };
+    CATALOG.iter().any(|e| {
+        e.chain_id == effective
+            && e.role == DexContractRole::PositionManager
+            && parse_static_addr(e.address) == Some(token)
+    })
+}
+
 /// V3 factory for pool reads when catalogued.
 pub fn venue_v3_factory(venue: DexVenue, chain_id: u64) -> Option<Address> {
     CATALOG.iter().find_map(|e| {
@@ -417,6 +431,14 @@ pub fn venue_v3_factory(venue: DexVenue, chain_id: u64) -> Option<Address> {
             None
         }
     })
+}
+
+/// PancakeV3PoolDeployer for deterministic pool address derivation (wiz4rd 943 today).
+pub fn venue_pool_deployer(venue: DexVenue, chain_id: u64) -> Option<Address> {
+    match (venue, chain_id) {
+        (DexVenue::Wiz4rd, 943) => parse_static_addr(POOL_DEPLOYER_943),
+        _ => None,
+    }
 }
 
 /// V2 factory for pair reads when catalogued (9inch 369).
@@ -664,6 +686,10 @@ mod tests {
             venue_position_manager(DexVenue::Wiz4rd, 943),
             Some(address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745"))
         );
+        assert!(is_v3_position_manager(
+            943,
+            address!("0xf1b1D004dD8bFC618F977F6ACAD127a60c566745")
+        ));
     }
 
     #[test]

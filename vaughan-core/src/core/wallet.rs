@@ -563,6 +563,16 @@ impl WalletState {
         self.effective_rpc()
     }
 
+    /// Primary + fallback RPC URLs for read-only jobs (LP pool quote, enable checks, …).
+    pub fn active_rpc_url_list(&self) -> Result<Vec<String>, WalletError> {
+        if !self.is_initialized() {
+            return Err(WalletError::NotInitialized);
+        }
+        let net = self.networks().active();
+        let (primary, fallbacks) = self.rpc_endpoints_for(net);
+        Ok(crate::core::dex_lp::merge_rpc_urls(&primary, &fallbacks))
+    }
+
     /// Snapshot active network RPC endpoints for read-only provider proxying.
     ///
     /// Does not require an unlocked wallet — only initialized vault + network config.

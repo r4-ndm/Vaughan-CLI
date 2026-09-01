@@ -89,7 +89,11 @@ impl Tool for GetBalanceTool {
                 },
                 "token_address": {
                     "type": "string",
-                    "description": "Optional ERC-20 token contract address (omit for native coin balance)"
+                    "description": "Optional ERC-20 token contract address (omit for native coin balance). Alias: token"
+                },
+                "token": {
+                    "type": "string",
+                    "description": "Alias for token_address when querying ERC-20 balance"
                 }
             },
             "required": []
@@ -105,7 +109,11 @@ impl Tool for GetBalanceTool {
         let provider: alloy::providers::RootProvider<alloy::network::Ethereum> =
             alloy::providers::RootProvider::new_http(rpc_url);
 
-        if let Some(token_str) = args.get("token_address").and_then(|v| v.as_str()) {
+        if let Some(token_str) = args
+            .get("token_address")
+            .or_else(|| args.get("token"))
+            .and_then(|v| v.as_str())
+        {
             let token_addr = Address::from_str(token_str)
                 .map_err(|e| AgentError::InvalidToolCall(format!("Invalid token address: {e}")))?;
 

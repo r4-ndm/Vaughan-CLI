@@ -307,7 +307,14 @@ impl Fee {
         // Display uses 18 decimals as a safe default for native EVM amounts;
         // the currency symbol is preserved from the base estimate.
         let total_formatted = format_units(total_wei, 18).unwrap_or_else(|_| "0.0".to_string());
-        let total = format!("{total_formatted} {}", self.currency);
+        let trimmed = if let Some((whole, frac)) = total_formatted.split_once('.') {
+            let clipped = if frac.len() > 6 { &frac[..6] } else { frac };
+            let s = format!("{whole}.{clipped}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            total_formatted
+        };
+        let total = format!("{trimmed} {}", self.currency);
 
         Self {
             total,

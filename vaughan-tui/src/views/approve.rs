@@ -146,12 +146,19 @@ pub struct ApproveView {
     title: String,
     origin: Option<String>,
     details: Vec<String>,
+    /// Decoded human verification rows (LP Brew, etc.) rendered as a bordered table.
+    verify_table: Vec<(String, String)>,
     fee: Option<FeeEdit>,
 }
 
 impl ApproveView {
-    pub fn new(title: String, origin: Option<String>, details: Vec<String>) -> Self {
-        // All three fields can carry remote-controlled text (page origin, site
+    pub fn new(
+        title: String,
+        origin: Option<String>,
+        details: Vec<String>,
+        verify_table: Vec<(String, String)>,
+    ) -> Self {
+        // All fields can carry remote-controlled text (page origin, site
         // key, sign message, MCP agent explanation). Strip control chars so a
         // malicious dApp cannot inject terminal escape sequences (OSC-8 links,
         // screen repaints) into the prompt the user approves from.
@@ -159,6 +166,10 @@ impl ApproveView {
             title: sanitize_display(&title),
             origin: origin.map(|o| sanitize_display(&o)),
             details: details.iter().map(|d| sanitize_display(d)).collect(),
+            verify_table: verify_table
+                .into_iter()
+                .map(|(label, value)| (sanitize_display(&label), sanitize_display(&value)))
+                .collect(),
             fee: None,
         }
     }
@@ -170,9 +181,10 @@ impl ApproveView {
         title: String,
         origin: Option<String>,
         details: Vec<String>,
+        verify_table: Vec<(String, String)>,
         base_fee: Fee,
     ) -> Self {
-        let mut view = Self::new(title, origin, details);
+        let mut view = Self::new(title, origin, details, verify_table);
         if let Some(line) = view.details.iter().position(|l| l.starts_with("Fee:")) {
             view.fee = Some(FeeEdit::new(base_fee, line));
         }
@@ -279,7 +291,14 @@ impl ApproveView {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        _wallet: &WalletState,
+        signing: bool,
+        tick: u64,
+    ) {
         let origin = self.origin.as_deref().unwrap_or("(no origin)");
         let mut text = vec![
             Line::from(Span::styled(
@@ -289,6 +308,16 @@ impl ApproveView {
             Line::from(format!("Origin:  {origin}")),
             Line::from(""),
         ];
+        if !self.verify_table.is_empty() {
+            text.push(Line::from(Span::styled(
+                "Verification (decoded calldata + Brew job)",
+                Style::default().fg(Color::Cyan),
+            )));
+            for line in verify_table_lines(&self.verify_table, area.width.saturating_sub(4)) {
+                text.push(line);
+            }
+            text.push(Line::from(""));
+        }
         for detail in &self.details {
             text.push(Line::from(detail.clone()));
         }
@@ -309,9 +338,20 @@ impl ApproveView {
             }
         }
         text.push(Line::from(""));
-        text.push(Line::from(
-            "y / Enter — approve (after brief pause)     n / Esc — deny",
-        ));
+        if signing {
+            text.push(Line::from(Span::styled(
+                format!(
+                    "{} Signing and broadcasting — please wait…",
+                    crate::jobs::spinner_frame(tick)
+                ),
+                Style::default().fg(Color::Yellow),
+            )));
+            text.push(Line::from(""));
+        } else {
+            text.push(Line::from(
+                "y / Enter — approve (after brief pause)     n / Esc — deny",
+            ));
+        }
         text.push(Line::from(
             "Stale prompts auto-deny after 60s (dApp timeout safety).",
         ));
@@ -336,6 +376,61 @@ impl ApproveView {
         // returns the user to their previous screen); this view only renders.
         KeyOutcome::NotHandled
     }
+}
+
+/// Render verification rows as a Unicode box table for human confirmation.
+pub fn verify_table_lines(rows: &[(String, String)], width: u16) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let inner = width.max(40) as usize;
+    let label_w = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 24);
+    let value_w = inner.saturating_sub(label_w + 3).max(16);
+    let horiz = |w: usize| "─".repeat(w);
+    let mut out = Vec::with_capacity(rows.len() * 2 + 2);
+    out.push(Line::from(format!(
+        "┌─{}─┬─{}─┐",
+        horiz(label_w),
+        horiz(value_w)
+    )));
+    for (idx, (label, value)) in rows.iter().enumerate() {
+        out.push(Line::from(format!(
+            "│ {:label_w$} │ {:value_w$} │",
+            truncate_display(label, label_w),
+            truncate_display(value, value_w),
+            label_w = label_w,
+            value_w = value_w
+        )));
+        if idx + 1 < rows.len() {
+            out.push(Line::from(format!(
+                "├─{}─┼─{}─┤",
+                horiz(label_w),
+                horiz(value_w)
+            )));
+        }
+    }
+    out.push(Line::from(format!(
+        "└─{}─┴─{}─┘",
+        horiz(label_w),
+        horiz(value_w)
+    )));
+    out
+}
+
+fn truncate_display(raw: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    if chars.len() <= max_chars {
+        return raw.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".into();
+    }
+    format!("{}…", chars[..max_chars - 1].iter().collect::<String>())
 }
 
 #[cfg(test)]
@@ -366,12 +461,27 @@ mod tests {
                 "Network: PulseChain Testnet v4 (testnet)".into(),
                 "Fee:     0.021 tPLS".into(),
             ],
+            vec![],
             evm_fee("420000000", Some("100000000")),
         )
     }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn verify_table_renders_box_rows() {
+        let lines = verify_table_lines(
+            &[
+                ("Pool".into(), "T1 / T2 · wiz4rd · 2% fee".into()),
+                ("Range".into(), "Full (-887200 → 887200)".into()),
+            ],
+            80,
+        );
+        assert!(lines[0].to_string().starts_with('┌'));
+        assert!(lines.iter().any(|l| l.to_string().contains("T1 / T2")));
+        assert!(lines.last().unwrap().to_string().starts_with('└'));
     }
 
     #[test]
@@ -403,6 +513,7 @@ mod tests {
             "T\u{1b}[31mitle".into(),
             Some("https://x.example\u{1b}]8;;x\u{7}".into()),
             vec!["Message: hello\u{1b}[2J".into()],
+            vec![],
         );
         assert!(!view.title.chars().any(|c| c.is_control()));
         assert!(!view.origin.unwrap().chars().any(|c| c.is_control()));
@@ -419,7 +530,7 @@ mod tests {
 
     #[test]
     fn non_transaction_prompt_has_no_fee_editor() {
-        let mut view = ApproveView::new("Sign message".into(), None, vec!["Message: hi".into()]);
+        let mut view = ApproveView::new("Sign message".into(), None, vec!["Message: hi".into()], vec![]);
         assert!(!view.has_fee_editor());
         assert_eq!(
             view.handle_fee_key(key(KeyCode::Char('3'))),

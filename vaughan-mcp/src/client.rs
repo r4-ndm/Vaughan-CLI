@@ -60,12 +60,23 @@ pub async fn try_get_session(token: &str) -> Result<Option<McpSessionInfo>, Stri
         .and_then(|v| v.as_str())
         .ok_or_else(|| "session response missing network_id".to_string())?
         .to_string();
+    let account_index = data
+        .get("account_index")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let account_label = data
+        .get("account_label")
+        .and_then(|v| v.as_str())
+        .unwrap_or("wallet 0")
+        .to_string();
     let address = alloy::primitives::Address::from_str(address)
         .map_err(|e| format!("invalid session address: {e}"))?;
     Ok(Some(McpSessionInfo {
         address,
         chain_id,
         network_id,
+        account_index,
+        account_label,
     }))
 }
 
@@ -75,6 +86,8 @@ pub struct McpSessionInfo {
     pub address: alloy::primitives::Address,
     pub chain_id: u64,
     pub network_id: String,
+    pub account_index: u32,
+    pub account_label: String,
 }
 
 /// Ping the TUI listener to see if it is up and token matches.

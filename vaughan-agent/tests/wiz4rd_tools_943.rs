@@ -12,6 +12,7 @@ async fn wiz4rd_get_pool_and_quote_on_943() {
         rpc_url: "https://rpc.v4.testnet.pulsechain.com".into(),
         chain_id: 943,
         active_address: Some(address!("0xAe089fF30590206F24E4E6627Ea61E4944cFc895")),
+            profile_dir: None,
     };
 
     let pool = registry
@@ -55,6 +56,7 @@ async fn wiz4rd_build_swap_and_lp_proposals_on_943() {
         rpc_url: "https://rpc.v4.testnet.pulsechain.com".into(),
         chain_id: 943,
         active_address: Some(address!("0xAe089fF30590206F24E4E6627Ea61E4944cFc895")),
+            profile_dir: None,
     };
 
     // Only WZRD/WPLS @ fee 500 is deployed on 943 today; other tiers have no pool.

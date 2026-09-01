@@ -8,6 +8,7 @@ use alloy::primitives::{Address, U160, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -77,6 +78,67 @@ fn connect_http(rpc_url: &str) -> Result<impl Provider + use<>, WalletError> {
     Ok(ProviderBuilder::new().connect_http(url))
 }
 
+/// Primary RPC first, then built-in fallbacks (deduped, non-empty).
+pub fn merge_rpc_urls(primary: &str, fallbacks: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |u: &str| {
+        let t = u.trim();
+        if t.is_empty() {
+            return;
+        }
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+    };
+    push(primary);
+    for u in fallbacks {
+        push(u);
+    }
+    out
+}
+
+/// True when another RPC endpoint may succeed (transport / HTTP / decode flake).
+pub fn is_lp_rpc_transport(err: &WalletError) -> bool {
+    match err {
+        WalletError::NetworkError(m) => {
+            m.starts_with("getPool:")
+                || m.starts_with("get_pool_info:")
+                || m.starts_with("decode getPool:")
+                || m.starts_with("allowance:")
+                || m.starts_with("block number:")
+                || m.contains("invalid RPC URL")
+                || m.contains("timed out")
+                || m.contains("connection")
+                || m.contains("connect")
+                || m.contains("no RPC URL")
+        }
+        WalletError::RpcError(_) => true,
+        _ => false,
+    }
+}
+
+/// Run `call` against primary RPC, then network fallbacks on transport failures.
+pub async fn with_lp_rpc_urls<T, F, Fut>(rpc_urls: &[String], mut call: F) -> Result<T, WalletError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<T, WalletError>>,
+{
+    if rpc_urls.is_empty() {
+        return Err(WalletError::NetworkError(
+            "no RPC URL configured — set network RPC in Settings (F1)".into(),
+        ));
+    }
+    let mut last: Option<WalletError> = None;
+    for url in rpc_urls {
+        match call(url.clone()).await {
+            Ok(v) => return Ok(v),
+            Err(e) if is_lp_rpc_transport(&e) => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| WalletError::RpcError("all LP RPC endpoints failed".into())))
+}
+
 fn default_deadline_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -112,7 +174,12 @@ pub struct V3LpPoolQuote {
     pub tick: Option<i32>,
     /// Human token1-per-token0 price when the pool is initialized.
     pub pool_price_token1_per_token0: Option<String>,
+    /// When the requested fee had no pool but another tier does (TUI should switch ←→).
+    pub suggested_fee_tier: Option<u32>,
 }
+
+/// Standard V3 fee tiers on Pulse / 9mm catalog venues.
+pub const V3_LP_FEE_TIERS: [u32; 5] = [100, 500, 2500, 10_000, 20_000];
 
 /// V3 pool deployment stage for a token pair + fee tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,7 +245,7 @@ pub async fn v3_pool_lifecycle(
 }
 
 /// Optional on-chain wait before resolving the next deploy tx (multi-step LP).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum V3LpDeployWait {
     #[default]
     None,
@@ -193,10 +260,17 @@ pub enum V3LpDeployWait {
 const DEPLOY_WAIT_POLL: Duration = Duration::from_secs(2);
 const DEPLOY_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Optional context for the deploy wait (e.g. which approve tx was just broadcast).
+#[derive(Clone, Debug, Default)]
+pub struct V3LpDeployContext {
+    pub last_step_label: Option<String>,
+}
+
 /// Block until a prior deploy step is visible on-chain (or timeout).
 pub async fn v3_lp_run_deploy_wait(
     wait: V3LpDeployWait,
     params: &V3LpDeployParams,
+    ctx: Option<&V3LpDeployContext>,
 ) -> Result<(), WalletError> {
     match wait {
         V3LpDeployWait::None => Ok(()),
@@ -222,7 +296,10 @@ pub async fn v3_lp_run_deploy_wait(
             )
             .await
         }
-        V3LpDeployWait::AfterApprove => v3_lp_wait_for_mint_allowances(params).await,
+        V3LpDeployWait::AfterApprove => {
+            v3_lp_wait_for_next_approve(params, ctx.and_then(|c| c.last_step_label.as_deref()))
+                .await
+        }
     }
 }
 
@@ -291,8 +368,53 @@ async fn v3_lp_wait_for_pool_initialized(
     }
 }
 
-/// Wait until at least one mint `approve` is reflected on-chain (avoids duplicate approve loops).
-async fn v3_lp_wait_for_mint_allowances(params: &V3LpDeployParams) -> Result<(), WalletError> {
+fn approve_label_token(label: &str) -> Option<&str> {
+    label
+        .strip_prefix("approve ")
+        .and_then(|rest| rest.split_whitespace().next())
+}
+
+fn allowance_covers_mint(cur: U256, need: U256) -> bool {
+    need.is_zero() || cur >= need || cur == U256::MAX
+}
+
+async fn read_allowance_once(
+    provider: &impl Provider,
+    token: Address,
+    owner: Address,
+    npm: Address,
+) -> Result<U256, WalletError> {
+    use wiz4rd_sdk::allowance::get_allowance;
+
+    get_allowance(provider, token, owner, npm)
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))
+}
+
+/// Poll until two consecutive reads match (post-approve confirmation wait).
+async fn read_allowance_stable(
+    provider: &impl Provider,
+    token: Address,
+    owner: Address,
+    npm: Address,
+) -> Result<U256, WalletError> {
+    let mut cur = read_allowance_once(provider, token, owner, npm).await?;
+    for _ in 0..2 {
+        tokio::time::sleep(DEPLOY_WAIT_POLL).await;
+        let next = read_allowance_once(provider, token, owner, npm).await?;
+        if next == cur {
+            return Ok(cur);
+        }
+        cur = next;
+    }
+    Ok(cur)
+}
+
+/// Wait until the approve tx we just broadcast is reflected (reset → 0, enable → MAX/need).
+async fn v3_lp_wait_for_next_approve(
+    params: &V3LpDeployParams,
+    last_label: Option<&str>,
+) -> Result<(), WalletError> {
     use wiz4rd_sdk::allowance::get_allowance;
 
     let npm = venue_position_manager(params.venue, params.chain_id).ok_or_else(|| {
@@ -304,34 +426,69 @@ async fn v3_lp_wait_for_mint_allowances(params: &V3LpDeployParams) -> Result<(),
     })?;
     let owner = Address::from_str(params.from.trim())
         .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
-    let amount0_wei = parse_deposit_wei(&params.amount0, params.dec0, "amount0")?;
-    let (need0, need1) = v3_lp_mint_amounts_at_pool(params, amount0_wei).await?;
+    let (need0, need1) = v3_lp_deploy_mint_amounts(params).await?;
     let provider = connect_http(&params.rpc_url)?;
     let start = Instant::now();
-    loop {
-        let cur0 = get_allowance(&provider, params.token0, owner, npm)
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
-        let cur1 = get_allowance(&provider, params.token1, owner, npm)
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
-        if cur0 >= need0 && cur1 >= need1 {
-            return Ok(());
+
+    let wait_reset = last_label.is_some_and(|l| l.contains("reset"));
+    if wait_reset {
+        let name = last_label.and_then(approve_label_token).unwrap_or("token0");
+        let token = if name == "token1" {
+            params.token1
+        } else {
+            params.token0
+        };
+        loop {
+            let cur = get_allowance(&provider, token, owner, npm)
+                .await
+                .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
+            if cur.is_zero() {
+                return Ok(());
+            }
+            if start.elapsed() >= DEPLOY_WAIT_TIMEOUT {
+                return Err(WalletError::NetworkError(
+                    "approve reset not confirmed within 60s — wait for the block, then retry"
+                        .into(),
+                ));
+            }
+            tokio::time::sleep(DEPLOY_WAIT_POLL).await;
         }
-        // One approve confirmed — next deploy step may queue the other token or mint.
-        if cur0 >= need0 || cur1 >= need1 {
-            return Ok(());
-        }
-        if start.elapsed() >= DEPLOY_WAIT_TIMEOUT {
-            return Err(WalletError::NetworkError(
-                "approve not confirmed within 60s — wait for the block, then retry".into(),
-            ));
-        }
-        tokio::time::sleep(DEPLOY_WAIT_POLL).await;
     }
+
+    let wait_targets: &[(Address, U256)] = match last_label.and_then(approve_label_token) {
+        Some("token1") => &[(params.token1, need1)],
+        Some("token0") => &[(params.token0, need0)],
+        _ => &[(params.token0, need0), (params.token1, need1)],
+    };
+
+    for &(token, need) in wait_targets {
+        if need.is_zero() {
+            continue;
+        }
+        let cur = read_allowance_stable(&provider, token, owner, npm).await?;
+        if allowance_covers_mint(cur, need) {
+            continue;
+        }
+        loop {
+            let cur = get_allowance(&provider, token, owner, npm)
+                .await
+                .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
+            if allowance_covers_mint(cur, need) {
+                return Ok(());
+            }
+            if start.elapsed() >= DEPLOY_WAIT_TIMEOUT {
+                return Err(WalletError::NetworkError(
+                    "approve not confirmed within 60s — wait for the block, then retry".into(),
+                ));
+            }
+            tokio::time::sleep(DEPLOY_WAIT_POLL).await;
+        }
+    }
+    Ok(())
 }
 
 /// Inputs for one step of the V3 create → initialize → approve → mint pipeline.
+#[derive(Clone)]
 pub struct V3LpDeployParams {
     pub from: String,
     pub venue: DexVenue,
@@ -347,11 +504,18 @@ pub struct V3LpDeployParams {
     pub pool_max_price: String,
     pub amount0: String,
     pub amount1: String,
+    /// Which sorted leg holds the user's one-sided deposit (false = deposit on token1).
+    pub deposit_on_token0: bool,
 }
 
 fn parse_deposit_wei(raw: &str, decimals: u8, label: &str) -> Result<U256, WalletError> {
     let wei_str = parse_native_amount(raw.trim(), decimals)?;
     U256::from_str(&wei_str).map_err(|_| WalletError::InvalidAmount(format!("invalid {label}")))
+}
+
+/// Tick range for a deploy/mint from human min/max or full-range preset.
+pub fn v3_lp_mint_tick_range(params: &V3LpDeployParams) -> Result<(i32, i32), WalletError> {
+    v3_lp_range_ticks(params)
 }
 
 fn v3_lp_range_ticks(params: &V3LpDeployParams) -> Result<(i32, i32), WalletError> {
@@ -371,8 +535,66 @@ fn v3_lp_range_ticks(params: &V3LpDeployParams) -> Result<(i32, i32), WalletErro
     }
 }
 
-/// Mint amounts coupled to live pool price (token0 deposit is the anchor).
-#[allow(clippy::too_many_arguments)]
+/// Fix swapped human deposit legs (e.g. `amount0: "300"`, `amount1: "90.36…"` when deposit was 300 T2).
+pub fn lp_deploy_fixup_swapped_amounts(params: &mut V3LpDeployParams) {
+    let (deposit, other) = if params.deposit_on_token0 {
+        (&mut params.amount0, &mut params.amount1)
+    } else {
+        (&mut params.amount1, &mut params.amount0)
+    };
+    if looks_like_computed_deposit(deposit.trim()) && looks_like_user_deposit(other.trim()) {
+        std::mem::swap(&mut params.amount0, &mut params.amount1);
+    }
+}
+
+fn looks_like_user_deposit(raw: &str) -> bool {
+    let s = raw.trim();
+    if s.is_empty() {
+        return false;
+    }
+    match s.split_once('.') {
+        None => true,
+        Some((_, frac)) => frac.len() <= 2,
+    }
+}
+
+fn looks_like_computed_deposit(raw: &str) -> bool {
+    let s = raw.trim();
+    s.split_once('.')
+        .is_some_and(|(_, frac)| frac.len() > 4)
+}
+
+/// Mint deposit amounts in wei for deploy batching or preflight balance checks.
+pub async fn v3_lp_deploy_mint_amounts(
+    params: &V3LpDeployParams,
+) -> Result<(U256, U256), WalletError> {
+    let mut params = params.clone();
+    lp_deploy_fixup_swapped_amounts(&mut params);
+    let amount0_wei = parse_deposit_wei(&params.amount0, params.dec0, "amount0")?;
+    let amount1_wei = parse_deposit_wei(&params.amount1, params.dec1, "amount1")?;
+    let lifecycle = v3_pool_lifecycle(
+        &params.rpc_url,
+        params.venue,
+        params.chain_id,
+        params.token0,
+        params.token1,
+        params.fee,
+    )
+    .await?;
+    match lifecycle {
+        V3PoolLifecycle::Ready => {
+            if params.deposit_on_token0 {
+                v3_lp_mint_amounts_at_pool(&params, amount0_wei).await
+            } else {
+                v3_lp_mint_amounts_at_pool_from_amount1(&params, amount1_wei).await
+            }
+        }
+        V3PoolLifecycle::Missing | V3PoolLifecycle::Uninitialized { .. } => {
+            Ok((amount0_wei, amount1_wei))
+        }
+    }
+}
+
 async fn v3_lp_mint_amounts_at_pool(
     params: &V3LpDeployParams,
     amount0_wei: U256,
@@ -386,7 +608,7 @@ async fn v3_lp_mint_amounts_at_pool(
         params.fee,
     )
     .await?;
-    let sqrt = sqrt_price_u160(info.sqrt_price_x96)?;
+    let sqrt = v3_pool_sqrt_u160(info.sqrt_price_x96)?;
     v3_preview_mint_deposits_from_amount0(
         params.chain_id,
         params.token0,
@@ -402,6 +624,35 @@ async fn v3_lp_mint_amounts_at_pool(
     )
 }
 
+async fn v3_lp_mint_amounts_at_pool_from_amount1(
+    params: &V3LpDeployParams,
+    amount1_wei: U256,
+) -> Result<(U256, U256), WalletError> {
+    let (_, info) = load_v3_lp_pool(
+        &params.rpc_url,
+        params.venue,
+        params.chain_id,
+        params.token0,
+        params.token1,
+        params.fee,
+    )
+    .await?;
+    let sqrt = v3_pool_sqrt_u160(info.sqrt_price_x96)?;
+    v3_preview_mint_deposits_from_amount1(
+        params.chain_id,
+        params.token0,
+        params.token1,
+        params.dec0,
+        params.dec1,
+        params.fee,
+        sqrt,
+        info.tick,
+        &params.pool_min_price,
+        &params.pool_max_price,
+        amount1_wei,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn v3_lp_first_needed_approve(
     provider: &impl Provider,
@@ -413,7 +664,7 @@ async fn v3_lp_first_needed_approve(
     need0: U256,
     need1: U256,
 ) -> Result<Option<(EvmTransaction, String)>, WalletError> {
-    use wiz4rd_sdk::allowance::ensure_allowance_txs;
+    use wiz4rd_sdk::allowance::build_approve_tx;
 
     let owner = Address::from_str(from.trim())
         .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
@@ -421,19 +672,107 @@ async fn v3_lp_first_needed_approve(
         if need.is_zero() {
             continue;
         }
-        let txs = ensure_allowance_txs(provider, token, owner, npm, need)
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("allowance: {e}")))?;
-        if let Some(req) = txs.first() {
-            let label = if txs.len() > 1 {
-                format!("approve {name} for LP (step 1/2: reset)")
-            } else {
-                format!("approve {name} for LP")
-            };
-            return Ok(Some((tx_to_evm(from, chain_id, req.clone())?, label)));
+        let current = read_allowance_once(provider, token, owner, npm).await?;
+        if allowance_covers_mint(current, need) {
+            continue;
         }
+        // USDT-style: zero before a new approval when allowance is stuck non-zero.
+        if !current.is_zero() {
+            let req = build_approve_tx(token, npm, U256::ZERO);
+            let label = format!("approve {name} for LP (reset)");
+            return Ok(Some((tx_to_evm(from, chain_id, req)?, label)));
+        }
+        // PancakeSwap-style Enable: infinite NPM approval (avoids re-approve loops when mint need shifts).
+        let req = build_approve_tx(token, npm, U256::MAX);
+        let label = format!("approve {name} for LP");
+        return Ok(Some((tx_to_evm(from, chain_id, req)?, label)));
     }
     Ok(None)
+}
+
+/// On-chain enable status for sorted `token0` / `token1` when the pool is [`V3PoolLifecycle::Ready`].
+///
+/// `None` when the pool is missing or uninitialized — enables happen after create/initialize.
+pub async fn v3_lp_token_enable_status(
+    params: &V3LpDeployParams,
+) -> Result<Option<(bool, bool)>, WalletError> {
+    if params.token0 >= params.token1 {
+        return Err(WalletError::InvalidTransaction(
+            "token0 must be sorted below token1".into(),
+        ));
+    }
+    let lifecycle = v3_pool_lifecycle(
+        &params.rpc_url,
+        params.venue,
+        params.chain_id,
+        params.token0,
+        params.token1,
+        params.fee,
+    )
+    .await?;
+    if !matches!(lifecycle, V3PoolLifecycle::Ready) {
+        return Ok(None);
+    }
+    let (need0, need1) = v3_lp_deploy_mint_amounts(params).await?;
+    let npm = venue_position_manager(params.venue, params.chain_id).ok_or_else(|| {
+        WalletError::Other(format!(
+            "{} has no V3 NPM on chain {}",
+            params.venue.label(),
+            params.chain_id
+        ))
+    })?;
+    let owner = Address::from_str(params.from.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
+    let provider = connect_http(&params.rpc_url)?;
+    let cur0 = read_allowance_once(&provider, params.token0, owner, npm).await?;
+    let cur1 = read_allowance_once(&provider, params.token1, owner, npm).await?;
+    Ok(Some((
+        allowance_covers_mint(cur0, need0),
+        allowance_covers_mint(cur1, need1),
+    )))
+}
+
+/// Next PancakeSwap-style **Enable** tx for the NPM (reset or infinite approve).
+pub async fn v3_lp_build_next_enable_tx(
+    params: &V3LpDeployParams,
+) -> Result<Option<(EvmTransaction, String)>, WalletError> {
+    if params.token0 >= params.token1 {
+        return Err(WalletError::InvalidTransaction(
+            "token0 must be sorted below token1".into(),
+        ));
+    }
+    let lifecycle = v3_pool_lifecycle(
+        &params.rpc_url,
+        params.venue,
+        params.chain_id,
+        params.token0,
+        params.token1,
+        params.fee,
+    )
+    .await?;
+    if !matches!(lifecycle, V3PoolLifecycle::Ready) {
+        return Ok(None);
+    }
+    let (need0, need1) = v3_lp_deploy_mint_amounts(params).await?;
+    let npm = venue_position_manager(params.venue, params.chain_id).ok_or_else(|| {
+        WalletError::Other(format!(
+            "{} has no V3 NPM on chain {}",
+            params.venue.label(),
+            params.chain_id
+        ))
+    })?;
+    let provider = connect_http(&params.rpc_url)?;
+    v3_lp_first_needed_approve(
+        &provider,
+        &params.from,
+        params.chain_id,
+        npm,
+        params.token0,
+        params.token1,
+        need0,
+        need1,
+    )
+    .await
 }
 
 /// Next on-chain tx for V3 pool deploy / add-LP (one step per call).
@@ -510,14 +849,8 @@ pub async fn v3_lp_prepare_deploy_step(
             .map(|tx| (tx, "initialize".to_string()))
         }
         V3PoolLifecycle::Ready => {
-            let amount0_wei = parse_deposit_wei(&params.amount0, params.dec0, "amount0")?;
-            if amount0_wei.is_zero() {
-                return Err(WalletError::InvalidTransaction(
-                    "deposit amount0 must be > 0".into(),
-                ));
-            }
-            let (amount0, amount1) = v3_lp_mint_amounts_at_pool(params, amount0_wei).await?;
-            if amount1.is_zero() {
+            let (amount0, amount1) = v3_lp_deploy_mint_amounts(params).await?;
+            if amount0.is_zero() || amount1.is_zero() {
                 return Err(WalletError::InvalidTransaction(
                     "deposit amounts must be > 0 for this range".into(),
                 ));
@@ -655,8 +988,8 @@ fn tx_to_evm(
     })
 }
 
-/// Load on-chain pool state for a catalogued V3 LP venue (mint preview / tick range).
-fn sqrt_price_u160(sqrt: U256) -> Result<U160, WalletError> {
+/// Convert pool `sqrtPriceX96` (U256 from slot0) to U160 for mint preview math.
+pub fn v3_pool_sqrt_u160(sqrt: U256) -> Result<U160, WalletError> {
     let bytes = sqrt.to_be_bytes::<32>();
     if bytes[..12].iter().any(|&b| b != 0) {
         return Err(WalletError::InvalidTransaction(
@@ -685,11 +1018,31 @@ pub async fn fetch_v3_lp_pool_quote(
             "fetch_v3_lp_pool_quote requires token0 < token1".into(),
         ));
     }
-    let lifecycle = v3_pool_lifecycle(rpc_url, venue, chain_id, token0, token1, fee).await?;
+    let mut effective_fee = fee;
+    let mut suggested_fee_tier = None;
+    let first = v3_pool_lifecycle(rpc_url, venue, chain_id, token0, token1, effective_fee).await?;
+    let lifecycle = if matches!(first, V3PoolLifecycle::Missing) {
+        if let Some(found) =
+            discover_v3_pool_fee_tier(rpc_url, venue, chain_id, token0, token1).await?
+        {
+            if found != effective_fee {
+                suggested_fee_tier = Some(found);
+                effective_fee = found;
+                v3_pool_lifecycle(rpc_url, venue, chain_id, token0, token1, effective_fee).await?
+            } else {
+                first
+            }
+        } else {
+            first
+        }
+    } else {
+        first
+    };
     match lifecycle {
         V3PoolLifecycle::Ready => {
-            let (_, info) = load_v3_lp_pool(rpc_url, venue, chain_id, token0, token1, fee).await?;
-            let sqrt = sqrt_price_u160(info.sqrt_price_x96)?;
+            let (_, info) =
+                load_v3_lp_pool(rpc_url, venue, chain_id, token0, token1, effective_fee).await?;
+            let sqrt = v3_pool_sqrt_u160(info.sqrt_price_x96)?;
             let human = wiz4rd_math::pool_tick_to_human_price(
                 chain_id, token0, token1, dec0, dec1, info.tick,
             )
@@ -699,6 +1052,7 @@ pub async fn fetch_v3_lp_pool_quote(
                 sqrt_price_x96: Some(sqrt),
                 tick: Some(info.tick),
                 pool_price_token1_per_token0: Some(human),
+                suggested_fee_tier,
             })
         }
         other => Ok(V3LpPoolQuote {
@@ -706,6 +1060,7 @@ pub async fn fetch_v3_lp_pool_quote(
             sqrt_price_x96: None,
             tick: None,
             pool_price_token1_per_token0: None,
+            suggested_fee_tier,
         }),
     }
 }
@@ -821,6 +1176,44 @@ pub fn v3_preview_mint_deposits_from_amount1(
     Ok((amounts.amount0, amounts.amount1))
 }
 
+/// Mint preview from a token0 deposit when tick bounds are already known (matches NPM mint).
+pub fn v3_preview_mint_deposits_from_amount0_ticks(
+    sqrt_price_x96: U160,
+    tick_current: i32,
+    tick_lower: i32,
+    tick_upper: i32,
+    amount0_wei: U256,
+) -> Result<(U256, U256), WalletError> {
+    let amounts = wiz4rd_math::v3_mint_amounts_from_amount0(
+        sqrt_price_x96,
+        tick_current,
+        tick_lower,
+        tick_upper,
+        amount0_wei,
+    )
+    .map_err(WalletError::InvalidTransaction)?;
+    Ok((amounts.amount0, amounts.amount1))
+}
+
+/// Mint preview from a token1 deposit when tick bounds are already known (matches NPM mint).
+pub fn v3_preview_mint_deposits_from_amount1_ticks(
+    sqrt_price_x96: U160,
+    tick_current: i32,
+    tick_lower: i32,
+    tick_upper: i32,
+    amount1_wei: U256,
+) -> Result<(U256, U256), WalletError> {
+    let amounts = wiz4rd_math::v3_mint_amounts_from_amount1(
+        sqrt_price_x96,
+        tick_current,
+        tick_lower,
+        tick_upper,
+        amount1_wei,
+    )
+    .map_err(WalletError::InvalidTransaction)?;
+    Ok((amounts.amount0, amounts.amount1))
+}
+
 pub async fn load_v3_lp_pool(
     rpc_url: &str,
     venue: DexVenue,
@@ -843,6 +1236,47 @@ pub async fn load_v3_lp_pool(
     Ok((cfg, info))
 }
 
+/// First catalog fee tier with an on-chain pool for `token0`/`token1` (any lifecycle except Missing).
+pub async fn discover_v3_pool_fee_tier(
+    rpc_url: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    token0: Address,
+    token1: Address,
+) -> Result<Option<u32>, WalletError> {
+    if token0 >= token1 {
+        return Err(WalletError::InvalidTransaction(
+            "discover_v3_pool_fee_tier requires token0 < token1".into(),
+        ));
+    }
+    let factory = venue_v3_factory(venue, chain_id).ok_or_else(|| {
+        WalletError::Other(format!(
+            "{} has no V3 factory on chain {chain_id}",
+            venue.label()
+        ))
+    })?;
+    let provider = connect_http(rpc_url)?;
+    for fee in V3_LP_FEE_TIERS {
+        let pool = factory_get_pool(&provider, factory, get_pool_key(token0, token1, fee)).await?;
+        if !pool.is_zero() {
+            return Ok(Some(fee));
+        }
+    }
+    Ok(None)
+}
+
+/// Block to start NPM `Transfer` log scans when the caller did not bound `from_block`.
+fn lp_positions_scan_from_block(chain_id: u64, latest: u64) -> u64 {
+    use crate::core::wiz4rd::NPM_LOG_SCAN_FROM_BLOCK_943;
+    match chain_id {
+        // Local anvil reuses chain id 943 with a tiny head — scan from genesis.
+        943 if latest < NPM_LOG_SCAN_FROM_BLOCK_943 => 0,
+        943 => NPM_LOG_SCAN_FROM_BLOCK_943,
+        369 => latest.saturating_sub(500_000),
+        _ => latest.saturating_sub(50_000),
+    }
+}
+
 /// List V3 LP NFT positions for `owner` (Transfer-log scan + `positions()`).
 pub async fn list_v3_lp_positions(
     rpc_url: &str,
@@ -854,7 +1288,17 @@ pub async fn list_v3_lp_positions(
 ) -> Result<Vec<PositionInfo>, WalletError> {
     let cfg = v3_lp_sdk_config(venue, chain_id, rpc_url)?;
     let provider = connect_http(rpc_url)?;
-    list_positions_from(&provider, &cfg, owner, from_block, to_block)
+    let scan_from = match from_block {
+        Some(b) => b,
+        None => {
+            let latest = provider
+                .get_block_number()
+                .await
+                .map_err(|e| WalletError::NetworkError(format!("block number: {e}")))?;
+            lp_positions_scan_from_block(chain_id, latest)
+        }
+    };
+    list_positions_from(&provider, &cfg, owner, Some(scan_from), to_block)
         .await
         .map_err(|e| WalletError::NetworkError(format!("list positions: {e}")))
 }
@@ -1069,6 +1513,31 @@ mod tests {
     }
 
     #[test]
+    fn fixup_swaps_round_deposit_out_of_wrong_leg() {
+        use alloy::primitives::address;
+        let mut params = V3LpDeployParams {
+            from: String::new(),
+            venue: DexVenue::Wiz4rd,
+            chain_id: 943,
+            rpc_url: String::new(),
+            token0: address!("0x33df366093ef8ac488e5be40e7ee2eeac2142770"),
+            token1: address!("0xfc413180d3624349d111fd98ee76bc08a25bc655"),
+            fee: 20000,
+            dec0: 18,
+            dec1: 18,
+            pool_initial_price: String::new(),
+            pool_min_price: String::new(),
+            pool_max_price: String::new(),
+            amount0: "300".into(),
+            amount1: "90.363684870695".into(),
+            deposit_on_token0: false,
+        };
+        lp_deploy_fixup_swapped_amounts(&mut params);
+        assert_eq!(params.amount1, "300");
+        assert_eq!(params.amount0, "90.363684870695");
+    }
+
+    #[test]
     fn sdk_config_for_wiz4rd_943_and_nine_mm_369() {
         assert!(v3_lp_sdk_config(DexVenue::Wiz4rd, 943, "http://127.0.0.1:8545").is_ok());
         assert!(v3_lp_sdk_config(DexVenue::NineMm, 369, "http://127.0.0.1:8545").is_ok());
@@ -1120,5 +1589,28 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, WalletError::InvalidTransaction(_)));
         assert!(err.user_message().contains("token0 < token1"));
+    }
+
+    #[test]
+    fn merge_rpc_urls_dedupes_primary_and_fallbacks() {
+        let urls = merge_rpc_urls(
+            "https://rpc.v4.testnet.pulsechain.com",
+            &[
+                "https://pulsechain-testnet-rpc.publicnode.com".into(),
+                "https://rpc.v4.testnet.pulsechain.com".into(),
+            ],
+        );
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://rpc.v4.testnet.pulsechain.com");
+    }
+
+    #[test]
+    fn lp_positions_scan_from_block_943_live_rpc() {
+        use crate::core::wiz4rd::NPM_LOG_SCAN_FROM_BLOCK_943;
+        assert_eq!(lp_positions_scan_from_block(943, 12), 0);
+        assert_eq!(
+            lp_positions_scan_from_block(943, NPM_LOG_SCAN_FROM_BLOCK_943),
+            NPM_LOG_SCAN_FROM_BLOCK_943
+        );
     }
 }

@@ -87,8 +87,12 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::LpListPositions { .. }
         | UiJob::LpListV2Positions { .. }
         | UiJob::LpV3PoolDeployStep { .. }
+        | UiJob::LpEnableCheck { .. }
+        | UiJob::LpEnablePrepare { .. }
+        | UiJob::LpEnableWait { .. }
         | UiJob::LpV3PoolQuote { .. }
-        | UiJob::DeployToken { .. } => return,
+        | UiJob::DeployToken { .. }
+        | UiJob::McpQueuedApprove { .. } => return,
     };
     view.apply_job_result(result);
 }

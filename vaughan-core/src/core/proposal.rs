@@ -77,6 +77,11 @@ pub enum ProposalType {
         target: Address,
         function_name: Option<String>,
     },
+    /// One step in a multi-step V3 LP deploy Brew (`propose_v3_lp_deploy`).
+    LpDeployStep {
+        job_id: String,
+        step_label: String,
+    },
     /// Fixed-supply ERC-20 deploy (testnet meme-coin launcher).
     TokenLaunch {
         name: String,
@@ -306,6 +311,30 @@ pub fn apply_proposal(
     };
     evm.gas_limit = Some(proposal.gas_limit);
     Ok(evm)
+}
+
+/// Apply agent-stamped total fee to an unsigned EVM tx before broadcast.
+///
+/// Avoids a fresh RPC `estimate_fee` on the UI thread when the proposal already
+/// carries [`TxProposal::estimated_fee_wei`] (common for MCP / LP Brew steps).
+pub fn apply_stamped_fee_to_evm(
+    evm: &mut EvmTransaction,
+    proposal: &TxProposal,
+    priority_fee_wei: u64,
+) {
+    let Some(total) = proposal.estimated_fee_wei.filter(|w| !w.is_zero()) else {
+        return;
+    };
+    let Some(gas) = evm.gas_limit.filter(|g| *g > 0) else {
+        return;
+    };
+    let max = total / U256::from(gas);
+    if max.is_zero() {
+        return;
+    }
+    let tip = U256::from(priority_fee_wei).min(max);
+    evm.max_fee_per_gas = Some(max.to_string());
+    evm.max_priority_fee_per_gas = Some(tip.to_string());
 }
 
 /// File-backed proposal queue with HMAC integrity.
@@ -541,6 +570,33 @@ impl ProposalQueue {
             }
         }
         Ok(removed)
+    }
+
+    /// Re-tag pending proposals after MCP session rotation (TUI unlock/restart).
+    ///
+    /// Agents enqueue with the session HMAC; a new loopback token invalidates the
+    /// old tag without removing the proposal. Rebind lets the file queue surface
+    /// again without asking the agent to re-propose.
+    pub fn rebind_pending_session(&self, session_secret: &[u8]) -> Result<usize, ProposalError> {
+        if session_secret.is_empty() {
+            return Err(ProposalError::SessionRequired);
+        }
+        self.ensure_dirs()?;
+        let pending = self.list_pending()?;
+        let mut rebound = 0usize;
+        for queued in pending {
+            let mut updated = queued;
+            updated.hmac =
+                compute_proposal_hmac(session_secret, &updated.source, &updated.proposal)?;
+            let path = self
+                .pending_dir()
+                .join(format!("{}.json", updated.proposal.proposal_id));
+            let json = serde_json::to_string_pretty(&updated)
+                .map_err(|e| ProposalError::Io(e.to_string()))?;
+            write_atomic(&path, json.as_bytes())?;
+            rebound += 1;
+        }
+        Ok(rebound)
     }
 
     fn ensure_proposal_id_available(&self, proposal_id: &str) -> Result<(), ProposalError> {

@@ -39,6 +39,17 @@ kind: must | guide
 | `pulsechain-context` | guide | all |
 | `dapp-connect` | guide | all |
 | `vb-ag-quotes` | guide | all |
+| `lp-gas-preflight` | guide | assist |
+| `lp-brew-incidents` | guide | assist |
+| `workflow-recovery` | guide | assist |
+| `vaughan-brews` | guide | assist |
+
+### `lp-brew-incidents`
+
+Field catalog of **LP Brew failures** (createPool OOG, ghost approve, mint never queued,
+MCP timeouts, swapped job amounts, balance tool quirks). Read when a 943 wiz4rd Brew
+misbehaves — complements [`workflow-recovery`](workflow-recovery/SKILL.md) and
+[`lp-gas-preflight`](lp-gas-preflight/SKILL.md).
 
 ### `mcp-connect`
 
