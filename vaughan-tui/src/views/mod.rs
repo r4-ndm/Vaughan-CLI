@@ -410,7 +410,7 @@ fn render_address_under_augha(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Copy / toast line under the address (visible on home and every unlocked screen).
 fn render_chrome_flash(frame: &mut Frame, area: Rect, app: &App) {
-    use crate::views::approve::verify_table_lines;
+    use crate::views::approve::verify_table_compact_lines;
 
     let chrome = app.chrome();
     if chrome.flash_table.is_none() && chrome.flash.is_none() {
@@ -434,10 +434,15 @@ fn render_chrome_flash(frame: &mut Frame, area: Rect, app: &App) {
         )));
     }
     if let Some(rows) = &chrome.flash_table {
-        let table_style = Style::default().fg(Color::Green);
-        for line in verify_table_lines(rows, area.width.saturating_sub(2)) {
-            lines.push(line.style(table_style));
+        for line in verify_table_compact_lines(rows, area.width.saturating_sub(2)) {
+            lines.push(line.style(Style::default().fg(Color::Green)));
         }
+    }
+    if chrome.flash_dismiss_on_enter {
+        lines.push(Line::from(Span::styled(
+            "Enter — OK",
+            Style::default().fg(Color::DarkGray),
+        )));
     }
     if lines.is_empty() {
         return;

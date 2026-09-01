@@ -279,6 +279,8 @@ pub struct ChromeSnapshot {
     pub flash_title: Option<String>,
     /// Bordered verification table for post-action success (e.g. LP Brew mint).
     pub flash_table: Option<Vec<(String, String)>>,
+    /// When true, flash stays until the user presses Enter (LP Brew success).
+    pub flash_dismiss_on_enter: bool,
     /// Ticks remaining before flash content clears (decremented each UI tick).
     pub flash_ticks_left: u8,
     /// Which status box is hotkeyed (F1 / F2 / F3).

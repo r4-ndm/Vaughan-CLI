@@ -14,7 +14,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
     Frame,
@@ -310,10 +310,14 @@ impl ApproveView {
         ];
         if !self.verify_table.is_empty() {
             text.push(Line::from(Span::styled(
-                "Verification (decoded calldata + Brew job)",
-                Style::default().fg(Color::Cyan),
+                "Summary",
+                Style::default()
+                    .fg(brand::accent_color())
+                    .add_modifier(Modifier::BOLD),
             )));
-            for line in verify_table_lines(&self.verify_table, area.width.saturating_sub(4)) {
+            for line in
+                verify_table_compact_lines(&self.verify_table, area.width.saturating_sub(4))
+            {
                 text.push(line);
             }
             text.push(Line::from(""));
@@ -378,7 +382,85 @@ impl ApproveView {
     }
 }
 
-/// Render verification rows as a Unicode box table for human confirmation.
+/// Compact styled lines for the approve screen (fits narrow terminals).
+pub fn verify_table_compact_lines(rows: &[(String, String)], width: u16) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let inner = width.max(40) as usize;
+    const LABEL_W: usize = 12;
+    let mut out = Vec::with_capacity(rows.len() + 1);
+
+    let job = rows
+        .iter()
+        .find(|(label, _)| label == "Brew job")
+        .map(|(_, value)| value.as_str());
+    let step = rows
+        .iter()
+        .find(|(label, _)| label == "Step")
+        .map(|(_, value)| value.as_str());
+    if job.is_some() || step.is_some() {
+        let mut meta = String::new();
+        if let Some(s) = step {
+            meta.push_str(s);
+        }
+        if let Some(j) = job {
+            if !meta.is_empty() {
+                meta.push_str(" · ");
+            }
+            meta.push_str("job ");
+            meta.push_str(j);
+        }
+        out.push(Line::from(Span::styled(
+            truncate_display(&meta, inner),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    for (label, value) in rows {
+        if matches!(label.as_str(), "Brew job" | "Step" | "Recipient") {
+            continue;
+        }
+        let value_style = if label.starts_with("Deposit") {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if label == "Pool" {
+            Style::default()
+                .fg(brand::accent_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(brand::body_color())
+        };
+        out.push(compact_verify_row(
+            label,
+            value,
+            inner,
+            LABEL_W,
+            Style::default().fg(brand::accent_color()),
+            value_style,
+        ));
+    }
+    out
+}
+
+fn compact_verify_row(
+    label: &str,
+    value: &str,
+    inner_width: usize,
+    label_w: usize,
+    label_style: Style,
+    value_style: Style,
+) -> Line<'static> {
+    let value_w = inner_width.saturating_sub(label_w + 2).max(12);
+    Line::from(vec![
+        Span::styled(format!(" {:label_w$}", truncate_display(label, label_w)), label_style),
+        Span::raw(" "),
+        Span::styled(truncate_display(value, value_w), value_style),
+    ])
+}
+
+/// Render verification rows as a Unicode box table (success flash under address).
 pub fn verify_table_lines(rows: &[(String, String)], width: u16) -> Vec<Line<'static>> {
     if rows.is_empty() {
         return Vec::new();
@@ -468,6 +550,24 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn verify_table_compact_fits_fewer_lines_than_box() {
+        let rows = vec![
+            ("Brew job".into(), "lp_abc".into()),
+            ("Step".into(), "Add liquidity (mint)".into()),
+            ("Pool".into(), "BOB / JANE · Wiz4rd · 2% fee".into()),
+            ("Range".into(), "Full (-887200 → 887200)".into()),
+            ("Deposit BOB".into(), "100".into()),
+            ("Deposit JANE".into(), "0.04".into()),
+            ("Recipient".into(), "0x9274…".into()),
+        ];
+        let compact = verify_table_compact_lines(&rows, 80);
+        let boxed = verify_table_lines(&rows, 80);
+        assert!(compact.len() < boxed.len());
+        assert!(compact.iter().any(|l| l.to_string().contains("BOB / JANE")));
+        assert!(!compact.iter().any(|l| l.to_string().starts_with('┌')));
     }
 
     #[test]
