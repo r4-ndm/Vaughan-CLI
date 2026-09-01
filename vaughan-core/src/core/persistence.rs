@@ -44,6 +44,26 @@ pub fn is_sentient_profile(name: &str) -> bool {
     name == SENTIENT_PROFILE || name == DEGEN_PROFILE
 }
 
+/// Whether Sentient auto-exec is offered in the TUI / CLI.
+///
+/// Deferred while assist (advisor) mode is hardened. Re-enable when assist is
+/// bomb-proof — flip to `true` and restore the unlock Sentient role picker.
+pub fn sentient_mode_enabled() -> bool {
+    false
+}
+
+/// Profile names that must not be used while [`sentient_mode_enabled`] is false.
+pub fn reject_deferred_sentient_profile(profile: &str) -> Result<(), WalletError> {
+    if is_sentient_profile(profile) && !sentient_mode_enabled() {
+        return Err(WalletError::Other(
+            "Sentient mode is deferred — use the default profile with Agent advisor mode \
+             (assist-first). Sentient auto-exec will return when assist is battle-tested."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a profile name for safe on-disk use.
 ///
 /// Names come from CLI args and MCP host configs; without validation a name
@@ -936,6 +956,13 @@ mod tests {
         assert!(is_sentient_profile(DEGEN_PROFILE));
         assert!(!is_sentient_profile(DEFAULT_PROFILE));
         assert!(!is_sentient_profile("bot1"));
+    }
+
+    #[test]
+    fn sentient_mode_deferred_by_default() {
+        assert!(!sentient_mode_enabled());
+        assert!(reject_deferred_sentient_profile(SENTIENT_PROFILE).is_err());
+        assert!(reject_deferred_sentient_profile("default").is_ok());
     }
 
     #[test]

@@ -31,6 +31,10 @@ pub use uniswap_v3_sdk::utils;
 /// Sqrt-price math (next-price + amount deltas) — the swap/quote core.
 pub use uniswap_v3_sdk::utils::sqrt_price_math;
 
+/// Uniswap V3 tick bounds as plain `i32` for agent/API validation.
+pub const MIN_V3_TICK: i32 = -887_272;
+pub const MAX_V3_TICK: i32 = 887_272;
+
 pub use uniswap_v3_sdk::utils::{
     full_math::FullMath,
     get_fee_growth_inside::get_fee_growth_inside,

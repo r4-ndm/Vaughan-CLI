@@ -741,8 +741,11 @@ mod tests {
         assert!(is_ephemeral_url("chrome://newtab/"));
     }
 
+    static CDP_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn resolve_cdp_port_default_off() {
+        let _guard = CDP_ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
         assert_eq!(resolve_cdp_port(false), 0);
         assert_eq!(resolve_cdp_port(true), DEFAULT_CDP_PORT);
@@ -750,6 +753,7 @@ mod tests {
 
     #[test]
     fn resolve_cdp_port_env_overrides_toggle() {
+        let _guard = CDP_ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("VAUGHAN_DAPP_BROWSER_CDP_PORT", "9333");
         assert_eq!(resolve_cdp_port(false), 9333);
         assert_eq!(resolve_cdp_port(true), 9333);
@@ -760,6 +764,7 @@ mod tests {
 
     #[test]
     fn spawn_cdp_port_random_when_enabled() {
+        let _guard = CDP_ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
         assert_eq!(spawn_cdp_port(false), 0);
         let a = spawn_cdp_port(true);

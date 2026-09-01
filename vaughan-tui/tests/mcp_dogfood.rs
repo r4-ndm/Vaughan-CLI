@@ -11,6 +11,7 @@ mod common;
 use alloy::primitives::{Address, Bytes, U256};
 use common::{funded_wallet, Anvil};
 use vaughan_core::core::proposal::{ProposalQueue, ProposalType, TxProposal, PROPOSAL_TTL_SECS};
+use vaughan_core::core::WalletState;
 use vaughan_tui::provider::{execute_approval, ApprovalKind};
 
 fn mcp_proposal_kind(proposal: TxProposal) -> ApprovalKind {
@@ -246,5 +247,107 @@ async fn mcp_fee_spike_blocks_sign() {
     assert!(
         msg.contains("fee") && msg.contains("10%"),
         "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn lp_deploy_step_skips_batch7702_decode_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = WalletState::load(dir.path().join("w.json")).unwrap();
+
+    let calldata = hex::decode(
+        "a167129500000000000000000000000033df366093ef8ac488e5be40e7ee2eeac2142770000000000000000000000000fc413180d3624349d111fd98ee76bc08a25bc6550000000000000000000000000000000000000000000000000000000000004e20",
+    )
+    .unwrap();
+    let factory: Address = "0x297BeFB564d3Bba2D1913613B84Fb743C259C6cf"
+        .parse()
+        .unwrap();
+    let proposal = TxProposal::new(
+        "lp-createPool-route",
+        ProposalType::LpDeployStep {
+            job_id: "lp_test".into(),
+            step_label: "createPool".into(),
+        },
+        factory,
+        U256::ZERO,
+        Bytes::from(calldata),
+        500_000,
+        true,
+        "route test",
+    )
+    .with_chain(943, None);
+
+    let err = execute_approval(&mcp_proposal_kind(proposal), &mut wallet)
+        .await
+        .expect_err("locked wallet must not sign");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("locked"),
+        "LP deploy must use EVM send path (fail on locked wallet), not batch7702 decode: {err}"
+    );
+    assert!(!msg.contains("batch7702") && !msg.contains("decode"));
+}
+
+#[tokio::test]
+async fn lp_deploy_step_applies_fee_override_to_evm_tx() {
+    use vaughan_core::chains::{ChainTransaction, Fee, FeeDetails};
+    use vaughan_core::core::proposal::apply_proposal;
+    use vaughan_core::core::transaction::TransactionService;
+
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = funded_wallet(dir.path(), &anvil);
+
+    let calldata = hex::decode(
+        "095ea7b3000000000000000000000000fc413180d3624349d111fd98ee76bc08a25bc6550000000000000000000000000000000000000000000000000000000000004e20",
+    )
+    .unwrap();
+    let npm: Address = "0x33df366093ef8ac488e5be40e7ee2eeac2142770"
+        .parse()
+        .unwrap();
+    let proposal = TxProposal::new(
+        "lp-fee-override",
+        ProposalType::LpDeployStep {
+            job_id: "lp_fee_test".into(),
+            step_label: "approve token0".into(),
+        },
+        npm,
+        U256::ZERO,
+        Bytes::from(calldata),
+        100_000,
+        true,
+        "fee override dogfood",
+    )
+    .with_chain(943, None);
+
+    let evm = apply_proposal(&wallet, &proposal).expect("apply_proposal");
+    let override_max = 88_000_000_000u128;
+    let override_tip = 7_000_000_000u128;
+    let fee = Fee {
+        total: "test".into(),
+        currency: "tPLS".into(),
+        details: FeeDetails::Evm {
+            gas_limit: evm.gas_limit.unwrap_or(100_000),
+            max_fee_per_gas: Some(override_max.to_string()),
+            max_priority_fee_per_gas: Some(override_tip.to_string()),
+        },
+    };
+
+    // Mirrors execute_approval_with_fee LP-deploy branch (fee_override path).
+    let mut chain_tx = ChainTransaction::Evm(evm);
+    TransactionService::new()
+        .apply_fee(&mut chain_tx, &fee)
+        .expect("apply_fee");
+    let ChainTransaction::Evm(signed_shape) = chain_tx else {
+        panic!("expected EVM tx");
+    };
+
+    assert_eq!(
+        signed_shape.max_fee_per_gas.as_deref(),
+        Some(override_max.to_string().as_str())
+    );
+    assert_eq!(
+        signed_shape.max_priority_fee_per_gas.as_deref(),
+        Some(override_tip.to_string().as_str())
     );
 }

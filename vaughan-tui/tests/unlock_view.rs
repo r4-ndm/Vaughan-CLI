@@ -189,10 +189,10 @@ fn meta(name: &str, initialized: bool) -> ProfileMeta {
     }
 }
 
-/// The picker opens on the Human / Sentient role choice; an uncreated
-/// sentient wallet is flagged as new.
+/// With Sentient deferred, the picker skips the role step and goes straight
+/// to human wallet / mode selection.
 #[test]
-fn picker_lists_human_or_sentient_roles() {
+fn picker_skips_sentient_role_when_deferred() {
     let dir = tempfile::tempdir().unwrap();
     let wallet = fresh_wallet(dir.path());
     let view = UnlockView::with_profiles(
@@ -201,11 +201,13 @@ fn picker_lists_human_or_sentient_roles() {
     );
 
     let text = render(&view, &wallet);
-    assert!(text.contains("Human"), "human row:\n{text}");
-    assert!(text.contains("Sentient"), "sentient row:\n{text}");
     assert!(
-        text.contains("new — vault created next"),
-        "uninitialized tag:\n{text}"
+        !text.contains("Sentient"),
+        "sentient row hidden while deferred:\n{text}"
+    );
+    assert!(
+        text.contains("Agent advisor") || text.contains("Human only"),
+        "expected mode picker:\n{text}"
     );
 }
 
@@ -225,6 +227,7 @@ fn password_field_uses_empty_placeholder() {
 /// Enter on Sentient skips the mode step (auto-exec only runs on the agent
 /// wallet's seed) and emits `SwitchProfile` with SentientTrader.
 #[test]
+#[ignore = "sentient mode deferred until assist is battle-tested"]
 fn picker_enter_on_sentient_emits_switch_profile() {
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = fresh_wallet(dir.path());
@@ -425,6 +428,7 @@ fn unlock_via_human_only_row_sets_human_mode() {
 /// mode for the session (FR-5.1); the default profile stays HumanOnly
 /// (covered by `unlock_view_correct_password_unlocks_and_publishes_event`).
 #[test]
+#[ignore = "sentient mode deferred until assist is battle-tested"]
 fn unlock_sentient_profile_sets_sentient_mode() {
     let dir = tempfile::tempdir().unwrap();
     // Create the vault offline, then reload it as the sentient profile.
@@ -454,6 +458,7 @@ fn unlock_sentient_profile_sets_sentient_mode() {
 /// → `SwitchProfile` → the app reloads the sentient vault → password unlocks
 /// it and lands on the dashboard in SentientTrader mode.
 #[test]
+#[ignore = "sentient mode deferred until assist is battle-tested"]
 fn sentient_picker_password_unlocks_real_vault() {
     let dir = tempfile::tempdir().unwrap();
     let _ = funded_wallet_at(dir.path(), "http://127.0.0.1:8545");

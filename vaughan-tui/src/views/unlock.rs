@@ -15,8 +15,8 @@ use ratatui::widgets::{Gauge, HighlightSpacing, List, ListItem, ListState, Parag
 use ratatui::Frame;
 use tokio::runtime::Handle;
 use vaughan_core::core::{
-    is_sentient_profile, tui_mode_for_profile, OperatingMode, ProfileMeta, StateManager,
-    WalletState, SENTIENT_PROFILE,
+    is_sentient_profile, sentient_mode_enabled, tui_mode_for_profile, OperatingMode, ProfileMeta,
+    StateManager, WalletState, SENTIENT_PROFILE,
 };
 use vaughan_provider::EventBus;
 
@@ -124,24 +124,55 @@ impl UnlockView {
 
     /// Picker construction from an explicit profile list (tests inject fakes).
     pub fn with_profiles(profiles: Vec<ProfileMeta>, current_profile: &str) -> Self {
-        let current_is_sentient = is_sentient_profile(current_profile);
+        let current_is_sentient =
+            is_sentient_profile(current_profile) && sentient_mode_enabled();
+        let (stage, selected) = Self::initial_stage_and_selection(&profiles);
+        let mut picked_profile = None;
+        if !sentient_mode_enabled() && stage == Stage::PickMode {
+            let humans: Vec<_> = profiles.iter().filter(|p| !p.is_sentient).collect();
+            picked_profile = Some(
+                humans
+                    .first()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| current_profile.to_string()),
+            );
+        }
         Self {
             input: Input::new(true, ""),
             status: String::new(),
-            selected: usize::from(current_is_sentient),
-            stage: if profiles.is_empty() {
-                Stage::Password
-            } else {
-                Stage::PickRole
-            },
+            selected,
+            stage,
             password_back: None,
-            role: None,
-            picked_profile: None,
+            role: Some(Role::Human),
+            picked_profile,
             picked_mode: None,
             unlocking: false,
             tick: 0,
             profiles,
         }
+        .tap_human_only_when_sentient_deferred(current_is_sentient)
+    }
+
+    fn initial_stage_and_selection(profiles: &[ProfileMeta]) -> (Stage, usize) {
+        if profiles.is_empty() {
+            return (Stage::Password, 0);
+        }
+        if sentient_mode_enabled() {
+            return (Stage::PickRole, 0);
+        }
+        let humans: Vec<_> = profiles.iter().filter(|p| !p.is_sentient).collect();
+        if humans.len() > 1 {
+            (Stage::PickWallet, 0)
+        } else {
+            (Stage::PickMode, 1)
+        }
+    }
+
+    fn tap_human_only_when_sentient_deferred(mut self, current_is_sentient: bool) -> Self {
+        if current_is_sentient {
+            self.selected = 0;
+        }
+        self
     }
 
     /// Surface an app-side error (e.g. a failed profile switch) on the status
@@ -202,7 +233,13 @@ impl UnlockView {
 
     fn row_count(&self) -> usize {
         match self.stage {
-            Stage::PickRole => 2,
+            Stage::PickRole => {
+                if sentient_mode_enabled() {
+                    2
+                } else {
+                    1
+                }
+            }
             Stage::PickWallet => self.human_profiles().len(),
             Stage::PickMode => HUMAN_WALLET_MODES.len(),
             Stage::Password => 0,
@@ -356,16 +393,16 @@ impl UnlockView {
 
     fn render_roles(&self, frame: &mut Frame, area: Rect) {
         let human_new = self.human_profiles().is_empty();
-        let sentient_new = self.sentient_meta().map(|m| !m.initialized).unwrap_or(true);
-        let rows = [
-            (Role::Human, "Human", human_new, Style::default()),
-            (
+        let mut rows = vec![(Role::Human, "Human", human_new, Style::default())];
+        if sentient_mode_enabled() {
+            let sentient_new = self.sentient_meta().map(|m| !m.initialized).unwrap_or(true);
+            rows.push((
                 Role::Sentient,
                 "Sentient",
                 sentient_new,
                 Style::default().fg(Color::Magenta),
-            ),
-        ];
+            ));
+        }
         let labels = rows
             .iter()
             .map(|(_, label, is_new, base)| {
@@ -520,7 +557,7 @@ impl UnlockView {
                 KeyOutcome::Consumed
             }
             KeyCode::Enter => {
-                let role = if self.selected == 0 {
+                let role = if !sentient_mode_enabled() || self.selected == 0 {
                     Role::Human
                 } else {
                     Role::Sentient

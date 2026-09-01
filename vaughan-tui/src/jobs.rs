@@ -183,6 +183,61 @@ pub enum UiJob {
         amount1: String,
         /// Wait for a prior on-chain step before building the next tx.
         deploy_wait: vaughan_core::core::V3LpDeployWait,
+        /// Label of the tx that was just broadcast (approve wait semantics).
+        after_step_label: Option<String>,
+    },
+    /// Check NPM enable status for both tokens (PancakeSwap form step).
+    LpEnableCheck {
+        venue: vaughan_core::core::DexVenue,
+        chain_id: u64,
+        rpc_url: String,
+        from: String,
+        token0: String,
+        token1: String,
+        fee: u32,
+        dec0: u8,
+        dec1: u8,
+        pool_initial_price: String,
+        pool_min_price: String,
+        pool_max_price: String,
+        amount0: String,
+        amount1: String,
+    },
+    /// Build the next Enable tx for the deposit form.
+    LpEnablePrepare {
+        venue: vaughan_core::core::DexVenue,
+        chain_id: u64,
+        rpc_url: String,
+        from: String,
+        token0: String,
+        token1: String,
+        fee: u32,
+        dec0: u8,
+        dec1: u8,
+        pool_initial_price: String,
+        pool_min_price: String,
+        pool_max_price: String,
+        amount0: String,
+        amount1: String,
+        symbol: String,
+    },
+    /// Wait for an Enable broadcast, then re-check allowances.
+    LpEnableWait {
+        venue: vaughan_core::core::DexVenue,
+        chain_id: u64,
+        rpc_url: String,
+        from: String,
+        token0: String,
+        token1: String,
+        fee: u32,
+        dec0: u8,
+        dec1: u8,
+        pool_initial_price: String,
+        pool_min_price: String,
+        pool_max_price: String,
+        amount0: String,
+        amount1: String,
+        after_step_label: String,
     },
     /// On-chain pool price + lifecycle for V3 add-LP deposit coupling.
     LpV3PoolQuote {
@@ -201,6 +256,13 @@ pub enum UiJob {
         symbol: String,
         supply: String,
     },
+    /// MCP file-queue approve: sign + broadcast off the UI thread.
+    McpQueuedApprove {
+        proposal_id: String,
+        source: String,
+        proposal: vaughan_core::core::proposal::TxProposal,
+        fee_override: Option<vaughan_core::chains::Fee>,
+    },
 }
 
 /// Cached need-to-know strip shared across every unlocked screen.
@@ -213,7 +275,11 @@ pub struct ChromeSnapshot {
     pub error: Option<String>,
     /// Brief chrome toast (e.g. "F3 address copied") — shown under the address.
     pub flash: Option<String>,
-    /// Ticks remaining before [`Self::flash`] clears (decremented each UI tick).
+    /// Optional title above [`Self::flash_table`] (LP Brew success summary).
+    pub flash_title: Option<String>,
+    /// Bordered verification table for post-action success (e.g. LP Brew mint).
+    pub flash_table: Option<Vec<(String, String)>>,
+    /// Ticks remaining before flash content clears (decremented each UI tick).
     pub flash_ticks_left: u8,
     /// Which status box is hotkeyed (F1 / F2 / F3).
     pub focus: ChromeFocus,
@@ -303,10 +369,19 @@ pub enum UiJobResult {
     LpV2Positions(Result<Vec<vaughan_core::core::V2LpPosition>, WalletError>),
     /// Prepared V3 createPool or initialize transaction + confirm label.
     LpV3PoolDeployStep(Result<(vaughan_core::chains::EvmTransaction, String), WalletError>),
+    LpEnableCheck(Result<Option<(bool, bool)>, WalletError>),
+    LpEnablePrepare(Result<(vaughan_core::chains::EvmTransaction, String, String), WalletError>),
+    LpEnableWait(Result<(), WalletError>),
     /// Live pool sqrt/tick for V3 deposit preview.
     LpV3PoolQuote(Result<vaughan_core::core::V3LpPoolQuote, WalletError>),
     /// Meme-coin deploy + auto-import.
     DeployToken(Result<vaughan_core::core::TokenLaunchOutcome, WalletError>),
+    /// MCP file-queue proposal executed (tx hash hex + proposal for success flash).
+    McpQueuedApprove {
+        result: Result<String, WalletError>,
+        proposal: vaughan_core::core::proposal::TxProposal,
+        proposal_id: String,
+    },
 }
 
 /// Successful off-thread unlock: derived accounts plus the session mode picked

@@ -49,6 +49,7 @@ async fn test_assist_registry_and_proposals_with_anvil() {
         rpc_url: anvil.rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
+            profile_dir: None,
     };
 
     // 1. Propose Native Transfer
@@ -117,6 +118,10 @@ async fn test_assist_registry_and_proposals_with_anvil() {
     let batch_prop: TxProposal = serde_json::from_value(batch_raw).unwrap();
     assert_eq!(batch_prop.value_wei.to_string(), "1000000000000000000");
     assert!(!batch_prop.calldata.is_empty());
+    assert!(
+        !batch_prop.simulation_success,
+        "batch7702 must not claim eth_call success on undelegated EOAs"
+    );
 
     // 3. Propose Contract Call
     let call_raw = registry

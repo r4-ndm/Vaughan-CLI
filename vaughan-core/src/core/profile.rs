@@ -55,7 +55,9 @@ impl fmt::Display for OperatingMode {
 /// profile trades autonomously under policy; every other profile stays
 /// human-approved. Single source of truth for unlock + onboarding.
 pub fn tui_mode_for_profile(profile: &str) -> OperatingMode {
-    if crate::core::persistence::is_sentient_profile(profile) {
+    if crate::core::persistence::is_sentient_profile(profile)
+        && crate::core::persistence::sentient_mode_enabled()
+    {
         OperatingMode::SentientTrader
     } else {
         OperatingMode::HumanOnly
