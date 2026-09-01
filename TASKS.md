@@ -317,6 +317,9 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/wiz4rd-addresses.md`)
 - [x] wiz4rd MCP Phase B+C: `get_v3_pool`, `quote_v3_swap`, `propose_v3_swap` (`docs/pulse-defi-skills.md`)
 - [x] wiz4rd MCP Phase D: `propose_v3_mint` + `list_v3_positions`
+- [x] LP Brews Phase 1: `lp_brew.rs` + `lp_deploy.rs` orchestrator, `propose_v3_lp_deploy`, `discover_v3_pool_fee`, TUI auto-advance on `LpDeployStep`, `vaughan lp plan|deploy`, token-agnostic `vaughan-brews` skill + `brew.example.json`
+- [x] LP Brews Phase 2: `build_lp_deploy_batch_calls` + `propose_v3_lp_deploy { mode: batch }` → single `Batch7702` confirm
+- [ ] Manual Advisor+Cursor 943 Brew walkthrough (user-chosen pair; smoke example in `docs/examples/`)
 - [x] wiz4rd MCP Phase E: `propose_v3_increase` / `_decrease` / `_collect`
 - [x] MCP wrap / unwrap / revoke / approve / list_allowances
 - [x] MCP bridge: `quote_bridge` / `propose_bridge` (LibertySwap)
@@ -357,12 +360,45 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] 9inch V3 factory + NPM on 369 — catalog + `propose_v3_create_pool` / `propose_v3_initialize_pool` + TUI Create tab
 - [ ] PulseX / other mainnet V3 NPM when addresses verified
 - [x] LP dual stack — wiz4rd V3 full lifecycle TUI on 943; 9inch V3 on 369 (Create/Mint/…); 9inch V2 via MCP `propose_v2_*`; core `v2_lp` + pool deploy
+- [x] LP smoke matrix — `core/lp_smoke` catalog (943 pairs), headless TUI tests (`smoke_tests`), live RPC `cargo test -p vaughan-core --test lp_smoke_943 -- --ignored`
+- [x] LP Tier 1 bomb-proof (2026-08-31): Anvil full pipeline (`lp_pipeline_anvil`), deploy-wait polls (`lp_workflow_anvil`), live smoke in `.github/workflows/live-smoke.yml`
+- [ ] LP manual 943 walkthrough (runbook below) — one human pass after material LP changes
 - [x] Bridge (`f`): LibertySwap convenience wrapper (source broadcast; dest async) — see above
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred
 - [x] Local EIP-712: paste/load typed-data JSON → Approve view — `vaughan sign-typed-data`, browser `sign-typed`
 - [x] Watch mode (MCP): `watch_balance` + `watch_quote` threshold snapshots; agent owns poll loop
 - [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/sentient-ops.md`](docs/sentient-ops.md))
 - [x] Batch7702 fee-spike: stamp via `estimate_self_pay_fee`, check at approve (same as other MCP writes)
+
+#### LP manual 943 walkthrough (operator runbook)
+
+Rebuild TUI (`cargo run -p vaughan-cli`), unlock on **pulsechain-testnet-v4**, open **LP** (`l`). Use small tPLS amounts.
+
+| Step | Pair | Pass criteria |
+|------|------|----------------|
+| 1 | **JIM/JANE** Add LP | Fee auto-switches 0.05% → 0.01%; pool quote loads; Enable → Confirm gas sane (~single-digit tPLS, not 100+) |
+| 2 | **WZRD/WPLS** Add LP | Default 0.05% fee; full-range mint succeeds |
+| 3 | Cancel mid-pipeline | After first approve broadcast, Esc — view resets cleanly (no stuck “Loading”) |
+| 4 | Collect | Existing position → Collect tab → fees land in wallet |
+
+Automated gates (CI / local):
+
+```sh
+cargo test -p vaughan-tui --test lp_pipeline_anvil --test lp_workflow_anvil --test lp_view \
+  --test lp_deploy_mcp_anvil --test lp_deploy_batch_fork -- --nocapture
+cargo test -p vaughan-core --test lp_smoke_943 -- --ignored --nocapture   # live 943 RPC
+```
+
+#### Advisor + Cursor LP Brew walkthrough (943)
+
+1. Unlock Vaughan TUI on **pulsechain-testnet-v4** in **Human → Advisor** mode.
+2. Copy [`docs/examples/lp-brew-smoke-943.example.json`](docs/examples/lp-brew-smoke-943.example.json) to `~/.local/share/vaughan-cli/brews/` and edit token addresses / amounts (or pass MCP args directly).
+3. In Cursor with Vaughan MCP connected: ask agent to run `discover_v3_pool_fee` then **`propose_v3_lp_deploy`** once with your pair, price, deposit, and fee.
+4. Approve each step in the TUI approval card (~5–6 confirms for a new pool; later steps auto-enqueue after each broadcast).
+5. Verify with MCP `list_v3_positions`.
+6. Optional Phase 2: repeat with `mode: "batch"` for a single EIP-7702 confirm (shows step list + delegation note on the batch card).
+
+Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaughan-tui --test lp_deploy_mcp_anvil` green locally.
 
 ### Positioning (UX + docs)
 - [x] Demote Dapps screen: relabel to “Optional web / VB” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP

@@ -11,7 +11,8 @@ use vaughan_core::chains::evm::adapter::EvmAdapter;
 use vaughan_core::chains::evm::networks::{get_network_by_id, resolve_rpc_endpoints};
 use vaughan_core::core::persistence::StateManager;
 use vaughan_core::core::proposal::{
-    guard_mainnet_write, proposal_status_json, McpSessionToken, ProposalQueue, TxProposal,
+    guard_mainnet_write, proposal_status_json, McpSessionToken, ProposalQueue, ProposalType,
+    TxProposal,
 };
 
 use crate::browser_bridge::{self, browser_tool_definitions};
@@ -122,6 +123,7 @@ impl McpDispatcher {
             rpc_url: ctx.rpc_url.clone(),
             chain_id: ctx.chain_id,
             active_address: ctx.active_address,
+            profile_dir: Some(self.profile_dir.clone()),
         };
 
         match name {
@@ -154,7 +156,19 @@ impl McpDispatcher {
                 let addr = ctx.active_address.ok_or_else(|| {
                     "wallet_locked: unlock Vaughan TUI or pass account_address".to_string()
                 })?;
-                Ok(json!({ "address": format!("{addr:#x}") }))
+                let session = McpSessionToken::read(&self.profile_dir)
+                    .map_err(|e| e.user_message())?
+                    .unwrap_or_default();
+                let account_meta = if session.is_empty() {
+                    None
+                } else {
+                    try_get_session(&session).await.ok().flatten()
+                };
+                Ok(json!({
+                    "address": format!("{addr:#x}"),
+                    "account_index": account_meta.as_ref().map(|s| s.account_index),
+                    "account_label": account_meta.as_ref().map(|s| s.account_label.as_str()),
+                }))
             }
             "list_assets" => self.list_assets(ctx).await,
             _ => self
@@ -234,6 +248,7 @@ impl McpDispatcher {
             rpc_url: ctx.rpc_url.clone(),
             chain_id: ctx.chain_id,
             active_address: ctx.active_address,
+            profile_dir: Some(self.profile_dir.clone()),
         };
 
         let raw = self
@@ -288,6 +303,7 @@ impl McpDispatcher {
             rpc_url: ctx.rpc_url.clone(),
             chain_id: ctx.chain_id,
             active_address: ctx.active_address,
+            profile_dir: Some(self.profile_dir.clone()),
         };
         self.assist
             .execute(name, args, &tool_ctx)
@@ -308,11 +324,27 @@ impl McpDispatcher {
                     .to_string()
             })?;
 
-        match try_propose_live(&session, &ctx.source, &proposal).await {
-            Ok(Some(data)) => return Ok(data),
-            Ok(None) => {}
-            Err(e) if e.contains("wallet is locked") || e.contains("tui_offline") => {}
-            Err(e) => return Err(e),
+        // LP Brew steps: always enqueue so MCP returns immediately and the TUI
+        // surfaces the card via poll_file_queue (multi-step pipeline UX).
+        // Standalone V3 mint proposals use the same path (avoid 120s live-propose timeout).
+        let file_queue_immediately = matches!(
+            proposal.proposal_type,
+            ProposalType::LpDeployStep { .. }
+        ) || matches!(
+            &proposal.proposal_type,
+            ProposalType::ContractCall {
+                function_name: Some(name),
+                ..
+            } if name == "mint"
+        );
+
+        if !file_queue_immediately {
+            match try_propose_live(&session, &ctx.source, &proposal).await {
+                Ok(Some(data)) => return Ok(data),
+                Ok(None) => {}
+                Err(e) if e.contains("wallet is locked") || e.contains("tui_offline") => {}
+                Err(e) => return Err(e),
+            }
         }
 
         let secret = session.as_bytes();
@@ -376,20 +408,26 @@ impl McpDispatcher {
             .map_err(|e| e.user_message())?
             .unwrap_or_default();
         let has_session_file = !session.is_empty();
-        let (reachable, unlocked, address) = if has_session_file {
+        let (reachable, unlocked, address, account_index, account_label) = if has_session_file {
             let reachable = ping(&session).await;
             match try_get_session(&session).await {
                 // A answered Session query proves reachability even if the
                 // (earlier, 2s) ping timed out.
-                Ok(Some(info)) => (true, true, Some(info.address)),
+                Ok(Some(info)) => (
+                    true,
+                    true,
+                    Some(info.address),
+                    Some(info.account_index),
+                    Some(info.account_label),
+                ),
                 // Locked/offline session: preserve the ping result — reporting
                 // unreachable when the plane is actually up misleads agents
                 // into spawning duplicate serve processes.
-                Ok(None) => (reachable, false, None),
-                Err(_) => (reachable, false, None),
+                Ok(None) => (reachable, false, None, None, None),
+                Err(_) => (reachable, false, None, None, None),
             }
         } else {
-            (false, false, None)
+            (false, false, None, None, None)
         };
         let profile_name = self
             .profile_dir
@@ -406,6 +444,8 @@ impl McpDispatcher {
             "agent_autonomy_tier": autonomy.as_str(),
             "operator_auto_connect": autonomy == vaughan_core::core::AgentAutonomyTier::Operator,
             "active_address": address.map(|a| format!("{a:#x}")),
+            "active_account_index": account_index,
+            "active_account_label": account_label,
             "profile": profile_name,
             "sentient_auto_exec": auto_exec,
             "ready_for_writes": reachable && unlocked,

@@ -297,9 +297,36 @@ pub(crate) fn token_symbol_hint(addr: &str, chain_id: u64) -> Option<&'static st
         if addr.eq_ignore_ascii_case("0x15de8ae884726f37ec90824f825d723ac93c8b77") {
             return Some("BOB");
         }
+        if addr.eq_ignore_ascii_case("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba") {
+            return Some("JIM");
+        }
         if addr.eq_ignore_ascii_case("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59") {
             return Some("JANE");
         }
+    }
+    None
+}
+
+/// Lower rank = shown first in LP position pair labels (Add LP field order on 943 smoke tokens).
+pub(crate) fn token_lp_display_rank(addr: &str, chain_id: u64) -> Option<u8> {
+    use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
+    if chain_id != 943 {
+        return None;
+    }
+    if addr.eq_ignore_ascii_case("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba") {
+        return Some(0);
+    }
+    if addr.eq_ignore_ascii_case("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59") {
+        return Some(1);
+    }
+    if addr.eq_ignore_ascii_case("0x15de8ae884726f37ec90824f825d723ac93c8b77") {
+        return Some(2);
+    }
+    if addr.eq_ignore_ascii_case(WZRD_SMOKE_943) {
+        return Some(3);
+    }
+    if addr.eq_ignore_ascii_case("0x70499adEBB11Efd915E3b69E700c331778628707") {
+        return Some(4);
     }
     None
 }
@@ -346,12 +373,14 @@ pub fn render(frame: &mut Frame, app: &App) {
     let status_h = 3u16;
     let footer_h = 12u16;
 
+    let flash_h = app.chrome_flash_height(area.width);
+
     let [logo, _gap_above, addr_row, flash_row, status_bar, _gap_below_status, body, footer] =
         Layout::vertical([
             Constraint::Length(1), // VAUGHAN banner
             Constraint::Length(1), // blank above address
             Constraint::Length(1), // colour-coded address
-            Constraint::Length(1), // copy toast / blank
+            Constraint::Length(flash_h), // copy toast / LP success table
             Constraint::Length(status_h),
             Constraint::Length(1), // blank under F1–F3
             Constraint::Min(0),
@@ -381,17 +410,45 @@ fn render_address_under_augha(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Copy / toast line under the address (visible on home and every unlocked screen).
 fn render_chrome_flash(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(msg) = app.chrome().flash.as_deref() else {
+    use crate::views::approve::verify_table_compact_lines;
+
+    let chrome = app.chrome();
+    if chrome.flash_table.is_none() && chrome.flash.is_none() {
         return;
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(title) = chrome.flash_title.as_deref() {
+        lines.push(Line::from(Span::styled(
+            title.to_string(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else if let Some(msg) = chrome.flash.as_deref() {
+        lines.push(Line::from(Span::styled(
             msg.to_string(),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Center),
+        )));
+    }
+    if let Some(rows) = &chrome.flash_table {
+        for line in verify_table_compact_lines(rows, area.width.saturating_sub(2)) {
+            lines.push(line.style(Style::default().fg(Color::Green)));
+        }
+    }
+    if chrome.flash_dismiss_on_enter {
+        lines.push(Line::from(Span::styled(
+            "Enter — OK",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    if lines.is_empty() {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
         area,
     );
 }

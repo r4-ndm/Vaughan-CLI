@@ -923,7 +923,7 @@ impl DexView {
 
         lines.push(Line::from(""));
         lines.push(Line::from(format!(
-            "Gas (est.): {fee_total}  [{}]",
+            "Gas (max cap): {fee_total}  [{}]",
             self.speed.label()
         )));
         lines.push(Line::from(format!(

@@ -61,9 +61,18 @@ pub fn resolve_token(raw: &str, chain_id: u64) -> Result<(Address, bool), AgentE
             .ok_or_else(|| AgentError::InvalidToolCall("invalid WZRD address".into()))?;
         return Ok((a, false));
     }
-    let addr = Address::from_str(s)
-        .map_err(|e| AgentError::InvalidToolCall(format!("Invalid token address: {e}")))?;
-    Ok((addr, false))
+    if let Ok(addr) = Address::from_str(s) {
+        return Ok((addr, false));
+    }
+    // Smoke-catalog symbols on 943 (BOB, JANE, JIM) for LP Brew tours.
+    if chain_id == 943 {
+        if let Ok(addr) = vaughan_core::core::resolve_lp_brew_token(s, chain_id) {
+            return Ok((addr, false));
+        }
+    }
+    Err(AgentError::InvalidToolCall(format!(
+        "Invalid token {raw:?} — use checksummed 0x address or known symbol (WPLS, WZRD, BOB, JANE, JIM on 943)"
+    )))
 }
 
 pub async fn load_pool(

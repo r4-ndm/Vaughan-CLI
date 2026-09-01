@@ -12,7 +12,8 @@ use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::v3_lp::{proposal_network_id, resolve_lp_venue, venue_param_schema};
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::{
-    build_v3_create_pool_evm, build_v3_initialize_pool_from_tick_evm, is_allowed_dex_router,
+    build_v3_create_pool_evm, build_v3_initialize_pool_from_human_price_evm,
+    build_v3_initialize_pool_from_tick_evm, is_allowed_dex_router, sort_lp_token_pair,
     v3_pool_lifecycle, venue_v3_factory, V3PoolLifecycle,
 };
 
@@ -168,7 +169,7 @@ impl Tool for ProposeV3InitializePoolTool {
 
     fn description(&self) -> &str {
         "Draft V3 initialize(sqrtPriceX96) on an existing uninitialized pool. \
-         Use initial_tick 0 for 1:1 starting price (same decimals). Never signs."
+         Use initial_price_token1_per_token0 for human price, or initial_tick 0 for 1:1 (same decimals). Never signs."
     }
 
     fn parameters(&self) -> Value {
@@ -180,8 +181,12 @@ impl Tool for ProposeV3InitializePoolTool {
                 "fee": { "type": "integer", "default": 500 },
                 "initial_tick": {
                     "type": "integer",
-                    "description": "Starting price tick (0 = 1:1). Adjust for decimal offset.",
+                    "description": "Starting price tick (0 = 1:1). Mutually exclusive with initial_price_token1_per_token0.",
                     "default": 0
+                },
+                "initial_price_token1_per_token0": {
+                    "type": "string",
+                    "description": "Human starting price token1 per token0 (sorted pool order). Use instead of initial_tick when decimals differ."
                 },
                 "venue": venue_param_schema()["venue"],
                 "explanation": { "type": "string" }
@@ -207,10 +212,20 @@ impl Tool for ProposeV3InitializePoolTool {
             "token_b",
         )?;
         let fee = args.get("fee").and_then(|v| v.as_u64()).unwrap_or(500) as u32;
+        let human_price = args
+            .get("initial_price_token1_per_token0")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let initial_tick = args
             .get("initial_tick")
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
+        if human_price.is_some() && args.get("initial_tick").is_some() {
+            return Err(AgentError::InvalidToolCall(
+                "pass initial_price_token1_per_token0 or initial_tick, not both".into(),
+            ));
+        }
         let explanation = require_explanation(&args)?;
         let venue = resolve_lp_venue(&args, context.chain_id)?;
         let lifecycle = v3_pool_lifecycle(
@@ -236,13 +251,38 @@ impl Tool for ProposeV3InitializePoolTool {
                 ))
             }
         };
-        let evm = build_v3_initialize_pool_from_tick_evm(
-            &format!("{from:#x}"),
-            context.chain_id,
-            pool,
-            initial_tick,
-        )
-        .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
+        let evm = if let Some(price) = human_price {
+            let dec_a = fetch_erc20_decimals(&context.rpc_url, token_a)
+                .await
+                .map_err(|e| AgentError::ProviderError(e.user_message()))?;
+            let dec_b = fetch_erc20_decimals(&context.rpc_url, token_b)
+                .await
+                .map_err(|e| AgentError::ProviderError(e.user_message()))?;
+            let pair = sort_lp_token_pair(token_a, token_b, dec_a, dec_b);
+            build_v3_initialize_pool_from_human_price_evm(
+                &format!("{from:#x}"),
+                context.chain_id,
+                pool,
+                pair.token0,
+                pair.token1,
+                pair.dec0,
+                pair.dec1,
+                price,
+                fee,
+            )
+            .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?
+        } else {
+            build_v3_initialize_pool_from_tick_evm(
+                &format!("{from:#x}"),
+                context.chain_id,
+                pool,
+                initial_tick,
+            )
+            .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?
+        };
+        let init_detail = human_price
+            .map(|p| format!("price {p}"))
+            .unwrap_or_else(|| format!("tick {initial_tick}"));
         let calldata = hex::decode(evm.data.as_deref().unwrap_or("0x").trim_start_matches("0x"))
             .map_err(|e| AgentError::InvalidToolCall(format!("calldata: {e}")))?;
         let proposal = attach_estimated_fee(
@@ -258,7 +298,7 @@ impl Tool for ProposeV3InitializePoolTool {
                 200_000,
                 true,
                 format!(
-                    "{explanation} [{} initialize fee {fee} tick {initial_tick} pool {pool:#x}]",
+                    "{explanation} [{} initialize fee {fee} {init_detail} pool {pool:#x}]",
                     venue.label()
                 ),
             )
@@ -268,4 +308,24 @@ impl Tool for ProposeV3InitializePoolTool {
         .await;
         Ok(serde_json::to_value(&proposal)?)
     }
+}
+
+async fn fetch_erc20_decimals(rpc_url: &str, token: Address) -> Result<u8, vaughan_core::error::WalletError> {
+    use alloy::providers::ProviderBuilder;
+    use alloy::sol;
+    sol! {
+        #[sol(rpc)]
+        contract Erc20Decimals {
+            function decimals() external view returns (uint8);
+        }
+    }
+    let url = rpc_url
+        .parse()
+        .map_err(|_| vaughan_core::error::WalletError::NetworkError("invalid RPC URL".into()))?;
+    let provider = ProviderBuilder::new().connect_http(url);
+    Erc20Decimals::new(token, provider)
+        .decimals()
+        .call()
+        .await
+        .map_err(|e| vaughan_core::error::WalletError::NetworkError(format!("decimals: {e}")))
 }

@@ -56,6 +56,8 @@ async fn mcp_loopback_ping_and_session() {
         address: Some("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".into()),
         chain_id: Some(31_337),
         network_id: Some("anvil".into()),
+        account_index: Some(1),
+        account_label: Some("wallet 1".into()),
     });
     svc.on_unlock(&tokio::runtime::Handle::current());
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -77,6 +79,8 @@ async fn mcp_loopback_ping_and_session() {
     );
     assert_eq!(data["chain_id"].as_u64().unwrap(), 31_337);
     assert_eq!(data["network_id"].as_str().unwrap(), "anvil");
+    assert_eq!(data["account_index"].as_u64().unwrap(), 1);
+    assert_eq!(data["account_label"].as_str().unwrap(), "wallet 1");
 
     svc.on_lock();
 }

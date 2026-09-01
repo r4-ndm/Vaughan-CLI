@@ -19,6 +19,9 @@ pub const FACTORY_943: &str = "0x297BeFB564d3Bba2D1913613B84Fb743C259C6cf";
 pub const SWAP_ROUTER_943: &str = "0xfC656c95eCd418536844FeeaA46949bb9365BEaF";
 /// NonfungiblePositionManager (943).
 pub const POSITION_MANAGER_943: &str = "0xf1b1D004dD8bFC618F977F6ACAD127a60c566745";
+/// Lower bound for NPM `Transfer` log scans on 943. Public RPC returns empty
+/// `eth_getLogs` without `fromBlock`; do not scan from genesis on live 943.
+pub const NPM_LOG_SCAN_FROM_BLOCK_943: u64 = 25_100_000;
 /// QuoterV2 (943).
 pub const QUOTER_V2_943: &str = "0x38d1752597c2c0BD25E980891cd6d74766138FB7";
 /// TickLens (943).

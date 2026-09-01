@@ -562,12 +562,10 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.quitting {
             self.tick = self.tick.wrapping_add(1);
-            if self.chrome.flash_ticks_left > 0 {
+            if self.chrome.flash_ticks_left > 0 && !self.chrome.flash_dismiss_on_enter {
                 self.chrome.flash_ticks_left -= 1;
                 if self.chrome.flash_ticks_left == 0 {
-                    self.chrome.flash = None;
-                    self.chrome.flash_title = None;
-                    self.chrome.flash_table = None;
+                    self.clear_chrome_flash();
                 }
             }
             self.poll_provider();
@@ -644,6 +642,15 @@ impl App {
         // Quit confirm owns the keyboard until Yes/No/Esc.
         if self.quit_confirm.is_some() {
             self.handle_quit_confirm_key(key);
+            return;
+        }
+
+        // LP Brew success (and similar) stays until Enter.
+        if self.chrome.flash_dismiss_on_enter
+            && (self.chrome.flash_table.is_some() || self.chrome.flash_title.is_some())
+            && matches!(key.code, KeyCode::Enter)
+        {
+            self.clear_chrome_flash();
             return;
         }
 
@@ -828,24 +835,35 @@ impl App {
         self.chrome.flash = Some(msg.into());
         self.chrome.flash_title = None;
         self.chrome.flash_table = None;
+        self.chrome.flash_dismiss_on_enter = false;
         self.chrome.flash_ticks_left = 45; // ~a few seconds at UI tick rate
     }
 
-    /// Post-mint LP Brew success: bordered table under the address (longer TTL).
+    fn clear_chrome_flash(&mut self) {
+        self.chrome.flash = None;
+        self.chrome.flash_title = None;
+        self.chrome.flash_table = None;
+        self.chrome.flash_dismiss_on_enter = false;
+        self.chrome.flash_ticks_left = 0;
+    }
+
+    /// Post-mint LP Brew success: summary under the address until Enter.
     fn set_success_flash(&mut self, title: impl Into<String>, rows: Vec<(String, String)>) {
         self.chrome.flash_title = Some(title.into());
         self.chrome.flash_table = Some(rows);
         self.chrome.flash = None;
-        self.chrome.flash_ticks_left = 120;
+        self.chrome.flash_dismiss_on_enter = true;
+        self.chrome.flash_ticks_left = 0;
     }
 
     /// Height of the chrome flash strip (single line or verification table).
     pub fn chrome_flash_height(&self, width: u16) -> u16 {
-        use crate::views::approve::verify_table_lines;
+        use crate::views::approve::verify_table_compact_lines;
         if let Some(rows) = &self.chrome.flash_table {
             let title = u16::from(self.chrome.flash_title.is_some());
-            let table = verify_table_lines(rows, width.saturating_sub(4)).len() as u16;
-            title.saturating_add(table).clamp(1, 14)
+            let table = verify_table_compact_lines(rows, width.saturating_sub(4)).len() as u16;
+            let dismiss = u16::from(self.chrome.flash_dismiss_on_enter);
+            title.saturating_add(table).saturating_add(dismiss).clamp(1, 14)
         } else {
             1
         }

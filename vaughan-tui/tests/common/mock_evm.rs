@@ -12,6 +12,13 @@ pub fn ret_u256(v: u64) -> Vec<u8> {
     out
 }
 
+/// ABI-encode a single `uint8` return (padded to 32 bytes).
+pub fn ret_u8(v: u8) -> Vec<u8> {
+    let mut out = vec![0u8; 32];
+    out[31] = v;
+    out
+}
+
 /// ABI-encode an `address` return.
 pub fn ret_address(addr: Address) -> Vec<u8> {
     let mut out = vec![0u8; 32];

@@ -34,6 +34,7 @@ async fn propose_vac_to_unlocked_tui() {
         rpc_url: "https://rpc.v4.testnet.pulsechain.com".into(),
         chain_id: live.chain_id,
         active_address: Some(live.address),
+        profile_dir: Some(profile_dir.clone()),
     };
 
     let raw = registry

@@ -1,0 +1,10 @@
+{
+  "venue": "wiz4rd",
+  "token_a": "0x15de8ae884726f37ec90824f825d723ac93c8b77",
+  "token_b": "0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59",
+  "price": "0.2",
+  "deposit": "100",
+  "deposit_token": "0x15de8ae884726f37ec90824f825d723ac93c8b77",
+  "fee": 20000,
+  "range": "full"
+}

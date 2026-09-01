@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "vaughan": {
+      "command": "/home/r4/Desktop/Vaughan-CLI/target/debug/vaughan",
+      "args": ["mcp", "--profile", "default"],
+      "cwd": "/home/r4/Desktop/Vaughan-CLI",
+      "env": {
+        "VAUGHAN_DAPP_BROWSER_CHROME": "/usr/bin/chromium",
+        "VAUGHAN_DAPP_BROWSER_CDP_PORT": "9222",
+        "DISPLAY": ":0"
+      }
+    }
+  }
+}
