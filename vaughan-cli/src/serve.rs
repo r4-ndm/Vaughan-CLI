@@ -21,12 +21,17 @@ use vaughan_core::core::mcp_host::{
 use vaughan_core::core::proposal::{
     guard_mainnet_write, mcp_control_port, McpSessionToken, ProposalQueue, TxProposal,
 };
-use vaughan_core::core::{is_sentient_profile, OperatingMode, StateManager, WalletState};
+use vaughan_core::core::{
+    is_sentient_profile, reject_deferred_sentient_profile, OperatingMode, StateManager,
+    WalletState,
+};
 use vaughan_tui::provider::ApprovalKind;
 use vaughan_tui::sentient_mcp::{self, mcp_auto_exec_enabled};
 
 /// Run until Ctrl-C. Requires `--password-env` for non-interactive unlock.
 pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Result<()> {
+    reject_deferred_sentient_profile(&profile)
+        .map_err(|e| anyhow::anyhow!("{}", e.user_message()))?;
     let path = StateManager::profile_path(&profile)?;
     let mut wallet = WalletState::load_with_session(
         path.clone(),
@@ -151,10 +156,14 @@ impl McpHostBackend for ServeMcpBackend {
         let w = self.wallet.lock().map_err(|_| "wallet lock poisoned")?;
         let addr = w.active_address().map_err(|e| e.to_string())?;
         let net = w.networks().active();
+        let account_index = w.active_account_index().map_err(|e| e.to_string())?;
+        let account_label = w.active_account_label().map_err(|e| e.to_string())?;
         Ok(McpSessionData {
             address: addr.to_string(),
             chain_id: net.chain_id,
             network_id: net.id.clone(),
+            account_index,
+            account_label: account_label.to_string(),
         })
     }
 

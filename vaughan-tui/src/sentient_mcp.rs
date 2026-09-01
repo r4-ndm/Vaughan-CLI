@@ -20,7 +20,7 @@ use crate::provider::{self, ApprovalKind};
 
 /// True when this vault profile should auto-sign MCP proposals (no human card).
 pub fn mcp_auto_exec_enabled(profile_name: &str) -> bool {
-    is_sentient_profile(profile_name)
+    vaughan_core::core::sentient_mode_enabled() && is_sentient_profile(profile_name)
 }
 
 /// One-line policy summary for a sentient session (unlock + settings).
@@ -285,6 +285,7 @@ fn sizeable_legs(
             }
         }
         ProposalType::TokenLaunch { .. } => Ok(Vec::new()),
+        ProposalType::LpDeployStep { .. } => Ok(Vec::new()),
     }
 }
 
@@ -436,10 +437,19 @@ mod tests {
 
     #[test]
     fn legacy_degen_profile_still_enables_auto_exec() {
-        assert!(mcp_auto_exec_enabled("sentient"));
-        assert!(mcp_auto_exec_enabled("degen"));
+        assert!(!mcp_auto_exec_enabled("sentient"));
+        assert!(!mcp_auto_exec_enabled("degen"));
         assert!(!mcp_auto_exec_enabled("default"));
         assert!(!mcp_auto_exec_enabled("savings"));
+    }
+
+    #[test]
+    fn auto_exec_when_sentient_mode_re_enabled() {
+        if !vaughan_core::core::sentient_mode_enabled() {
+            return;
+        }
+        assert!(mcp_auto_exec_enabled("sentient"));
+        assert!(mcp_auto_exec_enabled("degen"));
     }
 
     #[test]

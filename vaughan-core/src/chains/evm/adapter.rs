@@ -32,6 +32,7 @@ use crate::chains::{
     Balance, ChainAdapter, ChainInfo, ChainTransaction, ChainType, EvmTransaction, Fee, FeeDetails,
     TokenInfo, TxHash, TxRecord, TxStatus,
 };
+use crate::core::dex_catalog::is_v3_position_manager;
 use crate::error::WalletError;
 
 pub type AlloyProvider = RootProvider<Ethereum>;
@@ -40,6 +41,91 @@ pub type AlloyProvider = RootProvider<Ethereum>;
 /// one. Networks with a different market (e.g. PulseChain's sub-gwei fees)
 /// override this in [`crate::chains::evm::networks`].
 pub const DEFAULT_PRIORITY_FEE_WEI: u64 = 1_500_000_000; // 1.5 gwei
+
+/// Headroom applied to `eth_estimateGas` (MetaMask/ethers ~25%).
+const GAS_ESTIMATE_HEADROOM_BPS: u64 = 12_500;
+
+/// When RPC `estimateGas` overshoots (common on Pulse testnet V3 mint), cap by selector.
+const DEFAULT_CONTRACT_GAS_CAP: u64 = 1_500_000;
+
+/// Hard cap on EIP-1559 max fee for testnet UX when feeHistory returns mainnet-scale values.
+const TESTNET_MAX_FEE_WEI: u64 = 50_000_000_000; // 50 gwei
+
+/// Selector-aware gas limit ceiling for contract calls.
+fn gas_limit_cap_for_calldata(input: Option<&Bytes>) -> u64 {
+    let data = input.as_ref().map(|b| b.as_ref()).unwrap_or(&[]);
+    if data.len() < 4 {
+        return if data.is_empty() {
+            100_000
+        } else {
+            DEFAULT_CONTRACT_GAS_CAP
+        };
+    }
+    match &data[0..4] {
+        [0x09, 0x5e, 0xa7, 0xb3] => 150_000, // ERC-20 approve
+        [0xa1, 0x67, 0x12, 0x95] => 7_500_000, // V3 factory createPool (deploys pool contract)
+        [0xf6, 0x37, 0x73, 0x1d] => 500_000, // V3 pool initialize
+        [0x88, 0x31, 0x64, 0x56] => 900_000, // V3 NPM mint
+        [0xfc, 0x6f, 0x78, 0x65] => 250_000, // V3 NPM collect
+        [0x0c, 0x49, 0x40, 0x16] => 400_000, // V3 NPM decreaseLiquidity
+        _ => DEFAULT_CONTRACT_GAS_CAP,
+    }
+}
+
+/// Apply headroom and a selector cap so fee previews match real LP mint/approve costs.
+fn padded_gas_limit(estimated: u64, input: Option<&Bytes>) -> u64 {
+    let padded = estimated.saturating_mul(GAS_ESTIMATE_HEADROOM_BPS) / 10_000;
+    padded.max(21_000).min(gas_limit_cap_for_calldata(input))
+}
+
+/// Pulse testnet feeHistory often suggests 10k+ gwei; clamp to live gas price (capped).
+async fn sanitize_testnet_eip1559_fees(
+    provider: &AlloyProvider,
+    chain_id: u64,
+    max_fee_per_gas: Option<String>,
+    max_priority_fee_per_gas: Option<String>,
+    priority_default_wei: u64,
+) -> Result<(Option<String>, Option<String>), WalletError> {
+    let Some(net) = get_network_by_chain_id(chain_id) else {
+        return Ok((max_fee_per_gas, max_priority_fee_per_gas));
+    };
+    if !net.is_testnet {
+        return Ok((max_fee_per_gas, max_priority_fee_per_gas));
+    }
+    let max_v = max_fee_per_gas
+        .as_deref()
+        .and_then(|s| U256::from_str(s).ok())
+        .unwrap_or_default();
+    if max_v <= U256::from(TESTNET_MAX_FEE_WEI) {
+        return Ok((max_fee_per_gas, max_priority_fee_per_gas));
+    }
+    let gas_price = provider
+        .get_gas_price()
+        .await
+        .map_err(|e| WalletError::RpcError(e.to_string()))?;
+    let headroom = U256::from(gas_price).saturating_mul(U256::from(110u64)) / U256::from(100u64);
+    let capped_max = headroom
+        .min(U256::from(TESTNET_MAX_FEE_WEI))
+        .max(U256::from(priority_default_wei));
+    let tip = max_priority_fee_per_gas
+        .as_deref()
+        .and_then(|s| U256::from_str(s).ok())
+        .unwrap_or(U256::from(priority_default_wei))
+        .min(capped_max);
+    Ok((Some(capped_max.to_string()), Some(tip.to_string())))
+}
+
+fn format_fee_total(total_wei: U256, symbol: &str, decimals: u8) -> String {
+    let raw = format_units(total_wei, decimals).unwrap_or_else(|_| "0".to_string());
+    let trimmed = if let Some((whole, frac)) = raw.split_once('.') {
+        let clipped = if frac.len() > 6 { &frac[..6] } else { frac };
+        let s = format!("{whole}.{clipped}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        raw
+    };
+    format!("{trimmed} {symbol}")
+}
 
 /// Canonical Multicall3 address (https://github.com/mds1/multicall). Present
 /// on both PulseChain mainnet and testnet — verified via `cast codesize`
@@ -116,6 +202,7 @@ impl EvmAdapter {
             network_name: network_name.into(),
             priority_fee_wei,
             balance_cache: moka::future::Cache::builder()
+                .max_capacity(1_000)
                 .time_to_live(Duration::from_secs(10))
                 .build(),
             nonce_cache: moka::future::Cache::builder()
@@ -443,7 +530,15 @@ impl EvmAdapter {
             .into_iter()
             .map(|t| t.address.to_string())
             .collect();
+        addresses.retain(|raw| {
+            parse_address(raw)
+                .map(|addr| !is_v3_position_manager(self.chain_id, addr))
+                .unwrap_or(true)
+        });
         for addr in self.discover_token_addresses(wallet_address).await? {
+            if is_v3_position_manager(self.chain_id, addr) {
+                continue;
+            }
             let a = addr.to_string();
             if !addresses
                 .iter()
@@ -456,6 +551,12 @@ impl EvmAdapter {
         for raw in extra_token_addresses {
             let a = raw.trim().to_string();
             if a.is_empty() {
+                continue;
+            }
+            if parse_address(&a)
+                .ok()
+                .is_some_and(|addr| is_v3_position_manager(self.chain_id, addr))
+            {
                 continue;
             }
             if !addresses
@@ -1014,17 +1115,20 @@ impl ChainAdapter for EvmAdapter {
         let gas_limit = if let Some(gl) = evm_tx.gas_limit {
             gl
         } else {
-            let req = req.clone();
-            self.with_provider(move |provider| {
-                let req = req.clone();
-                async move {
-                    provider
-                        .estimate_gas(req)
-                        .await
-                        .map_err(|e| WalletError::GasEstimationFailed(e.to_string()))
-                }
-            })
-            .await?
+            let estimate_req = req.clone();
+            let calldata = req.input.input.clone();
+            let estimated = self
+                .with_provider(move |provider| {
+                    let estimate_req = estimate_req.clone();
+                    async move {
+                        provider
+                            .estimate_gas(estimate_req)
+                            .await
+                            .map_err(|e| WalletError::GasEstimationFailed(e.to_string()))
+                    }
+                })
+                .await?;
+            padded_gas_limit(estimated, calldata.as_ref())
         };
 
         // EIP-1559 fee market: prefer alloy's feeHistory-percentile estimate
@@ -1032,13 +1136,15 @@ impl ChainAdapter for EvmAdapter {
         // base-fee × 2 + tip heuristic (audit 4.2) when feeHistory is
         // unavailable, and to legacy gas price when there is no base fee.
         let priority_fee = U256::from(self.priority_fee_wei);
+        let chain_id = self.chain_id;
+        let priority_wei = self.priority_fee_wei;
         let (max_fee_per_gas, max_priority_fee_per_gas) = self
             .with_provider(|provider| async move {
-                match provider.estimate_eip1559_fees().await {
-                    Ok(est) => Ok((
+                let (max_fee, max_tip) = match provider.estimate_eip1559_fees().await {
+                    Ok(est) => (
                         Some(est.max_fee_per_gas.to_string()),
                         Some(est.max_priority_fee_per_gas.to_string()),
-                    )),
+                    ),
                     Err(_) => {
                         // feeHistory unavailable (e.g. legacy-only RPC):
                         // fall back to the base-fee heuristic.
@@ -1052,27 +1158,27 @@ impl ChainAdapter for EvmAdapter {
                                 let max_fee = base_fee
                                     .saturating_mul(U256::from(2u64))
                                     .saturating_add(priority_fee);
-                                Ok((Some(max_fee.to_string()), Some(priority_fee.to_string())))
+                                (Some(max_fee.to_string()), Some(priority_fee.to_string()))
                             }
                             None => {
                                 let gas_price = provider
                                     .get_gas_price()
                                     .await
                                     .map_err(|e| WalletError::RpcError(e.to_string()))?;
-                                Ok((Some(gas_price.to_string()), None))
+                                (Some(gas_price.to_string()), None)
                             }
                         }
                     }
-                }
+                };
+                sanitize_testnet_eip1559_fees(&provider, chain_id, max_fee, max_tip, priority_wei)
+                    .await
             })
             .await?;
 
         let (symbol, _name, decimals) = self.native_asset();
         let per_gas = U256::from_str(max_fee_per_gas.as_deref().unwrap_or("0")).unwrap_or_default();
         let total_wei = per_gas.saturating_mul(U256::from(gas_limit));
-        let total_formatted =
-            format_units(total_wei, decimals).unwrap_or_else(|_| "0.0".to_string());
-        let total = format!("{total_formatted} {symbol}");
+        let total = format_fee_total(total_wei, &symbol, decimals);
 
         Ok(Fee {
             total,
@@ -1179,6 +1285,27 @@ mod tests {
         ] {
             assert!(!EvmAdapter::is_transport_failure(&e), "{e:?}");
         }
+    }
+
+    #[test]
+    fn padded_gas_limit_caps_inflated_mint_estimate() {
+        let mint = Bytes::from_static(&[0x88, 0x31, 0x64, 0x56]);
+        assert_eq!(padded_gas_limit(5_872_678, Some(&mint)), 900_000);
+        assert_eq!(padded_gas_limit(706_443, Some(&mint)), 883_053);
+    }
+
+    #[test]
+    fn padded_gas_limit_caps_approve() {
+        let approve = Bytes::from_static(&[0x09, 0x5e, 0xa7, 0xb3]);
+        assert_eq!(padded_gas_limit(500_000, Some(&approve)), 150_000);
+    }
+
+    #[test]
+    fn padded_gas_limit_allows_create_pool_deploy() {
+        let create = Bytes::from_static(&[0xa1, 0x67, 0x12, 0x95]);
+        // Pulse 943 createPool ~5.87M; headroom must not cap below that.
+        assert_eq!(padded_gas_limit(5_872_678, Some(&create)), 7_340_847);
+        assert_eq!(padded_gas_limit(8_000_000, Some(&create)), 7_500_000);
     }
 
     #[tokio::test]

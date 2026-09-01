@@ -542,6 +542,14 @@ fn pretty_payload_lines(value: &Value) -> Vec<String> {
     lines
 }
 
+/// Human-readable approval prompt content for the TUI approve card.
+pub struct ApprovalPreview {
+    pub title: String,
+    pub details: Vec<String>,
+    pub verify_table: Vec<(String, String)>,
+    pub base_fee: Option<Fee>,
+}
+
 /// Render a short, human-readable summary of `kind` for the approval prompt.
 ///
 /// Returns `(title, details)` where `details` is shown verbatim. This is the
@@ -552,8 +560,17 @@ pub fn describe_approval(
     wallet: &WalletState,
     handle: &Handle,
 ) -> Result<(String, Vec<String>), ProviderError> {
-    let (title, details, _) = describe_approval_with_fee(kind, wallet, handle)?;
-    Ok((title, details))
+    let preview = describe_approval_with_fee(kind, wallet, handle)?;
+    Ok((preview.title, preview.details))
+}
+
+/// Full approval preview including verification table and optional fee editor seed.
+pub fn describe_approval_preview(
+    kind: &ApprovalKind,
+    wallet: &WalletState,
+    handle: &Handle,
+) -> Result<ApprovalPreview, ProviderError> {
+    describe_approval_with_fee(kind, wallet, handle)
 }
 
 /// [`describe_approval`] plus the base [`Fee`] for transaction kinds, so the
@@ -562,32 +579,35 @@ pub fn describe_approval_with_fee(
     kind: &ApprovalKind,
     wallet: &WalletState,
     handle: &Handle,
-) -> Result<(String, Vec<String>, Option<Fee>), ProviderError> {
+) -> Result<ApprovalPreview, ProviderError> {
     match kind {
         ApprovalKind::SendTransaction(tx) => {
             let fee = tx_fee_for_prompt(tx, wallet, handle)?;
-            Ok((
-                "Sign & broadcast transaction".into(),
-                describe_tx(tx, wallet, fee.clone()),
-                Some(fee),
-            ))
+            Ok(ApprovalPreview {
+                title: "Sign & broadcast transaction".into(),
+                details: describe_tx(tx, wallet, fee.clone()),
+                verify_table: Vec::new(),
+                base_fee: Some(fee),
+            })
         }
         ApprovalKind::SignTransaction(tx) => {
             let fee = tx_fee_for_prompt(tx, wallet, handle)?;
-            Ok((
-                "Sign transaction (no broadcast)".into(),
-                describe_tx(tx, wallet, fee.clone()),
-                Some(fee),
-            ))
+            Ok(ApprovalPreview {
+                title: "Sign transaction (no broadcast)".into(),
+                details: describe_tx(tx, wallet, fee.clone()),
+                verify_table: Vec::new(),
+                base_fee: Some(fee),
+            })
         }
-        ApprovalKind::SignMessage { message, .. } => Ok((
-            "Sign message (personal_sign)".into(),
-            vec![
+        ApprovalKind::SignMessage { message, .. } => Ok(ApprovalPreview {
+            title: "Sign message (personal_sign)".into(),
+            details: vec![
                 "Method:  personal_sign".to_string(),
                 format!("Message: {message}"),
             ],
-            None,
-        )),
+            verify_table: Vec::new(),
+            base_fee: None,
+        }),
         ApprovalKind::SignTypedData { typed_data, .. } => {
             let primary = typed_data["primaryType"].as_str().unwrap_or("?");
             let domain = &typed_data["domain"];
@@ -610,22 +630,29 @@ pub fn describe_approval_with_fee(
             lines.push(format!("Type:    {primary}"));
             lines.push("Message:".to_string());
             lines.extend(pretty_payload_lines(&typed_data["message"]));
-            Ok(("Sign typed data (eth_signTypedData_v4)".into(), lines, None))
+            Ok(ApprovalPreview {
+                title: "Sign typed data (eth_signTypedData_v4)".into(),
+                details: lines,
+                verify_table: Vec::new(),
+                base_fee: None,
+            })
         }
-        ApprovalKind::Connect { site } => Ok((
-            "Connect dApp (eth_requestAccounts)".into(),
-            vec![
+        ApprovalKind::Connect { site } => Ok(ApprovalPreview {
+            title: "Connect dApp (eth_requestAccounts)".into(),
+            details: vec![
                 format!("Site:    {site}"),
                 "Grants this site your active account until you lock the wallet.".into(),
                 "Sign/send still requires a separate approval.".into(),
             ],
-            None,
-        )),
-        ApprovalKind::SwitchChain { chain_id, label } => Ok((
-            "Switch network".into(),
-            vec![format!("Chain:   {label}"), format!("Id:      {chain_id}")],
-            None,
-        )),
+            verify_table: Vec::new(),
+            base_fee: None,
+        }),
+        ApprovalKind::SwitchChain { chain_id, label } => Ok(ApprovalPreview {
+            title: "Switch network".into(),
+            details: vec![format!("Chain:   {label}"), format!("Id:      {chain_id}")],
+            verify_table: Vec::new(),
+            base_fee: None,
+        }),
         ApprovalKind::McpProposal {
             proposal, source, ..
         } => {
@@ -637,22 +664,39 @@ pub fn describe_approval_with_fee(
             {
                 let net = wallet.networks().active();
                 let testnet = if net.is_testnet { " (testnet)" } else { "" };
+                let verify_table = vec![
+                    ("Action".into(), "Deploy fixed-supply ERC-20".into()),
+                    ("Name".into(), name.clone()),
+                    ("Symbol".into(), symbol.clone()),
+                    ("Supply".into(), format!("{supply_human} (18 decimals)")),
+                    ("Mint to".into(), "Active wallet".into()),
+                    ("Network".into(), format!("{}{testnet}", net.name)),
+                ];
                 let lines = vec![
                     format!("Source:  MCP ({source})"),
-                    "Action:  Deploy fixed-supply ERC-20".into(),
-                    format!("Name:    {name}"),
-                    format!("Symbol:  {symbol}"),
-                    format!("Supply:  {supply_human} (18 decimals)"),
-                    format!("Mint to: active wallet"),
-                    format!("Network: {}{testnet}", net.name),
                     format!("Gas:     {}", proposal.gas_limit),
                     mcp_proposal_fee_line(wallet, proposal, handle),
                     "Sim (agent): skipped — contract creation".into(),
                     "Note:    Token auto-imports after deploy".into(),
                     format!("Agent:   {}", proposal.explanation),
                 ];
-                return Ok(("MCP token launch".into(), lines, None));
+                return Ok(ApprovalPreview {
+                    title: "MCP token launch".into(),
+                    details: lines,
+                    verify_table,
+                    base_fee: None,
+                });
             }
+
+            let verify_table = mcp_proposal_verify_table(wallet, handle, proposal);
+            let title = if let ProposalType::LpDeployStep { step_label, .. } =
+                &proposal.proposal_type
+            {
+                vaughan_core::core::lp_deploy_step_verify_title(step_label).into()
+            } else {
+                "MCP transaction proposal".into()
+            };
+
             let net = wallet.networks().active();
             let to = format!("{:#x}", proposal.to);
             let value = format_base_units(&proposal.value_wei.to_string(), net.decimals);
@@ -667,23 +711,35 @@ pub fn describe_approval_with_fee(
                 format!("To:      {to}"),
                 format!("Value:   {value} {}", net.native_symbol),
                 format!("Network: {}{testnet}", net.name),
-                format!("Gas:     {}", proposal.gas_limit),
+                mcp_proposal_gas_line(wallet, proposal, handle),
                 mcp_proposal_fee_line(wallet, proposal, handle),
-                format!(
-                    "Sim (agent): {}",
-                    if proposal.simulation_success {
-                        "ok"
-                    } else {
-                        "failed — will re-simulate"
-                    }
-                ),
-                "Note:    Agent explanation is UNTRUSTED — verify calldata below".to_string(),
-                format!("Agent:   {}", proposal.explanation),
+                format!("Sim (agent): {}", mcp_proposal_sim_line(proposal)),
             ];
-            if let Some(d) = data {
-                lines.push(format!("Data:    {d}"));
+            if verify_table.is_empty() {
+                lines.push(
+                    "Note:    Agent explanation is UNTRUSTED — verify calldata below".to_string(),
+                );
+                lines.push(format!("Agent:   {}", proposal.explanation));
+            } else {
+                lines.push(
+                    "Note:    Verify the table above; agent text below is UNTRUSTED".to_string(),
+                );
+                lines.push(format!("Agent:   {}", proposal.explanation));
             }
-            Ok(("MCP transaction proposal".into(), lines, None))
+            if let Some(d) = data {
+                if verify_table.is_empty() || d.len() <= 74 {
+                    lines.push(format!("Data:    {d}"));
+                } else {
+                    lines.push(format!("Data:    {}…", &d[..74]));
+                    lines.push("         (full calldata in proposal file)".into());
+                }
+            }
+            Ok(ApprovalPreview {
+                title,
+                details: lines,
+                verify_table,
+                base_fee: mcp_approval_base_fee(wallet, handle, proposal),
+            })
         }
         ApprovalKind::StealthSweep {
             stealth_address,
@@ -691,18 +747,158 @@ pub fn describe_approval_with_fee(
         } => {
             let net = wallet.networks().active();
             let testnet = if net.is_testnet { " (testnet)" } else { "" };
-            Ok((
-                "Sweep stealth note".into(),
-                vec![
+            Ok(ApprovalPreview {
+                title: "Sweep stealth note".into(),
+                details: vec![
                     format!("From:    {stealth_address}"),
                     format!("Amount:  {balance_display}"),
                     format!("Network: {}{testnet}", net.name),
                     "Moves funds to your active public account.".into(),
                 ],
-                None,
-            ))
+                verify_table: vec![
+                    ("Action".into(), "Sweep stealth note".into()),
+                    ("From".into(), stealth_address.clone()),
+                    ("Amount".into(), balance_display.clone()),
+                ],
+                base_fee: None,
+            })
         }
     }
+}
+
+fn mcp_proposal_verify_table(
+    wallet: &WalletState,
+    handle: &Handle,
+    proposal: &TxProposal,
+) -> Vec<(String, String)> {
+    let profile_dir = match wallet.path().parent() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let ProposalType::LpDeployStep {
+        job_id,
+        step_label,
+    } = &proposal.proposal_type
+    else {
+        return Vec::new();
+    };
+    let (token0_label, token1_label) =
+        handle.block_on(lp_brew_token_labels(wallet, profile_dir, job_id))
+            .unwrap_or_else(|_| ("token0".into(), "token1".into()));
+    vaughan_core::core::lp_deploy_step_verify_rows(
+        profile_dir,
+        proposal,
+        job_id,
+        step_label,
+        &token0_label,
+        &token1_label,
+    )
+    .map(|rows| rows.into_iter().map(|r| (r.label, r.value)).collect())
+    .unwrap_or_default()
+}
+
+async fn lp_brew_token_labels(
+    wallet: &WalletState,
+    profile_dir: &std::path::Path,
+    job_id: &str,
+) -> Result<(String, String), vaughan_core::error::WalletError> {
+    use vaughan_core::core::lp_deploy_job_load;
+    use vaughan_core::core::short_address;
+
+    let job = lp_deploy_job_load(profile_dir, job_id)?;
+    let t0: alloy::primitives::Address = job.params.token0.parse().map_err(|_| {
+        vaughan_core::error::WalletError::InvalidTransaction("token0".into())
+    })?;
+    let t1: alloy::primitives::Address = job.params.token1.parse().map_err(|_| {
+        vaughan_core::error::WalletError::InvalidTransaction("token1".into())
+    })?;
+    let assets = wallet.assets().await?;
+    let label = |addr: alloy::primitives::Address| {
+        let needle = format!("{addr:#x}");
+        assets
+            .iter()
+            .find(|a| {
+                a.token
+                    .contract_address
+                    .as_deref()
+                    .is_some_and(|c| c.eq_ignore_ascii_case(&needle))
+            })
+            .map(|a| a.token.symbol.clone())
+            .unwrap_or_else(|| short_address(addr))
+    };
+    Ok((label(t0), label(t1)))
+}
+
+/// Build a verification-style table for the post-mint success flash.
+pub async fn lp_brew_mint_success_flash(
+    wallet: &WalletState,
+    proposal: &TxProposal,
+    tx_hash: &str,
+) -> Option<(String, Vec<(String, String)>)> {
+    use vaughan_core::core::lp_deploy_job_load;
+    use vaughan_core::core::{
+        lp_deploy_mint_success_rows, npm_mint_token_id_for_tx, VerifyRow,
+    };
+
+    let ProposalType::LpDeployStep {
+        job_id,
+        step_label,
+    } = &proposal.proposal_type
+    else {
+        return None;
+    };
+    if step_label != "add liquidity" {
+        return None;
+    }
+    let profile_dir = wallet.path().parent()?;
+    let (token0_label, token1_label) =
+        lp_brew_token_labels(wallet, profile_dir, job_id).await.ok()?;
+    let job = lp_deploy_job_load(profile_dir, job_id).ok()?;
+    let params = vaughan_core::core::V3LpDeployParams::try_from(&job.params).ok()?;
+    let token_id = if let Ok(adapter) = wallet.active_adapter().await {
+        npm_mint_token_id_for_tx(&adapter, params.venue, params.chain_id, tx_hash)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let rows: Vec<(String, String)> = lp_deploy_mint_success_rows(
+        profile_dir,
+        job_id,
+        &token0_label,
+        &token1_label,
+        tx_hash,
+        token_id,
+    )
+    .ok()?
+    .into_iter()
+    .map(|VerifyRow { label, value }| (label, value))
+    .collect();
+    Some(("LP Brew complete ✓".into(), rows))
+}
+
+/// Gas limit line for MCP cards. LP Brew steps always re-estimate on-chain gas
+/// so stale agent proposals (e.g. 500k createPool) cannot mislead the user.
+fn mcp_proposal_gas_line(
+    wallet: &WalletState,
+    proposal: &TxProposal,
+    handle: &Handle,
+) -> String {
+    let is_lp_deploy = matches!(
+        proposal.proposal_type,
+        ProposalType::LpDeployStep { .. }
+    );
+    if is_lp_deploy {
+        if let Ok(evm) = apply_proposal(wallet, proposal) {
+            if let Ok(live) =
+                handle.block_on(vaughan_core::core::lp_deploy_wallet_gas_limit(wallet, &evm))
+            {
+                return format!("Gas:     {live} (network estimate)");
+            }
+        }
+    }
+    format!("Gas:     {}", proposal.gas_limit)
 }
 
 /// Fee line for the MCP proposal card (guardrail: the prompt must show cost).
@@ -727,7 +923,13 @@ fn mcp_proposal_fee_line(wallet: &WalletState, proposal: &TxProposal, handle: &H
         proposal.proposal_type,
         vaughan_core::core::proposal::ProposalType::Batch7702 { .. }
     );
-    let fresh = if is_batch {
+    let is_lp_deploy = matches!(
+        proposal.proposal_type,
+        vaughan_core::core::proposal::ProposalType::LpDeployStep { .. }
+    );
+    let fresh = if is_batch || is_lp_deploy {
+        // Batch7702 and LP Brew steps: avoid blocking the UI thread on RPC fee
+        // estimates before the approval card renders.
         None
     } else {
         apply_proposal(wallet, proposal)
@@ -766,6 +968,57 @@ pub fn apply_fee_override(tx: &mut TxParams, fee: &Fee) {
         tx.max_priority_fee_per_gas = max_priority_fee_per_gas.clone();
         tx.gas_price = None;
     }
+}
+
+fn apply_estimated_fee_to_evm(
+    evm: &mut EvmTransaction,
+    fee: &Fee,
+) -> Result<(), ProviderError> {
+    use vaughan_core::chains::ChainTransaction;
+    use vaughan_core::core::transaction::TransactionService;
+
+    let mut chain_tx = ChainTransaction::Evm(evm.clone());
+    TransactionService::new()
+        .apply_fee(&mut chain_tx, fee)
+        .map_err(map_wallet_error)?;
+    if let ChainTransaction::Evm(updated) = chain_tx {
+        *evm = updated;
+    }
+    Ok(())
+}
+
+fn mcp_proposal_sim_line(proposal: &TxProposal) -> String {
+    if matches!(
+        proposal.proposal_type,
+        ProposalType::Batch7702 { .. }
+    ) {
+        "skipped — EIP-7702 batch requires delegation (not plain eth_call)".into()
+    } else if proposal.simulation_success {
+        "ok".into()
+    } else {
+        "failed — will re-simulate".into()
+    }
+}
+
+fn mcp_approval_base_fee(
+    wallet: &WalletState,
+    handle: &Handle,
+    proposal: &TxProposal,
+) -> Option<Fee> {
+    let mut evm = apply_proposal(wallet, proposal).ok()?;
+    if matches!(
+        proposal.proposal_type,
+        ProposalType::LpDeployStep { .. }
+    ) {
+        if let Ok(live) = handle.block_on(vaughan_core::core::lp_deploy_wallet_gas_limit(
+            wallet, &evm,
+        )) {
+            evm.gas_limit = Some(live);
+        }
+    }
+    handle
+        .block_on(wallet.estimate_transaction_fee(evm))
+        .ok()
 }
 
 /// Describe a transaction's recipient, value, chain, data, and fee.
@@ -838,6 +1091,15 @@ fn fee_from_explicit_tx_params(tx: &TxParams, wallet: &WalletState) -> Option<Fe
 pub async fn execute_approval(
     kind: &ApprovalKind,
     wallet: &mut WalletState,
+) -> Result<String, ProviderError> {
+    execute_approval_with_fee(kind, wallet, None).await
+}
+
+/// Like [`execute_approval`] with an optional user-adjusted fee from the approve card.
+pub async fn execute_approval_with_fee(
+    kind: &ApprovalKind,
+    wallet: &mut WalletState,
+    fee_override: Option<&Fee>,
 ) -> Result<String, ProviderError> {
     // A locked wallet never prompts, never signs: reject cleanly (EIP-1193
     // 4100). The UI skips the prompt for locked wallets too (see app.rs), so
@@ -968,35 +1230,125 @@ pub async fn execute_approval(
                 }
                 return Ok(result.tx_hash.to_string());
             }
-            if !matches!(proposal.proposal_type, ProposalType::TokenLaunch { .. }) {
+            if !matches!(
+                proposal.proposal_type,
+                ProposalType::TokenLaunch { .. } | ProposalType::Batch7702 { .. }
+            ) {
                 resimulate_mcp_proposal(wallet, proposal).await?;
             }
-            let evm = apply_proposal(wallet, proposal).map_err(map_wallet_error)?;
-            if let Ok(fresh_fee) = wallet.estimate_transaction_fee(evm.clone()).await {
-                if let Some(fresh_wei) = fresh_fee.total_wei_evm() {
-                    if vaughan_core::core::fee_spike_exceeds_threshold(
-                        proposal.estimated_fee_wei,
-                        fresh_wei,
-                    ) {
-                        return Err(ProviderError::InvalidParams(
-                            "network fee is unverified or increased more than 10% since \
-                             the agent proposal — deny and ask the agent to re-propose"
-                                .into(),
-                        ));
+            let mut evm = apply_proposal(wallet, proposal).map_err(map_wallet_error)?;
+            let is_lp_deploy = matches!(
+                proposal.proposal_type,
+                ProposalType::LpDeployStep { .. }
+            );
+            if is_lp_deploy {
+                if let Ok(live) = vaughan_core::core::lp_deploy_wallet_gas_limit(wallet, &evm).await
+                {
+                    evm.gas_limit = Some(live);
+                }
+                if let Some(fee) = fee_override {
+                    apply_estimated_fee_to_evm(&mut evm, fee)?;
+                } else if let Ok(fee) = wallet.estimate_transaction_fee(evm.clone()).await {
+                    apply_estimated_fee_to_evm(&mut evm, &fee)?;
+                } else if proposal.estimated_fee_wei.is_some() {
+                    let prio = wallet
+                        .networks()
+                        .active()
+                        .default_priority_fee_wei
+                        .unwrap_or(10_000_000);
+                    vaughan_core::core::proposal::apply_stamped_fee_to_evm(
+                        &mut evm,
+                        proposal,
+                        prio,
+                    );
+                }
+            } else if fee_override.is_some() || proposal.estimated_fee_wei.is_some() {
+                if let Some(fee) = fee_override {
+                    apply_estimated_fee_to_evm(&mut evm, fee)?;
+                } else {
+                let prio = wallet
+                    .networks()
+                    .active()
+                    .default_priority_fee_wei
+                    .unwrap_or(10_000_000);
+                vaughan_core::core::proposal::apply_stamped_fee_to_evm(
+                    &mut evm,
+                    proposal,
+                    prio,
+                );
+                }
+            }
+            if !is_lp_deploy {
+                if let Ok(fresh_fee) = wallet.estimate_transaction_fee(evm.clone()).await {
+                    if let Some(fresh_wei) = fresh_fee.total_wei_evm() {
+                        if vaughan_core::core::fee_spike_exceeds_threshold(
+                            proposal.estimated_fee_wei,
+                            fresh_wei,
+                        ) {
+                            return Err(ProviderError::InvalidParams(
+                                "network fee is unverified or increased more than 10% since \
+                                 the agent proposal — deny and ask the agent to re-propose"
+                                    .into(),
+                            ));
+                        }
                     }
                 }
             }
-            let hash = wallet
-                .send_transaction(evm)
+            let receipt = wallet
+                .broadcast(evm, proposal_id)
                 .await
                 .map_err(map_wallet_error)?;
+            let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
+            let mined_ok = wait_for_receipt_success(&adapter, &receipt.hash, is_lp_deploy)
+                .await
+                .map_err(map_wallet_error)?;
+            if !mined_ok {
+                return Err(ProviderError::InvalidParams(
+                    "transaction reverted on-chain — LP Brew step not applied; \
+                     check gas and token balances, then re-propose"
+                        .into(),
+                ));
+            }
+            let hash = receipt.hash;
             if let Some(parent) = wallet.path().parent() {
                 if let Ok(Some(token)) = vaughan_core::core::McpSessionToken::read(parent) {
                     let queue = ProposalQueue::new(parent);
-                    let _ = queue.mark_approved(proposal_id, &hash.to_string(), token.as_bytes());
+                    let _ = queue.mark_approved(proposal_id, &hash, token.as_bytes());
+                    if let ProposalType::LpDeployStep { job_id, .. } = &proposal.proposal_type {
+                        if let Err(e) = vaughan_core::core::lp_deploy_advance_after_broadcast(
+                            parent,
+                            wallet,
+                            job_id,
+                            token.as_bytes(),
+                            "mcp",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                target: "vaughan_tui::provider",
+                                error = %e.user_message(),
+                                "LP Brew auto-advance failed after broadcast — retrying after approve fixup"
+                            );
+                            if let Err(e2) = vaughan_core::core::lp_deploy_retry_after_approve(
+                                parent,
+                                wallet,
+                                job_id,
+                                token.as_bytes(),
+                                "mcp",
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    target: "vaughan_tui::provider",
+                                    error = %e2.user_message(),
+                                    "LP Brew retry after approve also failed — mint may need manual re-propose"
+                                );
+                            }
+                        }
+                    }
                 }
             }
-            Ok(hash.to_string())
+            Ok(hash)
         }
         ApprovalKind::StealthSweep {
             stealth_address, ..
@@ -1022,6 +1374,46 @@ pub async fn execute_approval(
                 .map(|h| h.to_string())
                 .map_err(map_wallet_error)
         }
+    }
+}
+
+/// Poll until `hash` is mined; returns whether the receipt status is success.
+async fn wait_for_receipt_success(
+    adapter: &vaughan_core::chains::evm::EvmAdapter,
+    hash: &str,
+    lp_deploy: bool,
+) -> Result<bool, WalletError> {
+    use alloy::primitives::B256;
+    use std::str::FromStr;
+    use std::time::{Duration, Instant};
+
+    let timeout = if lp_deploy {
+        Duration::from_secs(120)
+    } else {
+        Duration::from_secs(90)
+    };
+    let parsed = B256::from_str(hash.trim()).map_err(|_| {
+        WalletError::InvalidTransaction("broadcast hash is invalid".into())
+    })?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let receipt = adapter
+            .with_provider(|provider| async move {
+                provider
+                    .get_transaction_receipt(parsed)
+                    .await
+                    .map_err(|e| WalletError::RpcError(e.to_string()))
+            })
+            .await?;
+        if let Some(r) = receipt {
+            return Ok(r.status());
+        }
+        if Instant::now() >= deadline {
+            return Err(WalletError::NetworkError(
+                "timed out waiting for transaction receipt".into(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
     }
 }
 
@@ -1073,6 +1465,15 @@ pub fn execute_approval_sync(
     handle: &Handle,
 ) -> Result<String, ProviderError> {
     handle.block_on(execute_approval(kind, wallet))
+}
+
+pub fn execute_approval_sync_with_fee(
+    kind: &ApprovalKind,
+    wallet: &mut WalletState,
+    handle: &Handle,
+    fee_override: Option<&Fee>,
+) -> Result<String, ProviderError> {
+    handle.block_on(execute_approval_with_fee(kind, wallet, fee_override))
 }
 
 /// Map [`TxParams`] (already quantity-normalized by the provider) onto an

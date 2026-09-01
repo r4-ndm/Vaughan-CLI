@@ -28,6 +28,8 @@ pub struct McpSessionSnapshot {
     pub address: Option<String>,
     pub chain_id: Option<u64>,
     pub network_id: Option<String>,
+    pub account_index: Option<u32>,
+    pub account_label: Option<String>,
 }
 
 /// Request forwarded from the MCP listener to the UI thread.
@@ -83,7 +85,10 @@ pub struct McpService {
     session: Option<McpSessionToken>,
     listener: ListenerState,
     requests: mpsc::Sender<McpHostRequest>,
+    /// Proposals whose approval card is on screen (or already decided).
     surfaced: HashSet<String>,
+    /// Proposals forwarded to the UI thread but not yet shown (retry if preview fails).
+    inflight: HashSet<String>,
     snapshot: Arc<RwLock<McpSessionSnapshot>>,
     /// Set when the control-plane port is bound (synchronously, before the
     /// token file is written).
@@ -109,6 +114,7 @@ impl McpService {
             listener: ListenerState::new(),
             requests,
             surfaced: HashSet::new(),
+            inflight: HashSet::new(),
             snapshot: Arc::new(RwLock::new(McpSessionSnapshot::default())),
             listener_bound: Arc::new(AtomicBool::new(false)),
             listener_bind_failed: Arc::new(AtomicBool::new(false)),
@@ -201,6 +207,16 @@ impl McpService {
             self.retry_after = Some(std::time::Instant::now() + BIND_RETRY_BACKOFF);
             return;
         }
+        let queue = ProposalQueue::new(&self.profile_dir);
+        if let Ok(n) = queue.rebind_pending_session(token.as_str().as_bytes()) {
+            if n > 0 {
+                tracing::info!(
+                    target: "vaughan_tui::mcp",
+                    rebound = n,
+                    "rebound pending MCP proposals to new session"
+                );
+            }
+        }
         self.listener_bound.store(true, Ordering::SeqCst);
         self.listener.stop.store(false, Ordering::SeqCst);
         let stop = self.listener.stop.clone();
@@ -236,6 +252,7 @@ impl McpService {
         self.listener_bind_failed.store(false, Ordering::SeqCst);
         self.retry_after = None;
         self.surfaced.clear();
+        self.inflight.clear();
         self.update_session(McpSessionSnapshot::default());
         let _ = McpSessionToken::invalidate(&self.profile_dir);
     }
@@ -255,6 +272,23 @@ impl McpService {
         self.session.as_ref().map(|t| t.as_str())
     }
 
+    /// User decided on a file-queue proposal — do not resurface again this session.
+    pub fn mark_proposal_decided(&mut self, proposal_id: &str) {
+        self.inflight.remove(proposal_id);
+        self.surfaced.insert(proposal_id.to_string());
+    }
+
+    /// Preview/build failed before the card — allow [`Self::poll_file_queue`] to retry.
+    pub fn clear_inflight_proposal(&mut self, proposal_id: &str) {
+        self.inflight.remove(proposal_id);
+    }
+
+    /// User pressed **y** on a file-queue card — block [`Self::poll_file_queue`] from
+    /// resurfacing the same proposal while async broadcast runs.
+    pub fn mark_proposal_executing(&mut self, proposal_id: &str) {
+        self.inflight.insert(proposal_id.to_string());
+    }
+
     /// Poll file queue and surface the oldest not-yet-shown pending proposal.
     pub fn poll_file_queue(&mut self, pending_on_screen: bool) {
         if pending_on_screen {
@@ -270,18 +304,19 @@ impl McpService {
         };
         for queued in pending {
             let id = queued.proposal.proposal_id.clone();
-            if self.surfaced.contains(&id) {
+            if self.surfaced.contains(&id) || self.inflight.contains(&id) {
                 continue;
             }
             if queue.get_pending(&id, secret.as_bytes()).is_err() {
                 continue;
             }
-            self.surfaced.insert(id.clone());
+            self.inflight.insert(id.clone());
             if let Err(e) = self.requests.try_send(McpHostRequest::Propose {
                 proposal: Box::new(queued.proposal),
                 source: queued.source,
                 reply: None,
             }) {
+                self.inflight.remove(&id);
                 tracing::warn!(target: "vaughan_tui::mcp", "UI queue full, dropping queued proposal: {e}");
             }
             break;
@@ -310,6 +345,11 @@ impl McpHostBackend for TuiMcpBackend {
                 address: address.clone(),
                 chain_id,
                 network_id: network_id.clone(),
+                account_index: snap.account_index.unwrap_or(0),
+                account_label: snap
+                    .account_label
+                    .clone()
+                    .unwrap_or_else(|| "wallet 0".into()),
             }),
             _ => Err("wallet is locked".into()),
         }
@@ -441,4 +481,148 @@ async fn run_listener(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, Bytes, U256};
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+    use vaughan_core::core::proposal::{ProposalQueue, ProposalType, TxProposal};
+
+    static MCP_POLL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn sample_proposal(id: &str) -> TxProposal {
+        TxProposal::new(
+            id,
+            ProposalType::NativeTransfer {
+                to: Address::ZERO,
+                amount_wei: U256::ZERO,
+            },
+            Address::ZERO,
+            U256::ZERO,
+            Bytes::new(),
+            21_000,
+            true,
+            "test",
+        )
+        .with_chain(943, Some("pulsechain-testnet-v4".into()))
+    }
+
+    #[tokio::test]
+    async fn poll_file_queue_resurfaces_after_inflight_cleared() {
+        let _guard = MCP_POLL_TEST_LOCK.lock().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut svc = McpService::new(dir.path(), tx);
+        svc.on_unlock(&tokio::runtime::Handle::current());
+        let secret = svc.session_secret().expect("session").as_bytes();
+        ProposalQueue::new(dir.path())
+            .enqueue(sample_proposal("prop_resurface"), "test", secret)
+            .expect("enqueue");
+
+        svc.poll_file_queue(false);
+        assert!(rx.try_recv().is_ok(), "first poll must surface proposal");
+
+        svc.clear_inflight_proposal("prop_resurface");
+        svc.poll_file_queue(false);
+        assert!(rx.try_recv().is_ok(), "must resurface pending proposal");
+    }
+
+    #[tokio::test]
+    async fn poll_file_queue_skips_decided_proposals() {
+        let _guard = MCP_POLL_TEST_LOCK.lock().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut svc = McpService::new(dir.path(), tx);
+        svc.on_unlock(&tokio::runtime::Handle::current());
+        let secret = svc.session_secret().expect("session").as_bytes();
+        ProposalQueue::new(dir.path())
+            .enqueue(sample_proposal("prop_done"), "test", secret)
+            .expect("enqueue");
+        svc.mark_proposal_decided("prop_done");
+
+        svc.poll_file_queue(false);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn poll_file_queue_skips_executing_proposals() {
+        let _guard = MCP_POLL_TEST_LOCK.lock().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut svc = McpService::new(dir.path(), tx);
+        svc.on_unlock(&tokio::runtime::Handle::current());
+        let secret = svc.session_secret().expect("session").as_bytes();
+        ProposalQueue::new(dir.path())
+            .enqueue(sample_proposal("prop_exec"), "test", secret)
+            .expect("enqueue");
+
+        svc.poll_file_queue(false);
+        assert!(rx.try_recv().is_ok(), "first poll must surface proposal");
+        let _ = rx.try_recv();
+
+        svc.mark_proposal_executing("prop_exec");
+        svc.poll_file_queue(false);
+        assert!(
+            rx.try_recv().is_err(),
+            "executing proposal must not resurface"
+        );
+    }
+
+    /// Simulates repeated UI ticks (~16ms) while a slow broadcast is in flight.
+    #[tokio::test]
+    async fn poll_file_queue_does_not_resurface_during_executing_stress() {
+        let _guard = MCP_POLL_TEST_LOCK.lock().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        std::env::set_var("VAUGHAN_MCP_PORT", port.to_string());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut svc = McpService::new(dir.path(), tx);
+        svc.on_unlock(&tokio::runtime::Handle::current());
+        let secret = svc.session_secret().expect("session").as_bytes();
+        ProposalQueue::new(dir.path())
+            .enqueue(sample_proposal("prop_slow_tx"), "test", secret)
+            .expect("enqueue");
+
+        svc.poll_file_queue(false);
+        assert!(rx.try_recv().is_ok(), "first poll must surface proposal");
+        let _ = rx.try_recv();
+
+        svc.mark_proposal_executing("prop_slow_tx");
+        for tick in 0..64 {
+            svc.poll_file_queue(false);
+            assert!(
+                rx.try_recv().is_err(),
+                "poll tick {tick} must not re-emit card during broadcast"
+            );
+        }
+    }
 }

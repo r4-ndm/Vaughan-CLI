@@ -111,6 +111,13 @@ impl SentientTrader {
             let need = self.circuit_breaker.config().required_rpc_quorum.max(1);
             if self.rpc_urls.len() >= need && need >= 2 {
                 QuorumValidator::validate_pair_reserves(&self.rpc_urls, pair_addr, need).await?;
+            } else if need >= 2 {
+                tracing::warn!(
+                    target: "vaughan_agent::sentient",
+                    configured = self.rpc_urls.len(),
+                    required = need,
+                    "multi-RPC reserve quorum skipped — add more RPC URLs to the Sentient profile"
+                );
             }
         }
 

@@ -6,6 +6,7 @@
 //! — via `--password-env NAME` for automation, or an interactive prompt.
 
 mod json_out;
+mod lp;
 mod serve;
 
 use std::path::PathBuf;
@@ -19,7 +20,8 @@ use vaughan_agent::tools::{default_assist_registry, ToolContext};
 use vaughan_core::chains::ChainTransaction;
 use vaughan_core::core::proposal::{ProposalQueue, TxProposal};
 use vaughan_core::core::{
-    guard_mainnet_write, OperatingMode, StateManager, TransactionService, WalletState,
+    guard_mainnet_write, reject_deferred_sentient_profile, OperatingMode, StateManager,
+    TransactionService, WalletState,
 };
 
 #[derive(Debug, Parser)]
@@ -183,6 +185,11 @@ enum Command {
         #[command(subcommand)]
         action: PresetCmd,
     },
+    /// LP Brew: plan or enqueue deploy steps (Advisor TUI approval).
+    Lp {
+        #[command(subcommand)]
+        action: LpCmd,
+    },
     /// Profile configuration (metadata only — no vault unlock).
     Config {
         #[command(subcommand)]
@@ -220,6 +227,24 @@ enum ProposalsCmd {
     List,
     /// Show one proposal by id.
     Show { proposal_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum LpCmd {
+    /// Dry-run: show lifecycle branch and step list (no proposals).
+    Plan {
+        #[arg(long)]
+        password_env: Option<String>,
+        #[command(flatten)]
+        brew: lp::LpBrewArgs,
+    },
+    /// Enqueue the first LP deploy step (requires unlocked TUI MCP session).
+    Deploy {
+        #[arg(long)]
+        password_env: Option<String>,
+        #[command(flatten)]
+        brew: lp::LpBrewArgs,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -351,6 +376,8 @@ fn main() {
             vaughan_tui::run_interactive(&profile).map_err(|e| anyhow::anyhow!("{}", e))
         }
         Some(Command::Mcp { source }) => {
+            reject_deferred_sentient_profile(&profile)
+                .map_err(|e| anyhow::anyhow!("{}", e.user_message()))?;
             vaughan_core::logging::init_logging();
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             runtime
@@ -623,6 +650,38 @@ async fn run_cli(
             });
             json_out::print_json_value(json_mode, &data_out, || println!("{sig}"));
         }
+        Command::Lp { action } => match action {
+            LpCmd::Plan {
+                password_env,
+                brew,
+            } => {
+                unlock(&mut wallet, password_env.as_deref())?;
+                if let Some(id) = brew.network.as_deref() {
+                    wallet.set_active_network(id)?;
+                }
+                if let Some(url) = brew.rpc_url.as_deref() {
+                    wallet.set_rpc_override(url);
+                }
+                lp::run_lp_plan(&wallet, lp::LpPlanArgs { brew })
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.user_message()))?;
+            }
+            LpCmd::Deploy {
+                password_env,
+                brew,
+            } => {
+                unlock(&mut wallet, password_env.as_deref())?;
+                if let Some(id) = brew.network.as_deref() {
+                    wallet.set_active_network(id)?;
+                }
+                if let Some(url) = brew.rpc_url.as_deref() {
+                    wallet.set_rpc_override(url);
+                }
+                lp::run_lp_deploy(&wallet, wallet.path(), lp::LpDeployArgs { brew })
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.user_message()))?;
+            }
+        },
         Command::Browse {
             address,
             call,
@@ -783,6 +842,7 @@ async fn run_cli(
                     .active_address()
                     .ok()
                     .and_then(|a| a.parse::<Address>().ok()),
+                profile_dir: Some(vaughan_agent::paths::profile_dir(wallet.path())),
             };
             match action {
                 ProposeCmd::Transfer {

@@ -30,6 +30,9 @@ use app::App;
 /// profile on the unlock-screen picker.
 pub fn run_interactive(profile: &str) -> io::Result<()> {
     vaughan_core::logging::init_tui_logging();
+    if let Err(e) = vaughan_core::core::reject_deferred_sentient_profile(profile) {
+        return Err(io::Error::other(e.user_message()));
+    }
     brand::load_persisted_theme();
 
     let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");

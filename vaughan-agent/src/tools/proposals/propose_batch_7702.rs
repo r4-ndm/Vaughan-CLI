@@ -1,11 +1,9 @@
 //! Proposal tool: Draft a batched EIP-7702 multi-transfer or multicall for human confirmation.
 
 use alloy::primitives::{Address, Bytes, U256};
-use alloy::providers::Provider;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::str::FromStr;
-use url::Url;
 
 use crate::error::AgentError;
 use crate::proposal::{ProposalType, TxProposal};
@@ -134,21 +132,9 @@ impl Tool for ProposeBatch7702Tool {
         let batched_calldata = Bytes::from(encode_execute(&txns, &[0u8; 66]));
         let sender = context.active_address.unwrap_or(Address::ZERO);
 
-        // Pre-flight simulation
-        let rpc_url = Url::parse(&context.rpc_url)
-            .map_err(|e| AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}")))?;
-
-        let provider: alloy::providers::RootProvider<alloy::network::Ethereum> =
-            alloy::providers::RootProvider::new_http(rpc_url);
-
-        let tx = alloy::rpc::types::eth::TransactionRequest::default()
-            .to(sender)
-            .input(batched_calldata.clone().into())
-            .value(total_value)
-            .from(sender);
-
-        let sim_res = provider.call(tx).await;
-        let sim_success = sim_res.is_ok();
+        // EIP-7702 batches execute via delegation — eth_call to an undelegated EOA
+        // succeeds with empty bytes and would mislead the user.
+        let sim_success = false;
 
         let explanation = args
             .get("explanation")
@@ -174,5 +160,75 @@ impl Tool for ProposeBatch7702Tool {
         proposal.estimated_fee_wei = estimated_fee_wei;
 
         Ok(serde_json::to_value(&proposal)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+    use alloy::providers::{Provider, ProviderBuilder};
+    use std::process::{Child, Command};
+    use std::time::Duration;
+
+    struct AnvilGuard {
+        child: Child,
+        rpc_url: String,
+    }
+
+    impl AnvilGuard {
+        fn spawn(port: u16) -> Self {
+            let child = Command::new("anvil")
+                .args(["-p", &port.to_string(), "--silent"])
+                .spawn()
+                .expect("anvil on PATH");
+            std::thread::sleep(Duration::from_millis(400));
+            Self {
+                child,
+                rpc_url: format!("http://127.0.0.1:{port}"),
+            }
+        }
+    }
+
+    impl Drop for AnvilGuard {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+        }
+    }
+
+    #[tokio::test]
+    async fn undelegated_eoa_batch_stamps_sim_success_false() {
+        let anvil = AnvilGuard::spawn(8560);
+        let sender = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let context = ToolContext {
+            rpc_url: anvil.rpc_url.clone(),
+            chain_id: 31337,
+            active_address: Some(sender),
+            profile_dir: None,
+        };
+        let tool = ProposeBatch7702Tool::new();
+        let raw = tool
+            .execute(
+                json!({
+                    "calls": [{
+                        "to": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+                        "value_wei": "1",
+                        "data": "0xdeadbeef"
+                    }],
+                    "explanation": "undelegated batch smoke"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+        let proposal: TxProposal = serde_json::from_value(raw).unwrap();
+        assert!(
+            !proposal.simulation_success,
+            "eth_call to undelegated EOA must not stamp sim_success"
+        );
+
+        let provider = ProviderBuilder::new().connect_http(anvil.rpc_url.parse().unwrap());
+        let code = provider.get_code_at(sender).await.unwrap();
+        assert!(code.is_empty(), "test sender must be undelegated EOA");
     }
 }

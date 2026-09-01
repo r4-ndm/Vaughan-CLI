@@ -188,6 +188,8 @@ impl View {
         wallet: &WalletState,
         bridge_line: &str,
         assets: &[Balance],
+        mcp_signing: bool,
+        tick: u64,
     ) {
         match self {
             Self::Onboarding(v) => v.render(frame, area, wallet),
@@ -209,7 +211,7 @@ impl View {
             Self::Lp(v) => v.render(frame, area, wallet, assets),
             Self::TokenLaunch(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
-            Self::Approve(v) => v.render(frame, area, wallet),
+            Self::Approve(v) => v.render(frame, area, wallet, mcp_signing, tick),
         }
     }
 
@@ -307,8 +309,12 @@ struct PendingMcpTokenLaunch {
 
 /// Discard accidental keypresses for this long after an approve prompt appears.
 const APPROVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
-/// Auto-deny stale prompts (dApps typically time out around 30–60s).
+/// Auto-deny stale live provider / loopback MCP prompts (dApps ~30–60s).
 const APPROVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// File-queue MCP cards may stay on screen longer; on expiry dismiss UI only
+/// (proposal stays pending and [`McpService::poll_file_queue`] resurfaces it).
+const QUEUED_APPROVE_SCREEN_TTL: std::time::Duration =
+    std::time::Duration::from_secs(vaughan_core::core::proposal::PROPOSAL_TTL_SECS);
 /// Bound on queues into the UI thread (provider requests, MCP requests, job
 /// results) — a flooding client gets backpressure instead of unbounded growth.
 const UI_QUEUE_CAPACITY: usize = 256;
@@ -336,6 +342,8 @@ pub struct App {
     pending_mcp_token_launch: Option<PendingMcpTokenLaunch>,
     /// Screen to return to after the pending approval resolves.
     approve_return: Screen,
+    /// File-queue MCP approve running off-thread (keeps UI responsive).
+    mcp_approve_inflight: bool,
     /// Always-on status strip: native balance + gas price.
     chrome: ChromeSnapshot,
     /// MCP control plane (session + loopback listener).
@@ -422,6 +430,7 @@ impl App {
             pending_approval: None,
             pending_mcp_token_launch: None,
             approve_return: Screen::Dashboard,
+            mcp_approve_inflight: false,
             chrome: ChromeSnapshot {
                 loading: false,
                 ..ChromeSnapshot::default()
@@ -485,6 +494,22 @@ impl App {
         self.view.screen()
     }
 
+    /// Where to return after an approval card. Never chain Approve → Approve (ghost trap).
+    fn approve_return_screen(&self) -> Screen {
+        match self.screen() {
+            Screen::Approve => Screen::Dashboard,
+            other => other,
+        }
+    }
+
+    fn normalize_approve_return(screen: Screen) -> Screen {
+        if screen == Screen::Approve {
+            Screen::Dashboard
+        } else {
+            screen
+        }
+    }
+
     pub fn tick(&self) -> u64 {
         self.tick
     }
@@ -511,8 +536,15 @@ impl App {
                 .lock()
                 .map(|s| s.summary_line())
                 .unwrap_or_else(|_| "Bridge: status unavailable".into());
-            self.view
-                .render(frame, area, &wallet, &bridge_line, &self.chrome.assets);
+            self.view.render(
+                frame,
+                area,
+                &wallet,
+                &bridge_line,
+                &self.chrome.assets,
+                self.mcp_approve_inflight,
+                self.tick,
+            );
         } else {
             // Job thread holds the wallet — keep painting a spinner body.
             use ratatui::widgets::Paragraph;
@@ -534,11 +566,19 @@ impl App {
                 self.chrome.flash_ticks_left -= 1;
                 if self.chrome.flash_ticks_left == 0 {
                     self.chrome.flash = None;
+                    self.chrome.flash_title = None;
+                    self.chrome.flash_table = None;
                 }
             }
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
+            if self.screen() == Screen::Approve
+                && self.pending_approval.is_none()
+                && !self.mcp_approve_inflight
+            {
+                self.navigate(Self::normalize_approve_return(self.approve_return));
+            }
             if let View::Dex(v) = &mut self.view {
                 v.set_tick(self.tick);
                 if v.tick_quote_debounce() {
@@ -617,25 +657,26 @@ impl App {
             return;
         }
 
-        // The approval prompt owns its own key handling (approve/deny) and its
-        // reply channel, so global shortcuts don't apply while it is shown.
+        // F1–F3 chrome strip (focus · ↑/↓ preview · Enter set · Esc cancel) runs
+        // before view handlers so Dex/Ag/LP token ↑/↓ and Browser REPL history
+        // cannot steal arrows while a chrome box is focused.
+        if self.wallet().is_unlocked() && self.handle_chrome_hotkey(key) {
+            return;
+        }
+
+        // Approval prompt: fee editor + y/n/Enter/Esc; chrome hotkeys above still apply.
         if self.screen() == Screen::Approve {
             self.handle_approval_key(key);
             return;
         }
 
-        // Dex/Ag Token in/out: ↑/↓ pick from wallet assets; else F1–F3 chrome strip.
-        if self.wallet().is_unlocked() {
-            if matches!(key.code, KeyCode::Up | KeyCode::Down) {
-                let forward = matches!(key.code, KeyCode::Down);
-                if self.view.try_cycle_venue_selector(forward) {
-                    return;
-                }
-                if self.cycle_active_token_field(forward) {
-                    return;
-                }
+        // Dex/Ag/LP: ↑/↓ on venue row or token fields when chrome is idle.
+        if self.wallet().is_unlocked() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            let forward = matches!(key.code, KeyCode::Down);
+            if self.view.try_cycle_venue_selector(forward) {
+                return;
             }
-            if self.handle_chrome_hotkey(key) {
+            if self.cycle_active_token_field(forward) {
                 return;
             }
         }
@@ -785,7 +826,29 @@ impl App {
     /// Chrome toast under the address (home + every unlocked screen).
     fn set_flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash = Some(msg.into());
+        self.chrome.flash_title = None;
+        self.chrome.flash_table = None;
         self.chrome.flash_ticks_left = 45; // ~a few seconds at UI tick rate
+    }
+
+    /// Post-mint LP Brew success: bordered table under the address (longer TTL).
+    fn set_success_flash(&mut self, title: impl Into<String>, rows: Vec<(String, String)>) {
+        self.chrome.flash_title = Some(title.into());
+        self.chrome.flash_table = Some(rows);
+        self.chrome.flash = None;
+        self.chrome.flash_ticks_left = 120;
+    }
+
+    /// Height of the chrome flash strip (single line or verification table).
+    pub fn chrome_flash_height(&self, width: u16) -> u16 {
+        use crate::views::approve::verify_table_lines;
+        if let Some(rows) = &self.chrome.flash_table {
+            let title = u16::from(self.chrome.flash_title.is_some());
+            let table = verify_table_lines(rows, width.saturating_sub(4)).len() as u16;
+            title.saturating_add(table).clamp(1, 14)
+        } else {
+            1
+        }
     }
 
     /// Surface a profile-switch failure where the user can see it: the chrome
@@ -878,8 +941,8 @@ impl App {
                             continue;
                         }
                     };
-                    self.approve_return = self.screen();
-                    self.view = View::Approve(ApproveView::new(title, Some(site.clone()), details));
+                    self.approve_return = self.approve_return_screen();
+                    self.view = View::Approve(ApproveView::new(title, Some(site.clone()), details, vec![]));
                     self.pending_approval = Some(PendingApproval {
                         kind,
                         reply: PendingReply::Accounts(reply),
@@ -932,8 +995,8 @@ impl App {
                             continue;
                         }
                     };
-                    self.approve_return = self.screen();
-                    self.view = View::Approve(ApproveView::new(title, origin, details));
+                    self.approve_return = self.approve_return_screen();
+                    self.view = View::Approve(ApproveView::new(title, origin, details, vec![]));
                     self.pending_approval = Some(PendingApproval {
                         kind,
                         reply: PendingReply::Switch(reply),
@@ -977,17 +1040,28 @@ impl App {
                     }
                     let preview =
                         provider::describe_approval_with_fee(&kind, &self.wallet(), &self.handle);
-                    let (title, details, fee) = match preview {
+                    let preview = match preview {
                         Ok(preview) => preview,
                         Err(error) => {
                             let _ = reply.send(Err(error));
                             continue;
                         }
                     };
-                    self.approve_return = self.screen();
-                    self.view = View::Approve(match fee {
-                        Some(base_fee) => ApproveView::with_fee(title, origin, details, base_fee),
-                        None => ApproveView::new(title, origin, details),
+                    self.approve_return = self.approve_return_screen();
+                    self.view = View::Approve(match preview.base_fee {
+                        Some(base_fee) => ApproveView::with_fee(
+                            preview.title,
+                            origin,
+                            preview.details,
+                            preview.verify_table,
+                            base_fee,
+                        ),
+                        None => ApproveView::new(
+                            preview.title,
+                            origin,
+                            preview.details,
+                            preview.verify_table,
+                        ),
                     });
                     self.pending_approval = Some(PendingApproval {
                         kind: *kind,
@@ -1151,7 +1225,11 @@ impl App {
         let Some(pending) = self.pending_approval.as_ref() else {
             return;
         };
-        if pending.shown_at.elapsed() < APPROVE_TTL {
+        let ttl = match pending.reply {
+            PendingReply::Queued => QUEUED_APPROVE_SCREEN_TTL,
+            _ => APPROVE_TTL,
+        };
+        if pending.shown_at.elapsed() < ttl {
             return;
         }
         let Some(pending) = self.pending_approval.take() else {
@@ -1169,11 +1247,12 @@ impl App {
             }
             PendingReply::LocalSign => {}
             PendingReply::Queued => {
-                // No channel to reject on — write the denial back to the
-                // queue so the proposal does not resurface on the next poll.
+                // Keep the file-queue entry pending — dismiss the card so the
+                // next poll can surface it again (tab switches, reading time).
                 if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
-                    self.reject_queued_proposal(proposal_id, "expired without decision");
+                    self.mcp.clear_inflight_proposal(proposal_id);
                 }
+                self.set_flash("MCP approval still pending — card will return");
             }
         }
         let back = self.approve_return;
@@ -1193,6 +1272,8 @@ impl App {
                 address: wallet.active_address().ok().map(str::to_string),
                 chain_id: Some(net.chain_id),
                 network_id: Some(net.id.clone()),
+                account_index: wallet.active_account_index().ok(),
+                account_label: wallet.active_account_label().ok().map(str::to_string),
             });
             let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
             ProposalQueue::new(&profile_dir)
@@ -1264,22 +1345,36 @@ impl App {
                         }
                         continue;
                     }
-                    let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
-                    let (title, details) = match preview {
+                    let preview =
+                        provider::describe_approval_preview(&kind, &self.wallet(), &self.handle);
+                    let preview = match preview {
                         Ok(preview) => preview,
                         Err(error) => {
                             if let Some(r) = reply {
                                 let _ = r.send(Err(error));
+                            } else if let ApprovalKind::McpProposal { proposal_id, .. } = &kind {
+                                self.mcp.clear_inflight_proposal(proposal_id);
+                                self.set_flash(format!("MCP proposal failed to open: {error}"));
                             }
                             continue;
                         }
                     };
-                    self.approve_return = self.screen();
-                    self.view = View::Approve(ApproveView::new(
-                        title,
-                        Some(format!("MCP ({source})")),
-                        details,
-                    ));
+                    self.approve_return = self.approve_return_screen();
+                    self.view = View::Approve(match preview.base_fee {
+                        Some(base_fee) => ApproveView::with_fee(
+                            preview.title,
+                            Some(format!("MCP ({source})")),
+                            preview.details,
+                            preview.verify_table,
+                            base_fee,
+                        ),
+                        None => ApproveView::new(
+                            preview.title,
+                            Some(format!("MCP ({source})")),
+                            preview.details,
+                            preview.verify_table,
+                        ),
+                    });
                     // File-queue proposals have no reply channel; they still
                     // get a real pending approval so the card is answerable —
                     // approve/deny is written back to the queue files.
@@ -1287,6 +1382,13 @@ impl App {
                         Some(reply) => PendingReply::Sign(reply),
                         None => PendingReply::Queued,
                     };
+                    if matches!(pending_reply, PendingReply::Queued) {
+                        if let ApprovalKind::McpProposal { proposal_id, .. } = &kind {
+                            // Card is on screen — clear inflight only; do not mark
+                            // surfaced until the user approves or denies.
+                            self.mcp.clear_inflight_proposal(proposal_id);
+                        }
+                    }
                     self.pending_approval = Some(PendingApproval {
                         kind,
                         reply: pending_reply,
@@ -1387,17 +1489,22 @@ impl App {
                         )));
                         continue;
                     }
-                    let preview = provider::describe_approval(&kind, &self.wallet(), &self.handle);
-                    let (title, details) = match preview {
+                    let preview =
+                        provider::describe_approval_preview(&kind, &self.wallet(), &self.handle);
+                    let preview = match preview {
                         Ok(preview) => preview,
                         Err(error) => {
                             let _ = reply.send(Err(error));
                             continue;
                         }
                     };
-                    self.approve_return = self.screen();
-                    self.view =
-                        View::Approve(ApproveView::new(title, Some("MCP stealth".into()), details));
+                    self.approve_return = self.approve_return_screen();
+                    self.view = View::Approve(ApproveView::new(
+                        preview.title,
+                        Some("MCP stealth".into()),
+                        preview.details,
+                        preview.verify_table,
+                    ));
                     self.pending_approval = Some(PendingApproval {
                         kind,
                         reply: PendingReply::Sign(reply),
@@ -1490,7 +1597,22 @@ impl App {
             self.quit_confirm = Some(true);
             return;
         }
+        if self.mcp_approve_inflight {
+            return;
+        }
+        let approve = matches!(
+            key.code,
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+        );
         let Some(pending) = self.pending_approval.as_ref() else {
+            if approve {
+                self.set_flash("No approval pending — wait for signing or the next MCP card");
+            } else if matches!(
+                key.code,
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc
+            ) {
+                self.navigate(Self::normalize_approve_return(self.approve_return));
+            }
             return;
         };
         if pending.shown_at.elapsed() < APPROVE_DEBOUNCE {
@@ -1505,10 +1627,6 @@ impl App {
                 crate::views::approve::FeeKeyOutcome::NotHandled => {}
             }
         }
-        let approve = matches!(
-            key.code,
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
-        );
         let deny = matches!(
             key.code,
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc
@@ -1522,6 +1640,9 @@ impl App {
         if deny {
             if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
                 self.reject_queued_proposal(proposal_id, "user rejected");
+                if matches!(pending.reply, PendingReply::Queued) {
+                    self.mcp.mark_proposal_decided(proposal_id);
+                }
             }
             match pending.reply {
                 PendingReply::Sign(reply) => {
@@ -1606,8 +1727,29 @@ impl App {
                     self.begin_mcp_token_launch_deploy(proposal_id, None, name, symbol, supply);
                     return;
                 }
-                // File-queue proposal: execute writes mark_approved back to
-                // the queue; surface the outcome as a flash.
+                if let ApprovalKind::McpProposal {
+                    proposal_id,
+                    source,
+                    proposal,
+                    ..
+                } = kind
+                {
+                    self.mcp.mark_proposal_executing(&proposal_id);
+                    let fee_override = if let View::Approve(view) = &self.view {
+                        view.adjusted_fee()
+                    } else {
+                        None
+                    };
+                    self.mcp_approve_inflight = true;
+                    self.spawn_job(UiJob::McpQueuedApprove {
+                        proposal_id,
+                        source,
+                        proposal: (*proposal).clone(),
+                        fee_override,
+                    });
+                    return;
+                }
+                // Non-MCP queued kinds (should not happen today).
                 let result = {
                     let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
                     provider::execute_approval_sync(&kind, &mut wallet, &self.handle)
@@ -1658,11 +1800,12 @@ impl App {
                 return;
             }
         };
-        self.approve_return = self.screen();
+        self.approve_return = self.approve_return_screen();
         self.view = View::Approve(ApproveView::new(
             title,
             Some("Local (browserless)".into()),
             details,
+            vec![],
         ));
         self.pending_approval = Some(PendingApproval {
             kind,
@@ -1796,6 +1939,7 @@ impl App {
             Screen::Approve => View::Approve(ApproveView::new(
                 "Approve request".to_string(),
                 None,
+                Vec::new(),
                 Vec::new(),
             )),
         };
@@ -2139,6 +2283,12 @@ impl App {
         ) {
             self.navigate(self.screen());
         }
+    }
+
+    fn lp_job_rpc_urls(wallet: &WalletState, job_primary: &str) -> Vec<String> {
+        wallet
+            .active_rpc_url_list()
+            .unwrap_or_else(|_| vaughan_core::core::merge_rpc_urls(job_primary, &[]))
     }
 
     fn spawn_job(&self, job: UiJob) {
@@ -2563,15 +2713,21 @@ impl App {
                 } => {
                     use alloy::primitives::Address;
                     use std::str::FromStr;
-                    use vaughan_core::core::list_v3_lp_positions;
+                    use vaughan_core::core::{list_v3_lp_positions, with_lp_rpc_urls};
                     let parsed_owner = Address::from_str(&owner).map_err(|_| {
                         WalletError::InvalidTransaction("invalid owner address".into())
                     });
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
                     UiJobResult::LpPositions(match parsed_owner {
                         Err(e) => Err(e),
-                        Ok(addr) => handle.block_on(list_v3_lp_positions(
-                            &rpc_url, venue, chain_id, addr, None, None,
-                        )),
+                        Ok(addr) => {
+                            handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
+                                list_v3_lp_positions(&url, venue, chain_id, addr, None, None).await
+                            }))
+                        }
                     })
                 }
                 UiJob::LpListV2Positions {
@@ -2612,21 +2768,27 @@ impl App {
                     amount0,
                     amount1,
                     deploy_wait,
+                    after_step_label,
                 } => {
                     use alloy::primitives::Address;
                     use std::str::FromStr;
                     use vaughan_core::core::{
-                        v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, V3LpDeployParams,
+                        v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, with_lp_rpc_urls,
+                        V3LpDeployContext, V3LpDeployParams,
                     };
                     let parse_addr = |s: &str, label: &str| {
                         Address::from_str(s.trim()).map_err(|_| {
                             WalletError::InvalidTransaction(format!("invalid {label}"))
                         })
                     };
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
                     UiJobResult::LpV3PoolDeployStep(handle.block_on(async {
                         use tokio::time::{timeout, Duration};
                         use vaughan_core::core::V3LpDeployWait;
-                        const DEPLOY_PREP_TIMEOUT: Duration = Duration::from_secs(15);
+                        const DEPLOY_PREP_TIMEOUT: Duration = Duration::from_secs(30);
                         const DEPLOY_ONCHAIN_WAIT: Duration = Duration::from_secs(60);
                         let job_timeout = match deploy_wait {
                             V3LpDeployWait::None => DEPLOY_PREP_TIMEOUT,
@@ -2638,7 +2800,7 @@ impl App {
                             from,
                             venue,
                             chain_id,
-                            rpc_url: rpc_url.clone(),
+                            rpc_url: String::new(),
                             token0: t0,
                             token1: t1,
                             fee,
@@ -2649,18 +2811,247 @@ impl App {
                             pool_max_price,
                             amount0,
                             amount1,
+                            deposit_on_token0: true,
                         };
-                        timeout(job_timeout, async {
-                            v3_lp_run_deploy_wait(deploy_wait, &params).await?;
-                            v3_lp_prepare_deploy_step(&params).await
+                        with_lp_rpc_urls(&rpc_urls, |url| {
+                            let mut p = params.clone();
+                            p.rpc_url = url;
+                            let ctx = after_step_label.clone().map(|label| V3LpDeployContext {
+                                last_step_label: Some(label),
+                            });
+                            async move {
+                                timeout(job_timeout, async {
+                                    v3_lp_run_deploy_wait(deploy_wait, &p, ctx.as_ref()).await?;
+                                    v3_lp_prepare_deploy_step(&p).await
+                                })
+                                .await
+                                .map_err(|_| {
+                                    WalletError::NetworkError(format!(
+                                        "LP deploy step timed out ({}s)",
+                                        job_timeout.as_secs()
+                                    ))
+                                })?
+                            }
                         })
                         .await
-                        .map_err(|_| {
-                            WalletError::NetworkError(format!(
-                                "LP deploy step timed out ({}s)",
-                                job_timeout.as_secs()
-                            ))
-                        })?
+                    }))
+                }
+                UiJob::LpEnableCheck {
+                    venue,
+                    chain_id,
+                    rpc_url,
+                    from,
+                    token0,
+                    token1,
+                    fee,
+                    dec0,
+                    dec1,
+                    pool_initial_price,
+                    pool_min_price,
+                    pool_max_price,
+                    amount0,
+                    amount1,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::{
+                        v3_lp_token_enable_status, with_lp_rpc_urls, V3LpDeployParams,
+                    };
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
+                    UiJobResult::LpEnableCheck((|| {
+                        let parse_addr = |s: &str, label: &str| {
+                            Address::from_str(s.trim()).map_err(|_| {
+                                WalletError::InvalidTransaction(format!("invalid {label}"))
+                            })
+                        };
+                        let params = V3LpDeployParams {
+                            from,
+                            venue,
+                            chain_id,
+                            rpc_url: String::new(),
+                            token0: parse_addr(&token0, "token0")?,
+                            token1: parse_addr(&token1, "token1")?,
+                            fee,
+                            dec0,
+                            dec1,
+                            pool_initial_price,
+                            pool_min_price,
+                            pool_max_price,
+                            amount0,
+                            amount1,
+                            deposit_on_token0: true,
+                        };
+                        handle.block_on(async {
+                            use tokio::time::{timeout, Duration};
+                            const ENABLE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+                            with_lp_rpc_urls(&rpc_urls, |url| {
+                                let mut p = params.clone();
+                                p.rpc_url = url.to_string();
+                                async move {
+                                    timeout(ENABLE_CHECK_TIMEOUT, v3_lp_token_enable_status(&p))
+                                        .await
+                                        .map_err(|_| {
+                                            WalletError::NetworkError(
+                                                "enable check timed out (30s)".into(),
+                                            )
+                                        })?
+                                }
+                            })
+                            .await
+                        })
+                    })())
+                }
+                UiJob::LpEnablePrepare {
+                    venue,
+                    chain_id,
+                    rpc_url,
+                    from,
+                    token0,
+                    token1,
+                    fee,
+                    dec0,
+                    dec1,
+                    pool_initial_price,
+                    pool_min_price,
+                    pool_max_price,
+                    amount0,
+                    amount1,
+                    symbol,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::{
+                        v3_lp_build_next_enable_tx, with_lp_rpc_urls, V3LpDeployParams,
+                    };
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
+                    UiJobResult::LpEnablePrepare(handle.block_on(async {
+                        let parse_addr = |s: &str, label: &str| {
+                            Address::from_str(s.trim()).map_err(|_| {
+                                WalletError::InvalidTransaction(format!("invalid {label}"))
+                            })
+                        };
+                        let params = V3LpDeployParams {
+                            from,
+                            venue,
+                            chain_id,
+                            rpc_url: String::new(),
+                            token0: parse_addr(&token0, "token0")?,
+                            token1: parse_addr(&token1, "token1")?,
+                            fee,
+                            dec0,
+                            dec1,
+                            pool_initial_price,
+                            pool_min_price,
+                            pool_max_price,
+                            amount0,
+                            amount1,
+                            deposit_on_token0: true,
+                        };
+                        use tokio::time::{timeout, Duration};
+                        const ENABLE_PREP_TIMEOUT: Duration = Duration::from_secs(30);
+                        let out = with_lp_rpc_urls(&rpc_urls, |url| {
+                            let mut p = params.clone();
+                            p.rpc_url = url.to_string();
+                            async move {
+                                timeout(ENABLE_PREP_TIMEOUT, v3_lp_build_next_enable_tx(&p))
+                                    .await
+                                    .map_err(|_| {
+                                        WalletError::NetworkError(
+                                            "enable prepare timed out (30s)".into(),
+                                        )
+                                    })?
+                            }
+                        })
+                        .await?;
+                        match out {
+                            Some((tx, label)) => Ok((tx, label, symbol)),
+                            None => Err(WalletError::InvalidTransaction(
+                                "pool not ready for Enable yet — finish pool setup first".into(),
+                            )),
+                        }
+                    }))
+                }
+                UiJob::LpEnableWait {
+                    venue,
+                    chain_id,
+                    rpc_url,
+                    from,
+                    token0,
+                    token1,
+                    fee,
+                    dec0,
+                    dec1,
+                    pool_initial_price,
+                    pool_min_price,
+                    pool_max_price,
+                    amount0,
+                    amount1,
+                    after_step_label,
+                } => {
+                    use alloy::primitives::Address;
+                    use std::str::FromStr;
+                    use vaughan_core::core::{
+                        v3_lp_run_deploy_wait, with_lp_rpc_urls, V3LpDeployContext,
+                        V3LpDeployParams, V3LpDeployWait,
+                    };
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
+                    UiJobResult::LpEnableWait(handle.block_on(async {
+                        let parse_addr = |s: &str, label: &str| {
+                            Address::from_str(s.trim()).map_err(|_| {
+                                WalletError::InvalidTransaction(format!("invalid {label}"))
+                            })
+                        };
+                        let params = V3LpDeployParams {
+                            from,
+                            venue,
+                            chain_id,
+                            rpc_url: String::new(),
+                            token0: parse_addr(&token0, "token0")?,
+                            token1: parse_addr(&token1, "token1")?,
+                            fee,
+                            dec0,
+                            dec1,
+                            pool_initial_price,
+                            pool_min_price,
+                            pool_max_price,
+                            amount0,
+                            amount1,
+                            deposit_on_token0: true,
+                        };
+                        use tokio::time::{timeout, Duration};
+                        const ENABLE_WAIT: Duration = Duration::from_secs(75);
+                        let ctx = V3LpDeployContext {
+                            last_step_label: Some(after_step_label),
+                        };
+                        with_lp_rpc_urls(&rpc_urls, |url| {
+                            let mut p = params.clone();
+                            p.rpc_url = url;
+                            let ctx = ctx.clone();
+                            async move {
+                                timeout(
+                                    ENABLE_WAIT,
+                                    v3_lp_run_deploy_wait(
+                                        V3LpDeployWait::AfterApprove,
+                                        &p,
+                                        Some(&ctx),
+                                    ),
+                                )
+                                .await
+                                .map_err(|_| {
+                                    WalletError::NetworkError("Enable wait timed out (75s)".into())
+                                })?
+                            }
+                        })
+                        .await
                     }))
                 }
                 UiJob::LpV3PoolQuote {
@@ -2675,15 +3066,19 @@ impl App {
                 } => {
                     use alloy::primitives::Address;
                     use std::str::FromStr;
-                    use vaughan_core::core::fetch_v3_lp_pool_quote;
+                    use vaughan_core::core::{fetch_v3_lp_pool_quote, with_lp_rpc_urls};
                     let parse_addr = |s: &str, label: &str| {
                         Address::from_str(s.trim()).map_err(|_| {
                             WalletError::InvalidTransaction(format!("invalid {label}"))
                         })
                     };
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
                     UiJobResult::LpV3PoolQuote(handle.block_on(async {
                         use tokio::time::{timeout, Duration};
-                        const POOL_QUOTE_TIMEOUT: Duration = Duration::from_secs(15);
+                        const POOL_QUOTE_TIMEOUT: Duration = Duration::from_secs(45);
                         let t0 = parse_addr(&token0, "token0")?;
                         let t1 = parse_addr(&token1, "token1")?;
                         if t0 >= t1 {
@@ -2691,16 +3086,19 @@ impl App {
                                 "internal: token0 must be sorted".into(),
                             ));
                         }
-                        timeout(
-                            POOL_QUOTE_TIMEOUT,
-                            fetch_v3_lp_pool_quote(
-                                &rpc_url, venue, chain_id, t0, t1, dec0, dec1, fee,
-                            ),
-                        )
+                        with_lp_rpc_urls(&rpc_urls, |url| async move {
+                            timeout(
+                                POOL_QUOTE_TIMEOUT,
+                                fetch_v3_lp_pool_quote(
+                                    &url, venue, chain_id, t0, t1, dec0, dec1, fee,
+                                ),
+                            )
+                            .await
+                            .map_err(|_| {
+                                WalletError::NetworkError("pool lookup timed out (45s)".into())
+                            })?
+                        })
                         .await
-                        .map_err(|_| {
-                            WalletError::NetworkError("pool lookup timed out (15s)".into())
-                        })?
                     }))
                 }
                 UiJob::DeployToken {
@@ -2712,6 +3110,35 @@ impl App {
                         &wallet, &name, &symbol, &supply,
                     ),
                 )),
+                UiJob::McpQueuedApprove {
+                    proposal_id,
+                    source,
+                    proposal,
+                    fee_override,
+                } => {
+                    use crate::provider::{execute_approval_with_fee, ApprovalKind};
+                    let proposal_for_flash = proposal.clone();
+                    let kind = ApprovalKind::McpProposal {
+                        proposal_id: proposal_id.clone(),
+                        source,
+                        proposal: Box::new(proposal),
+                    };
+                    let result = handle.block_on(async {
+                        let mut w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        execute_approval_with_fee(
+                            &kind,
+                            &mut w,
+                            fee_override.as_ref(),
+                        )
+                        .await
+                        .map_err(|e| WalletError::Other(e.to_string()))
+                    });
+                    UiJobResult::McpQueuedApprove {
+                        result,
+                        proposal: proposal_for_flash,
+                        proposal_id,
+                    }
+                }
             };
             // Plain std thread: blocking_send applies backpressure if the UI
             // queue is full; Err means the UI is gone, result is droppable.
@@ -2722,6 +3149,40 @@ impl App {
     fn poll_jobs(&mut self) {
         while let Ok(result) = self.job_rx.try_recv() {
             match result {
+                UiJobResult::McpQueuedApprove {
+                    result,
+                    proposal,
+                    proposal_id,
+                } => {
+                    self.mcp_approve_inflight = false;
+                    match result {
+                        Ok(hash) => {
+                            self.mcp.mark_proposal_decided(&proposal_id);
+                            let flash = {
+                                let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                                self.handle.block_on(provider::lp_brew_mint_success_flash(
+                                    &wallet,
+                                    &proposal,
+                                    &hash,
+                                ))
+                            };
+                            if let Some((title, rows)) = flash {
+                                self.set_success_flash(title, rows);
+                            } else {
+                                self.set_flash(format!("Queued proposal executed: {hash}"));
+                            }
+                        }
+                        Err(e) => {
+                            self.mcp.clear_inflight_proposal(&proposal_id);
+                            self.set_flash(format!(
+                                "Queued proposal failed: {}",
+                                e.user_message()
+                            ));
+                        }
+                    }
+                    let back = self.approve_return;
+                    self.navigate(back);
+                }
                 UiJobResult::Unlock(r) => {
                     match r {
                         Ok(done) => {
