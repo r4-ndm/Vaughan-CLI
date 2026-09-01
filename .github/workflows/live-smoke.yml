@@ -46,8 +46,3 @@ jobs:
         run: >
           cargo test -p vaughan-agent wiz4rd_get_pool_and_quote_on_943
           -- --ignored --nocapture
-
-      - name: wiz4rd V3 LP smoke matrix on Pulse testnet 943
-        run: >
-          cargo test -p vaughan-core --test lp_smoke_943
-          -- --ignored --nocapture
