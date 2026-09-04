@@ -4,7 +4,8 @@ Public market data for Advisor (and later Sentient) — **no API key**.
 
 Patterns inspired by [pulsechain-mcp](https://github.com/DavidFeder/pulsechain-mcp)
 research tools; reimplemented in Rust under `vaughan-core::core::dexscreener`
-(no TypeScript vendoring).
+(no TypeScript vendoring). Why this helps Sentient (noob explainer):
+[`sentient-ops.md`](sentient-ops.md#why-sentient-works-better-with-davids-patterns).
 
 ## Module layout
 

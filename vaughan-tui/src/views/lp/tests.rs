@@ -377,7 +377,7 @@ mod tests {
         let bob = Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap();
         let jim = Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap();
         assert_eq!(
-            super::super::helpers::v3_position_pair_label(943, bob, jim, &[]),
+            super::super::helpers::v3_position_pair_label(943, bob, jim, &[], &[]),
             "JIM/BOB"
         );
     }
@@ -391,12 +391,32 @@ mod tests {
         let jane = Address::from_str("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59").unwrap();
         let plsx = Address::from_str("0x8a810ea8b121d08342e9e7696f4a9915cbe494b7").unwrap();
         assert_eq!(
-            super::super::helpers::v3_position_pair_label(943, t1, t2, &[]),
+            super::super::helpers::v3_position_pair_label(943, t1, t2, &[], &[]),
             "T1/T2"
         );
         assert_eq!(
-            super::super::helpers::v3_position_pair_label(943, jane, plsx, &[]),
+            super::super::helpers::v3_position_pair_label(943, jane, plsx, &[], &[]),
             "JANE/PLSX"
+        );
+    }
+
+    #[test]
+    fn v3_pair_label_uses_custom_token_symbol() {
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+        use vaughan_core::core::CustomToken;
+        let wpls = Address::from_str("0x70499adEBB11Efd915E3b69E700c331778628707").unwrap();
+        let meme = Address::from_str("0xf4d5e63e9942bc5f20bc8296388c77eb925afbfa").unwrap();
+        let custom = [CustomToken {
+            chain_id: 943,
+            address: format!("{meme:#x}"),
+            symbol: "BLORP".into(),
+            name: "Blorp".into(),
+            decimals: 18,
+        }];
+        assert_eq!(
+            super::super::helpers::v3_position_pair_label(943, wpls, meme, &[], &custom),
+            "WPLS/BLORP"
         );
     }
 

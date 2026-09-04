@@ -48,6 +48,10 @@ picker → `sentient` (or launch `vaughan --profile sentient`). The password
 screen shows the live policy bounds before unlock; F1 shows `· Sentient`
 while active. See [`sentient-ops.md`](sentient-ops.md#switching-agent-mode-tui).
 
+Why market/HEX “eyes and hands” feel sharper now (DavidFeder pulsechain-mcp
+habits, Rust-only):
+[`sentient-ops.md` — Why Sentient works better with David’s patterns](sentient-ops.md#why-sentient-works-better-with-davids-patterns).
+
 ## Partnership (keep it simple)
 
 Share a seed with an agent only if you mean to. There are **no contracts** —

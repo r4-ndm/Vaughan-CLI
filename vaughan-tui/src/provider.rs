@@ -812,7 +812,6 @@ async fn lp_brew_token_labels(
     job_id: &str,
 ) -> Result<(String, String), vaughan_core::error::WalletError> {
     use vaughan_core::core::lp_deploy_job_load;
-    use vaughan_core::core::short_address;
 
     let job = lp_deploy_job_load(profile_dir, job_id)?;
     let t0: alloy::primitives::Address = job
@@ -826,18 +825,10 @@ async fn lp_brew_token_labels(
         .parse()
         .map_err(|_| vaughan_core::error::WalletError::InvalidTransaction("token1".into()))?;
     let assets = wallet.assets().await?;
+    let custom = wallet.custom_tokens_for_active_chain();
+    let chain_id = wallet.networks().active().chain_id;
     let label = |addr: alloy::primitives::Address| {
-        let needle = format!("{addr:#x}");
-        assets
-            .iter()
-            .find(|a| {
-                a.token
-                    .contract_address
-                    .as_deref()
-                    .is_some_and(|c| c.eq_ignore_ascii_case(&needle))
-            })
-            .map(|a| a.token.symbol.clone())
-            .unwrap_or_else(|| short_address(addr))
+        crate::views::lp::helpers::symbol_for_token_address(chain_id, addr, &assets, &custom)
     };
     Ok((label(t0), label(t1)))
 }

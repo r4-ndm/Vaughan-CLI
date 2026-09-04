@@ -9,6 +9,11 @@
 //! and LP stay free** so users can buy WZRD (or remove LP for gas/trade capital)
 //! before burning.
 //!
+//! Unlock is **machine-local across profiles**: a burn recorded under the default
+//! vault (or any `profiles/<name>/`) unlocks every Vaughan profile on that
+//! `vaughan-cli` data dir for the same chain — you should not need a second
+//! WZRD burn just because you switched to Sentient.
+//!
 //! Uses Alloy `eth_getLogs` + the shared [`transfer_topic0`] helper (same
 //! pattern as asset discovery). No new crates. Disable locally with
 //! `VAUGHAN_ASSIST_BURN_GATE=0` or CI bypass [`ASSIST_UNLOCK_BYPASS_ENV`].
@@ -160,7 +165,7 @@ pub async fn vault_has_assist_burn(
         return Ok(true);
     }
     if let Some(dir) = profile_dir {
-        if cache_has_chain(dir, chain_id)? {
+        if cache_has_chain_shared(dir, chain_id)? {
             return Ok(true);
         }
     }
@@ -362,13 +367,35 @@ fn cache_path(profile_dir: &Path) -> PathBuf {
     profile_dir.join(CACHE_FILE)
 }
 
-/// True when this profile has unlocked power features on `chain_id` (any burner).
-fn cache_has_chain(profile_dir: &Path, chain_id: u64) -> Result<bool, WalletError> {
-    let path = cache_path(profile_dir);
+/// `…/vaughan-cli` root for a profile dir (`wallet.json` parent or
+/// `profiles/<name>` parent).
+fn vaughan_cli_root(profile_dir: &Path) -> PathBuf {
+    // profiles/<name> → climb to vaughan-cli; otherwise the dir itself is root.
+    if profile_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n != "vaughan-cli")
+    {
+        if let Some(parent) = profile_dir.parent() {
+            if parent
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n == "profiles")
+            {
+                if let Some(root) = parent.parent() {
+                    return root.to_path_buf();
+                }
+            }
+        }
+    }
+    profile_dir.to_path_buf()
+}
+
+fn cache_file_has_chain(path: &Path, chain_id: u64) -> Result<bool, WalletError> {
     if !path.exists() {
         return Ok(false);
     }
-    let raw = std::fs::read_to_string(&path)
+    let raw = std::fs::read_to_string(path)
         .map_err(|e| WalletError::Other(format!("assist cache read: {e}")))?;
     let cache: AssistUnlockCache = serde_json::from_str(&raw)
         .map_err(|e| WalletError::Other(format!("assist cache parse: {e}")))?;
@@ -376,32 +403,84 @@ fn cache_has_chain(profile_dir: &Path, chain_id: u64) -> Result<bool, WalletErro
     Ok(cache.unlocked.iter().any(|k| k.starts_with(&prefix)))
 }
 
+/// True when this profile has unlocked power features on `chain_id` (any burner).
+fn cache_has_chain(profile_dir: &Path, chain_id: u64) -> Result<bool, WalletError> {
+    cache_file_has_chain(&cache_path(profile_dir), chain_id)
+}
+
+/// Profile cache, shared `vaughan-cli/assist-unlock.json`, and sibling profiles.
+fn cache_has_chain_shared(profile_dir: &Path, chain_id: u64) -> Result<bool, WalletError> {
+    if cache_has_chain(profile_dir, chain_id)? {
+        return Ok(true);
+    }
+    let root = vaughan_cli_root(profile_dir);
+    if cache_file_has_chain(&cache_path(&root), chain_id)? {
+        return Ok(true);
+    }
+    let profiles = root.join("profiles");
+    if !profiles.is_dir() {
+        return Ok(false);
+    }
+    let entries = std::fs::read_dir(&profiles)
+        .map_err(|e| WalletError::Other(format!("assist cache profiles read: {e}")))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if cache_file_has_chain(&cache_path(&path), chain_id)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn write_cache_file(path: &Path, cache: &AssistUnlockCache) -> Result<(), WalletError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| WalletError::Other(format!("assist cache mkdir: {e}")))?;
+    }
+    let raw = serde_json::to_string_pretty(cache)
+        .map_err(|e| WalletError::Other(format!("assist cache encode: {e}")))?;
+    std::fs::write(path, raw).map_err(|e| WalletError::Other(format!("assist cache write: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn load_cache(path: &Path) -> AssistUnlockCache {
+    if !path.exists() {
+        return AssistUnlockCache::default();
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
 fn cache_put_vault(
     profile_dir: &Path,
     chain_id: u64,
     burned_by: Address,
 ) -> Result<(), WalletError> {
-    let path = cache_path(profile_dir);
-    let mut cache = if path.exists() {
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| WalletError::Other(format!("assist cache read: {e}")))?;
-        serde_json::from_str(&raw).unwrap_or_default()
-    } else {
-        AssistUnlockCache::default()
-    };
-    for key in [cache_vault_key(chain_id), cache_key(chain_id, burned_by)] {
-        if !cache.unlocked.iter().any(|k| k == &key) {
-            cache.unlocked.push(key);
+    let keys = [cache_vault_key(chain_id), cache_key(chain_id, burned_by)];
+    // Profile-local + shared root so sibling profiles (e.g. Sentient) see the burn.
+    for dir in [profile_dir.to_path_buf(), vaughan_cli_root(profile_dir)] {
+        let path = cache_path(&dir);
+        let mut cache = load_cache(&path);
+        let mut changed = false;
+        for key in &keys {
+            if !cache.unlocked.iter().any(|k| k == key) {
+                cache.unlocked.push(key.clone());
+                changed = true;
+            }
         }
-    }
-    let raw = serde_json::to_string_pretty(&cache)
-        .map_err(|e| WalletError::Other(format!("assist cache encode: {e}")))?;
-    std::fs::write(&path, raw)
-        .map_err(|e| WalletError::Other(format!("assist cache write: {e}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if changed || !path.exists() {
+            write_cache_file(&path, &cache)?;
+        }
     }
     Ok(())
 }
@@ -517,6 +596,19 @@ mod tests {
         )
         .unwrap();
         assert!(cache_has_chain(dir.path(), 943).unwrap());
+    }
+
+    #[test]
+    fn default_vault_burn_unlocks_sibling_sentient_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let vaughan = root.path().join("vaughan-cli");
+        let sentient = vaughan.join("profiles").join("sentient");
+        std::fs::create_dir_all(&sentient).unwrap();
+        let burner = address!("0xAe089fF30590206F24E4E6627Ea61E4944cFc895");
+        // Burn recorded only on the default (root) profile.
+        cache_put_vault(&vaughan, 943, burner).unwrap();
+        assert!(cache_has_chain_shared(&sentient, 943).unwrap());
+        assert!(!cache_has_chain(&sentient, 943).unwrap());
     }
 
     #[test]

@@ -11,7 +11,7 @@
 mod confirm;
 mod deploy;
 mod enable;
-mod helpers;
+pub(crate) mod helpers;
 mod input;
 mod jobs;
 mod render;

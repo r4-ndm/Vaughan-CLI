@@ -120,10 +120,31 @@ hand-maintained duplicate list). Session bridge tools
 **`rmcp`:** not needed now. Decision, revisit triggers, and a future spike recipe:
 [`mcp-transport.md`](mcp-transport.md).
 
+## Why Sentient works better with David’s patterns
+
+[DavidFeder/pulsechain-mcp](https://github.com/DavidFeder/pulsechain-mcp) is a
+battle-tested PulseChain agent playbook. Vaughan does **not** vendor that
+TypeScript — we reimplement the *habits* in Rust (`vaughan-core` + MCP tools).
+Sentient (agent-led auto-exec) benefits most because it must decide without a
+human on every click.
+
+| Habit (David-style) | What Vaughan does | Why Sentient cares |
+|---------------------|-------------------|--------------------|
+| **See the market** | DexScreener research tools — no API key ([`dexscreener.md`](dexscreener.md)) | Finds pairs/prices instead of guessing |
+| **Address beats ticker** | Spoof-aware search + e*/p* origin labels on resolve/list | Avoids fake tickers and eth-vs-pulse mixups |
+| **Fail soft** | Soft-fail JSON on network/429 — not a hard MCP crash | Agent can retry or stop cleanly mid-loop |
+| **Safe writes** | pHEX-only stake proposes; unlimited approve refused at the gate ([`hex-stake.md`](hex-stake.md), auto-exec above) | Circuit breakers alone are not enough if the *proposal* is already wrong |
+| **Readable review** | Proposal verify rows for Advisor cards (and Sentient logs the same facts) | Humans (and you debugging) can see what would run |
+
+**Analogy:** before = smart intern, no map, blank check. After = same intern with
+a PulseChain street map, a list of which doors are real, and a rule that says
+never sign blank checks — while circuit breakers still cap size/gas/slippage.
+
 ## Related
 
 - [`mcp.md`](mcp.md) — setup  
 - [`mcp-transport.md`](mcp-transport.md) — hand-rolled vs `rmcp`  
 - [`agent-roles.md`](agent-roles.md) — adviser vs sentient  
+- [`dexscreener.md`](dexscreener.md) / [`hex-stake.md`](hex-stake.md) — David-inspired tool detail  
 - [`mcp-threat-model.md`](mcp-threat-model.md) — hot-wallet warning for serve  
 - [`sentient-presets.md`](sentient-presets.md) — skill packs  

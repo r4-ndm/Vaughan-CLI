@@ -100,15 +100,20 @@ pub fn gate_sentient_proposal(
     // Per-asset position sizing. Every leg must fit its own balance.
     let legs = sizeable_legs(wallet, handle, proposal)?;
     if legs.is_empty() {
-        // Arbitrary call with no sizeable value leg: the position limit
-        // cannot be applied, so blind auto-exec is refused. The agent must
-        // use a typed proposal (transfer / swap / approve / wrap / batch)
-        // instead of raw unknown calldata.
-        return Err(ProviderError::InvalidParams(
-            "sentient auto-exec requires a sizeable value leg (native value, token \
-             transfer/approve/unwrap, or typed swap); raw contract calls need a human profile"
-                .into(),
-        ));
+        // Typed testnet workflows (token deploy / LP Brew steps) are not
+        // "raw unknown calldata" — createPool/initialize/mint are allowlisted
+        // by proposal type + mainnet guard. Everything else with no sizeable
+        // leg stays refused (blind contract_call).
+        match &proposal.proposal_type {
+            ProposalType::TokenLaunch { .. } | ProposalType::LpDeployStep { .. } => {}
+            _ => {
+                return Err(ProviderError::InvalidParams(
+                    "sentient auto-exec requires a sizeable value leg (native value, token \
+                     transfer/approve/unwrap, or typed swap); raw contract calls need a human profile"
+                        .into(),
+                ));
+            }
+        }
     }
     for (amount, balance) in &legs {
         breaker

@@ -243,6 +243,11 @@ pub fn trusted_dapp_allow_hosts(dapps: &[TrustedDapp]) -> Vec<String> {
 pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
     vec![
         TrustedDapp {
+            name: "PulseChain V4 faucet".into(),
+            url: "https://faucet.v4.testnet.pulsechain.com/".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
             name: "SquirrelSwap".into(),
             url: "https://app.squirrelswap.pro/#/".into(),
             extra_hosts: vec![],

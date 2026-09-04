@@ -43,7 +43,8 @@ use super::helpers::{
 use super::types::*;
 
 impl LpView {
-    pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState, assets: &[Balance]) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, assets: &[Balance]) {
+        let custom = wallet.custom_tokens_for_active_chain();
         if self.stage == Stage::Confirm {
             let [content, status_area] = body_areas(area);
             self.render_confirm(frame, content);
@@ -66,11 +67,17 @@ impl LpView {
             frame.render_widget(status_paragraph(&status), status_area);
             return;
         }
-        self.render_manager(frame, area, assets);
+        self.render_manager(frame, area, assets, &custom);
     }
 
     /// List / Increase / Decrease / Collect / Remove — full-width table, hints at bottom.
-    fn render_manager(&self, frame: &mut Frame, area: Rect, assets: &[Balance]) {
+    fn render_manager(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
+    ) {
         let [header, table, hints, status_area] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
@@ -91,7 +98,7 @@ impl LpView {
             header,
         );
 
-        let lines = self.manager_table_lines(assets, table.width);
+        let lines = self.manager_table_lines(assets, custom, table.width);
         frame.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
@@ -156,14 +163,19 @@ impl LpView {
         }
     }
 
-    fn manager_table_lines(&self, assets: &[Balance], width: u16) -> Vec<Line<'static>> {
+    fn manager_table_lines(
+        &self,
+        assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
+        width: u16,
+    ) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         match self.tab {
-            Tab::List => self.render_list(&mut out, assets, width),
-            Tab::Increase => self.render_v3_increase(&mut out, assets, width),
-            Tab::Decrease => self.render_v3_decrease(&mut out, assets, width),
-            Tab::Collect => self.render_v3_collect(&mut out, assets, width),
-            Tab::Remove => self.render_v2_remove(&mut out, assets, width),
+            Tab::List => self.render_list(&mut out, assets, custom, width),
+            Tab::Increase => self.render_v3_increase(&mut out, assets, custom, width),
+            Tab::Decrease => self.render_v3_decrease(&mut out, assets, custom, width),
+            Tab::Collect => self.render_v3_collect(&mut out, assets, custom, width),
+            Tab::Remove => self.render_v2_remove(&mut out, assets, custom, width),
             Tab::AddLp => {}
         }
         out
@@ -873,6 +885,7 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         width: u16,
     ) {
         if !self.lp_supported() {
@@ -881,7 +894,7 @@ impl LpView {
         }
         // Focused position: one row + actions live on the bottom hint bar (no under-row ticks).
         if self.list_action_idx.is_some() {
-            self.render_focused_position(out, assets, width);
+            self.render_focused_position(out, assets, custom, width);
             return;
         }
         match self.stack {
@@ -895,6 +908,7 @@ impl LpView {
                             self.chain_id,
                             p,
                             assets,
+                            custom,
                             i == self.sel,
                             width,
                         ));
@@ -911,6 +925,7 @@ impl LpView {
                             self.chain_id,
                             p,
                             assets,
+                            custom,
                             i == self.sel,
                             width,
                         ));
@@ -924,6 +939,7 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         _width: u16,
     ) {
         match self.stack {
@@ -937,6 +953,7 @@ impl LpView {
                     self.venue.label(),
                     p,
                     assets,
+                    custom,
                 ) {
                     out.push(line);
                 }
@@ -960,6 +977,7 @@ impl LpView {
                     self.venue.label(),
                     p,
                     assets,
+                    custom,
                 ) {
                     out.push(line);
                 }
@@ -972,6 +990,7 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         width: u16,
     ) -> bool {
         let Some(p) = self.v3_positions.get(self.sel) else {
@@ -983,6 +1002,7 @@ impl LpView {
             self.chain_id,
             p,
             assets,
+            custom,
             true,
             width,
         ));
@@ -993,9 +1013,10 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         width: u16,
     ) {
-        if !self.push_selected_v3_table(out, assets, width) {
+        if !self.push_selected_v3_table(out, assets, custom, width) {
             return;
         }
         out.push(Line::from(format!(
@@ -1047,9 +1068,10 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         width: u16,
     ) {
-        if !self.push_selected_v3_table(out, assets, width) {
+        if !self.push_selected_v3_table(out, assets, custom, width) {
             return;
         }
         if let Some(p) = self.v3_positions.get(self.sel) {
@@ -1078,9 +1100,10 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         width: u16,
     ) {
-        if !self.push_selected_v3_table(out, assets, width) {
+        if !self.push_selected_v3_table(out, assets, custom, width) {
             return;
         }
         if let Some(p) = self.v3_positions.get(self.sel) {
@@ -1102,6 +1125,7 @@ impl LpView {
         &self,
         out: &mut Vec<Line<'static>>,
         assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
         width: u16,
     ) {
         let Some(p) = self.v2_positions.get(self.sel) else {
@@ -1113,6 +1137,7 @@ impl LpView {
             self.chain_id,
             p,
             assets,
+            custom,
             true,
             width,
         ));

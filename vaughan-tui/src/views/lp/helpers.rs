@@ -19,8 +19,8 @@ use vaughan_core::core::{
     min_out_after_slippage, v3_preview_mint_deposits_from_amount0,
     v3_preview_mint_deposits_from_amount1, v3_range_ticks_from_human_prices,
     v3_sqrt_and_tick_for_preview, venue_position_manager, venue_swap_router, wpls_for_chain,
-    DexProtocol, DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3LpPositionView, V3PoolLifecycle,
-    V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    CustomToken, DexProtocol, DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3LpPositionView,
+    V3PoolLifecycle, V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
@@ -205,15 +205,21 @@ pub(crate) fn trim_float_string(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// Ticker for a pool token (F2 assets → catalog hints → short hex).
+/// Ticker for a pool token (F2 assets → imported custom tokens → catalog hints → short hex).
 pub(crate) fn symbol_for_token_address(
     chain_id: u64,
     addr: alloy::primitives::Address,
     assets: &[Balance],
+    custom: &[CustomToken],
 ) -> String {
     let raw = format!("{addr:#x}");
     if let Some(sym) = token_symbol_for_address(assets, &raw) {
         return sym.to_string();
+    }
+    if let Some(t) = custom.iter().find(|t| {
+        t.chain_id == chain_id && t.address.eq_ignore_ascii_case(&raw) && !t.symbol.is_empty()
+    }) {
+        return t.symbol.clone();
     }
     if let Some(sym) = crate::views::token_symbol_hint(&raw, chain_id) {
         return sym.to_string();
@@ -243,12 +249,13 @@ pub(crate) fn v3_position_pair_label(
     token0: alloy::primitives::Address,
     token1: alloy::primitives::Address,
     assets: &[Balance],
+    custom: &[CustomToken],
 ) -> String {
     let (first, second) = pair_tokens_for_display(chain_id, token0, token1);
     format!(
         "{}/{}",
-        symbol_for_token_address(chain_id, first, assets),
-        symbol_for_token_address(chain_id, second, assets)
+        symbol_for_token_address(chain_id, first, assets, custom),
+        symbol_for_token_address(chain_id, second, assets, custom)
     )
 }
 
@@ -426,6 +433,7 @@ pub(crate) fn v3_table_row_line(
     chain_id: u64,
     p: &V3LpPositionView,
     assets: &[Balance],
+    custom: &[CustomToken],
     selected: bool,
     term_width: u16,
 ) -> ratatui::text::Line<'static> {
@@ -433,9 +441,9 @@ pub(crate) fn v3_table_row_line(
     use ratatui::text::{Line, Span};
     let c = v3_table_cols(term_width);
     let mark = if selected { "▸" } else { " " };
-    let pair = v3_position_pair_label(chain_id, p.token0, p.token1, assets);
-    let d0 = decimals_for_token(p.token0, assets);
-    let d1 = decimals_for_token(p.token1, assets);
+    let pair = v3_position_pair_label(chain_id, p.token0, p.token1, assets, custom);
+    let d0 = decimals_for_token(p.token0, assets, custom);
+    let d1 = decimals_for_token(p.token1, assets, custom);
     let amt0 = compact_token_amount(&p.amount0, d0);
     let amt1 = compact_token_amount(&p.amount1, d1);
     let mut row = format!(
@@ -477,16 +485,17 @@ pub(crate) fn v3_focused_detail_lines(
     venue_label: &str,
     p: &V3LpPositionView,
     assets: &[Balance],
+    custom: &[CustomToken],
 ) -> Vec<ratatui::text::Line<'static>> {
     use alloy::primitives::U256;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     use vaughan_core::core::pool_tick_to_human_price;
 
-    let sym0 = symbol_for_token_address(chain_id, p.token0, assets);
-    let sym1 = symbol_for_token_address(chain_id, p.token1, assets);
-    let d0 = decimals_for_token(p.token0, assets);
-    let d1 = decimals_for_token(p.token1, assets);
+    let sym0 = symbol_for_token_address(chain_id, p.token0, assets, custom);
+    let sym1 = symbol_for_token_address(chain_id, p.token1, assets, custom);
+    let d0 = decimals_for_token(p.token0, assets, custom);
+    let d1 = decimals_for_token(p.token1, assets, custom);
     let amt0 = compact_token_amount(&p.amount0, d0);
     let amt1 = compact_token_amount(&p.amount1, d1);
     let fee0 = compact_token_amount(&U256::from(p.tokens_owed0), d0);
@@ -630,17 +639,22 @@ pub(crate) fn v2_table_cols(term_width: u16) -> V2TableCols {
 fn decimals_for_token(
     addr: alloy::primitives::Address,
     assets: &[Balance],
+    custom: &[CustomToken],
 ) -> u8 {
     let raw = format!("{addr:#x}");
-    assets
+    if let Some(dec) = assets.iter().find_map(|b| {
+        b.token
+            .contract_address
+            .as_ref()
+            .filter(|a| a.eq_ignore_ascii_case(&raw))
+            .map(|_| b.token.decimals)
+    }) {
+        return dec;
+    }
+    custom
         .iter()
-        .find(|b| {
-            b.token
-                .contract_address
-                .as_ref()
-                .is_some_and(|a| a.eq_ignore_ascii_case(&raw))
-        })
-        .map(|b| b.token.decimals)
+        .find(|t| t.address.eq_ignore_ascii_case(&raw))
+        .map(|t| t.decimals)
         .unwrap_or(18)
 }
 
@@ -718,6 +732,7 @@ pub(crate) fn v2_table_row_line(
     chain_id: u64,
     p: &vaughan_core::core::V2LpPosition,
     assets: &[Balance],
+    custom: &[CustomToken],
     selected: bool,
     term_width: u16,
 ) -> ratatui::text::Line<'static> {
@@ -725,10 +740,10 @@ pub(crate) fn v2_table_row_line(
     use ratatui::text::{Line, Span};
     let c = v2_table_cols(term_width);
     let mark = if selected { "▸" } else { " " };
-    let pair = v3_position_pair_label(chain_id, p.token0, p.token1, assets);
+    let pair = v3_position_pair_label(chain_id, p.token0, p.token1, assets, custom);
     let (a0, a1) = p.underlying_amounts();
-    let d0 = decimals_for_token(p.token0, assets);
-    let d1 = decimals_for_token(p.token1, assets);
+    let d0 = decimals_for_token(p.token0, assets, custom);
+    let d1 = decimals_for_token(p.token1, assets, custom);
     let share = format_share_pct(p.pool_share_bps());
     let amt0 = compact_token_amount(&a0, d0);
     let amt1 = compact_token_amount(&a1, d1);
@@ -764,15 +779,16 @@ pub(crate) fn v2_focused_detail_lines(
     venue_label: &str,
     p: &vaughan_core::core::V2LpPosition,
     assets: &[Balance],
+    custom: &[CustomToken],
 ) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     use vaughan_core::core::{format_display_amount, v2_spot_token1_per_token0};
 
-    let sym0 = symbol_for_token_address(chain_id, p.token0, assets);
-    let sym1 = symbol_for_token_address(chain_id, p.token1, assets);
-    let d0 = decimals_for_token(p.token0, assets);
-    let d1 = decimals_for_token(p.token1, assets);
+    let sym0 = symbol_for_token_address(chain_id, p.token0, assets, custom);
+    let sym1 = symbol_for_token_address(chain_id, p.token1, assets, custom);
+    let d0 = decimals_for_token(p.token0, assets, custom);
+    let d1 = decimals_for_token(p.token1, assets, custom);
     let (a0, a1) = p.underlying_amounts();
     let share = format_share_pct(p.pool_share_bps());
     // V2 positions are 50/50 of the underlying basket by design.

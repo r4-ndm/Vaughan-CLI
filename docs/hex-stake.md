@@ -4,7 +4,8 @@ On-chain HEX stake **reads** and **writes** for PulseChain mainnet (369).
 
 Patterns inspired by [pulsechain-mcp](https://github.com/DavidFeder/pulsechain-mcp)
 `hexStake` helpers; reimplemented in Rust under `vaughan-core::core::hex_stake`
-(no TypeScript vendoring).
+(no TypeScript vendoring). Why this helps Sentient (noob explainer):
+[`sentient-ops.md`](sentient-ops.md#why-sentient-works-better-with-davids-patterns).
 
 ## Contracts
 

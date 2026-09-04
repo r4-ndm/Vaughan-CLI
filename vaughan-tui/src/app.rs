@@ -1325,6 +1325,11 @@ impl App {
     }
 
     fn poll_mcp(&mut self) {
+        // If the WZRD gate demoted us to HumanOnly but another vault on this
+        // machine already burned (shared assist-unlock), restore the profile's
+        // AI mode so MCP comes back without a second burn or re-unlock.
+        self.restore_ai_mode_if_entitled();
+
         // HumanOnly runs no agent surface at all: no loopback control plane,
         // no session token, no file-queue surfacing (FR-5.1 mode teeth).
         let agent_surface =
@@ -2623,6 +2628,8 @@ impl App {
         }
         let needs_ai = self.wallet().operating_mode().is_ai_enabled();
         if !needs_ai {
+            // May have been demoted earlier — restore if another wallet unlocked us.
+            self.restore_ai_mode_if_entitled();
             return;
         }
         let Some(chain_id) = entitlement_chain_id() else {
@@ -2646,6 +2653,33 @@ impl App {
         if !entitled {
             self.force_human_only_assist_locked(reason);
         }
+    }
+
+    /// Re-enable Advisor/Sentient when shared assist-unlock says we're entitled
+    /// (e.g. default vault burned WZRD; Sentient was demoted to HumanOnly).
+    fn restore_ai_mode_if_entitled(&mut self) {
+        if !self.wallet().is_unlocked() {
+            return;
+        }
+        if self.wallet().operating_mode().is_ai_enabled() {
+            return;
+        }
+        let want = tui_mode_for_profile(self.wallet().profile_name());
+        if !want.is_ai_enabled() {
+            return;
+        }
+        if !self.power_features_ok() {
+            return;
+        }
+        {
+            let mut w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+            w.set_operating_mode(want);
+        }
+        tracing::info!(
+            target: "vaughan_tui::assist",
+            mode = %want,
+            "restored AI mode — assist unlock shared from another vault"
+        );
     }
 
     fn force_human_only_assist_locked(&mut self, reason: &str) {
