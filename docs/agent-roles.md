@@ -33,12 +33,15 @@ On `default`, pick how much **connect** automation the agent gets before signing
 | **Operator** | Auto on trusted dApp + Ag catalog hosts | Human approval |
 
 Toggle in **Settings → Networks (`n`) → `o`**, CLI `vaughan config agent-autonomy operator`,
-or check F1 for `· Op` when Operator is on. Never auto-signs on the adviser profile.
+or check F1 for `· Op` when Operator is on. **Never auto-signs** on the adviser
+(`default`) profile — every `propose_*` needs a fresh human approval card.
 
 ## Sentient
 
 The **`sentient` profile seed belongs to the agent**. It can do what it wants
 with that capital under the **skill + policy** loaded for that profile.
+Sentient is **enabled**: unlock the agent wallet or run
+`vaughan --profile sentient serve` for headless auto-exec.
 
 Switch in the TUI at the session boundary: `l` lock → unlock-screen profile
 picker → `sentient` (or launch `vaughan --profile sentient`). The password

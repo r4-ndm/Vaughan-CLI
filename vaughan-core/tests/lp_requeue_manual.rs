@@ -26,8 +26,7 @@ async fn requeue_latest_lp_brew_job() {
     let gas = lp_deploy_estimate_gas_limit(&params.rpc_url, params.chain_id, &tx)
         .await
         .expect("gas estimate");
-    let proposal =
-        lp_deploy_step_to_proposal(&job, &label, tx, gas, true, None).expect("proposal");
+    let proposal = lp_deploy_step_to_proposal(&job, &label, tx, gas, true, None).expect("proposal");
     let session = McpSessionToken::read(&prof)
         .expect("read session")
         .expect("session missing — unlock TUI");

@@ -13,13 +13,15 @@ use wiz4rd_sdk::allowance::build_approve_tx;
 use wiz4rd_sdk::pool_address::{compute_pool_address, get_pool_key};
 
 use crate::chains::EvmTransaction;
+use crate::core::dex_catalog::{
+    parse_dex_venue_label, venue_pool_deployer, venue_position_manager,
+};
 use crate::core::dex_lp::{
     build_v3_create_pool_evm, build_v3_initialize_pool_from_human_price_evm, build_v3_mint_evm,
     lp_deploy_fixup_swapped_amounts, v3_lp_deploy_mint_amounts, v3_lp_mint_tick_range,
     v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, v3_pool_lifecycle, V3LpDeployContext,
     V3LpDeployParams, V3LpDeployWait, V3PoolLifecycle,
 };
-use crate::core::dex_catalog::{parse_dex_venue_label, venue_pool_deployer, venue_position_manager};
 use crate::core::dex_quote::{min_out_after_slippage, DEFAULT_DEX_SLIPPAGE_BPS};
 use crate::core::proposal::{ProposalType, TxProposal};
 use crate::core::WalletState;
@@ -77,16 +79,21 @@ impl TryFrom<&StoredLpDeployParams> for V3LpDeployParams {
     type Error = WalletError;
 
     fn try_from(s: &StoredLpDeployParams) -> Result<Self, Self::Error> {
-        let venue = parse_dex_venue_label(&s.venue).ok_or_else(|| {
-            WalletError::Other(format!("unknown LP venue {:?}", s.venue))
-        })?;
+        let venue = parse_dex_venue_label(&s.venue)
+            .ok_or_else(|| WalletError::Other(format!("unknown LP venue {:?}", s.venue)))?;
         let mut params = V3LpDeployParams {
             from: s.from.clone(),
             venue,
             chain_id: s.chain_id,
             rpc_url: s.rpc_url.clone(),
-            token0: s.token0.parse().map_err(|_| WalletError::InvalidTransaction("token0".into()))?,
-            token1: s.token1.parse().map_err(|_| WalletError::InvalidTransaction("token1".into()))?,
+            token0: s
+                .token0
+                .parse()
+                .map_err(|_| WalletError::InvalidTransaction("token0".into()))?,
+            token1: s
+                .token1
+                .parse()
+                .map_err(|_| WalletError::InvalidTransaction("token1".into()))?,
             fee: s.fee,
             dec0: s.dec0,
             dec1: s.dec1,
@@ -271,24 +278,15 @@ pub async fn lp_deploy_estimate_gas_limit(
     use crate::chains::evm::EvmAdapter;
     use crate::chains::{ChainAdapter, ChainTransaction};
 
-    let net = get_network_by_chain_id(chain_id).ok_or_else(|| {
-        WalletError::NetworkError(format!("unknown chain id {chain_id}"))
-    })?;
+    let net = get_network_by_chain_id(chain_id)
+        .ok_or_else(|| WalletError::NetworkError(format!("unknown chain id {chain_id}")))?;
     let mut probe = tx.clone();
     probe.gas_limit = None;
     probe.gas_price = None;
     probe.max_fee_per_gas = None;
     probe.max_priority_fee_per_gas = None;
-    let adapter = EvmAdapter::new(
-        rpc_url,
-        chain_id,
-        &net.name,
-        &net.fallback_rpc_urls,
-    )
-    .await?;
-    let fee = adapter
-        .estimate_fee(&ChainTransaction::Evm(probe))
-        .await?;
+    let adapter = EvmAdapter::new(rpc_url, chain_id, &net.name, &net.fallback_rpc_urls).await?;
+    let fee = adapter.estimate_fee(&ChainTransaction::Evm(probe)).await?;
     match fee.details {
         crate::chains::FeeDetails::Evm { gas_limit, .. } => Ok(gas_limit),
         _ => Err(WalletError::InvalidTransaction(
@@ -538,7 +536,9 @@ fn evm_from_approve_req(
     })
 }
 /// Run pending on-chain wait, then prepare the next tx.
-pub async fn lp_deploy_next_step(job: &mut LpDeployJob) -> Result<LpDeployStepOutcome, WalletError> {
+pub async fn lp_deploy_next_step(
+    job: &mut LpDeployJob,
+) -> Result<LpDeployStepOutcome, WalletError> {
     if job.status != LpDeployJobStatus::Active {
         return Err(WalletError::Other("lp deploy job is not active".into()));
     }
@@ -547,12 +547,9 @@ pub async fn lp_deploy_next_step(job: &mut LpDeployJob) -> Result<LpDeployStepOu
     job.params.amount1 = params.amount1.clone();
 
     if job.pending_wait != V3LpDeployWait::None {
-        let ctx = job
-            .last_label
-            .as_ref()
-            .map(|label| V3LpDeployContext {
-                last_step_label: Some(label.clone()),
-            });
+        let ctx = job.last_label.as_ref().map(|label| V3LpDeployContext {
+            last_step_label: Some(label.clone()),
+        });
         v3_lp_run_deploy_wait(job.pending_wait, &params, ctx.as_ref()).await?;
         job.pending_wait = V3LpDeployWait::None;
     }
@@ -613,9 +610,10 @@ pub fn lp_deploy_step_to_proposal(
         .or_else(|_| U256::from_str_radix(tx.value.trim().trim_start_matches("0x"), 16))
         .unwrap_or(U256::ZERO);
     let calldata = match &tx.data {
-        Some(d) if !d.is_empty() => Bytes::from(hex::decode(d.trim_start_matches("0x")).map_err(
-            |e| WalletError::InvalidTransaction(format!("calldata hex: {e}")),
-        )?),
+        Some(d) if !d.is_empty() => Bytes::from(
+            hex::decode(d.trim_start_matches("0x"))
+                .map_err(|e| WalletError::InvalidTransaction(format!("calldata hex: {e}")))?,
+        ),
         _ => Bytes::new(),
     };
     let proposal_id = format!("lp-{}-{}", job.job_id, step_label.replace(' ', "-"));
@@ -684,14 +682,8 @@ pub async fn lp_deploy_advance_after_broadcast(
             tx_for_fee.gas_limit = Some(gas_limit);
             let estimated = wallet.estimate_transaction_fee(tx_for_fee).await.ok();
             let fee_wei = estimated.as_ref().and_then(|f| f.total_wei_evm());
-            let mut proposal = lp_deploy_step_to_proposal(
-                &job,
-                &label,
-                (*tx).clone(),
-                gas_limit,
-                true,
-                fee_wei,
-            )?;
+            let mut proposal =
+                lp_deploy_step_to_proposal(&job, &label, (*tx).clone(), gas_limit, true, fee_wei)?;
             proposal.estimated_fee_wei = fee_wei;
             lp_deploy_job_save(profile_dir, &job)?;
             let queue = crate::core::proposal::ProposalQueue::new(profile_dir);
@@ -721,7 +713,10 @@ mod tests {
 
     #[test]
     fn wait_after_maps_create_pool() {
-        assert_eq!(wait_after_label("createPool"), V3LpDeployWait::AfterCreatePool);
+        assert_eq!(
+            wait_after_label("createPool"),
+            V3LpDeployWait::AfterCreatePool
+        );
     }
 
     #[test]

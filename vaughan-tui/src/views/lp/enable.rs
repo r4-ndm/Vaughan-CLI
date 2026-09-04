@@ -191,7 +191,18 @@ impl LpView {
         if let Some(job) = self.enable_followup_job(wallet) {
             return Some(job);
         }
-        self.followup_deploy_job(wallet)
+        if let Some(job) = self.followup_deploy_job(wallet) {
+            return Some(job);
+        }
+        if self.lp_reload_pending {
+            self.lp_reload_pending = false;
+            if let Some(job) = self.list_job(wallet) {
+                self.busy = Busy::Loading;
+                self.status = "Refreshing positions…".into();
+                return Some(job);
+            }
+        }
+        None
     }
 
     pub(crate) fn enable_followup_job(&mut self, wallet: &WalletState) -> Option<UiJob> {

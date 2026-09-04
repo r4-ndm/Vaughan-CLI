@@ -49,7 +49,7 @@ async fn test_assist_registry_and_proposals_with_anvil() {
         rpc_url: anvil.rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     // 1. Propose Native Transfer

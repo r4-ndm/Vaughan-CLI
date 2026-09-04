@@ -192,6 +192,11 @@ fn get_explorer_api_url(chain_id: u64, address: Address) -> Option<String> {
             "https://api.basescan.org/api?module=contract&action=getabi&address={}",
             addr_str
         )),
+        // Arbitrum One
+        42161 => Some(format!(
+            "https://api.arbiscan.io/api?module=contract&action=getabi&address={}",
+            addr_str
+        )),
         _ => None,
     }
 }

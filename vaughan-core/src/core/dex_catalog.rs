@@ -6,7 +6,9 @@
 use alloy::primitives::Address;
 use std::str::FromStr;
 
-use super::wiz4rd::{FACTORY_943, POOL_DEPLOYER_943, POSITION_MANAGER_943, SWAP_ROUTER_943};
+use super::wiz4rd::{
+    FACTORY_943, POOL_DEPLOYER_943, POSITION_MANAGER_943, QUOTER_V2_943, SWAP_ROUTER_943,
+};
 
 /// Uni V2-style router vs V3 SwapRouter periphery.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -180,6 +182,13 @@ const CATALOG: &[CatalogEntry] = &[
         protocol: None,
         role: DexContractRole::V3Factory,
         address: FACTORY_943,
+    },
+    CatalogEntry {
+        venue: DexVenue::Wiz4rd,
+        chain_id: 943,
+        protocol: None,
+        role: DexContractRole::QuoterV2,
+        address: QUOTER_V2_943,
     },
     // PulseX
     CatalogEntry {
@@ -452,7 +461,7 @@ pub fn venue_v2_factory(venue: DexVenue, chain_id: u64) -> Option<Address> {
     })
 }
 
-/// QuoterV2 for browserless V3 quotes when catalogued (9mm 369 today).
+/// QuoterV2 for browserless V3 quotes when catalogued (wiz4rd 943, 9mm 369).
 pub fn venue_quoter_v2(venue: DexVenue, chain_id: u64) -> Option<Address> {
     CATALOG.iter().find_map(|e| {
         if e.venue == venue && e.chain_id == chain_id && e.role == DexContractRole::QuoterV2 {
@@ -461,6 +470,42 @@ pub fn venue_quoter_v2(venue: DexVenue, chain_id: u64) -> Option<Address> {
             None
         }
     })
+}
+
+/// Dex TUI ↑/↓ venues that have a SwapRouter on `chain_id` (plus Custom last).
+pub fn dex_swap_venues(chain_id: u64) -> Vec<DexVenue> {
+    let mut out: Vec<DexVenue> = DEX_VENUES
+        .iter()
+        .copied()
+        .filter(|v| {
+            *v != DexVenue::Custom
+                && (venue_swap_router(*v, DexProtocol::V3, chain_id).is_some()
+                    || venue_swap_router(*v, DexProtocol::V2, chain_id).is_some())
+        })
+        .collect();
+    // Prefer wiz4rd first on its home chain.
+    if chain_id == 943 {
+        if let Some(i) = out.iter().position(|v| *v == DexVenue::Wiz4rd) {
+            let w = out.remove(i);
+            out.insert(0, w);
+        }
+    }
+    out.push(DexVenue::Custom);
+    out
+}
+
+/// Cycle within [`dex_swap_venues`] for the active chain.
+pub fn cycle_dex_swap_venue(current: DexVenue, chain_id: u64, forward: bool) -> DexVenue {
+    let venues = dex_swap_venues(chain_id);
+    if venues.is_empty() {
+        return DexVenue::Custom;
+    }
+    let idx = venues.iter().position(|v| *v == current).unwrap_or(0);
+    if forward {
+        venues[(idx + 1) % venues.len()]
+    } else {
+        venues[(idx + venues.len() - 1) % venues.len()]
+    }
 }
 
 /// All write-gated DEX contract addresses for `chain_id` (routers, NPM, V3 factories).
@@ -627,6 +672,26 @@ mod tests {
             Some(address!("0xe50DbDC88E87a2C92984d794bcF3D1d76f619C68"))
         );
         assert!(venue_quoter_v2(DexVenue::PulseX, 369).is_none());
+        assert_eq!(
+            venue_quoter_v2(DexVenue::Wiz4rd, 943),
+            Some(address!("0x38d1752597c2c0BD25E980891cd6d74766138FB7"))
+        );
+    }
+
+    #[test]
+    fn dex_swap_venues_943_leads_with_wiz4rd() {
+        let v = dex_swap_venues(943);
+        assert_eq!(v.first(), Some(&DexVenue::Wiz4rd));
+        assert!(v.contains(&DexVenue::Custom));
+        assert!(!v.contains(&DexVenue::NineMm));
+        assert_eq!(
+            cycle_dex_swap_venue(DexVenue::Wiz4rd, 943, true),
+            DexVenue::PulseX
+        );
+        assert_eq!(
+            cycle_dex_swap_venue(DexVenue::Custom, 943, true),
+            DexVenue::Wiz4rd
+        );
     }
 
     #[test]

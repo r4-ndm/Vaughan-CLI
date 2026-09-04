@@ -46,10 +46,11 @@ pub fn is_sentient_profile(name: &str) -> bool {
 
 /// Whether Sentient auto-exec is offered in the TUI / CLI.
 ///
-/// Deferred while assist (advisor) mode is hardened. Re-enable when assist is
-/// bomb-proof — flip to `true` and restore the unlock Sentient role picker.
+/// When true, `--profile sentient` / unlock role picker enable agent-owned
+/// auto-exec under policy + circuit breakers. Advisor (`default`) never
+/// auto-signs.
 pub fn sentient_mode_enabled() -> bool {
-    false
+    true
 }
 
 /// Profile names that must not be used while [`sentient_mode_enabled`] is false.
@@ -238,7 +239,7 @@ pub fn trusted_dapp_allow_hosts(dapps: &[TrustedDapp]) -> Vec<String> {
     out
 }
 
-/// Built-in PulseChain dApps seeded into every vault (provider origins + launcher).
+/// Built-in trusted dApps seeded into every vault (provider origins + launcher).
 pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
     vec![
         TrustedDapp {
@@ -291,6 +292,21 @@ pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
             name: "9inch".into(),
             url: "https://app.9inch.io/swap?chain=pulse".into(),
             extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "Hyperliquid".into(),
+            url: "https://app.hyperliquid.xyz/trade".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "Asterdex".into(),
+            url: "https://www.asterdex.com/en/trade/pro/futures/CLUSD1".into(),
+            extra_hosts: vec!["asterdex.com".into()],
+        },
+        TrustedDapp {
+            name: "SquirrelSwap Bot".into(),
+            url: "https://app.squirrelswap.pro/#/bot".into(),
+            extra_hosts: vec!["squirrelswap.pro".into()],
         },
     ]
 }
@@ -829,6 +845,11 @@ mod tests {
         assert!(hosts.iter().any(|h| h == "ipfs.io"));
         assert!(hosts.iter().any(|h| h == "app.pulsex.com"));
         assert!(hosts.iter().any(|h| h == "app.9inch.io"));
+        assert!(hosts.iter().any(|h| h == "app.hyperliquid.xyz"));
+        assert!(
+            hosts.iter().any(|h| h == "www.asterdex.com")
+                || hosts.iter().any(|h| h == "asterdex.com")
+        );
     }
 
     #[test]
@@ -959,9 +980,9 @@ mod tests {
     }
 
     #[test]
-    fn sentient_mode_deferred_by_default() {
-        assert!(!sentient_mode_enabled());
-        assert!(reject_deferred_sentient_profile(SENTIENT_PROFILE).is_err());
+    fn sentient_mode_enabled_allows_sentient_profile() {
+        assert!(sentient_mode_enabled());
+        assert!(reject_deferred_sentient_profile(SENTIENT_PROFILE).is_ok());
         assert!(reject_deferred_sentient_profile("default").is_ok());
     }
 

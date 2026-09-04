@@ -801,6 +801,28 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live PulseChain testnet 943 RPC"]
+    async fn live_discover_wpls_wzrd_943() {
+        use std::str::FromStr;
+        let wpls = Address::from_str("0x70499adEBB11Efd915E3b69E700c331778628707").unwrap();
+        let wzrd = Address::from_str("0x29bab93456c0E97EE931C1554c7C215480aa7766").unwrap();
+        let route = discover_v3_swap_route(
+            "https://rpc.v4.testnet.pulsechain.com",
+            943,
+            wpls,
+            wzrd,
+            U256::from(10u64) * U256::from(10u128.pow(18)),
+            Some(wpls),
+            true,
+        )
+        .await
+        .expect("native/WPLS→WZRD");
+        assert_eq!(route.hop_fees, vec![500]);
+        assert_eq!(route.path, vec![wpls, wzrd]);
+        assert!(route.amount_out > U256::ZERO);
+    }
+
+    #[tokio::test]
     async fn discover_errors_when_no_pool() {
         let err = discover_v3_swap_route(
             "http://127.0.0.1:1",

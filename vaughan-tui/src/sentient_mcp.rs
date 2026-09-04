@@ -11,8 +11,8 @@ use vaughan_agent::{breaker_config_for_session, CircuitBreaker, EnforcementMode}
 use vaughan_core::core::is_sentient_profile;
 use vaughan_core::core::proposal::{ProposalType, TxProposal};
 use vaughan_core::core::{
-    apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, is_allowed_dex_router,
-    quote_v2_exact_in, OperatingMode, WalletState,
+    apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, is_allowed_agg_router,
+    is_allowed_dex_router, quote_v2_exact_in, OperatingMode, WalletState,
 };
 use vaughan_provider::ProviderError;
 
@@ -102,10 +102,11 @@ pub fn gate_sentient_proposal(
     if legs.is_empty() {
         // Arbitrary call with no sizeable value leg: the position limit
         // cannot be applied, so blind auto-exec is refused. The agent must
-        // use a typed proposal (transfer / swap / batch) instead.
+        // use a typed proposal (transfer / swap / approve / wrap / batch)
+        // instead of raw unknown calldata.
         return Err(ProviderError::InvalidParams(
             "sentient auto-exec requires a sizeable value leg (native value, token \
-             transfer, or typed swap); raw contract calls need a human profile"
+             transfer/approve/unwrap, or typed swap); raw contract calls need a human profile"
                 .into(),
         ));
     }
@@ -115,7 +116,9 @@ pub fn gate_sentient_proposal(
             .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
     }
 
-    // DexSwap: audited-router allowlist + fresh-quote slippage floor.
+    // DexSwap: audited router allowlist + slippage floor.
+    // V2 DEX routers get a fresh on-chain quote; Agg routers are allowlisted but
+    // cannot use the V2 quoter — require min_amount_out > 0 (propose-time bound).
     if let ProposalType::DexSwap {
         router,
         path,
@@ -124,31 +127,39 @@ pub fn gate_sentient_proposal(
     } = &proposal.proposal_type
     {
         let net = wallet.networks().active();
-        if !is_allowed_dex_router(net.chain_id, *router) {
+        let dex_ok = is_allowed_dex_router(net.chain_id, *router);
+        let agg_ok = is_allowed_agg_router(*router);
+        if !dex_ok && !agg_ok {
             return Err(ProviderError::InvalidParams(format!(
-                "router {router} is not on the audited DEX allowlist for chain {}",
+                "router {router} is not on the audited DEX/Agg allowlist for chain {}",
                 net.chain_id
             )));
         }
-        let quote = handle
-            .block_on(quote_v2_exact_in(&net.rpc_url, *router, *amount_in, path))
-            .map_err(|e| {
-                ProviderError::Internal(format!(
-                    "fresh swap quote failed (fail-closed): {}",
-                    e.user_message()
-                ))
-            })?;
-        // Policy floor: min_amount_out must be within max_slippage_bps of the
-        // fresh quote — the agent cannot set min_out = 0 and get sandwiched.
-        let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
-        let floor = quote.amount_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
-        if *min_amount_out < floor {
-            return Err(ProviderError::InvalidParams(format!(
-                "min_amount_out {min_amount_out} is below the policy floor {floor} \
-                 (fresh quote {} less {max_bps} bps slippage) — re-propose with a \
-                 tighter bound",
-                quote.amount_out
-            )));
+        if dex_ok {
+            let quote = handle
+                .block_on(quote_v2_exact_in(&net.rpc_url, *router, *amount_in, path))
+                .map_err(|e| {
+                    ProviderError::Internal(format!(
+                        "fresh swap quote failed (fail-closed): {}",
+                        e.user_message()
+                    ))
+                })?;
+            let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
+            let floor = quote.amount_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
+            if *min_amount_out < floor {
+                return Err(ProviderError::InvalidParams(format!(
+                    "min_amount_out {min_amount_out} is below the policy floor {floor} \
+                     (fresh quote {} less {max_bps} bps slippage) — re-propose with a \
+                     tighter bound",
+                    quote.amount_out
+                )));
+            }
+        } else if min_amount_out.is_zero() {
+            return Err(ProviderError::InvalidParams(
+                "agg swap auto-exec requires min_amount_out > 0 (propose-time bound; \
+                 fresh V2 quote does not apply to aggregator routers)"
+                    .into(),
+            ));
         }
     }
 
@@ -232,10 +243,11 @@ fn fresh_fee_estimate(
 
 /// Amount-at-risk legs and the balance each is measured against.
 ///
-/// One entry per (asset, amount) leg: native value, token transfers, and swap
-/// inputs. Token legs are capped as a percentage of that token's own balance —
-/// a per-asset position limit that needs no price oracle. An empty result
-/// means the proposal carries no sizeable leg (zero-value raw contract call).
+/// One entry per (asset, amount) leg: native value, token transfers, sized
+/// approve/unwrap, and swap inputs. Token legs are capped as a percentage of
+/// that token's own balance — a per-asset position limit that needs no price
+/// oracle. An empty result means the proposal carries no sizeable leg
+/// (unknown zero-value raw contract call).
 fn sizeable_legs(
     wallet: &WalletState,
     handle: &Handle,
@@ -279,10 +291,24 @@ fn sizeable_legs(
         }
         ProposalType::ContractCall { .. } => {
             if proposal.value_wei > U256::ZERO {
-                Ok(vec![(proposal.value_wei, native_balance(handle)?)])
-            } else {
-                Ok(Vec::new())
+                // Native wrap / payable call: value is the amount at risk.
+                return Ok(vec![(proposal.value_wei, native_balance(handle)?)]);
             }
+            // Typed ERC-20 approve / WETH9 withdraw — decode amount from calldata.
+            if let Some(amount) = decode_erc20_approve_amount(&proposal.calldata) {
+                refuse_unlimited_approve(amount)?;
+                return Ok(vec![(
+                    amount,
+                    token_balance(handle, &proposal.to.to_string())?,
+                )]);
+            }
+            if let Some(amount) = decode_weth_withdraw_amount(&proposal.calldata) {
+                return Ok(vec![(
+                    amount,
+                    token_balance(handle, &proposal.to.to_string())?,
+                )]);
+            }
+            Ok(Vec::new())
         }
         ProposalType::TokenLaunch { .. } => Ok(Vec::new()),
         ProposalType::LpDeployStep { .. } => Ok(Vec::new()),
@@ -358,6 +384,39 @@ fn decode_erc20_transfer_amount(data: &[u8]) -> Option<U256> {
         return None;
     }
     Some(U256::from_be_slice(&data[36..68]))
+}
+
+/// Decode amount from ERC-20 `approve(address,uint256)` (incl. revoke = 0).
+fn decode_erc20_approve_amount(data: &[u8]) -> Option<U256> {
+    const APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+    if data.len() != 68 || data[..4] != APPROVE_SELECTOR {
+        return None;
+    }
+    Some(U256::from_be_slice(&data[36..68]))
+}
+
+/// Unlimited approve is a standing drain grant — never auto-exec on Sentient.
+///
+/// Sized approve and revoke (`amount == 0`) stay allowed under the breaker.
+/// This must run before the zero-balance position skip in [`CircuitBreaker`].
+fn refuse_unlimited_approve(amount: U256) -> Result<(), ProviderError> {
+    if amount == U256::MAX {
+        return Err(ProviderError::InvalidParams(
+            "sentient auto-exec refuses unlimited ERC-20 approve \
+             (max uint256); use a sized amount or the Advisor profile"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Decode wad from WETH9 `withdraw(uint256)`.
+fn decode_weth_withdraw_amount(data: &[u8]) -> Option<U256> {
+    const WITHDRAW_SELECTOR: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d];
+    if data.len() != 36 || data[..4] != WITHDRAW_SELECTOR {
+        return None;
+    }
+    Some(U256::from_be_slice(&data[4..36]))
 }
 
 /// Parse a balance string, fail-closed: an unparseable balance must reject
@@ -437,17 +496,15 @@ mod tests {
 
     #[test]
     fn legacy_degen_profile_still_enables_auto_exec() {
-        assert!(!mcp_auto_exec_enabled("sentient"));
-        assert!(!mcp_auto_exec_enabled("degen"));
+        assert!(mcp_auto_exec_enabled("sentient"));
+        assert!(mcp_auto_exec_enabled("degen"));
         assert!(!mcp_auto_exec_enabled("default"));
         assert!(!mcp_auto_exec_enabled("savings"));
     }
 
     #[test]
     fn auto_exec_when_sentient_mode_re_enabled() {
-        if !vaughan_core::core::sentient_mode_enabled() {
-            return;
-        }
+        assert!(vaughan_core::core::sentient_mode_enabled());
         assert!(mcp_auto_exec_enabled("sentient"));
         assert!(mcp_auto_exec_enabled("degen"));
     }
@@ -466,17 +523,44 @@ mod tests {
 
     #[test]
     fn erc20_transfer_amount_rejects_other_selectors_and_lengths() {
-        // approve(address,uint256) selector.
+        // approve(address,uint256) selector — not a transfer.
         let mut approve = vec![0x09, 0x5e, 0xa7, 0xb3];
         approve.extend_from_slice(&[0u8; 64]);
         assert_eq!(decode_erc20_transfer_amount(&approve), None);
-        // Right selector, truncated payload.
         assert_eq!(
             decode_erc20_transfer_amount(&[0xa9, 0x05, 0x9c, 0xbb]),
             None
         );
-        // Empty calldata.
         assert_eq!(decode_erc20_transfer_amount(&[]), None);
+    }
+
+    #[test]
+    fn erc20_approve_and_weth_withdraw_decode() {
+        let mut approve = vec![0x09, 0x5e, 0xa7, 0xb3];
+        approve.extend_from_slice(&[0u8; 32]);
+        approve.extend_from_slice(&U256::from(7_000u64).to_be_bytes::<32>());
+        assert_eq!(
+            decode_erc20_approve_amount(&approve),
+            Some(U256::from(7_000u64))
+        );
+
+        let mut withdraw = vec![0x2e, 0x1a, 0x7d, 0x4d];
+        withdraw.extend_from_slice(&U256::from(99u64).to_be_bytes::<32>());
+        assert_eq!(
+            decode_weth_withdraw_amount(&withdraw),
+            Some(U256::from(99u64))
+        );
+        assert_eq!(decode_weth_withdraw_amount(&[0x2e, 0x1a, 0x7d, 0x4d]), None);
+        // Unknown selector → not sizeable (raw contract_call stays refused).
+        assert_eq!(decode_erc20_approve_amount(&[0xde, 0xad, 0xbe, 0xef]), None);
+        assert_eq!(decode_weth_withdraw_amount(&[0xde, 0xad, 0xbe, 0xef]), None);
+    }
+
+    #[test]
+    fn refuse_unlimited_approve_allows_sized_and_revoke() {
+        assert!(refuse_unlimited_approve(U256::ZERO).is_ok());
+        assert!(refuse_unlimited_approve(U256::from(1u64)).is_ok());
+        assert!(refuse_unlimited_approve(U256::MAX).is_err());
     }
 
     #[test]

@@ -29,7 +29,7 @@ use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
     AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
-    DashboardView, DexView, HistoryView, KeysView, LpView, OnboardingView, PlaceholderView,
+    DashboardView, DexView, HexView, HistoryView, KeysView, LpView, OnboardingView, PlaceholderView,
     ReceiveView, SettingsView, TokenLaunchView, UnlockView, WrapView,
 };
 
@@ -54,6 +54,7 @@ pub enum Screen {
     History,
     Approvals,
     Wrap,
+    Hex,
     TokenLaunch,
     Approve,
 }
@@ -79,6 +80,7 @@ impl Screen {
             Self::History => "History",
             Self::Approvals => "Approvals",
             Self::Wrap => "Wrap",
+            Self::Hex => "HEX",
             Self::TokenLaunch => "Launch",
             Self::Approve => "Approve",
         }
@@ -109,6 +111,8 @@ pub enum KeyOutcome {
     SignTypedData(serde_json::Value),
     /// Show a short chrome toast (copy confirmations, etc.); key is consumed.
     Flash(String),
+    /// Settings: open Home send prefilled for ≥13 WZRD burn to the dead sink.
+    AssistBurn,
     /// Unlock picker: load a different profile vault and rebind MCP/grants.
     /// Carries the operating mode picked alongside the profile (FR-5.1).
     SwitchProfile(String, OperatingMode),
@@ -126,6 +130,7 @@ impl std::fmt::Debug for KeyOutcome {
             Self::Intent(i) => f.debug_tuple("Intent").field(i).finish(),
             Self::SignTypedData(_) => write!(f, "SignTypedData(..)"),
             Self::Flash(s) => f.debug_tuple("Flash").field(s).finish(),
+            Self::AssistBurn => write!(f, "AssistBurn"),
             Self::SwitchProfile(p, m) => f.debug_tuple("SwitchProfile").field(p).field(m).finish(),
         }
     }
@@ -149,6 +154,7 @@ pub enum View {
     History(HistoryView),
     Approvals(ApprovalsView),
     Wrap(WrapView),
+    Hex(HexView),
     Lp(LpView),
     TokenLaunch(TokenLaunchView),
     Placeholder(PlaceholderView),
@@ -174,6 +180,7 @@ impl View {
             Self::History(_) => Screen::History,
             Self::Approvals(_) => Screen::Approvals,
             Self::Wrap(_) => Screen::Wrap,
+            Self::Hex(_) => Screen::Hex,
             Self::Lp(_) => Screen::Lp,
             Self::TokenLaunch(_) => Screen::TokenLaunch,
             Self::Placeholder(v) => v.screen(),
@@ -208,6 +215,7 @@ impl View {
             Self::History(v) => v.render(frame, area, wallet),
             Self::Approvals(v) => v.render(frame, area, wallet),
             Self::Wrap(v) => v.render(frame, area, wallet),
+            Self::Hex(v) => v.render(frame, area, wallet),
             Self::Lp(v) => v.render(frame, area, wallet, assets),
             Self::TokenLaunch(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
@@ -239,6 +247,7 @@ impl View {
             Self::History(v) => v.handle_key(key, wallet, handle, events),
             Self::Approvals(v) => v.handle_key(key, wallet, handle, events),
             Self::Wrap(v) => v.handle_key(key, wallet, handle, events),
+            Self::Hex(v) => v.handle_key(key, wallet, handle, events),
             Self::Lp(v) => v.handle_key(key, wallet, handle, events),
             Self::TokenLaunch(v) => v.handle_key(key, wallet, handle, events),
             Self::Placeholder(v) => v.handle_key(key, wallet, handle, events),
@@ -265,6 +274,7 @@ impl View {
             Self::History(v) => v.allows_footer_shortcuts(),
             Self::Approvals(v) => v.allows_footer_shortcuts(),
             Self::Wrap(v) => v.allows_footer_shortcuts(),
+            Self::Hex(v) => v.allows_footer_shortcuts(),
             Self::Lp(v) => v.allows_footer_shortcuts(),
             Self::TokenLaunch(v) => v.allows_footer_shortcuts(),
             Self::Placeholder(v) => v.allows_footer_shortcuts(),
@@ -604,6 +614,9 @@ impl App {
             if let View::Wrap(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
+            if let View::Hex(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
             if let View::Lp(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
@@ -688,11 +701,32 @@ impl App {
             }
         }
 
+        let before_addr = self
+            .wallet()
+            .active_address()
+            .ok()
+            .map(|a| a.to_string());
         let outcome = {
             let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
             self.view
                 .handle_key(key, &mut wallet, &self.handle, &self.events)
         };
+        let after_addr = self
+            .wallet()
+            .active_address()
+            .ok()
+            .map(|a| a.to_string());
+        // Keys import (and any path that flips the active account) must refresh F2.
+        if before_addr.is_some()
+            && after_addr.is_some()
+            && before_addr != after_addr
+        {
+            if let Some(owner) = after_addr {
+                self.events
+                    .publish(ProviderEvent::AccountsChanged(vec![owner.clone()]));
+                self.sync_f2_to_owner(&owner);
+            }
+        }
         let outcome = defer_footer_shortcut(outcome, key, self.view.allows_footer_shortcuts());
 
         match global_action(key, &outcome) {
@@ -714,7 +748,7 @@ impl App {
             }
             GlobalAction::RefreshChrome => {
                 if self.wallet().is_unlocked() {
-                    self.refresh_chrome();
+                    self.sync_f2_to_displayed();
                 }
                 return;
             }
@@ -746,17 +780,13 @@ impl App {
             }
             GlobalAction::CopyAddress => {
                 if self.wallet().is_unlocked() {
-                    let addr = {
-                        let w = self.wallet();
-                        w.active_address().map(|a| a.to_string())
-                    };
-                    match addr {
-                        Ok(addr) => match crate::clipboard::copy_text(&addr) {
-                            Ok(()) => self.set_flash("F3 address copied"),
-                            Err(e) => self.set_flash(e),
-                        },
-                        Err(e) => self.set_flash(e.user_message()),
-                    }
+                    self.copy_chrome_f3_address();
+                }
+                return;
+            }
+            GlobalAction::AssistBurn => {
+                if self.wallet().is_unlocked() {
+                    self.begin_assist_burn();
                 }
                 return;
             }
@@ -766,7 +796,20 @@ impl App {
         match outcome {
             KeyOutcome::Navigate(screen) => self.navigate(screen),
             KeyOutcome::Back => self.navigate_back(),
-            KeyOutcome::StartJob(job) => self.spawn_job(job),
+            KeyOutcome::StartJob(job) => {
+                if matches!(job, crate::jobs::UiJob::SendStealth { .. }) && !self.power_features_ok()
+                {
+                    self.flash_tools_locked();
+                } else if matches!(
+                    job,
+                    UiJob::RefreshChrome { .. } | UiJob::RefreshAssets { .. }
+                ) {
+                    // Views request a reload; always bind to the F3-displayed owner.
+                    self.sync_f2_to_displayed();
+                } else {
+                    self.spawn_job(job);
+                }
+            }
             KeyOutcome::SendAsset(balance) => {
                 // Align F2 with the asset the user picked from Assets.
                 if let Some(i) = self
@@ -777,14 +820,14 @@ impl App {
                 {
                     self.chrome.asset_idx = i;
                 } else {
-                    self.chrome.assets_loading = true;
-                    self.spawn_job(UiJob::RefreshAssets);
+                    self.spawn_refresh_assets();
                 }
                 self.view = View::Dashboard(DashboardView::for_asset(balance));
             }
             KeyOutcome::Intent(nav) => self.apply_intent(nav),
             KeyOutcome::SignTypedData(data) => self.begin_local_typed_data_sign(data),
             KeyOutcome::Flash(msg) => self.set_flash(msg),
+            KeyOutcome::AssistBurn => self.begin_assist_burn(),
             KeyOutcome::SwitchProfile(profile, mode) => self.switch_profile(&profile, mode),
             KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
         }
@@ -863,7 +906,10 @@ impl App {
             let title = u16::from(self.chrome.flash_title.is_some());
             let table = verify_table_compact_lines(rows, width.saturating_sub(4)).len() as u16;
             let dismiss = u16::from(self.chrome.flash_dismiss_on_enter);
-            title.saturating_add(table).saturating_add(dismiss).clamp(1, 14)
+            title
+                .saturating_add(table)
+                .saturating_add(dismiss)
+                .clamp(1, 14)
         } else {
             1
         }
@@ -960,7 +1006,8 @@ impl App {
                         }
                     };
                     self.approve_return = self.approve_return_screen();
-                    self.view = View::Approve(ApproveView::new(title, Some(site.clone()), details, vec![]));
+                    self.view =
+                        View::Approve(ApproveView::new(title, Some(site.clone()), details, vec![]));
                     self.pending_approval = Some(PendingApproval {
                         kind,
                         reply: PendingReply::Accounts(reply),
@@ -1420,6 +1467,12 @@ impl App {
                             reply.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
                         continue;
                     }
+                    if !self.power_features_ok() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "assist_locked: burn ≥13 WZRD (Settings → Unlock tools)".into(),
+                        )));
+                        continue;
+                    }
                     let result = self
                         .wallet()
                         .stealth_uri()
@@ -1430,6 +1483,12 @@ impl App {
                     if !self.wallet().is_unlocked() {
                         let _ =
                             reply.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
+                        continue;
+                    }
+                    if !self.power_features_ok() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "assist_locked: burn ≥13 WZRD (Settings → Unlock tools)".into(),
+                        )));
                         continue;
                     }
                     let notes = match self.handle.block_on(self.wallet().scan_stealth_notes()) {
@@ -1462,6 +1521,12 @@ impl App {
                     if !self.wallet().is_unlocked() {
                         let _ =
                             reply.send(Err(ProviderError::Unauthorized("wallet is locked".into())));
+                        continue;
+                    }
+                    if !self.power_features_ok() {
+                        let _ = reply.send(Err(ProviderError::Unauthorized(
+                            "assist_locked: burn ≥13 WZRD (Settings → Unlock tools)".into(),
+                        )));
                         continue;
                     }
                     let notes = match self.handle.block_on(self.wallet().scan_stealth_notes()) {
@@ -1857,6 +1922,10 @@ impl App {
     /// Build the default view for `screen`. Chrome/asset RPC refresh is limited
     /// to screens that need fresh data — other views reuse cached chrome.
     fn navigate(&mut self, screen: Screen) {
+        if Self::screen_requires_power_unlock(screen) && !self.power_features_ok() {
+            self.flash_tools_locked();
+            return;
+        }
         let from = self.screen();
         if matches!(
             screen,
@@ -1881,10 +1950,56 @@ impl App {
             }
             return;
         };
+        if Self::screen_requires_power_unlock(dest) && !self.power_features_ok() {
+            self.nav_back.clear();
+            self.flash_tools_locked();
+            self.mount_screen(Screen::Dashboard);
+            return;
+        }
         if dest == Screen::Dashboard {
             self.nav_back.clear();
         }
         self.mount_screen(dest);
+    }
+
+    /// Bridge / launch / browser / AA batch / NFT placeholder.
+    /// Ag, Dex, and LP stay free so users can buy WZRD (or exit LP for tPLS) before burning.
+    fn screen_requires_power_unlock(screen: Screen) -> bool {
+        matches!(
+            screen,
+            Screen::Bridge
+                | Screen::TokenLaunch
+                | Screen::Browser
+                | Screen::AaSend
+                | Screen::SoonNft
+        )
+    }
+
+    /// True when the burn gate is off or this vault has unlocked tools (any F3 burner).
+    fn power_features_ok(&self) -> bool {
+        use vaughan_core::core::{
+            assist_burn_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
+        };
+        if !assist_burn_gate_enabled() {
+            return true;
+        }
+        let Some(chain_id) = entitlement_chain_id() else {
+            return false;
+        };
+        let (dir, addrs) = {
+            let w = self.wallet();
+            let dir = profile_dir(w.path());
+            let addrs = w.account_addresses().unwrap_or_default();
+            (dir, addrs)
+        };
+        if addrs.is_empty() {
+            return false;
+        }
+        power_features_unlocked_blocking(&self.handle, Some(&dir), chain_id, &addrs)
+    }
+
+    fn flash_tools_locked(&mut self) {
+        self.set_flash("Tools locked: burn ≥13 WZRD from any account — press w");
     }
 
     fn mount_screen(&mut self, screen: Screen) {
@@ -1947,6 +2062,12 @@ impl App {
                 let chain_id = self.wallet().networks().active().chain_id;
                 View::Wrap(WrapView::for_chain(chain_id))
             }
+            Screen::Hex => {
+                let w = self.wallet();
+                let chain_id = w.networks().active().chain_id;
+                let owner = w.active_address().ok().unwrap_or_default();
+                View::Hex(HexView::for_chain(chain_id, &owner))
+            }
             Screen::TokenLaunch => {
                 let chain_id = self.wallet().networks().active().chain_id;
                 View::TokenLaunch(TokenLaunchView::for_chain(chain_id))
@@ -1965,13 +2086,13 @@ impl App {
         match screen {
             Screen::Onboarding | Screen::Unlock | Screen::Approve => {}
             Screen::Assets => {
-                self.refresh_chrome();
-                self.spawn_refresh_assets();
+                self.sync_f2_to_displayed();
             }
             Screen::Dex | Screen::Aggregator => {
-                self.refresh_chrome();
                 if self.chrome.assets.is_empty() {
-                    self.spawn_refresh_assets();
+                    self.sync_f2_to_displayed();
+                } else {
+                    self.refresh_chrome();
                 }
             }
             Screen::History => {
@@ -1984,24 +2105,38 @@ impl App {
                 self.refresh_chrome();
                 self.spawn_job(ApprovalsView::initial_job());
             }
+            Screen::Hex => {
+                self.refresh_chrome();
+                if let View::Hex(v) = &self.view {
+                    if let Some(job) = v.initial_job() {
+                        self.spawn_job(job);
+                    }
+                }
+            }
             Screen::Lp => {
                 self.refresh_chrome();
-                let job = {
-                    let wallet = self.wallet();
-                    if let View::Lp(v) = &self.view {
-                        v.initial_job(&wallet)
+                let job = if matches!(self.view, View::Lp(_)) {
+                    let w = self.wallet();
+                    let owner = w.active_address().ok().map(|s| s.to_string());
+                    let rpc = w.active_rpc_url();
+                    drop(w);
+                    if let (Some(owner), View::Lp(v)) = (owner, &mut self.view) {
+                        v.list_job_for(owner, rpc)
                     } else {
                         None
                     }
+                } else {
+                    None
                 };
                 if let Some(job) = job {
                     self.spawn_job(job);
                 }
             }
             Screen::Dashboard => {
-                self.refresh_chrome();
                 if self.chrome.assets.is_empty() {
-                    self.spawn_refresh_assets();
+                    self.sync_f2_to_displayed();
+                } else {
+                    self.refresh_chrome();
                 }
             }
             _ => {}
@@ -2009,23 +2144,105 @@ impl App {
     }
 
     /// Refresh always-on network / balance / gas chrome (unlocked screens).
+    ///
+    /// Clears the previous F2 balance immediately and stamps the job so a late
+    /// response from another F3 account cannot paint over the strip.
     fn refresh_chrome(&mut self) {
-        if !self.wallet().is_unlocked() || self.chrome.loading {
+        if !self.wallet().is_unlocked() {
             return;
         }
-        self.chrome.loading = true;
-        self.chrome.error = None;
-        self.spawn_job(UiJob::RefreshChrome);
+        let Some(owner) = self.chrome_display_owner() else {
+            return;
+        };
+        self.kick_f2_chrome(&owner);
     }
 
-    /// Re-fetch the F2 asset list (native + ERC-20). Safe to call often; coalesces
-    /// when a refresh is already in flight.
+    /// Re-fetch the F2 asset list (native + ERC-20). Safe to call often; stamped
+    /// jobs discard stale results after F3 switch / import.
     fn spawn_refresh_assets(&mut self) {
-        if !self.wallet().is_unlocked() || self.chrome.assets_loading {
+        if !self.wallet().is_unlocked() {
             return;
         }
+        let Some(owner) = self.chrome_display_owner() else {
+            return;
+        };
+        self.kick_f2_assets(&owner);
+    }
+
+    /// Address shown under the wordmark / driving F2 (F3 preview when focused).
+    fn chrome_display_owner(&self) -> Option<String> {
+        let w = self.wallet();
+        if !w.is_unlocked() {
+            return None;
+        }
+        if self.chrome.focus == ChromeFocus::Account {
+            if let Some(idx) = self.chrome.pending_account_index {
+                if let Ok(addr) = w.account_address(idx) {
+                    return Some(addr);
+                }
+            }
+        }
+        w.active_address().ok().map(str::to_string)
+    }
+
+    fn kick_f2_chrome(&mut self, owner: &str) {
+        self.chrome.f2_gen = self.chrome.f2_gen.wrapping_add(1);
+        let gen = self.chrome.f2_gen;
+        self.chrome.balance = None;
+        self.chrome.loading = true;
+        self.chrome.error = None;
+        self.spawn_job(UiJob::RefreshChrome {
+            owner: owner.to_string(),
+            gen,
+        });
+    }
+
+    fn kick_f2_assets(&mut self, owner: &str) {
+        self.chrome.f2_gen = self.chrome.f2_gen.wrapping_add(1);
+        let gen = self.chrome.f2_gen;
+        self.chrome.assets.clear();
+        self.chrome.asset_idx = 0;
         self.chrome.assets_loading = true;
-        self.spawn_job(UiJob::RefreshAssets);
+        self.spawn_job(UiJob::RefreshAssets {
+            owner: owner.to_string(),
+            gen,
+        });
+    }
+
+    /// Clear F2 and refetch native + assets for `owner` (F3 must match F2).
+    fn sync_f2_to_owner(&mut self, owner: &str) {
+        self.chrome.f2_gen = self.chrome.f2_gen.wrapping_add(1);
+        let gen = self.chrome.f2_gen;
+        self.chrome.balance = None;
+        self.chrome.assets.clear();
+        self.chrome.asset_idx = 0;
+        self.chrome.pending_asset_address = None;
+        self.chrome.loading = true;
+        self.chrome.assets_loading = true;
+        self.chrome.error = None;
+        self.spawn_job(UiJob::RefreshChrome {
+            owner: owner.to_string(),
+            gen,
+        });
+        self.spawn_job(UiJob::RefreshAssets {
+            owner: owner.to_string(),
+            gen,
+        });
+    }
+
+    fn f2_result_current(&self, owner: &str, gen: u64) -> bool {
+        if gen != self.chrome.f2_gen {
+            return false;
+        }
+        self.chrome_display_owner()
+            .is_some_and(|want| want.eq_ignore_ascii_case(owner))
+    }
+
+    /// Clear F2 and refetch native + assets for the chrome-displayed account.
+    fn sync_f2_to_displayed(&mut self) {
+        if let Some(owner) = self.chrome_display_owner() {
+            self.sync_f2_to_owner(&owner);
+        }
     }
 
     /// Dex / Ag: ↑/↓ on Token in or Token out cycles the wallet asset list.
@@ -2043,10 +2260,7 @@ impl App {
             if !on_token_field {
                 return false;
             }
-            if !self.chrome.assets_loading {
-                self.chrome.assets_loading = true;
-                self.spawn_job(UiJob::RefreshAssets);
-            }
+            self.spawn_refresh_assets();
             return true;
         }
         let assets = self.chrome.assets.clone();
@@ -2061,6 +2275,13 @@ impl App {
     /// F1 / F2 / F3 focus + ↑/↓ preview + Enter set / Esc cancel.
     /// Returns true if the key was consumed.
     fn handle_chrome_hotkey(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl+Y while F3 (or any chrome) focused: copy the address under the
+        // wordmark — for F3 that is the ↑/↓ preview wallet, not only the committed one.
+        if ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            self.copy_chrome_f3_address();
+            return true;
+        }
         match key.code {
             KeyCode::F(1) => {
                 self.begin_chrome_focus(ChromeFocus::Network);
@@ -2068,9 +2289,8 @@ impl App {
             }
             KeyCode::F(2) => {
                 self.begin_chrome_focus(ChromeFocus::Asset);
-                if self.chrome.assets.is_empty() && !self.chrome.assets_loading {
-                    self.chrome.assets_loading = true;
-                    self.spawn_job(UiJob::RefreshAssets);
+                if self.chrome.assets.is_empty() {
+                    self.spawn_refresh_assets();
                 }
                 true
             }
@@ -2090,7 +2310,12 @@ impl App {
                 true
             }
             KeyCode::Esc if self.chrome.focus != ChromeFocus::None => {
+                let was_account = self.chrome.focus == ChromeFocus::Account;
                 self.cancel_chrome_focus();
+                if was_account {
+                    // Restore F2 to the committed (active) account after abandoning preview.
+                    self.sync_f2_to_displayed();
+                }
                 true
             }
             KeyCode::Up | KeyCode::Down if self.chrome.focus != ChromeFocus::None => {
@@ -2098,7 +2323,66 @@ impl App {
                 self.preview_chrome_cycle(forward);
                 true
             }
+            KeyCode::Left | KeyCode::Right if self.chrome.focus == ChromeFocus::Asset => {
+                self.chrome.f2_show_contract = !self.chrome.f2_show_contract;
+                if self.chrome.f2_show_contract {
+                    let idx = self
+                        .chrome
+                        .pending_asset_idx
+                        .unwrap_or(self.chrome.asset_idx);
+                    if let Some(b) = self.chrome.assets.get(idx) {
+                        if let Some(addr) = b.token.contract_address.as_deref() {
+                            self.set_flash(format!("{} · {}", b.token.symbol, addr));
+                        } else {
+                            self.set_flash(format!("{} · native (no contract)", b.token.symbol));
+                        }
+                    }
+                }
+                true
+            }
+            // Plain `y` while F3 select mode: same as Ctrl+Y (preview address).
+            KeyCode::Char('y') | KeyCode::Char('Y')
+                if !ctrl && self.chrome.focus == ChromeFocus::Account =>
+            {
+                self.copy_chrome_f3_address();
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Copy the address shown under the wordmark (F3 ↑/↓ preview when Account focused).
+    fn copy_chrome_f3_address(&mut self) {
+        let Some(addr) = self.chrome_display_owner().or_else(|| {
+            self.wallet()
+                .active_address()
+                .ok()
+                .map(|a| a.to_string())
+        }) else {
+            self.set_flash("No account address to copy");
+            return;
+        };
+        match crate::clipboard::copy_text(&addr) {
+            Ok(()) => {
+                let short = if addr.len() > 12 {
+                    format!("{}…{}", &addr[..6], &addr[addr.len() - 4..])
+                } else {
+                    addr.clone()
+                };
+                let preview = self.chrome.focus == ChromeFocus::Account
+                    && self.chrome.pending_account_index.is_some_and(|idx| {
+                        self.wallet()
+                            .active_account_index()
+                            .ok()
+                            .is_some_and(|active| active != idx)
+                    });
+                if preview {
+                    self.set_flash(format!("Copied preview {short}"));
+                } else {
+                    self.set_flash(format!("F3 address copied · {short}"));
+                }
+            }
+            Err(e) => self.set_flash(e),
         }
     }
 
@@ -2116,8 +2400,11 @@ impl App {
                         let accounts = self.visible_accounts();
                         self.events
                             .publish(ProviderEvent::AccountsChanged(accounts));
-                        self.chrome.assets.clear();
-                        self.chrome.asset_idx = 0;
+                        if let Some(owner) = self.chrome_display_owner() {
+                            self.sync_f2_to_owner(&owner);
+                        }
+                        self.enforce_assist_entitlement("F3 account");
+                        self.kick_if_power_screen_locked();
                     }
                 }
                 self.cancel_chrome_focus();
@@ -2131,6 +2418,7 @@ impl App {
         self.chrome.pending_network_idx = None;
         self.chrome.pending_asset_idx = None;
         self.chrome.pending_account_index = None;
+        self.chrome.f2_show_contract = false;
     }
 
     fn cancel_chrome_focus(&mut self) {
@@ -2180,10 +2468,7 @@ impl App {
             ChromeFocus::Asset => {
                 let n = self.chrome.assets.len();
                 if n == 0 {
-                    if !self.chrome.assets_loading {
-                        self.chrome.assets_loading = true;
-                        self.spawn_job(UiJob::RefreshAssets);
-                    }
+                    self.spawn_refresh_assets();
                     return;
                 }
                 let cur = self
@@ -2211,6 +2496,11 @@ impl App {
                     (pos + choices.len() - 1) % choices.len()
                 };
                 self.chrome.pending_account_index = Some(choices[next].0);
+                // F2 must track the F3-preview address immediately (not only after Enter).
+                let owner = self.wallet().account_address(choices[next].0).ok();
+                if let Some(owner) = owner {
+                    self.sync_f2_to_owner(&owner);
+                }
             }
             ChromeFocus::None => {}
         }
@@ -2271,8 +2561,7 @@ impl App {
             }
             _ => {}
         }
-        self.refresh_chrome();
-        self.spawn_refresh_assets();
+        self.sync_f2_to_displayed();
         if let View::Dashboard(v) = &mut self.view {
             v.sync_from_chrome(&self.chrome);
         }
@@ -2290,17 +2579,139 @@ impl App {
         let accounts = self.visible_accounts();
         self.events
             .publish(ProviderEvent::AccountsChanged(accounts));
-        self.chrome.assets.clear();
-        self.chrome.asset_idx = 0;
-        self.chrome.pending_asset_address = None;
-        self.refresh_chrome();
-        self.spawn_refresh_assets();
+        if let Some(owner) = {
+            let w = self.wallet();
+            w.active_address().ok().map(|a| a.to_string())
+        } {
+            self.sync_f2_to_owner(&owner);
+        }
         if matches!(
             self.screen(),
-            Screen::Dex | Screen::Aggregator | Screen::Receive
+            Screen::Dex
+                | Screen::Aggregator
+                | Screen::Receive
+                | Screen::Lp
+                | Screen::Assets
+                | Screen::Approvals
+                | Screen::Wrap
+                | Screen::Hex
+                | Screen::Bridge
         ) {
             self.navigate(self.screen());
         }
+        self.enforce_assist_entitlement("F3 account");
+        self.kick_if_power_screen_locked();
+    }
+
+    /// Leave Dex/LP/etc when the new F3 account is not entitled.
+    fn kick_if_power_screen_locked(&mut self) {
+        if Self::screen_requires_power_unlock(self.screen()) && !self.power_features_ok() {
+            self.flash_tools_locked();
+            self.nav_back.clear();
+            self.mount_screen(Screen::Dashboard);
+        }
+    }
+
+    /// After unlock / F3: if AI mode is on but the vault has no burn, force HumanOnly.
+    fn enforce_assist_entitlement(&mut self, reason: &str) {
+        use vaughan_core::core::{
+            assist_burn_gate_enabled, entitlement_chain_id, vault_has_assist_burn,
+        };
+
+        if !assist_burn_gate_enabled() {
+            return;
+        }
+        let needs_ai = self.wallet().operating_mode().is_ai_enabled();
+        if !needs_ai {
+            return;
+        }
+        let Some(chain_id) = entitlement_chain_id() else {
+            self.force_human_only_assist_locked(reason);
+            return;
+        };
+        let (dir, addrs) = {
+            let w = self.wallet();
+            let dir = profile_dir(w.path());
+            let addrs = w.account_addresses().unwrap_or_default();
+            (dir, addrs)
+        };
+        if addrs.is_empty() {
+            self.force_human_only_assist_locked(reason);
+            return;
+        }
+        let entitled = self
+            .handle
+            .block_on(vault_has_assist_burn(Some(&dir), chain_id, &addrs))
+            .unwrap_or(false);
+        if !entitled {
+            self.force_human_only_assist_locked(reason);
+        }
+    }
+
+    fn force_human_only_assist_locked(&mut self, reason: &str) {
+        {
+            let mut w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+            w.set_operating_mode(OperatingMode::HumanOnly);
+        }
+        self.set_flash(format!(
+            "AI locked ({reason}): burn ≥13 WZRD from any account — press w"
+        ));
+    }
+
+    /// Settings `w`: switch to Pulse testnet if needed, prefill Home burn send.
+    fn begin_assist_burn(&mut self) {
+        use vaughan_core::core::{
+            assist_burn_gate_enabled, burn_sink_hex, entitlement_chain_id, wzrd_token_hex,
+            ASSIST_BURN_AMOUNT_HUMAN,
+        };
+
+        if !assist_burn_gate_enabled() {
+            self.set_flash("Tools burn gate disabled (VAUGHAN_ASSIST_BURN_GATE=0)");
+            return;
+        }
+        let Some(chain_id) = entitlement_chain_id() else {
+            self.set_flash("WZRD unlock burn not available on any chain yet");
+            return;
+        };
+        let Some(token) = wzrd_token_hex(chain_id) else {
+            self.set_flash("WZRD token not configured for entitlement chain");
+            return;
+        };
+
+        let switched = {
+            let mut w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+            if w.networks().active().chain_id == chain_id {
+                Ok(false)
+            } else if let Some(net) =
+                vaughan_core::chains::evm::networks::get_network_by_chain_id(chain_id)
+            {
+                w.set_active_network(&net.id).map(|_| true)
+            } else {
+                Err(WalletError::Other(format!(
+                    "no network config for chain {chain_id}"
+                )))
+            }
+        };
+        match switched {
+            Ok(true) => {
+                self.events
+                    .publish(ProviderEvent::ChainChanged(format!("0x{chain_id:x}")));
+                self.sync_f2_to_displayed();
+            }
+            Ok(false) => {}
+            Err(e) => {
+                self.set_flash(e.user_message());
+                return;
+            }
+        }
+
+        self.nav_back.clear();
+        self.view = View::Dashboard(DashboardView::for_assist_burn(
+            &token,
+            &burn_sink_hex(),
+            ASSIST_BURN_AMOUNT_HUMAN,
+        ));
+        self.set_flash("Unlock tools: confirm ≥13 WZRD to the dead address (one tx, no drip)");
     }
 
     fn lp_job_rpc_urls(wallet: &WalletState, job_primary: &str) -> Vec<String> {
@@ -2332,15 +2743,20 @@ impl App {
                         Err(e) => Err(e),
                     })
                 }
-                UiJob::RefreshChrome => {
+                UiJob::RefreshChrome { owner, gen } => {
+                    let owner_for_result = owner.clone();
                     let snap = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.chrome_rpc_snapshot()
+                        w.chrome_rpc_snapshot_for(&owner)
                     };
-                    UiJobResult::Chrome(match snap {
-                        Ok(s) => handle.block_on(s.fetch_chrome()),
-                        Err(e) => Err(e),
-                    })
+                    UiJobResult::Chrome {
+                        owner: owner_for_result,
+                        gen,
+                        result: match snap {
+                            Ok(s) => handle.block_on(s.fetch_chrome()),
+                            Err(e) => Err(e),
+                        },
+                    }
                 }
                 UiJob::RefreshBalance => {
                     let snap = {
@@ -2352,9 +2768,23 @@ impl App {
                         Err(e) => Err(e),
                     })
                 }
-                UiJob::RefreshAssets => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Assets(handle.block_on(w.assets()))
+                UiJob::RefreshAssets { owner, gen } => {
+                    let owner_for_result = owner.clone();
+                    let (snap, extras) = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (
+                            w.chrome_rpc_snapshot_for(&owner),
+                            w.custom_token_addresses_for_active_chain(),
+                        )
+                    };
+                    UiJobResult::Assets {
+                        owner: owner_for_result,
+                        gen,
+                        result: match snap {
+                            Ok(s) => handle.block_on(s.fetch_assets(&extras)),
+                            Err(e) => Err(e),
+                        },
+                    }
                 }
                 UiJob::EstimateFee { to, value_wei } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
@@ -2399,6 +2829,23 @@ impl App {
                 UiJob::SendEvm { tx } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Send(handle.block_on(w.broadcast(tx, "Contract")))
+                }
+                UiJob::AssistBurnVerify => {
+                    use vaughan_core::core::{
+                        entitlement_chain_id, vault_has_assist_burn_with_retry,
+                    };
+                    let (dir, addrs) = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        let dir = profile_dir(w.path());
+                        let addrs = w.account_addresses().unwrap_or_default();
+                        (dir, addrs)
+                    };
+                    UiJobResult::AssistBurnVerify(match entitlement_chain_id() {
+                        Some(chain_id) if !addrs.is_empty() => handle.block_on(
+                            vault_has_assist_burn_with_retry(Some(&dir), chain_id, &addrs),
+                        ),
+                        _ => Ok(false),
+                    })
                 }
                 UiJob::EstimateEvmFee { tx } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
@@ -2697,6 +3144,20 @@ impl App {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::Allowances(handle.block_on(w.list_allowances()))
                 }
+                UiJob::RefreshHexStakes { owner, gen } => {
+                    let rpc = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.active_rpc_url()
+                    };
+                    let (stakes, globals) =
+                        handle.block_on(crate::views::hex::load_hex_stakes(&rpc, &owner));
+                    UiJobResult::HexStakes {
+                        gen,
+                        owner,
+                        stakes,
+                        globals,
+                    }
+                }
                 UiJob::PollTxStatus { tx_hash } => {
                     let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                     UiJobResult::TxStatus(handle.block_on(w.get_tx_status(&tx_hash)))
@@ -2728,10 +3189,12 @@ impl App {
                     chain_id,
                     rpc_url,
                     owner,
+                    list_gen,
                 } => {
                     use alloy::primitives::Address;
                     use std::str::FromStr;
-                    use vaughan_core::core::{list_v3_lp_positions, with_lp_rpc_urls};
+                    use vaughan_core::core::{list_v3_lp_position_views, with_lp_rpc_urls};
+                    let owner_for_result = owner.clone();
                     let parsed_owner = Address::from_str(&owner).map_err(|_| {
                         WalletError::InvalidTransaction("invalid owner address".into())
                     });
@@ -2739,36 +3202,47 @@ impl App {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                         Self::lp_job_rpc_urls(&w, &rpc_url)
                     };
-                    UiJobResult::LpPositions(match parsed_owner {
-                        Err(e) => Err(e),
-                        Ok(addr) => {
-                            handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
-                                list_v3_lp_positions(&url, venue, chain_id, addr, None, None).await
-                            }))
-                        }
-                    })
+                    UiJobResult::LpPositions {
+                        list_gen,
+                        owner: owner_for_result,
+                        result: match parsed_owner {
+                            Err(e) => Err(e),
+                            Ok(addr) => {
+                                handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
+                                    list_v3_lp_position_views(
+                                        &url, venue, chain_id, addr, None, None,
+                                    )
+                                    .await
+                                }))
+                            }
+                        },
+                    }
                 }
                 UiJob::LpListV2Positions {
                     venue,
                     chain_id,
                     rpc_url,
                     owner,
+                    list_gen,
                 } => {
                     use alloy::primitives::Address;
                     use std::str::FromStr;
                     use vaughan_core::core::{default_v2_watch_pairs, list_v2_lp_positions};
-                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
-                        WalletError::InvalidTransaction("invalid owner address".into())
-                    });
-                    UiJobResult::LpV2Positions(match parsed_owner {
-                        Err(e) => Err(e),
-                        Ok(addr) => {
-                            let watch = default_v2_watch_pairs(chain_id, venue);
-                            handle.block_on(list_v2_lp_positions(
-                                &rpc_url, venue, chain_id, addr, &watch,
-                            ))
-                        }
-                    })
+                    let owner_for_result = owner.clone();
+                    let parsed = (|| -> Result<_, WalletError> {
+                        let addr = Address::from_str(&owner).map_err(|_| {
+                            WalletError::InvalidTransaction("invalid owner address".into())
+                        })?;
+                        let watch = default_v2_watch_pairs(chain_id, venue);
+                        handle.block_on(list_v2_lp_positions(
+                            &rpc_url, venue, chain_id, addr, &watch,
+                        ))
+                    })();
+                    UiJobResult::LpV2Positions {
+                        list_gen,
+                        owner: owner_for_result,
+                        result: parsed,
+                    }
                 }
                 UiJob::LpV3PoolDeployStep {
                     venue,
@@ -3143,13 +3617,9 @@ impl App {
                     };
                     let result = handle.block_on(async {
                         let mut w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        execute_approval_with_fee(
-                            &kind,
-                            &mut w,
-                            fee_override.as_ref(),
-                        )
-                        .await
-                        .map_err(|e| WalletError::Other(e.to_string()))
+                        execute_approval_with_fee(&kind, &mut w, fee_override.as_ref())
+                            .await
+                            .map_err(|e| WalletError::Other(e.to_string()))
                     });
                     UiJobResult::McpQueuedApprove {
                         result,
@@ -3179,9 +3649,7 @@ impl App {
                             let flash = {
                                 let wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
                                 self.handle.block_on(provider::lp_brew_mint_success_flash(
-                                    &wallet,
-                                    &proposal,
-                                    &hash,
+                                    &wallet, &proposal, &hash,
                                 ))
                             };
                             if let Some((title, rows)) = flash {
@@ -3192,10 +3660,7 @@ impl App {
                         }
                         Err(e) => {
                             self.mcp.clear_inflight_proposal(&proposal_id);
-                            self.set_flash(format!(
-                                "Queued proposal failed: {}",
-                                e.user_message()
-                            ));
+                            self.set_flash(format!("Queued proposal failed: {}", e.user_message()));
                         }
                     }
                     let back = self.approve_return;
@@ -3216,6 +3681,7 @@ impl App {
                                 self.events
                                     .publish(ProviderEvent::AccountsChanged(vec![addr]));
                             }
+                            self.enforce_assist_entitlement("unlock");
                             self.navigate(Screen::Dashboard);
                         }
                         Err(e) => {
@@ -3226,7 +3692,14 @@ impl App {
                         }
                     }
                 }
-                UiJobResult::Chrome(r) => {
+                UiJobResult::Chrome {
+                    owner,
+                    gen,
+                    result: r,
+                } => {
+                    if !self.f2_result_current(&owner, gen) {
+                        // Stale F3 race — keep waiting for the current owner fetch.
+                    } else {
                     self.chrome.loading = false;
                     match r {
                         Ok((bal, gas)) => {
@@ -3244,13 +3717,21 @@ impl App {
                             }
                         }
                     }
+                    }
                 }
                 UiJobResult::Balance(r) => {
                     if let View::Dashboard(v) = &mut self.view {
                         v.apply_balance(r);
                     }
                 }
-                UiJobResult::Assets(r) => {
+                UiJobResult::Assets {
+                    owner,
+                    gen,
+                    result: r,
+                } => {
+                    if !self.f2_result_current(&owner, gen) {
+                        // Stale F3 race.
+                    } else {
                     self.chrome.assets_loading = false;
                     match &r {
                         Ok(assets) => {
@@ -3280,15 +3761,29 @@ impl App {
                         View::Dashboard(v) => v.sync_from_chrome(&self.chrome),
                         _ => {}
                     }
+                    }
                 }
                 other => {
+                    if let UiJobResult::AssistBurnVerify(ref r) = other {
+                        match r {
+                            Ok(true) => self.set_flash(
+                                "Tools unlocked for this wallet — AI/MCP on every account",
+                            ),
+                            Ok(false) => self.set_flash(
+                                "Burn not seen yet — wait a block, or burn ≥13 WZRD in one tx",
+                            ),
+                            Err(e) => {
+                                self.set_flash(format!("Unlock check failed: {}", e.user_message()))
+                            }
+                        }
+                        continue;
+                    }
                     if let UiJobResult::DeployToken(ref deploy_result) = other {
                         self.finalize_mcp_token_launch(deploy_result);
                     }
                     if let UiJobResult::DeployToken(Ok(outcome)) = &other {
                         self.chrome.pending_asset_address = Some(outcome.token.address.clone());
-                        self.spawn_refresh_assets();
-                        self.refresh_chrome();
+                        self.sync_f2_to_displayed();
                     }
                     let send_ok = matches!(
                         &other,
@@ -3312,6 +3807,9 @@ impl App {
                         push_recent(&mut self.recent_broadcasts, receipt.entry.clone());
                         if let Some(old_hash) = old.as_deref() {
                             mark_replaced(&mut self.recent_broadcasts, old_hash, &receipt.hash);
+                        }
+                        if matches!(&self.view, View::Dashboard(v) if v.is_assist_burn()) {
+                            self.spawn_job(UiJob::AssistBurnVerify);
                         }
                     }
                     if let UiJobResult::BroadcastStatuses(Ok(pairs)) = &other {
@@ -3352,6 +3850,10 @@ impl App {
                             v.apply_job_result(other);
                             None
                         }
+                        View::Hex(v) => {
+                            v.apply_job_result(other);
+                            v.reload_job()
+                        }
                         View::Lp(v) => {
                             v.apply_job_result(other);
                             None
@@ -3386,7 +3888,6 @@ impl App {
                         self.spawn_job(job);
                     }
                     if send_ok {
-                        self.refresh_chrome();
                         if let Some(addr) = dex_swap_token {
                             {
                                 let mut w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
@@ -3395,10 +3896,8 @@ impl App {
                                 }
                             }
                             self.chrome.pending_asset_address = Some(addr);
-                            self.spawn_refresh_assets();
-                        } else if !matches!(self.view, View::Dex(_)) {
-                            self.spawn_refresh_assets();
                         }
+                        self.sync_f2_to_displayed();
                     }
                 }
             }
@@ -3425,6 +3924,8 @@ enum GlobalAction {
     CycleTheme,
     /// Copy the F3-active address to the clipboard.
     CopyAddress,
+    /// Prefill Home send for ≥13 WZRD burn unlock (footer `w` / Settings `w`).
+    AssistBurn,
 }
 
 /// When a view swallows a footer chip key without acting on it, retry globally.
@@ -3473,19 +3974,20 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'v' => GlobalAction::Navigate(Screen::Receive),
             'a' => GlobalAction::Navigate(Screen::Assets),
             'b' => GlobalAction::Navigate(Screen::AaSend),
-            'w' => GlobalAction::Navigate(Screen::Dapps),
-            'c' => GlobalAction::Navigate(Screen::Browser),
+            'q' => GlobalAction::Navigate(Screen::Dapps),
             'd' => GlobalAction::Navigate(Screen::Dex),
             'g' => GlobalAction::Navigate(Screen::Aggregator),
             'n' | 'i' => GlobalAction::Navigate(Screen::Settings),
             'k' => GlobalAction::Navigate(Screen::Keys),
             'e' => GlobalAction::Navigate(Screen::Wrap),
+            'u' => GlobalAction::Navigate(Screen::Hex),
             'p' => GlobalAction::Navigate(Screen::Lp),
             'f' => GlobalAction::Navigate(Screen::Bridge),
             'j' => GlobalAction::Navigate(Screen::Approvals),
             'm' => GlobalAction::Navigate(Screen::History),
             'o' => GlobalAction::Navigate(Screen::SoonNft),
-            'u' => GlobalAction::Navigate(Screen::TokenLaunch),
+            'z' => GlobalAction::Navigate(Screen::TokenLaunch),
+            'w' => GlobalAction::AssistBurn,
             'r' => GlobalAction::RefreshChrome,
             'h' => GlobalAction::Navigate(Screen::Dashboard),
             'l' => GlobalAction::Lock,
@@ -3625,11 +4127,15 @@ mod tests {
     #[test]
     fn other_keys_are_inert() {
         assert_eq!(
-            global_action(press('z'), &KeyOutcome::NotHandled),
+            global_action(press('c'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
         assert_eq!(
-            global_action(press('q'), &KeyOutcome::Navigate(Screen::Dashboard)),
+            global_action(press('1'), &KeyOutcome::NotHandled),
+            GlobalAction::None
+        );
+        assert_eq!(
+            global_action(press('u'), &KeyOutcome::Navigate(Screen::Dashboard)),
             GlobalAction::None
         );
     }
@@ -3683,6 +4189,18 @@ mod tests {
         assert_eq!(
             global_action(press('o'), &KeyOutcome::NotHandled),
             GlobalAction::Navigate(Screen::SoonNft)
+        );
+        assert_eq!(
+            global_action(press('w'), &KeyOutcome::NotHandled),
+            GlobalAction::AssistBurn
+        );
+        assert_eq!(
+            global_action(press('q'), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::Dapps)
+        );
+        assert_eq!(
+            global_action(press('z'), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::TokenLaunch)
         );
         assert_eq!(
             global_action(press('r'), &KeyOutcome::NotHandled),

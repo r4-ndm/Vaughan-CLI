@@ -16,10 +16,17 @@ pub enum UiJob {
         password: SecretString,
         mode: OperatingMode,
     },
-    /// Native balance + gas hint for the always-on status chrome.
-    RefreshChrome,
+    /// Native balance + gas hint for the always-on status chrome (`owner` + `gen` drop stale F3 races).
+    RefreshChrome {
+        owner: String,
+        gen: u64,
+    },
     RefreshBalance,
-    RefreshAssets,
+    /// F2 asset list for `owner` (same gen semantics as [`Self::RefreshChrome`]).
+    RefreshAssets {
+        owner: String,
+        gen: u64,
+    },
     EstimateFee {
         to: String,
         value_wei: String,
@@ -57,6 +64,8 @@ pub enum UiJob {
     SendEvm {
         tx: EvmTransaction,
     },
+    /// After assist burn broadcast: retry entitlement scan (log race).
+    AssistBurnVerify,
     /// Fee estimate for an arbitrary EVM payload (DEX approve/swap confirm card).
     EstimateEvmFee {
         tx: EvmTransaction,
@@ -138,6 +147,11 @@ pub enum UiJob {
     },
     /// Scan known-spender allowances for Approvals.
     RefreshAllowances,
+    /// List pHEX stakes + globals for the HEX view.
+    RefreshHexStakes {
+        owner: String,
+        gen: u64,
+    },
     /// Poll inclusion status for a broadcast hash (Send Done screen).
     PollTxStatus {
         tx_hash: String,
@@ -157,6 +171,8 @@ pub enum UiJob {
         chain_id: u64,
         rpc_url: String,
         owner: String,
+        /// Discard stale results after F3 account switch / remount.
+        list_gen: u64,
     },
     /// List 9inch V2 LP pair balances for `owner`.
     LpListV2Positions {
@@ -164,6 +180,7 @@ pub enum UiJob {
         chain_id: u64,
         rpc_url: String,
         owner: String,
+        list_gen: u64,
     },
     /// Build createPool, initialize, or mint for V3 add-liquidity.
     LpV3PoolDeployStep {
@@ -294,10 +311,14 @@ pub struct ChromeSnapshot {
     pub pending_network_idx: Option<usize>,
     /// Pending F2 asset index.
     pub pending_asset_idx: Option<usize>,
+    /// When F2 is focused, ←/→ toggles balance vs contract address in the strip.
+    pub f2_show_contract: bool,
     /// After a swap/send, select this ERC-20 in F2 once [`RefreshAssets`] completes.
     pub pending_asset_address: Option<String>,
     /// Pending F3 account index (`Account::index`).
     pub pending_account_index: Option<u32>,
+    /// Bumped whenever F2 must refetch; drop chrome/assets results with an older gen.
+    pub f2_gen: u64,
     /// Count of MCP proposals waiting in the file queue.
     pub mcp_pending: usize,
     /// Loopback MCP listener (Cursor / Claude agents) — shown on F1 network strip.
@@ -311,7 +332,7 @@ pub enum ChromeFocus {
     None,
     /// F1 — cycle networks with ↑/↓, Enter to set.
     Network,
-    /// F2 — cycle assets with ↑/↓, Enter to set.
+    /// F2 — cycle assets with ↑/↓, ←/→ contract address, Enter to set.
     Asset,
     /// F3 — cycle accounts with ↑/↓, Enter to set.
     Account,
@@ -344,9 +365,17 @@ pub enum UiJobResult {
     /// Vault unlock finished off the UI thread: derived accounts + the session
     /// mode the user picked at the unlock screen.
     Unlock(Result<UnlockCompletion, WalletError>),
-    Chrome(Result<(Balance, String), WalletError>),
+    Chrome {
+        owner: String,
+        gen: u64,
+        result: Result<(Balance, String), WalletError>,
+    },
     Balance(Result<Balance, WalletError>),
-    Assets(Result<Vec<Balance>, WalletError>),
+    Assets {
+        owner: String,
+        gen: u64,
+        result: Result<Vec<Balance>, WalletError>,
+    },
     Fee(Result<Fee, WalletError>),
     /// Successful send includes a [`BroadcastReceipt`] for History tracking.
     Send(Result<BroadcastReceipt, WalletError>),
@@ -362,13 +391,28 @@ pub enum UiJobResult {
     BridgeQuote(Box<Result<vaughan_core::core::BridgeQuote, WalletError>>),
     Activity(Result<Vec<vaughan_core::chains::TxRecord>, WalletError>),
     Allowances(Result<Vec<vaughan_core::chains::AllowanceEntry>, WalletError>),
+    /// HEX stake list + globals for the Hex view.
+    HexStakes {
+        gen: u64,
+        owner: String,
+        stakes: vaughan_core::core::HexStakeResult<vaughan_core::core::HexStakesForAddress>,
+        globals: vaughan_core::core::HexStakeResult<vaughan_core::core::HexGlobalState>,
+    },
     TxStatus(Result<vaughan_core::chains::TxStatus, WalletError>),
     /// Updated statuses for session broadcasts `(hash, status)`.
     BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),
-    /// V3 LP positions from NPM scan.
-    LpPositions(Result<Vec<vaughan_core::core::V3PositionInfo>, WalletError>),
+    /// V3 LP positions from NPM scan (owner + gen drop stale F3 races).
+    LpPositions {
+        list_gen: u64,
+        owner: String,
+        result: Result<Vec<vaughan_core::core::V3LpPositionView>, WalletError>,
+    },
     /// V2 LP positions (9inch pair balances).
-    LpV2Positions(Result<Vec<vaughan_core::core::V2LpPosition>, WalletError>),
+    LpV2Positions {
+        list_gen: u64,
+        owner: String,
+        result: Result<Vec<vaughan_core::core::V2LpPosition>, WalletError>,
+    },
     /// Prepared V3 createPool or initialize transaction + confirm label.
     LpV3PoolDeployStep(Result<(vaughan_core::chains::EvmTransaction, String), WalletError>),
     LpEnableCheck(Result<Option<(bool, bool)>, WalletError>),
@@ -384,6 +428,8 @@ pub enum UiJobResult {
         proposal: vaughan_core::core::proposal::TxProposal,
         proposal_id: String,
     },
+    /// Post-burn entitlement scan (true = unlocked).
+    AssistBurnVerify(Result<bool, WalletError>),
 }
 
 /// Successful off-thread unlock: derived accounts plus the session mode picked

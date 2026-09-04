@@ -34,6 +34,8 @@ without inject).
 | LibertySwap | `https://libertyswap.finance/` | [`sites/libertyswap.md`](sites/libertyswap.md) |
 | PulseX | `https://app.pulsex.com/` | [`sites/pulsex.md`](sites/pulsex.md) |
 | 9inch | `https://app.9inch.io/swap?chain=pulse` | [`sites/9inch.md`](sites/9inch.md) |
+| Hyperliquid | `https://app.hyperliquid.xyz/trade` | [`sites/hyperliquid.md`](sites/hyperliquid.md) |
+| Asterdex | `https://www.asterdex.com/en/trade/pro/futures/CLUSD1` | [`sites/asterdex.md`](sites/asterdex.md) |
 
 New dApp → copy [`sites/_template.md`](sites/_template.md), fill it, add a row
 above, and seed the URL in `vaughan-core` `default_trusted_dapps()`.

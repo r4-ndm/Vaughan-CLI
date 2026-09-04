@@ -86,7 +86,7 @@ fn assets_view_refresh_and_navigation() {
     // `r` schedules an assets refresh job (app applies it on the UI thread).
     let outcome = view.handle_key(key(KeyCode::Char('r')), &mut wallet, &handle, &events);
     match outcome {
-        KeyOutcome::StartJob(vaughan_tui::jobs::UiJob::RefreshAssets) => {
+        KeyOutcome::StartJob(vaughan_tui::jobs::UiJob::RefreshAssets { .. }) => {
             view.apply_assets(handle.block_on(wallet.assets()));
         }
         other => panic!("expected RefreshAssets job, got {other:?}"),

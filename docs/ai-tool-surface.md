@@ -27,30 +27,36 @@ See [`mcp-threat-model.md`](mcp-threat-model.md) for security controls.
 | **Adviser** | Human-led | `default` | `vaughan` | Yes | Propose only | Human in TUI |
 | **Sentient** | Agent-led | `sentient` | `vaughan-sentient` | Yes | Same verbs; auto under policy | Vaughan signs for that seed |
 
-**Shipped today:** Adviser MCP (`default` propose → approve).  
-**Sentient MCP:** Unlock TUI on `--profile sentient` (or legacy `degen`); MCP
-proposals auto re-sim → policy gate → sign (no card). Legacy profile name
-`degen` aliases to sentient for auto-exec.
+**Shipped today:** Adviser MCP (`default` propose → approve) and **Sentient MCP**
+(`vaughan-sentient` / `--profile sentient` auto-exec under policy when unlocked
+or via `vaughan serve`). Never point Sentient at the human `default` seed.
+
 
 ## Read tools (no approval)
 
 | Tool | Description |
 |------|-------------|
 | `get_balance` | Native balance for active account or explicit `address` |
-| `list_assets` | Native + known ERC-20 balances |
+| `list_assets` | Native + known ERC-20 balances; origin labels when catalogued (369) |
 | `get_network` | Active network id, chain id, RPC label |
 | `get_address` | Active account address (requires unlocked TUI or explicit session) |
 | `inspect_contract` | Capability fingerprint + ABI resolution |
 | `simulate_call` | `eth_call` pre-flight |
 | `get_dex_reserves` | Pair/pool reserves |
 | `search_pairs` | Factory log scan for pairs |
+| `dexscreener_search` | DexScreener pair search — **discovery only** (PulseChain default; spoof-aware) |
+| `dexscreener_token_pairs` | DexScreener pools for a token address (identity) |
+| `dexscreener_pair` | DexScreener single pair by LP address |
+| `dexscreener_tokens` | DexScreener pairs for up to 30 token addresses |
+| `hex_global_state` | HEX `currentDay` + `globals` (pHEX default; eHEX soft-fails) |
+| `hex_stakes_for_address` | List `stakeLists` for a staker (Hearts, 8 decimals) |
 | `quote_swap` | Pulse aggregator quote (Squirrel / PulseSwap / Piteas / EmpX on 369) — read-only |
 | `get_v3_pool` | wiz4rd V3 pool slot0 / liquidity (Pulse testnet 943) |
 | `quote_v3_swap` | wiz4rd V3 exact-in quote (local math on live pool) |
 | `list_allowances` | Non-zero ERC-20 allowances vs known Dex/Ag/Bridge spenders |
 | `list_v3_positions` | wiz4rd LP NFTs for an address (943; optional block range) |
 | `list_transfers` | Recent ERC-20 Transfer logs for an address |
-| `resolve_token` | Probe ERC-20 metadata (symbol/decimals/name) |
+| `resolve_token` | Probe ERC-20 metadata; optional e*/p* origin when catalogued |
 | `quote_bridge` | LibertySwap bridge quote (read-only) |
 | `watch_balance` | Native/ERC-20 snapshot + optional min/max threshold flags |
 | `watch_quote` | Aggregator quote snapshot + min/max out + `suggested_action` |
@@ -94,6 +100,8 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_v3_collect` | Yes | wiz4rd V3 collect fees |
 | `propose_wrap` | Yes | Native → WPLS (`deposit`) |
 | `propose_unwrap` | Yes | WPLS → native (`withdraw`) |
+| `propose_hex_stake_start` | Yes | pHEX `stakeStart` (hearts + days; 369) |
+| `propose_hex_stake_end` | Yes | pHEX `stakeEnd` (index + stakeId) |
 | `propose_approve` | Yes | ERC-20 `approve(spender, amount)` |
 | `propose_revoke` | Yes | ERC-20 `approve(spender, 0)` |
 | `propose_bridge` | Yes | LibertySwap bridge (source-chain broadcast) |

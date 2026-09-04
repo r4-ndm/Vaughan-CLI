@@ -19,9 +19,9 @@ use vaughan_core::chains::{Balance, EvmTransaction, Fee, FeeSpeed};
 use vaughan_core::core::is_allowed_dex_router;
 use vaughan_core::core::wiz4rd::{deployment_for_chain, WIZ4RD_FEE_TIERS, WZRD_SMOKE_943};
 use vaughan_core::core::{
-    chain_label, format_base_units, format_display_amount, min_out_after_slippage,
-    missing_router_hint, venue_quoter_v2, venue_swap_router, wpls_for_chain, DexProtocol, DexVenue,
-    WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    chain_label, cycle_dex_swap_venue, format_base_units, format_display_amount,
+    min_out_after_slippage, missing_router_hint, venue_quoter_v2, venue_swap_router, wpls_for_chain,
+    DexProtocol, DexVenue, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
@@ -403,6 +403,7 @@ impl DexView {
         let mut constraints = vec![
             Constraint::Length(1), // title
             Constraint::Length(1), // venue
+            Constraint::Length(1), // router (read-only for catalogued venues)
             Constraint::Length(3), // in
             Constraint::Length(1), // ↓
             Constraint::Length(3), // out
@@ -451,6 +452,22 @@ impl DexView {
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
+            .alignment(Alignment::Center),
+            chunks[i],
+        );
+        i += 1;
+
+        let router_line = self.router.value().trim();
+        let router_display = if router_line.is_empty() {
+            "router: —".to_string()
+        } else {
+            format!("router: {router_line}")
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                router_display,
+                Style::default().fg(Color::DarkGray),
+            )))
             .alignment(Alignment::Center),
             chunks[i],
         );
@@ -606,23 +623,34 @@ impl DexView {
 
     fn render_expected_out_line(&self, frame: &mut Frame, area: Rect, assets: &[Balance]) {
         let sym = self.token_out_symbol(assets);
-        let value_style = Style::default().fg(Color::DarkGray);
-        let value = if self.quote_loading_gen.is_some() {
-            Line::from(Span::styled(
+        let (value, style) = if self.quote_loading_gen.is_some() {
+            (
                 format!("{} quoting…", spinner_frame(self.tick)),
-                value_style,
-            ))
+                Style::default().fg(Color::DarkGray),
+            )
         } else if let Some(out) = self.expected_out {
-            Line::from(Span::styled(
+            (
                 format!("~{}  {sym}", Self::format_swap_token_amount(out)),
-                value_style,
-            ))
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else if let Some(err) = &self.quote_error {
-            Line::from(Span::styled(format!("— {err}"), value_style))
+            (format!("— {err}"), Style::default().fg(Color::Yellow))
         } else {
-            return;
+            (
+                "— enter amount to quote".into(),
+                Style::default().fg(Color::DarkGray),
+            )
         };
-        Self::render_centered_amount_row(frame, area, "Expected", value, false, false);
+        Self::render_centered_amount_row(
+            frame,
+            area,
+            "Expected",
+            Line::from(Span::styled(value, style)),
+            false,
+            false,
+        );
     }
 
     fn render_min_out_field(
@@ -1110,11 +1138,7 @@ impl DexView {
         if !matches!(self.focus, Focus::None | Focus::Dex) {
             return false;
         }
-        self.venue = if forward {
-            self.venue.next()
-        } else {
-            self.venue.prev()
-        };
+        self.venue = cycle_dex_swap_venue(self.venue, self.chain_id, forward);
         if venue_swap_router(self.venue, self.protocol, self.chain_id).is_none()
             && venue_swap_router(self.venue, self.protocol.toggle(), self.chain_id).is_some()
         {

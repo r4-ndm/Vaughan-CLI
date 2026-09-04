@@ -265,36 +265,19 @@ fn parity_swap_step() {
 /// round-down delta math; replicate the exact branch logic here.
 #[test]
 fn parity_position_amounts() {
+    use crate::v3_amounts_from_liquidity;
     for v in &vectors().position_amounts {
         let sqrt = u160(&v.sqrt_ratio_x96);
         let liq = u128v(&v.liquidity);
-        let lower = u160(
-            &get_sqrt_ratio_at_tick(i24(v.tick_lower))
-                .unwrap()
-                .to_string(),
-        );
-        let upper = u160(
-            &get_sqrt_ratio_at_tick(i24(v.tick_upper))
-                .unwrap()
-                .to_string(),
-        );
-
-        let amount0 = if v.tick_current < v.tick_lower {
-            get_amount_0_delta(lower, upper, liq, false).unwrap()
-        } else if v.tick_current < v.tick_upper {
-            get_amount_0_delta(sqrt, upper, liq, false).unwrap()
-        } else {
-            U256::ZERO
-        };
-        let amount1 = if v.tick_current < v.tick_lower {
-            U256::ZERO
-        } else if v.tick_current < v.tick_upper {
-            get_amount_1_delta(lower, sqrt, liq, false).unwrap()
-        } else {
-            get_amount_1_delta(lower, upper, liq, false).unwrap()
-        };
-
-        assert_eq!(amount0.to_string(), v.amount0, "amount0 {v:?}");
-        assert_eq!(amount1.to_string(), v.amount1, "amount1 {v:?}");
+        let got = v3_amounts_from_liquidity(
+            sqrt,
+            v.tick_current as i32,
+            v.tick_lower as i32,
+            v.tick_upper as i32,
+            liq,
+        )
+        .unwrap();
+        assert_eq!(got.amount0.to_string(), v.amount0, "amount0 {v:?}");
+        assert_eq!(got.amount1.to_string(), v.amount1, "amount1 {v:?}");
     }
 }

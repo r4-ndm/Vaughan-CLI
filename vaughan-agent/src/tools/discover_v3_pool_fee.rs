@@ -58,27 +58,16 @@ impl Tool for DiscoverV3PoolFeeTool {
         let (b, _) = resolve_token(token_b_s, context.chain_id)?;
         let (token0, token1) = if a < b { (a, b) } else { (b, a) };
 
-        let fee = discover_v3_pool_fee_tier(
-            &context.rpc_url,
-            venue,
-            context.chain_id,
-            token0,
-            token1,
-        )
-        .await
-        .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
+        let fee =
+            discover_v3_pool_fee_tier(&context.rpc_url, venue, context.chain_id, token0, token1)
+                .await
+                .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
 
         let lifecycle = if let Some(f) = fee {
-            let lc = v3_pool_lifecycle(
-                &context.rpc_url,
-                venue,
-                context.chain_id,
-                token0,
-                token1,
-                f,
-            )
-            .await
-            .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
+            let lc =
+                v3_pool_lifecycle(&context.rpc_url, venue, context.chain_id, token0, token1, f)
+                    .await
+                    .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
             Some(format!("{lc:?}"))
         } else {
             None

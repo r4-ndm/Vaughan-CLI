@@ -98,7 +98,10 @@ pub async fn run_lp_deploy(
     Ok(())
 }
 
-async fn brew_to_params(wallet: &WalletState, args: &LpBrewArgs) -> Result<vaughan_core::core::V3LpDeployParams, WalletError> {
+async fn brew_to_params(
+    wallet: &WalletState,
+    args: &LpBrewArgs,
+) -> Result<vaughan_core::core::V3LpDeployParams, WalletError> {
     if let Some(path) = &args.brew {
         let file = load_brew_file(path)?;
         let inputs = human_from_file(wallet, file)?;

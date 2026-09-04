@@ -80,6 +80,8 @@ pub struct SendView {
     pub(crate) status: String,
     /// Home (`h`) mode: "Send to" label; coin follows F2 chrome.
     home_mode: bool,
+    /// Locked WZRD→dead burn form (Settings Unlock tools); skip F2 chrome sync.
+    assist_burn: bool,
 }
 
 struct TokenCtx {
@@ -107,6 +109,7 @@ impl Default for SendView {
             tick: 0,
             status: String::new(),
             home_mode: false,
+            assist_burn: false,
         }
     }
 }
@@ -130,9 +133,30 @@ impl SendView {
         view
     }
 
+    /// Prefill ERC-20 burn to the assist sink (≥13 WZRD default).
+    pub fn for_assist_burn(token: &str, sink: &str, amount: &str) -> Self {
+        let mut view = Self::home();
+        view.assist_burn = true;
+        view.focus = Focus::Amount;
+        view.recipient.set_value(sink);
+        view.amount.set_value(amount);
+        view.token = Some(TokenCtx {
+            address: token.to_string(),
+            symbol: "WZRD".into(),
+            decimals: 18,
+        });
+        view.status =
+            "Unlock tools: one transfer of at least 13 WZRD to the dead address (no drip)".into();
+        view
+    }
+
+    pub fn is_assist_burn(&self) -> bool {
+        self.assist_burn
+    }
+
     /// Sync the send coin from F2 chrome (or native when empty).
     pub fn sync_from_chrome(&mut self, chrome: &ChromeSnapshot) {
-        if !self.home_mode || !matches!(self.stage, Stage::Input) {
+        if self.assist_burn || !self.home_mode || !matches!(self.stage, Stage::Input) {
             return;
         }
         if let Some(b) = chrome.assets.get(chrome.asset_idx) {
@@ -497,7 +521,7 @@ impl SendView {
         &mut self,
         key: KeyEvent,
         wallet: &WalletState,
-        _handle: &Handle,
+        handle: &Handle,
         _events: &EventBus,
     ) -> KeyOutcome {
         if self.busy != Busy::Idle {
@@ -559,7 +583,7 @@ impl SendView {
                         }
                         match self.amount.handle_key(key) {
                             InputAction::Ignored => KeyOutcome::NotHandled,
-                            InputAction::Submitted => self.begin_estimate(wallet),
+                            InputAction::Submitted => self.begin_estimate(wallet, handle),
                             InputAction::Consumed => KeyOutcome::Consumed,
                         }
                     }
@@ -696,11 +720,21 @@ impl SendView {
         }
     }
 
-    fn begin_estimate(&mut self, wallet: &WalletState) -> KeyOutcome {
+    fn begin_estimate(&mut self, wallet: &WalletState, handle: &Handle) -> KeyOutcome {
+        if let Some(msg) = self.assist_burn_amount_error() {
+            self.status = msg;
+            return KeyOutcome::Consumed;
+        }
         let decimals = self.amount_decimals(wallet);
         match parse_native_amount(self.amount.value(), decimals) {
             Ok(amount) => match self.resolve_recipient(wallet) {
                 Ok(to) => {
+                    if self.stealth.is_some() && !stealth_power_ok(wallet, handle) {
+                        self.stealth = None;
+                        self.status =
+                            "Stealth send locked: burn ≥13 WZRD from any account — Settings → Unlock".into();
+                        return KeyOutcome::Consumed;
+                    }
                     self.busy = Busy::Estimating;
                     self.status.clear();
                     if let Some(token) = &self.token {
@@ -728,7 +762,31 @@ impl SendView {
         }
     }
 
+    fn assist_burn_amount_error(&self) -> Option<String> {
+        if !self.assist_burn {
+            return None;
+        }
+        use alloy::primitives::U256;
+        use std::str::FromStr;
+        use vaughan_core::core::assist_burn_amount_u256;
+        let decimals = 18u8;
+        let Ok(amount) = parse_native_amount(self.amount.value(), decimals) else {
+            return Some("invalid burn amount".into());
+        };
+        let Ok(wei) = U256::from_str(&amount) else {
+            return Some("invalid burn amount".into());
+        };
+        if wei < assist_burn_amount_u256() {
+            return Some("burn at least 13 WZRD in one transfer (no drip)".into());
+        }
+        None
+    }
+
     fn begin_send(&mut self, wallet: &WalletState) -> KeyOutcome {
+        if let Some(msg) = self.assist_burn_amount_error() {
+            self.status = msg;
+            return KeyOutcome::Consumed;
+        }
         let decimals = self.amount_decimals(wallet);
         match parse_native_amount(self.amount.value(), decimals) {
             Ok(amount) => {
@@ -796,6 +854,26 @@ impl SendView {
             Ok(raw.to_string())
         }
     }
+}
+
+fn stealth_power_ok(wallet: &WalletState, handle: &Handle) -> bool {
+    use vaughan_core::core::{
+        assist_burn_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
+    };
+    if !assist_burn_gate_enabled() {
+        return true;
+    }
+    let Some(chain_id) = entitlement_chain_id() else {
+        return false;
+    };
+    let Ok(addrs) = wallet.account_addresses() else {
+        return false;
+    };
+    if addrs.is_empty() {
+        return false;
+    }
+    let dir = vaughan_agent::paths::profile_dir(wallet.path());
+    power_features_unlocked_blocking(handle, Some(&dir), chain_id, &addrs)
 }
 
 /// Base estimate max fee formatted as gwei for the Custom field prefill.

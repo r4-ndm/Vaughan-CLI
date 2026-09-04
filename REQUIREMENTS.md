@@ -44,7 +44,8 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-1.6** HD derivation at `m/44'/60'/0'/0/{index}` producing an Alloy local signer;
   support a list of derived accounts (index 0 active by default).
 - **FR-1.7** Built-in networks: PulseChain mainnet (369), PulseChain testnet v4 (943),
-  Ethereum (1), Sepolia (11155111), Polygon (137), BSC (56), Base (8453).
+  Ethereum (1), Sepolia (11155111), Polygon (137), BSC (56), Base (8453),
+  Arbitrum One (42161).
 - **FR-1.8** Dashboard: show active account address and native balance.
 - **FR-1.9** Send native asset: recipient + amount -> fee estimate -> sign -> broadcast
   -> show tx hash.

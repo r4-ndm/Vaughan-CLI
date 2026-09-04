@@ -1,6 +1,6 @@
 //! Launch **VB** (`vaughan-dapp-browser`) or **Freedom Browser** (dev fallback) for a whitelisted dApp URL.
 //!
-//! **Product order:** Browserless Pulse (Ag / Dex / Browse / MCP) first; **VB** when
+//! **Product order:** Browserless Pulse (Ag / Dex / LP / MCP) first; **VB** when
 //! a page is required; Freedom only if VB is missing and the user has a local
 //! checkout (`VAUGHAN_FREEDOM_CMD`). Freedom integration is **parked** until upstream
 //! [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges —

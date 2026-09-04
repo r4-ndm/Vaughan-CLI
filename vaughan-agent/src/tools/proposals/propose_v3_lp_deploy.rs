@@ -68,11 +68,10 @@ fn evm_to_aa_tx(tx: &EvmTransaction) -> Result<Transaction, AgentError> {
         .or_else(|_| U256::from_str_radix(tx.value.trim().trim_start_matches("0x"), 16))
         .unwrap_or(U256::ZERO);
     let data = match &tx.data {
-        Some(d) if !d.is_empty() => {
-            Bytes::from(hex::decode(d.trim_start_matches("0x")).map_err(|e| {
-                AgentError::InvalidToolCall(format!("batch calldata: {e}"))
-            })?)
-        }
+        Some(d) if !d.is_empty() => Bytes::from(
+            hex::decode(d.trim_start_matches("0x"))
+                .map_err(|e| AgentError::InvalidToolCall(format!("batch calldata: {e}")))?,
+        ),
         _ => Bytes::new(),
     };
     Ok(Transaction { to, value, data })
@@ -149,7 +148,9 @@ impl Tool for ProposeV3LpDeployTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::InvalidToolCall("Missing explanation".into()))?;
 
-        let venue_label = resolve_lp_venue(&args, context.chain_id)?.label().to_string();
+        let venue_label = resolve_lp_venue(&args, context.chain_id)?
+            .label()
+            .to_string();
         let range = match args.get("range").and_then(|v| v.as_str()).unwrap_or("full") {
             "full" | "" => LpRangeInput::Full,
             other => {
@@ -224,9 +225,10 @@ impl Tool for ProposeV3LpDeployTool {
         let gas_limit = lp_deploy_estimate_gas_limit(&params.rpc_url, params.chain_id, &tx)
             .await
             .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
-        let mut proposal = lp_deploy_step_to_proposal(&job, &label, (*tx).clone(), gas_limit, true, None)
-            .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?
-            .with_chain(context.chain_id, proposal_network_id(context));
+        let mut proposal =
+            lp_deploy_step_to_proposal(&job, &label, (*tx).clone(), gas_limit, true, None)
+                .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?
+                .with_chain(context.chain_id, proposal_network_id(context));
 
         proposal = attach_estimated_fee(proposal, context).await;
 
@@ -255,11 +257,13 @@ async fn propose_lp_deploy_batch(
         .iter()
         .map(evm_to_aa_tx)
         .collect::<Result<Vec<_>, _>>()?;
-    let sender = context.active_address.ok_or_else(|| {
-        AgentError::InvalidToolCall("No active wallet".into())
-    })?;
+    let sender = context
+        .active_address
+        .ok_or_else(|| AgentError::InvalidToolCall("No active wallet".into()))?;
     let batched_calldata = Bytes::from(encode_execute(&txns, &[0u8; 66]));
-    let total_value = txns.iter().fold(U256::ZERO, |acc, t| acc.saturating_add(t.value));
+    let total_value = txns
+        .iter()
+        .fold(U256::ZERO, |acc, t| acc.saturating_add(t.value));
 
     let rpc_url = Url::parse(&context.rpc_url)
         .map_err(|e| AgentError::InvalidToolCall(format!("Invalid RPC URL: {e}")))?;

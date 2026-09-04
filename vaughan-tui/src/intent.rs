@@ -11,7 +11,7 @@ pub enum IntentNav {
         amount: Option<String>,
         token_out: Option<String>,
     },
-    /// Browser (`c`) — inspect this address (browse).
+    /// Browser (Settings → c) — inspect this address (browse).
     BrowserInspect { address: String },
     /// Approvals manager (`j`) for revoke.
     Approvals,

@@ -26,11 +26,11 @@ files **point here**; edit `vaughan-agent/skills/` first.
 | Connect MCP, restart/reconnect host, tools missing, `wallet_locked` | [`mcp-connect/SKILL.md`](mcp-connect/SKILL.md) |
 | Ag quotes, PLS→HEX tour, Switch.win UI, `browser_open_agg` | [`vb-ag-quotes/SKILL.md`](vb-ag-quotes/SKILL.md) |
 | dApp connect / inject / CSP / trusted URL | [`dapp-connect/SKILL.md`](dapp-connect/SKILL.md) |
-| PulseChain addresses, WPLS/HEX, routers | [`pulsechain-context/SKILL.md`](pulsechain-context/SKILL.md) |
+| PulseChain addresses, WPLS/HEX, routers, e*/p* origin | [`pulsechain-context/SKILL.md`](pulsechain-context/SKILL.md) |
 | Contract fingerprint / ABI inspect | [`contract-inspection/SKILL.md`](contract-inspection/SKILL.md) |
 | Signing safety (always) | [`core-rules/SKILL.md`](core-rules/SKILL.md) |
 | Confirm F1 network + F3 wallet before propose_* (switch via TUI F1/F3) | [`wallet-account/SKILL.md`](wallet-account/SKILL.md) |
-| Ticker → paste `0x` → confirm contract before propose | [`token-resolve/SKILL.md`](token-resolve/SKILL.md) |
+| Ticker → paste `0x` → confirm contract before propose (DexScreener discover OK) | [`token-resolve/SKILL.md`](token-resolve/SKILL.md) |
 | Deposit vs wallet balance — warn before propose (LP legs) | [`balance-preflight/SKILL.md`](balance-preflight/SKILL.md) |
 | createPool gas / reverted deploy / pool missing after Y | [`lp-gas-preflight/SKILL.md`](lp-gas-preflight/SKILL.md) |
 | LP Brew bugs (ghost card, mint stuck, MCP timeout, swapped amounts) | [`lp-brew-incidents/SKILL.md`](lp-brew-incidents/SKILL.md) |

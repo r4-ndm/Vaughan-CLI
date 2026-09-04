@@ -14,6 +14,28 @@ kind: guide
 
 ## Known DEX addresses (verify with tools when unsure)
 
+### Token origin (e* / p*) — chain 369
+
+**Address always beats ticker.** Community naming:
+
+| Prefix | Meaning | Guidance |
+|--------|---------|----------|
+| **e\*** | Bridged from Ethereum | Legitimate (eHEX, eUSDC, eUSDT, eWBTC, …) |
+| **p\*** | State-fork copy | Typically useless — **except pHEX** (preferred HEX) |
+
+High-confusion pairs are labeled by `resolve_token` / `list_assets` / DexScreener
+tools when the address is catalogued (`vaughan-core::core::token_origin`). See
+[`docs/dexscreener.md`](../../../docs/dexscreener.md).
+
+Never invent `token_origin` for unknown addresses. Prefer:
+
+```
+dexscreener_search { query }          → discovery only
+→ pick a verified 0x from results or user paste
+→ resolve_token / dexscreener_token_pairs
+→ user confirms → propose_*
+```
+
 ### Mainnet (369)
 
 | Role | Address |
@@ -59,6 +81,14 @@ For native tPLS spends, leave a little headroom for gas (Vaughan will reject if 
 Match router to the factory that owns the pair.
 For tHEX / other testnet tokens not listed here, ask for the token address or `inspect_contract` a candidate; do not invent token addresses.
 
+## HEX stakes (PulseChain 369)
+
+- Stakeable contract is **pHEX** (state-fork at the Ethereum HEX address) — not **eHEX**.
+- Sensory: `hex_global_state`, `hex_stakes_for_address`. Writes: `propose_hex_stake_start` /
+  `propose_hex_stake_end` (human approve). Hearts = 8 decimals. Days 1–5555.
+- TUI: footer **`u` HEX**. Docs: `docs/hex-stake.md`.
+- Early `stakeEnd` incurs a protocol penalty — always warn before proposing.
+
 ## Piteas aggregator
 
 - Quote client lives in `vaughan-core::core::piteas` (see `docs/piteas.md`).
@@ -73,5 +103,5 @@ For tHEX / other testnet tokens not listed here, ask for the token address or `i
 - **Ag quote tours in VB (MCP):** [`vb-ag-quotes`](../vb-ag-quotes/SKILL.md) — `browser_open_agg`, PLS→HEX across venues.
 - Bridge (`f`): LibertySwap USDC cross-chain (`docs/bridge.md`) — not official Omnibridge;
   destination is async (no claim tracker in v1). Omnibridge/PulseRamp is deferred.
-- Browser (`c`) intent macros: `/swap`, `/inspect 0x…`, `/revoke`, `/stealth receive`
+- Browser (Settings → `c`) intent macros: `/swap`, `/inspect 0x…`, `/revoke`, `/stealth receive`
   (thin jumps to Ag / browse / Approvals / Receive). Writes: `write` / `writeraw` → fee confirm.

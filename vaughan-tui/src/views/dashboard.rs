@@ -37,6 +37,18 @@ impl DashboardView {
         }
     }
 
+    /// Prefill Home for WZRD burn-to-sink (Settings → Unlock tools).
+    pub fn for_assist_burn(token: &str, sink: &str, amount: &str) -> Self {
+        Self {
+            send: SendView::for_assist_burn(token, sink, amount),
+        }
+    }
+
+    /// True when this home send is the assist-burn unlock path.
+    pub fn is_assist_burn(&self) -> bool {
+        self.send.is_assist_burn()
+    }
+
     pub fn set_tick(&mut self, tick: u64) {
         self.send.set_tick(tick);
     }

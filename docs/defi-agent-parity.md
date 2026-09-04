@@ -53,7 +53,9 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | Human | Agent | Status |
 |-------|-------|--------|
 | Contract browser (`c`): probe, ABI, call | `inspect_contract`, `simulate_call` | [x] |
-| Discover pairs / pools | `search_pairs`, `get_dex_reserves` | [x] |
+| Discover pairs / pools | `search_pairs`, `get_dex_reserves`, `dexscreener_*` | [x] |
+| Market discovery (ticker) | `dexscreener_search` (discovery-only) | [x] |
+| Token origin (e*/p*) | `resolve_token` / `list_assets` catalog labels | [x] |
 | wiz4rd pool state | `get_v3_pool` | [x] |
 | Token “what is 0x…” → Assets import | `resolve_token`, `import_token` | [x] |
 | Activity / history (`m`) | `list_transfers` | [x] |

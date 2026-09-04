@@ -46,7 +46,7 @@ async fn mcp_propose_transfer_queues_and_roundtrips() {
         rpc_url: anvil.rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(sender),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     let raw = registry

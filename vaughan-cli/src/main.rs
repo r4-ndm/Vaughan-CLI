@@ -653,10 +653,7 @@ async fn run_cli(
             json_out::print_json_value(json_mode, &data_out, || println!("{sig}"));
         }
         Command::Lp { action } => match action {
-            LpCmd::Plan {
-                password_env,
-                brew,
-            } => {
+            LpCmd::Plan { password_env, brew } => {
                 unlock(&mut wallet, password_env.as_deref())?;
                 if let Some(id) = brew.network.as_deref() {
                     wallet.set_active_network(id)?;
@@ -668,10 +665,7 @@ async fn run_cli(
                     .await
                     .map_err(|e| anyhow::anyhow!(e.user_message()))?;
             }
-            LpCmd::Deploy {
-                password_env,
-                brew,
-            } => {
+            LpCmd::Deploy { password_env, brew } => {
                 unlock(&mut wallet, password_env.as_deref())?;
                 if let Some(id) = brew.network.as_deref() {
                     wallet.set_active_network(id)?;

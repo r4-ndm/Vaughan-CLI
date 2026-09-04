@@ -17,13 +17,75 @@ use crate::core::dex_routers::is_allowed_dex_router;
 use crate::core::transaction::parse_native_amount;
 use crate::error::WalletError;
 
-/// A V2 LP stake: LP token balance on the pair contract.
+/// A V2 LP stake: LP balance plus pool reserves / supply for share + underlying amounts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V2LpPosition {
     pub pair: Address,
     pub token0: Address,
     pub token1: Address,
     pub lp_balance: U256,
+    pub reserve0: U256,
+    pub reserve1: U256,
+    pub total_supply: U256,
+}
+
+impl V2LpPosition {
+    /// Underlying token amounts owed for this LP stake (`lp * reserve / supply`).
+    pub fn underlying_amounts(&self) -> (U256, U256) {
+        v2_underlying_amounts(
+            self.lp_balance,
+            self.total_supply,
+            self.reserve0,
+            self.reserve1,
+        )
+    }
+
+    /// Pool share in basis points (10_000 = 100%). Zero if supply is zero.
+    pub fn pool_share_bps(&self) -> u32 {
+        v2_pool_share_bps(self.lp_balance, self.total_supply)
+    }
+}
+
+/// `amount_i = lp * reserve_i / total_supply` (zero if supply is zero).
+pub fn v2_underlying_amounts(
+    lp_balance: U256,
+    total_supply: U256,
+    reserve0: U256,
+    reserve1: U256,
+) -> (U256, U256) {
+    if total_supply.is_zero() || lp_balance.is_zero() {
+        return (U256::ZERO, U256::ZERO);
+    }
+    (
+        lp_balance.saturating_mul(reserve0) / total_supply,
+        lp_balance.saturating_mul(reserve1) / total_supply,
+    )
+}
+
+/// Pool ownership in basis points (`10_000` = 100%). Caps at `10_000`.
+pub fn v2_pool_share_bps(lp_balance: U256, total_supply: U256) -> u32 {
+    if total_supply.is_zero() || lp_balance.is_zero() {
+        return 0;
+    }
+    let bps = (lp_balance.saturating_mul(U256::from(10_000u64))) / total_supply;
+    u32::try_from(bps).unwrap_or(u32::MAX).min(10_000)
+}
+
+/// Human pool spot: how many token1 per 1 token0 from reserves (not an oracle).
+pub fn v2_spot_token1_per_token0(
+    reserve0: U256,
+    reserve1: U256,
+    decimals0: u8,
+    decimals1: u8,
+) -> Option<String> {
+    use crate::core::transaction::format_display_amount;
+    if reserve0.is_zero() {
+        return None;
+    }
+    // price * 10^dec1 = reserve1 * 10^dec0 / reserve0
+    let scale0 = U256::from(10u64).pow(U256::from(decimals0));
+    let raw = reserve1.saturating_mul(scale0) / reserve0;
+    Some(format_display_amount(&raw.to_string(), decimals1, 8))
 }
 
 sol! {
@@ -35,6 +97,8 @@ sol! {
         function token0() external view returns (address);
         function token1() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
+        function totalSupply() external view returns (uint256);
+        function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
     }
 
     interface IUniswapV2RouterLiquidity {
@@ -232,11 +296,39 @@ pub async fn list_v2_lp_positions(
             .map_err(|e| WalletError::NetworkError(format!("decode token0: {e}")))?;
         let token1 = IUniswapV2Pair::token1Call::abi_decode_returns(&t1_raw)
             .map_err(|e| WalletError::NetworkError(format!("decode token1: {e}")))?;
+
+        let supply_call = IUniswapV2Pair::totalSupplyCall {};
+        let supply_raw = provider
+            .call(
+                alloy::rpc::types::TransactionRequest::default()
+                    .to(pair)
+                    .input(supply_call.abi_encode().into()),
+            )
+            .await
+            .map_err(|e| WalletError::NetworkError(format!("totalSupply: {e}")))?;
+        let total_supply = IUniswapV2Pair::totalSupplyCall::abi_decode_returns(&supply_raw)
+            .map_err(|e| WalletError::NetworkError(format!("decode totalSupply: {e}")))?;
+
+        let res_call = IUniswapV2Pair::getReservesCall {};
+        let res_raw = provider
+            .call(
+                alloy::rpc::types::TransactionRequest::default()
+                    .to(pair)
+                    .input(res_call.abi_encode().into()),
+            )
+            .await
+            .map_err(|e| WalletError::NetworkError(format!("getReserves: {e}")))?;
+        let reserves = IUniswapV2Pair::getReservesCall::abi_decode_returns(&res_raw)
+            .map_err(|e| WalletError::NetworkError(format!("decode getReserves: {e}")))?;
+
         out.push(V2LpPosition {
             pair,
             token0,
             token1,
             lp_balance: bal,
+            reserve0: U256::from(reserves.reserve0),
+            reserve1: U256::from(reserves.reserve1),
+            total_supply,
         });
     }
     Ok(out)
@@ -417,5 +509,52 @@ mod tests {
             "0xeb45a3c4aedd0f47f345fb4c8a1802bb5740d725"
         );
         assert!(tx.data.as_ref().unwrap().starts_with("0x"));
+    }
+
+    #[test]
+    fn underlying_and_share_match_full_pool() {
+        let supply = U256::from(1_000u64);
+        let lp = U256::from(1_000u64);
+        let r0 = U256::from(50_000u64);
+        let r1 = U256::from(25_000u64);
+        assert_eq!(v2_pool_share_bps(lp, supply), 10_000);
+        assert_eq!(v2_underlying_amounts(lp, supply, r0, r1), (r0, r1));
+    }
+
+    #[test]
+    fn half_share_halves_underlying() {
+        let supply = U256::from(1_000u64);
+        let lp = U256::from(500u64);
+        let r0 = U256::from(100u64);
+        let r1 = U256::from(200u64);
+        assert_eq!(v2_pool_share_bps(lp, supply), 5_000);
+        assert_eq!(
+            v2_underlying_amounts(lp, supply, r0, r1),
+            (U256::from(50u64), U256::from(100u64))
+        );
+    }
+
+    #[test]
+    fn zero_supply_is_safe() {
+        assert_eq!(v2_pool_share_bps(U256::from(1u64), U256::ZERO), 0);
+        assert_eq!(
+            v2_underlying_amounts(
+                U256::from(1u64),
+                U256::ZERO,
+                U256::from(9u64),
+                U256::from(9u64)
+            ),
+            (U256::ZERO, U256::ZERO)
+        );
+        assert!(v2_spot_token1_per_token0(U256::ZERO, U256::from(1u64), 18, 18).is_none());
+    }
+
+    #[test]
+    fn spot_price_one_to_two() {
+        // 1e18 reserve0, 2e18 reserve1, both 18 dec → 2 token1 per token0
+        let r0 = U256::from(10u64).pow(U256::from(18u64));
+        let r1 = U256::from(2u64) * r0;
+        let p = v2_spot_token1_per_token0(r0, r1, 18, 18).unwrap();
+        assert_eq!(p, "2");
     }
 }

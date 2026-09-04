@@ -85,6 +85,12 @@ impl Tool for ListV2PositionsTool {
                     "token0": format!("{:#x}", p.token0),
                     "token1": format!("{:#x}", p.token1),
                     "lp_balance": p.lp_balance.to_string(),
+                    "reserve0": p.reserve0.to_string(),
+                    "reserve1": p.reserve1.to_string(),
+                    "total_supply": p.total_supply.to_string(),
+                    "pool_share_bps": p.pool_share_bps(),
+                    "amount0": p.underlying_amounts().0.to_string(),
+                    "amount1": p.underlying_amounts().1.to_string(),
                 })
             })
             .collect();

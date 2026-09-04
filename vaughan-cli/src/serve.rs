@@ -22,8 +22,7 @@ use vaughan_core::core::proposal::{
     guard_mainnet_write, mcp_control_port, McpSessionToken, ProposalQueue, TxProposal,
 };
 use vaughan_core::core::{
-    is_sentient_profile, reject_deferred_sentient_profile, OperatingMode, StateManager,
-    WalletState,
+    is_sentient_profile, reject_deferred_sentient_profile, OperatingMode, StateManager, WalletState,
 };
 use vaughan_tui::provider::ApprovalKind;
 use vaughan_tui::sentient_mcp::{self, mcp_auto_exec_enabled};

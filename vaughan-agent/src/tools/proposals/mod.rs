@@ -18,11 +18,13 @@ pub mod propose_v3_lp_lifecycle;
 pub mod propose_v3_mint;
 pub mod propose_v3_swap;
 pub mod propose_wrap;
+pub mod propose_hex_stake;
 
 pub use propose_agg_swap::ProposeAggSwapTool;
 pub use propose_approve::ProposeApproveTool;
 pub use propose_batch_7702::ProposeBatch7702Tool;
 pub use propose_contract_call::ProposeContractCallTool;
+pub use propose_hex_stake::{ProposeHexStakeEndTool, ProposeHexStakeStartTool};
 pub use propose_revoke::ProposeRevokeTool;
 pub use propose_stealth_send::ProposeStealthSendTool;
 pub use propose_swap::ProposeSwapTool;
@@ -30,10 +32,10 @@ pub use propose_token_launch::ProposeTokenLaunchTool;
 pub use propose_transfer::ProposeTransferTool;
 pub use propose_v2_lp::{ProposeV2AddTool, ProposeV2RemoveTool};
 pub use propose_v3_create_pool::{ProposeV3CreatePoolTool, ProposeV3InitializePoolTool};
+pub use propose_v3_lp_deploy::ProposeV3LpDeployTool;
 pub use propose_v3_lp_lifecycle::{
     ProposeV3CollectTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
 };
-pub use propose_v3_lp_deploy::ProposeV3LpDeployTool;
 pub use propose_v3_mint::ProposeV3MintTool;
 pub use propose_v3_swap::ProposeV3SwapTool;
 pub use propose_wrap::{ProposeUnwrapTool, ProposeWrapTool};

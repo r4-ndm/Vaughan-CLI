@@ -303,7 +303,7 @@ impl LpView {
                 lines.push(Line::from("Increase liquidity"));
                 if let Some(p) = self.v3_positions.get(self.sel) {
                     let pair =
-                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1);
+                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1, &[]);
                     lines.push(Line::from(format!("Position: {pair} · #{}", p.token_id)));
                 }
                 let (sym0, sym1) = self.form_token_symbols();
@@ -318,7 +318,7 @@ impl LpView {
                 lines.push(Line::from("Remove liquidity"));
                 if let Some(p) = self.v3_positions.get(self.sel) {
                     let pair =
-                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1);
+                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1, &[]);
                     lines.push(Line::from(format!("Position: {pair} · #{}", p.token_id)));
                     lines.push(Line::from(format!(
                         "Remove:  {} units (position {})",
@@ -333,7 +333,7 @@ impl LpView {
                 lines.push(Line::from("Collect tokens"));
                 if let Some(p) = self.v3_positions.get(self.sel) {
                     let pair =
-                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1);
+                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1, &[]);
                     lines.push(Line::from(format!("Position: {pair} · #{}", p.token_id)));
                     lines.push(Line::from(format!(
                         "Owed:    {} / {} (raw units)",
@@ -373,7 +373,7 @@ impl LpView {
             parse_token_address(raw0, "token0"),
             parse_token_address(raw1, "token1"),
         ) {
-            return super::helpers::v3_position_pair_label(self.chain_id, a0, a1);
+            return super::helpers::v3_position_pair_label(self.chain_id, a0, a1, &[]);
         }
         format!(
             "{}/{}",

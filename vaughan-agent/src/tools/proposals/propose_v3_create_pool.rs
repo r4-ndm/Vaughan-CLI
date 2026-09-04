@@ -310,7 +310,10 @@ impl Tool for ProposeV3InitializePoolTool {
     }
 }
 
-async fn fetch_erc20_decimals(rpc_url: &str, token: Address) -> Result<u8, vaughan_core::error::WalletError> {
+async fn fetch_erc20_decimals(
+    rpc_url: &str,
+    token: Address,
+) -> Result<u8, vaughan_core::error::WalletError> {
     use alloy::providers::ProviderBuilder;
     use alloy::sol;
     sol! {

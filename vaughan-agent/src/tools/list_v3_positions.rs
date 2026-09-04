@@ -8,7 +8,7 @@ use std::str::FromStr;
 use crate::error::AgentError;
 use crate::tools::v3_lp::{resolve_lp_venue, venue_param_schema};
 use crate::tools::{Tool, ToolContext};
-use vaughan_core::core::{list_v3_lp_positions, venue_slug};
+use vaughan_core::core::{list_v3_lp_position_views, venue_slug};
 
 #[derive(Default)]
 pub struct ListV3PositionsTool;
@@ -26,8 +26,8 @@ impl Tool for ListV3PositionsTool {
     }
 
     fn description(&self) -> &str {
-        "List V3 LP NFT positions for an address. Optional venue (wiz4rd on 943, 9mm on 369). \
-         Optional from_block/to_block to bound log scans."
+        "List V3 LP NFT positions for an address (includes live principal amounts + tick). \
+         Optional venue (wiz4rd on 943, 9mm on 369). Optional from_block/to_block to bound log scans."
     }
 
     fn parameters(&self) -> Value {
@@ -60,7 +60,7 @@ impl Tool for ListV3PositionsTool {
         let to_block = args.get("to_block").and_then(|v| v.as_u64());
         let venue = resolve_lp_venue(&args, context.chain_id)?;
 
-        let positions = list_v3_lp_positions(
+        let positions = list_v3_lp_position_views(
             &context.rpc_url,
             venue,
             context.chain_id,
@@ -84,6 +84,12 @@ impl Tool for ListV3PositionsTool {
                     "liquidity": p.liquidity.to_string(),
                     "tokens_owed0": p.tokens_owed0.to_string(),
                     "tokens_owed1": p.tokens_owed1.to_string(),
+                    "pool": format!("{:#x}", p.pool),
+                    "tick_current": p.tick_current,
+                    "sqrt_price_x96": p.sqrt_price_x96.to_string(),
+                    "amount0": p.amount0.to_string(),
+                    "amount1": p.amount1.to_string(),
+                    "range_status": p.range_status().label(),
                 })
             })
             .collect();

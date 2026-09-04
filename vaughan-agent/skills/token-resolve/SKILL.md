@@ -14,13 +14,17 @@ guess addresses. Resolve or ask for a paste, then **confirm** before any `propos
 
 | Tool | When |
 |------|------|
-| `list_assets` | Active wallet — may already show symbol + `contract` |
-| `resolve_token` | User pasted `0x…` — read symbol, name, decimals (read-only) |
+| `list_assets` | Active wallet — may already show symbol + `contract` (+ origin on 369) |
+| `dexscreener_search` | Ticker discovery on PulseChain — **not** settlement identity |
+| `dexscreener_token_pairs` | Market overview for a verified token `0x` |
+| `resolve_token` | User pasted `0x…` — metadata + optional e*/p* origin |
 | `import_token` | After user confirms — add to profile Assets (needs unlocked session) |
 | `inspect_contract` | Optional — user unsure if contract is a standard ERC-20 |
 
 Built-in resolver symbols on **943** (no paste needed): **WPLS**, **WZRD**, smoke **BOB**, **JANE**, **JIM**.
 Everything else (e.g. **TEST1**, **TEST2**) needs a contract unless already in `list_assets`.
+
+On **369**, watch e*/p* traps (pHEX vs eHEX, bridged DAI vs pDAI, eUSDT vs fork USDT).
 
 ## Flow per token
 
@@ -32,8 +36,11 @@ list_assets   → match symbol (case-insensitive) on active chain?
 
 | Result | Next |
 |--------|------|
-| Found | Go to **3 — Confirm** using that `contract` |
-| Not found | **2 — Ask for paste** |
+| Found | Go to **3 — Confirm** using that `contract` (check origin / warning) |
+| Not found | Optional: `dexscreener_search` for candidates → still need user-confirmed `0x` |
+| Still unclear | **2 — Ask for paste** |
+
+Do **not** treat DexScreener search hits as confirmed contracts.
 
 ### 2 — Ask for paste
 

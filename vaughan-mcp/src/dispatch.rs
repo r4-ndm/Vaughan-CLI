@@ -87,24 +87,43 @@ impl McpDispatcher {
             "list_pending_proposals" => self.list_pending_proposals(&ctx),
             "get_control_plane_status" => self.control_plane_status(&ctx).await,
             "import_token" => self.assist_side_effect("import_token", args, &ctx).await,
-            "get_stealth_uri" => self.stealth_uri(&ctx).await,
-            "scan_stealth_notes" => self.stealth_scan(&ctx).await,
-            "sweep_stealth_note" => self.stealth_sweep(args, &ctx).await,
-            "browser_open" => browser_bridge::browser_open(args, &ctx).await,
-            "browser_open_agg" => browser_bridge::browser_open_agg(args, &ctx).await,
-            "browser_navigate" => browser_bridge::browser_navigate(args, &ctx).await,
-            "browser_status" => browser_bridge::browser_status(&ctx).await,
-            "browser_snapshot" => browser_bridge::browser_snapshot(args, &ctx).await,
-            "browser_read_quote" => browser_bridge::browser_read_quote(args, &ctx).await,
-            "browser_click" => browser_bridge::browser_click(args, &ctx).await,
-            "browser_click_text" => browser_bridge::browser_click_text(args, &ctx).await,
-            "browser_type" => browser_bridge::browser_type(args, &ctx).await,
-            "browser_select_token" => browser_bridge::browser_select_token(args, &ctx).await,
-            "browser_setup_swap" => browser_bridge::browser_setup_swap(args, &ctx).await,
-            "browser_submit_swap" => browser_bridge::browser_submit_swap(args, &ctx).await,
-            "browser_connect_wallet" => browser_bridge::browser_connect_wallet(args, &ctx).await,
-            "browser_press" => browser_bridge::browser_press(args, &ctx).await,
-            "browser_wait" => browser_bridge::browser_wait(args, &ctx).await,
+            "get_stealth_uri" => {
+                self.require_power_unlocked(&ctx).await?;
+                self.stealth_uri(&ctx).await
+            }
+            "scan_stealth_notes" => {
+                self.require_power_unlocked(&ctx).await?;
+                self.stealth_scan(&ctx).await
+            }
+            "sweep_stealth_note" => {
+                self.require_power_unlocked(&ctx).await?;
+                self.stealth_sweep(args, &ctx).await
+            }
+            name if name.starts_with("browser_") => {
+                self.require_power_unlocked(&ctx).await?;
+                match name {
+                    "browser_open" => browser_bridge::browser_open(args, &ctx).await,
+                    "browser_open_agg" => browser_bridge::browser_open_agg(args, &ctx).await,
+                    "browser_navigate" => browser_bridge::browser_navigate(args, &ctx).await,
+                    "browser_status" => browser_bridge::browser_status(&ctx).await,
+                    "browser_snapshot" => browser_bridge::browser_snapshot(args, &ctx).await,
+                    "browser_read_quote" => browser_bridge::browser_read_quote(args, &ctx).await,
+                    "browser_click" => browser_bridge::browser_click(args, &ctx).await,
+                    "browser_click_text" => browser_bridge::browser_click_text(args, &ctx).await,
+                    "browser_type" => browser_bridge::browser_type(args, &ctx).await,
+                    "browser_select_token" => {
+                        browser_bridge::browser_select_token(args, &ctx).await
+                    }
+                    "browser_setup_swap" => browser_bridge::browser_setup_swap(args, &ctx).await,
+                    "browser_submit_swap" => browser_bridge::browser_submit_swap(args, &ctx).await,
+                    "browser_connect_wallet" => {
+                        browser_bridge::browser_connect_wallet(args, &ctx).await
+                    }
+                    "browser_press" => browser_bridge::browser_press(args, &ctx).await,
+                    "browser_wait" => browser_bridge::browser_wait(args, &ctx).await,
+                    _ => Err(format!("unknown tool: {name}")),
+                }
+            }
             name if name.starts_with("propose_") => self.propose_tool(name, args, &ctx).await,
             name if self.sensory.definitions().iter().any(|d| d.name == name)
                 || name == "get_balance"
@@ -223,11 +242,26 @@ impl McpDispatcher {
         let rows: Vec<_> = assets
             .iter()
             .map(|bal| {
-                json!({
+                let mut row = json!({
                     "symbol": bal.token.symbol,
                     "formatted": bal.formatted,
                     "contract": bal.token.contract_address,
-                })
+                });
+                if let Some(contract) = bal.token.contract_address.as_deref() {
+                    if let Some(label) =
+                        vaughan_core::core::token_origin_lookup_str(ctx.chain_id, contract)
+                    {
+                        let label = label.to_label();
+                        if let Some(obj) = row.as_object_mut() {
+                            obj.insert("display_symbol".into(), json!(label.display_symbol));
+                            obj.insert("token_origin".into(), json!(label.token_origin));
+                            if let Some(w) = label.warning {
+                                obj.insert("warning".into(), json!(w));
+                            }
+                        }
+                    }
+                }
+                row
             })
             .collect();
         Ok(json!({
@@ -243,6 +277,7 @@ impl McpDispatcher {
         ctx: &McpContext,
     ) -> Result<Value, String> {
         guard_mainnet_write(ctx.is_testnet).map_err(|e| e.to_string())?;
+        self.require_power_unlocked(ctx).await?;
 
         let tool_ctx = ToolContext {
             rpc_url: ctx.rpc_url.clone(),
@@ -275,6 +310,30 @@ impl McpDispatcher {
                 "message": "Multiple proposals committed — approve/exec each in order",
             }))
         }
+    }
+
+    /// When the burn gate is on, refuse power tools without a qualifying WZRD burn.
+    async fn require_power_unlocked(&self, ctx: &McpContext) -> Result<(), String> {
+        use vaughan_core::core::{
+            assist_burn_gate_enabled, entitlement_chain_id, require_power_features,
+        };
+        if !assist_burn_gate_enabled() {
+            return Ok(());
+        }
+        let Some(chain_id) = entitlement_chain_id() else {
+            return Err(
+                "assist_locked: WZRD entitlement chain unavailable — burn gate cannot unlock"
+                    .into(),
+            );
+        };
+        // Vault-wide: positive cache for this chain unlocks every account. Cold
+        // scan uses the session address; TUI re-verify writes the vault cache.
+        let addr = ctx.active_address.ok_or_else(|| {
+            "wallet_locked: unlock Vaughan TUI or pass account_address".to_string()
+        })?;
+        require_power_features(Some(&self.profile_dir), chain_id, &[addr])
+            .await
+            .map_err(|e| e.user_message())
     }
 
     /// `import_token` mutates persisted wallet state (the token list shown in
@@ -327,16 +386,15 @@ impl McpDispatcher {
         // LP Brew steps: always enqueue so MCP returns immediately and the TUI
         // surfaces the card via poll_file_queue (multi-step pipeline UX).
         // Standalone V3 mint proposals use the same path (avoid 120s live-propose timeout).
-        let file_queue_immediately = matches!(
-            proposal.proposal_type,
-            ProposalType::LpDeployStep { .. }
-        ) || matches!(
-            &proposal.proposal_type,
-            ProposalType::ContractCall {
-                function_name: Some(name),
-                ..
-            } if name == "mint"
-        );
+        let file_queue_immediately =
+            matches!(proposal.proposal_type, ProposalType::LpDeployStep { .. })
+                || matches!(
+                    &proposal.proposal_type,
+                    ProposalType::ContractCall {
+                        function_name: Some(name),
+                        ..
+                    } if name == "mint"
+                );
 
         if !file_queue_immediately {
             match try_propose_live(&session, &ctx.source, &proposal).await {

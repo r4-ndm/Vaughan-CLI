@@ -44,67 +44,99 @@ use super::helpers::{
 use super::types::*;
 
 impl LpView {
-    pub fn initial_job(&self, wallet: &WalletState) -> Option<UiJob> {
+    pub fn initial_job(&mut self, wallet: &WalletState) -> Option<UiJob> {
         self.list_job(wallet)
     }
 
-    pub(crate) fn list_job(&self, wallet: &WalletState) -> Option<UiJob> {
+    pub(crate) fn list_job(&mut self, wallet: &WalletState) -> Option<UiJob> {
+        let owner = wallet.active_address().ok()?.to_string();
+        let rpc = wallet.active_rpc_url();
+        self.list_job_for(owner, rpc)
+    }
+
+    /// List LP for an already-resolved owner (avoids holding `WalletState` across `&mut self`).
+    pub(crate) fn list_job_for(&mut self, owner: String, rpc_url: String) -> Option<UiJob> {
         if !self.lp_supported() {
             return None;
         }
-        let owner = wallet.active_address().ok()?.to_string();
-        let rpc = wallet.active_rpc_url();
+        self.list_gen = self.list_gen.wrapping_add(1);
+        let list_gen = self.list_gen;
+        // Clear immediately so a previous account's rows never linger under a new F3.
+        self.v3_positions.clear();
+        self.v2_positions.clear();
+        self.sel = 0;
+        self.list_action_idx = None;
         match self.stack {
             LpStack::V3 { .. } => Some(UiJob::LpListPositions {
                 venue: self.venue,
                 chain_id: self.chain_id,
-                rpc_url: rpc,
+                rpc_url,
                 owner,
+                list_gen,
             }),
             LpStack::V2 { venue } => Some(UiJob::LpListV2Positions {
                 venue,
                 chain_id: self.chain_id,
-                rpc_url: rpc,
+                rpc_url,
                 owner,
+                list_gen,
             }),
         }
     }
 
     pub fn apply_job_result(&mut self, result: UiJobResult) {
         match result {
-            UiJobResult::LpPositions(Ok(rows)) => {
-                self.busy = Busy::Idle;
-                self.v3_positions = rows;
-                if self.sel >= self.v3_positions.len() && !self.v3_positions.is_empty() {
-                    self.sel = 0;
+            UiJobResult::LpPositions {
+                list_gen,
+                owner,
+                result,
+            } => {
+                if list_gen != self.list_gen {
+                    return;
                 }
-                self.sync_decrease_from_selection();
-                self.status = format!(
-                    "{} · {} V3 position(s)",
-                    self.venue.label(),
-                    self.v3_positions.len()
-                );
-            }
-            UiJobResult::LpPositions(Err(e)) => {
                 self.busy = Busy::Idle;
-                self.status = lp_network_user_message(&e);
-            }
-            UiJobResult::LpV2Positions(Ok(rows)) => {
-                self.busy = Busy::Idle;
-                self.v2_positions = rows;
-                if self.sel >= self.v2_positions.len() && !self.v2_positions.is_empty() {
-                    self.sel = 0;
+                match result {
+                    Ok(rows) => {
+                        self.v3_positions = rows;
+                        self.list_action_idx = None;
+                        self.clamp_list_sel();
+                        self.status = format!(
+                            "{} · {} V3 position(s) · {} · ↑↓ select · Enter open",
+                            self.venue.label(),
+                            self.v3_positions.len(),
+                            short_addr(&owner)
+                        );
+                    }
+                    Err(e) => {
+                        self.status = lp_network_user_message(&e);
+                    }
                 }
-                self.sync_decrease_from_selection();
-                self.status = format!(
-                    "{} · {} V2 position(s)",
-                    self.venue.label(),
-                    self.v2_positions.len()
-                );
             }
-            UiJobResult::LpV2Positions(Err(e)) => {
+            UiJobResult::LpV2Positions {
+                list_gen,
+                owner,
+                result,
+            } => {
+                if list_gen != self.list_gen {
+                    return;
+                }
                 self.busy = Busy::Idle;
-                self.status = lp_network_user_message(&e);
+                match result {
+                    Ok(rows) => {
+                        self.v2_positions = rows;
+                        self.list_action_idx = None;
+                        self.clamp_list_sel();
+                        self.status = format!(
+                            "{} · {} V2 position(s) · {} · ↑↓ select · Enter open",
+                            self.venue.label(),
+                            self.v2_positions.len(),
+                            short_addr(&owner)
+                        );
+                    }
+                    Err(e) => {
+                        self.status = lp_network_user_message(&e);
+                    }
+                }
             }
             UiJobResult::LpV3PoolDeployStep(Ok((tx, label))) => {
                 let step = LpDeployLastStep::from_deploy_label(&label);
@@ -236,7 +268,8 @@ impl LpView {
                 } else {
                     self.stage = Stage::Input;
                     self.confirm_lines.clear();
-                    self.status = format!("LP tx ok ({})", receipt.hash);
+                    self.lp_reload_pending = true;
+                    self.status = format!("LP tx ok ({}) — refreshing positions…", receipt.hash);
                 }
             }
             UiJobResult::Send(Err(e)) => {
@@ -251,4 +284,12 @@ impl LpView {
             _ => {}
         }
     }
+}
+
+fn short_addr(addr: &str) -> String {
+    let a = addr.trim();
+    if a.len() <= 12 {
+        return a.to_string();
+    }
+    format!("{}…{}", &a[..6], &a[a.len().saturating_sub(4)..])
 }

@@ -37,7 +37,14 @@ fn key(code: KeyCode) -> KeyEvent {
 fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handle) {
     let result = match job {
         UiJob::RefreshBalance => UiJobResult::Balance(handle.block_on(wallet.balance())),
-        UiJob::RefreshAssets => UiJobResult::Assets(handle.block_on(wallet.assets())),
+        UiJob::RefreshAssets { .. } => UiJobResult::Assets {
+            owner: wallet
+                .active_address()
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
+            gen: 0,
+            result: handle.block_on(wallet.assets()),
+        },
         UiJob::EstimateFee { to, value_wei } => {
             UiJobResult::Fee(handle.block_on(wallet.estimate_fee(&to, &value_wei)))
         }
@@ -69,7 +76,7 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         ),
         // Chrome / DEX / Ag / Bridge / unlock jobs are not used by SendView tests.
         UiJob::Unlock { .. }
-        | UiJob::RefreshChrome
+        | UiJob::RefreshChrome { .. }
         | UiJob::SendEvm { .. }
         | UiJob::EstimateEvmFee { .. }
         | UiJob::DexSwapEstimateAfterApprove { .. }

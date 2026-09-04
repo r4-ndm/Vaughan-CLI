@@ -45,7 +45,14 @@ pub fn lp_deploy_step_verify_rows(
 ) -> Result<Vec<VerifyRow>, WalletError> {
     let job = lp_deploy_job_load(profile_dir, job_id)?;
     let params = V3LpDeployParams::try_from(&job.params)?;
-    lp_deploy_step_verify_rows_with_job(proposal, step_label, &job, &params, token0_label, token1_label)
+    lp_deploy_step_verify_rows_with_job(
+        proposal,
+        step_label,
+        &job,
+        &params,
+        token0_label,
+        token1_label,
+    )
 }
 
 fn lp_deploy_step_verify_rows_with_job(
@@ -146,7 +153,8 @@ fn lp_deploy_step_verify_rows_with_job(
                 label: "Pool".into(),
                 value: pair,
             });
-            if let Ok(call) = INonfungiblePositionManager::mintCall::abi_decode(&proposal.calldata) {
+            if let Ok(call) = INonfungiblePositionManager::mintCall::abi_decode(&proposal.calldata)
+            {
                 let p = call.params;
                 rows.push(VerifyRow {
                     label: "Range".into(),
@@ -158,19 +166,11 @@ fn lp_deploy_step_verify_rows_with_job(
                 });
                 rows.push(VerifyRow {
                     label: format!("Deposit {token0_label}"),
-                    value: format_display_amount(
-                        &p.amount0Desired.to_string(),
-                        params.dec0,
-                        12,
-                    ),
+                    value: format_display_amount(&p.amount0Desired.to_string(), params.dec0, 12),
                 });
                 rows.push(VerifyRow {
                     label: format!("Deposit {token1_label}"),
-                    value: format_display_amount(
-                        &p.amount1Desired.to_string(),
-                        params.dec1,
-                        12,
-                    ),
+                    value: format_display_amount(&p.amount1Desired.to_string(), params.dec1, 12),
                 });
                 rows.push(VerifyRow {
                     label: "Recipient".into(),
@@ -284,9 +284,8 @@ pub async fn npm_mint_token_id_for_tx(
 
     let npm = venue_position_manager(venue, chain_id)
         .ok_or_else(|| WalletError::InvalidTransaction("NPM not configured for venue".into()))?;
-    let parsed = B256::from_str(tx_hash.trim()).map_err(|_| {
-        WalletError::InvalidTransaction("invalid mint tx hash".into())
-    })?;
+    let parsed = B256::from_str(tx_hash.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid mint tx hash".into()))?;
     let receipt = adapter
         .with_provider(|provider| async move {
             provider
@@ -360,12 +359,12 @@ fn format_tick_range(tick_lower: i32, tick_upper: i32, fee: u32) -> String {
 }
 
 fn format_tick_range_from_params(params: &V3LpDeployParams) -> Result<String, WalletError> {
-    let (lo, hi) = if params.pool_min_price.trim().is_empty() || params.pool_max_price.trim().is_empty()
-    {
-        default_full_range_ticks(params.fee)?
-    } else {
-        crate::core::dex_lp::v3_lp_mint_tick_range(params)?
-    };
+    let (lo, hi) =
+        if params.pool_min_price.trim().is_empty() || params.pool_max_price.trim().is_empty() {
+            default_full_range_ticks(params.fee)?
+        } else {
+            crate::core::dex_lp::v3_lp_mint_tick_range(params)?
+        };
     Ok(format_tick_range(lo, hi, params.fee))
 }
 
@@ -497,8 +496,14 @@ mod tests {
         )
         .unwrap();
         assert!(rows.iter().any(|r| r.label == "Deposit T1"));
-        assert!(rows.iter().any(|r| r.label == "Deposit T2" && r.value == "300"));
-        assert!(rows.iter().any(|r| r.label == "Position NFT" && r.value == "#6"));
-        assert!(rows.iter().any(|r| r.label == "Tx" && r.value.contains('…')));
+        assert!(rows
+            .iter()
+            .any(|r| r.label == "Deposit T2" && r.value == "300"));
+        assert!(rows
+            .iter()
+            .any(|r| r.label == "Position NFT" && r.value == "#6"));
+        assert!(rows
+            .iter()
+            .any(|r| r.label == "Tx" && r.value.contains('…')));
     }
 }

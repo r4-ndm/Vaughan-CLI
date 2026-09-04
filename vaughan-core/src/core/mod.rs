@@ -4,13 +4,17 @@
 pub mod account;
 pub mod agent_autonomy;
 pub mod aggregator;
+pub mod assist_entitlement;
 pub mod bridge;
 pub mod broadcasts;
 pub mod dex_catalog;
 pub mod dex_lp;
 pub mod dex_quote;
 pub mod dex_routers;
+pub mod dexscreener;
+pub mod hex_stake;
 pub mod lp_brew;
+pub mod proposal_review;
 pub mod lp_deploy;
 pub mod lp_smoke;
 pub mod mcp_host;
@@ -25,6 +29,7 @@ pub mod provider_session;
 pub mod site_grants;
 pub mod stealth;
 pub mod token_launch;
+pub mod token_origin;
 pub mod transaction;
 pub mod v2_lp;
 pub mod vault_secrets;
@@ -42,6 +47,14 @@ pub use aggregator::{
     rank_agg_quote_outcomes, AggAccess, AggExecTx, AggQuote, AggQuoteOutcome, AggQuoteRequest,
     AggVenue, SquirrelPreview, SquirrelSwapClient, AGG_VENUES, OFFICIAL_AGG_ROUTERS,
 };
+pub use assist_entitlement::{
+    address_has_assist_burn, address_has_assist_burn_with_retry, assist_burn_amount_u256,
+    assist_burn_gate_enabled, assist_unlock_bypass, build_assist_burn_evm, burn_sink_hex,
+    entitlement_chain_id, entitlement_wzrd, power_features_unlocked_blocking,
+    require_assist_entitlement, require_power_features, vault_has_assist_burn,
+    vault_has_assist_burn_with_retry, wzrd_token_hex, ASSIST_BURN_AMOUNT_HUMAN,
+    ASSIST_BURN_AMOUNT_WEI, ASSIST_BURN_GATE_ENV, BURN_SINK,
+};
 pub use bridge::{
     assert_bridge_exec_targets, is_whitelisted_router, BridgeApproval, BridgeAsset,
     BridgeChainPreset, BridgeExecTx, BridgeFee, BridgeQuote, BridgeQuoteRequest, BridgeTokenInfo,
@@ -52,25 +65,28 @@ pub use broadcasts::{
     MAX_RECENT_BROADCASTS,
 };
 pub use dex_catalog::{
-    chain_label, default_lp_v3_venue, default_lp_venue, lp_stack_for_chain, lp_v2_venue,
-    lp_v3_venue_picker, lp_v3_venues, missing_router_hint, parse_dex_venue_label,
-    venue_pool_deployer, venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router, venue_v2_factory,
-    venue_v3_factory, DexContractRole, DexProtocol, DexVenue, LpStack, DEX_VENUES,
+    chain_label, cycle_dex_swap_venue, default_lp_v3_venue, default_lp_venue, dex_swap_venues,
+    lp_stack_for_chain, lp_v2_venue, lp_v3_venue_picker, lp_v3_venues, missing_router_hint,
+    parse_dex_venue_label, venue_pool_deployer, venue_position_manager, venue_quoter_v2,
+    venue_slug, venue_swap_router, venue_v2_factory, venue_v3_factory, DexContractRole,
+    DexProtocol, DexVenue, LpStack, DEX_VENUES,
 };
 pub use dex_lp::{
     build_v3_collect_evm, build_v3_create_pool_evm, build_v3_decrease_evm, build_v3_increase_evm,
     build_v3_initialize_pool_evm, build_v3_initialize_pool_from_human_price_evm,
     build_v3_initialize_pool_from_tick_evm, build_v3_mint_evm, default_full_range_ticks,
-    discover_v3_pool_fee_tier, display_price_range_from_preset, fetch_v3_lp_pool_quote,
-    is_lp_rpc_transport, list_v3_lp_positions, load_v3_lp_pool, merge_rpc_urls,
-    sqrt_price_x96_from_tick, v3_initial_tick_from_human_price, v3_lp_build_next_enable_tx,
+    discover_v3_pool_fee_tier, display_price_range_from_preset, enrich_v3_lp_positions,
+    fetch_v3_lp_pool_quote, get_v3_lp_position, is_lp_rpc_transport, list_v3_lp_position_views,
+    list_v3_lp_positions, load_v3_lp_pool, lp_deploy_fixup_swapped_amounts, merge_rpc_urls,
+    pool_tick_to_human_price, sqrt_price_x96_from_tick, v3_initial_tick_from_human_price,
+    v3_lp_build_next_enable_tx, v3_lp_deploy_mint_amounts, v3_lp_mint_tick_range,
     v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, v3_lp_sdk_config, v3_lp_token_enable_status,
-    lp_deploy_fixup_swapped_amounts, v3_lp_deploy_mint_amounts, v3_lp_mint_tick_range, v3_pool_lifecycle, v3_pool_sqrt_u160,     v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount0_ticks,
-    v3_preview_mint_deposits_from_amount1, v3_preview_mint_deposits_from_amount1_ticks,
-    v3_range_ticks_from_human_prices,
+    v3_pool_lifecycle, v3_pool_sqrt_u160, v3_preview_mint_deposits_from_amount0,
+    v3_preview_mint_deposits_from_amount0_ticks, v3_preview_mint_deposits_from_amount1,
+    v3_preview_mint_deposits_from_amount1_ticks, v3_range_status, v3_range_ticks_from_human_prices,
     v3_sqrt_and_tick_for_preview, with_lp_rpc_urls, wiz4rd_sdk_config, V3LpDeployContext,
-    V3LpDeployParams, V3LpDeployWait, V3LpPoolQuote, V3PoolLifecycle, V3PositionInfo,
-    V3_LP_FEE_TIERS,
+    V3LpDeployParams, V3LpDeployWait, V3LpPoolQuote, V3LpPositionView, V3PoolLifecycle,
+    V3PositionInfo, V3RangeStatus, V3_LP_FEE_TIERS,
 };
 pub use dex_quote::{
     discover_v3_swap_route, encode_v3_packed_path, erc20_allowance_covers, min_out_after_slippage,
@@ -80,6 +96,10 @@ pub use dex_quote::{
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
 };
+pub use dexscreener::{
+    catalog_chain_id_for_dex_slug, resolve_dex_chain, DexScreenerClient, DEFAULT_DEXSCREENER_CHAIN,
+    DEXSCREENER_API_BASE,
+};
 pub use lp_brew::{
     load_brew_file, lp_human_inputs_to_deploy_params, pool_price_to_user_price,
     resolve_lp_brew_fee, resolve_lp_brew_token, sort_lp_token_pair, trim_float_string,
@@ -87,12 +107,11 @@ pub use lp_brew::{
     LpRangeInput, SortedLpTokens,
 };
 pub use lp_deploy::{
-    build_lp_deploy_batch_calls, lp_deploy_advance_after_broadcast, lp_deploy_job_create,
-    lp_deploy_job_load, lp_deploy_job_mark_done, lp_deploy_job_save, lp_deploy_next_step,
-    lp_deploy_plan, lp_deploy_preflight, lp_deploy_estimate_gas_limit, lp_deploy_retry_after_approve,
-    lp_deploy_step_to_proposal, lp_deploy_wallet_gas_limit, wait_after_label,
-    LpDeployBatchPlan, LpDeployJob, LpDeployJobStatus, LpDeployPlan, LpDeployStepOutcome,
-    StoredLpDeployParams,
+    build_lp_deploy_batch_calls, lp_deploy_advance_after_broadcast, lp_deploy_estimate_gas_limit,
+    lp_deploy_job_create, lp_deploy_job_load, lp_deploy_job_mark_done, lp_deploy_job_save,
+    lp_deploy_next_step, lp_deploy_plan, lp_deploy_preflight, lp_deploy_retry_after_approve,
+    lp_deploy_step_to_proposal, lp_deploy_wallet_gas_limit, wait_after_label, LpDeployBatchPlan,
+    LpDeployJob, LpDeployJobStatus, LpDeployPlan, LpDeployStepOutcome, StoredLpDeployParams,
 };
 pub use lp_smoke::{LpSmoke943Pair, LP_SMOKE_943, LP_SMOKE_943_VENUE, RPC_943};
 pub use mcp_host::{
@@ -106,27 +125,32 @@ pub use mcp_ipc::{
 pub use network::NetworkService;
 pub use persistence::{
     default_ipfs_gateway_hosts, default_trusted_dapps, is_sentient_profile,
-    reject_deferred_sentient_profile, sentient_mode_enabled,
-    merge_default_trusted_dapps, trusted_dapp_allow_hosts, CustomNetwork, CustomToken,
-    PersistedState, ProfileMeta, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE,
-    SENTIENT_PROFILE,
+    merge_default_trusted_dapps, reject_deferred_sentient_profile, sentient_mode_enabled,
+    trusted_dapp_allow_hosts, CustomNetwork, CustomToken, PersistedState, ProfileMeta,
+    StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
 };
 pub use piteas::{
     AuthStyle, MethodParameters, NativeToken, PiteasClient, PiteasFileConfig, PiteasQuote,
     QuoteRequest, PITEAS_ROUTER_MAINNET,
 };
 pub use profile::{tui_mode_for_profile, OperatingMode};
-pub use proposal_verify::{
-    lp_deploy_mint_success_rows, lp_deploy_step_verify_rows, lp_deploy_step_verify_title,
-    npm_mint_token_id_for_tx, npm_mint_token_id_from_logs, short_address, short_tx_hash,
-    VerifyRow,
-};
 pub use proposal::{
     apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, mcp_control_port,
     mcp_mainnet_writes_allowed, proposal_status_json, validate_proposal_id, McpSessionToken,
     ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal, TxProposal,
     MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT, MCP_ENQUEUE_RATE_WINDOW_SECS,
     MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
+};
+pub use hex_stake::{
+    ehex_address, encode_stake_end, encode_stake_start, fetch_hex_global_state,
+    fetch_hex_stakes_for_address, phex_address, resolve_hex_contract, HexContractKind,
+    HexContractRef, HexGlobalState, HexSoftFail, HexStakeResult, HexStakeRow, HexStakesForAddress,
+    HEX_STAKE_SOURCE, MAX_STAKE_DAYS, MIN_STAKE_DAYS, PHEX_HEARTS_DECIMALS,
+};
+pub use proposal_review::{review_mcp_proposal, ProposalReview};
+pub use proposal_verify::{
+    lp_deploy_mint_success_rows, lp_deploy_step_verify_rows, lp_deploy_step_verify_title,
+    npm_mint_token_id_for_tx, npm_mint_token_id_from_logs, short_address, short_tx_hash, VerifyRow,
 };
 pub use provider_session::{ProviderSessionToken, PROVIDER_SESSION_FILE};
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
@@ -135,12 +159,17 @@ pub use token_launch::{
     token_launch_allowed, validate_token_name, validate_token_symbol, TokenLaunchOutcome,
     TOKEN_LAUNCH_DECIMALS,
 };
+pub use token_origin::{
+    lookup as token_origin_lookup, lookup_str as token_origin_lookup_str, CatalogEntry,
+    TokenOriginKind, TokenOriginLabel,
+};
 pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,
 };
 pub use v2_lp::{
     build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, default_v2_watch_pairs,
-    get_v2_pair_address, list_v2_lp_positions, V2LpPosition,
+    get_v2_pair_address, list_v2_lp_positions, v2_pool_share_bps, v2_spot_token1_per_token0,
+    v2_underlying_amounts, V2LpPosition,
 };
 pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, UnlockPayload, WalletState};
 pub use wiz4rd::{

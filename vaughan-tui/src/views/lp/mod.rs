@@ -1,5 +1,9 @@
 //! Browserless LP — wiz4rd V3 on testnet 943, 9inch V3 on Pulse mainnet 369.
 //!
+//! **List** opens first: ↑↓ select positions with liquidity, Enter focuses that
+//! row and ↑↓ picks Increase / Decrease / Collect (or V2 Remove), Enter opens
+//! the manage tab. Esc returns to the list.
+//!
 //! **Add LP** mirrors [9inch V3 add liquidity](https://9inch.io/liquidity/add/v3?chain=pulse)
 //! and [9mm V3 range UI](https://dex.9mm.pro/add/PLS/…): pair + fee, four-column
 //! price range, ±% presets, then deposits.
@@ -37,7 +41,7 @@ impl LpView {
         let mut v = Self {
             stack,
             venue,
-            tab: Tab::AddLp,
+            tab: Tab::List,
             stage: Stage::Input,
             busy: Busy::Idle,
             tick: 0,
@@ -45,7 +49,9 @@ impl LpView {
             chain_id,
             v3_positions: Vec::new(),
             v2_positions: Vec::new(),
+            list_gen: 0,
             sel: 0,
+            list_action_idx: None,
             add_step: AddStep::SelectPair,
             focus: Focus::None,
             token0: Input::new(false, "select token"),
@@ -91,6 +97,7 @@ impl LpView {
             lp_enable_recheck_pending: false,
             lp_enable_last_label: String::new(),
             lp_enable_in_confirm: false,
+            lp_reload_pending: false,
         };
         v.amount0.set_value("1");
         v.amount1.set_value("1");

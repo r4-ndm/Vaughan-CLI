@@ -50,7 +50,7 @@ impl LpView {
         handle: &Handle,
         events: &EventBus,
     ) -> KeyOutcome {
-        let _ = (handle, events);
+        let _ = events;
         let tab_focus = matches!(key.code, KeyCode::Tab | KeyCode::BackTab);
         if self.busy == Busy::Sending {
             return KeyOutcome::Consumed;
@@ -67,26 +67,18 @@ impl LpView {
         }
 
         match key.code {
+            KeyCode::Up if self.tab == Tab::List && self.list_action_idx.is_some() => {
+                KeyOutcome::Consumed
+            }
+            KeyCode::Down if self.tab == Tab::List && self.list_action_idx.is_some() => {
+                KeyOutcome::Consumed
+            }
             KeyCode::Up if self.tab == Tab::List => {
-                let len = match self.stack {
-                    LpStack::V3 { .. } => self.v3_positions.len(),
-                    LpStack::V2 { .. } => self.v2_positions.len(),
-                };
-                if len > 0 && self.sel > 0 {
-                    self.sel -= 1;
-                    self.sync_decrease_from_selection();
-                }
+                self.move_list_sel(false);
                 KeyOutcome::Consumed
             }
             KeyCode::Down if self.tab == Tab::List => {
-                let len = match self.stack {
-                    LpStack::V3 { .. } => self.v3_positions.len(),
-                    LpStack::V2 { .. } => self.v2_positions.len(),
-                };
-                if self.sel + 1 < len {
-                    self.sel += 1;
-                    self.sync_decrease_from_selection();
-                }
+                self.move_list_sel(true);
                 KeyOutcome::Consumed
             }
             KeyCode::Up if self.on_manage_tab() && self.focus == Focus::None => {
@@ -109,17 +101,28 @@ impl LpView {
                 self.focus = Focus::None;
                 KeyOutcome::Consumed
             }
-            KeyCode::Left if self.focus == Focus::None => {
+            KeyCode::Left if self.focus == Focus::None && self.list_action_idx.is_none() => {
                 self.tab = self.tab.prev(self.stack);
                 self.on_tab_changed();
                 KeyOutcome::Consumed
             }
-            KeyCode::Right if self.focus == Focus::None => {
+            KeyCode::Right if self.focus == Focus::None && self.list_action_idx.is_none() => {
                 self.tab = self.tab.next(self.stack);
                 self.on_tab_changed();
                 KeyOutcome::Consumed
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
+            KeyCode::Char(c)
+                if self.tab == Tab::List
+                    && self.list_action_idx.is_some()
+                    && self.apply_list_action_key(c) =>
+            {
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('r') | KeyCode::Char('R')
+                if !(self.tab == Tab::List
+                    && self.list_action_idx.is_some()
+                    && matches!(self.stack, LpStack::V2 { .. })) =>
+            {
                 if let Some(job) = self.list_job(wallet) {
                     self.busy = Busy::Loading;
                     self.status = "Loading positions…".into();
@@ -129,10 +132,29 @@ impl LpView {
                     KeyOutcome::Consumed
                 }
             }
-            KeyCode::Enter => self.submit_manage(wallet),
+            KeyCode::Enter if self.tab == Tab::List && self.list_action_idx.is_some() => {
+                self.enter_list_action();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Enter if self.tab == Tab::List => {
+                self.open_list_actions();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Enter => self.submit_manage(wallet, handle),
             KeyCode::Esc => {
                 if self.focus == Focus::Liquidity {
                     self.focus = Focus::None;
+                    KeyOutcome::Consumed
+                } else if self.tab == Tab::List && self.list_action_idx.is_some() {
+                    self.close_list_actions();
+                    KeyOutcome::Consumed
+                } else if matches!(
+                    self.tab,
+                    Tab::Increase | Tab::Decrease | Tab::Collect | Tab::Remove
+                ) {
+                    self.tab = Tab::List;
+                    self.on_tab_changed();
+                    self.status = "↑↓ select · Enter open · ←→ tabs · r reload".into();
                     KeyOutcome::Consumed
                 } else {
                     KeyOutcome::Back
@@ -633,34 +655,59 @@ impl LpView {
         }
     }
 
-    pub(crate) fn submit_manage(&mut self, wallet: &WalletState) -> KeyOutcome {
+    pub(crate) fn submit_manage(
+        &mut self,
+        wallet: &WalletState,
+        handle: &Handle,
+    ) -> KeyOutcome {
         if !self.lp_supported() {
             self.status = self.default_status_hint();
             return KeyOutcome::Consumed;
         }
         match self.tab {
             Tab::List => KeyOutcome::Consumed,
-            Tab::Increase => match self.build_increase_tx(wallet) {
-                Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Increase),
-                Err(e) => {
+            Tab::Increase | Tab::Decrease | Tab::Collect => {
+                if let Err(e) = self.refresh_selected_v3_position(wallet, handle) {
                     self.status = e;
-                    KeyOutcome::Consumed
+                    return KeyOutcome::Consumed;
                 }
-            },
-            Tab::Decrease => match self.build_decrease_tx(wallet) {
-                Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Decrease),
-                Err(e) => {
-                    self.status = e;
-                    KeyOutcome::Consumed
+                match self.tab {
+                    Tab::Increase => match self.build_increase_tx(wallet) {
+                        Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Increase),
+                        Err(e) => {
+                            self.status = e;
+                            KeyOutcome::Consumed
+                        }
+                    },
+                    Tab::Decrease => {
+                        if let Some(p) = self.v3_positions.get(self.sel) {
+                            if let Some(hint) = super::helpers::v3_manage_hint(
+                                p.liquidity,
+                                p.tokens_owed0,
+                                p.tokens_owed1,
+                            ) {
+                                self.status = hint.into();
+                                return KeyOutcome::Consumed;
+                            }
+                        }
+                        match self.build_decrease_tx(wallet) {
+                            Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Decrease),
+                            Err(e) => {
+                                self.status = e;
+                                KeyOutcome::Consumed
+                            }
+                        }
+                    }
+                    Tab::Collect => match self.build_collect_tx(wallet) {
+                        Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Collect),
+                        Err(e) => {
+                            self.status = e;
+                            KeyOutcome::Consumed
+                        }
+                    },
+                    _ => unreachable!(),
                 }
-            },
-            Tab::Collect => match self.build_collect_tx(wallet) {
-                Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Collect),
-                Err(e) => {
-                    self.status = e;
-                    KeyOutcome::Consumed
-                }
-            },
+            }
             Tab::Remove => match self.build_v2_remove_tx(wallet) {
                 Ok(tx) => self.confirm_tx(tx, LpConfirmAction::V2Remove),
                 Err(e) => {
@@ -670,5 +717,32 @@ impl LpView {
             },
             Tab::AddLp => KeyOutcome::Consumed,
         }
+    }
+
+    /// Re-read `positions(tokenId)` so decrease amounts match chain (not a stale list).
+    pub(crate) fn refresh_selected_v3_position(
+        &mut self,
+        wallet: &WalletState,
+        handle: &Handle,
+    ) -> Result<(), String> {
+        let token_id = self
+            .v3_positions
+            .get(self.sel)
+            .map(|p| p.token_id)
+            .ok_or_else(|| "No position selected".to_string())?;
+        let rpc = wallet.active_rpc_url();
+        let venue = self.venue;
+        let chain_id = self.chain_id;
+        let fresh = handle
+            .block_on(vaughan_core::core::get_v3_lp_position(
+                &rpc, venue, chain_id, token_id,
+            ))
+            .map_err(|e| e.user_message())?;
+        let idx = self.sel;
+        if let Some(prev) = self.v3_positions.get(idx).cloned() {
+            self.v3_positions[idx] = prev.with_updated_info(fresh);
+        }
+        self.sync_decrease_from_selection();
+        Ok(())
     }
 }

@@ -62,12 +62,12 @@ fn gas_limit_cap_for_calldata(input: Option<&Bytes>) -> u64 {
         };
     }
     match &data[0..4] {
-        [0x09, 0x5e, 0xa7, 0xb3] => 150_000, // ERC-20 approve
+        [0x09, 0x5e, 0xa7, 0xb3] => 150_000,   // ERC-20 approve
         [0xa1, 0x67, 0x12, 0x95] => 7_500_000, // V3 factory createPool (deploys pool contract)
-        [0xf6, 0x37, 0x73, 0x1d] => 500_000, // V3 pool initialize
-        [0x88, 0x31, 0x64, 0x56] => 900_000, // V3 NPM mint
-        [0xfc, 0x6f, 0x78, 0x65] => 250_000, // V3 NPM collect
-        [0x0c, 0x49, 0x40, 0x16] => 400_000, // V3 NPM decreaseLiquidity
+        [0xf6, 0x37, 0x73, 0x1d] => 500_000,   // V3 pool initialize
+        [0x88, 0x31, 0x64, 0x56] => 900_000,   // V3 NPM mint
+        [0xfc, 0x6f, 0x78, 0x65] => 250_000,   // V3 NPM collect
+        [0x0c, 0x49, 0x40, 0x16] => 400_000,   // V3 NPM decreaseLiquidity
         _ => DEFAULT_CONTRACT_GAS_CAP,
     }
 }

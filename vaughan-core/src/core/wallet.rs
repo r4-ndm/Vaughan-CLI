@@ -136,6 +136,22 @@ impl ChromeRpcSnapshot {
         };
         Ok((bal, gas))
     }
+
+    /// ERC-20 + native assets for this snapshot's address (custom-token extras included).
+    pub async fn fetch_assets(&self, extras: &[String]) -> Result<Vec<Balance>, WalletError> {
+        let adapter = self.adapter().await?;
+        match tokio::time::timeout(
+            Self::CHROME_RPC_TIMEOUT,
+            adapter.get_assets(&self.address, extras),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(WalletError::NetworkError(
+                "assets RPC timed out — check RPC / network".into(),
+            )),
+        }
+    }
 }
 
 enum OwnedSignerBackend {
@@ -445,6 +461,21 @@ impl WalletState {
         Ok(self.require_unlocked()?.active_address())
     }
 
+    /// Every unlocked account address (HD + imported + hardware), for vault-wide gates.
+    pub fn account_addresses(&self) -> Result<Vec<alloy::primitives::Address>, WalletError> {
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+        self.require_unlocked()?
+            .accounts()
+            .iter()
+            .map(|a| {
+                Address::from_str(&a.address).map_err(|_| {
+                    WalletError::InvalidTransaction(format!("bad account address {}", a.label))
+                })
+            })
+            .collect()
+    }
+
     /// Active account index (HD or imported).
     pub fn active_account_index(&self) -> Result<u32, WalletError> {
         Ok(self.require_unlocked()?.active_index())
@@ -531,6 +562,16 @@ impl WalletState {
         self.require_unlocked()?
             .label_for(index)
             .map(str::to_string)
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))
+    }
+
+    /// Address for account `index` (F3 chrome preview under the wordmark).
+    pub fn account_address(&self, index: u32) -> Result<String, WalletError> {
+        self.require_unlocked()?
+            .accounts()
+            .iter()
+            .find(|a| a.index == index)
+            .map(|a| a.address.clone())
             .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))
     }
 
@@ -930,7 +971,16 @@ impl WalletState {
     /// Holding [`WalletState`] across `eth_getBalance` / gas RPCs freezes the UI on
     /// `[busy]` — chrome refresh must use this snapshot pattern instead.
     pub fn chrome_rpc_snapshot(&self) -> Result<ChromeRpcSnapshot, WalletError> {
-        let (net, address) = self.active_context()?;
+        let (_net, address) = self.active_context()?;
+        self.chrome_rpc_snapshot_for(address)
+    }
+
+    /// Like [`Self::chrome_rpc_snapshot`], but for an explicit F3-preview address.
+    pub fn chrome_rpc_snapshot_for(&self, address: &str) -> Result<ChromeRpcSnapshot, WalletError> {
+        if !self.is_unlocked() {
+            return Err(WalletError::WalletLocked);
+        }
+        let net = self.networks().active();
         let (rpc_url, fallback_rpc_urls) = self.rpc_endpoints_for(net);
         Ok(ChromeRpcSnapshot {
             rpc_url,
@@ -939,6 +989,14 @@ impl WalletState {
             network_name: net.name.clone(),
             address: address.to_string(),
         })
+    }
+
+    /// Custom-token addresses for the active chain (F2 extras, including zero balances).
+    pub fn custom_token_addresses_for_active_chain(&self) -> Vec<String> {
+        self.custom_tokens_for_active_chain()
+            .into_iter()
+            .map(|t| t.address)
+            .collect()
     }
 
     /// Suggested max fee / legacy gas price as a gwei display string for wallet chrome.

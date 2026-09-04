@@ -53,15 +53,41 @@ mod tests {
     }
 
     #[test]
-    fn v3_opens_on_add_lp_tab() {
+    fn v3_list_labels_are_human() {
+        use super::super::helpers::{
+            fee_tier_short, short_units, v3_fees_owed_label, v3_liq_short, v3_liquidity_status,
+            v3_range_label, v3_range_short,
+        };
+        use alloy::primitives::U256;
+        assert_eq!(v3_liquidity_status(0), "Empty");
+        assert_eq!(v3_liquidity_status(1), "Dust");
+        assert_eq!(v3_liquidity_status(2), "Active");
+        assert_eq!(v3_liq_short(0), "Emp");
+        assert_eq!(v3_liq_short(1), "Dst");
+        assert_eq!(v3_liq_short(2), "Act");
+        assert_eq!(v3_range_label(-887_200, 887_200), "Full range");
+        assert_eq!(v3_range_label(-85_200, -71_600), "Custom");
+        assert_eq!(v3_range_short(-887_200, 887_200), "Full");
+        assert_eq!(v3_range_short(-85_200, -71_600), "Cust");
+        assert_eq!(v3_fees_owed_label(0, 0), "—");
+        assert_eq!(v3_fees_owed_label(1, 0), "Ready");
+        assert_eq!(fee_tier_short(20_000), "2%");
+        assert_eq!(fee_tier_short(500), ".05");
+        assert_eq!(short_units(U256::from(42u64)), "42");
+        assert!(short_units(U256::from(1_983_098_040_965_341_809u64)).contains('e'));
+    }
+
+    #[test]
+    fn v3_opens_on_list_tab() {
         let v = LpView::for_chain(369);
-        assert_eq!(v.tab, Tab::AddLp);
+        assert_eq!(v.tab, Tab::List);
         assert_eq!(v.add_step, AddStep::SelectPair);
     }
 
     #[test]
     fn up_down_cycles_lp_venue_from_default_focus() {
         let mut v = LpView::for_chain(369);
+        v.tab = Tab::AddLp;
         assert_eq!(v.venue, DexVenue::NineInch);
         assert!(v.cycle_venue_selector(true));
         assert_eq!(v.venue, DexVenue::NineMm);
@@ -351,8 +377,26 @@ mod tests {
         let bob = Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap();
         let jim = Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap();
         assert_eq!(
-            super::super::helpers::v3_position_pair_label(943, bob, jim),
+            super::super::helpers::v3_position_pair_label(943, bob, jim, &[]),
             "JIM/BOB"
+        );
+    }
+
+    #[test]
+    fn v3_pair_label_uses_t1_t2_plsx_hints() {
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+        let t1 = Address::from_str("0x33df366093ef8ac488e5be40e7ee2eeac2142770").unwrap();
+        let t2 = Address::from_str("0xfc413180d3624349d111fd98ee76bc08a25bc655").unwrap();
+        let jane = Address::from_str("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59").unwrap();
+        let plsx = Address::from_str("0x8a810ea8b121d08342e9e7696f4a9915cbe494b7").unwrap();
+        assert_eq!(
+            super::super::helpers::v3_position_pair_label(943, t1, t2, &[]),
+            "T1/T2"
+        );
+        assert_eq!(
+            super::super::helpers::v3_position_pair_label(943, jane, plsx, &[]),
+            "JANE/PLSX"
         );
     }
 
@@ -360,24 +404,25 @@ mod tests {
     fn decrease_defaults_to_partial_not_full_position() {
         use alloy::primitives::{Address, U256};
         use std::str::FromStr;
-        use vaughan_core::core::V3PositionInfo;
+        use vaughan_core::core::{V3LpPositionView, V3PositionInfo};
 
         let mut v = LpView::for_chain(943);
-        v.v3_positions.push(V3PositionInfo {
-            token_id: U256::from(4u64),
-            nonce: 0,
-            operator: Address::ZERO,
-            token0: Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap(),
-            token1: Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap(),
-            fee: 20_000,
-            tick_lower: 0,
-            tick_upper: 0,
-            liquidity: 1_000,
-            fee_growth_inside0_last_x128: U256::ZERO,
-            fee_growth_inside1_last_x128: U256::ZERO,
-            tokens_owed0: 0,
-            tokens_owed1: 0,
-        });
+        v.v3_positions
+            .push(V3LpPositionView::from_info_only(V3PositionInfo {
+                token_id: U256::from(4u64),
+                nonce: 0,
+                operator: Address::ZERO,
+                token0: Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap(),
+                token1: Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap(),
+                fee: 20_000,
+                tick_lower: 0,
+                tick_upper: 0,
+                liquidity: 1_000,
+                fee_growth_inside0_last_x128: U256::ZERO,
+                fee_growth_inside1_last_x128: U256::ZERO,
+                tokens_owed0: 0,
+                tokens_owed1: 0,
+            }));
         v.tab = Tab::Decrease;
         v.on_tab_changed();
         assert_eq!(v.decrease_preset_applied, Some(0));
@@ -387,35 +432,81 @@ mod tests {
     }
 
     #[test]
-    fn mint_send_completes_deploy_from_sent_step() {
-        use vaughan_core::chains::TxStatus;
-        use vaughan_core::core::broadcasts::{BroadcastEntry, BroadcastReceipt};
+    fn list_up_down_prefers_positions_with_liquidity() {
+        use alloy::primitives::{Address, U256};
+        use std::str::FromStr;
+        use vaughan_core::core::{V3LpPositionView, V3PositionInfo};
+
+        fn pos(id: u64, liq: u128) -> V3LpPositionView {
+            V3LpPositionView::from_info_only(V3PositionInfo {
+                token_id: U256::from(id),
+                nonce: 0,
+                operator: Address::ZERO,
+                token0: Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap(),
+                token1: Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap(),
+                fee: 500,
+                tick_lower: -100,
+                tick_upper: 100,
+                liquidity: liq,
+                fee_growth_inside0_last_x128: U256::ZERO,
+                fee_growth_inside1_last_x128: U256::ZERO,
+                tokens_owed0: 0,
+                tokens_owed1: 0,
+            })
+        }
 
         let mut v = LpView::for_chain(943);
-        v.lp_deploy_active = true;
-        v.lp_deploy_last_step = LpDeployLastStep::Approve;
-        v.lp_deploy_sent_step = LpDeployLastStep::AddLiquidity;
-        v.stage = Stage::Confirm;
-        v.apply_job_result(UiJobResult::Send(Ok(BroadcastReceipt {
-            hash: "0xabc".into(),
-            entry: BroadcastEntry {
-                hash: "0xabc".into(),
-                label: "add liquidity".into(),
-                chain_id: 943,
-                from: "0x1".into(),
-                to: "0x2".into(),
-                value: "0".into(),
-                data: None,
-                nonce: 1,
-                gas_limit: None,
-                max_fee_per_gas: None,
-                max_priority_fee_per_gas: None,
-                status: TxStatus::Pending,
-                replaces: None,
-            },
-        })));
-        assert!(!v.lp_deploy_active);
-        assert_eq!(v.stage, Stage::Input);
-        assert!(v.status.contains("LP added"));
+        assert_eq!(v.tab, Tab::List);
+        v.v3_positions = vec![pos(1, 0), pos(2, 500), pos(3, 0), pos(4, 900)];
+        v.clamp_list_sel();
+        assert_eq!(v.sel, 1, "start on first liquid row");
+        v.move_list_sel(true);
+        assert_eq!(v.sel, 3);
+        v.move_list_sel(true);
+        assert_eq!(v.sel, 1, "wrap among liquid only");
+        v.move_list_sel(false);
+        assert_eq!(v.sel, 3);
+    }
+
+    #[test]
+    fn list_enter_opens_actions_then_manage_tab() {
+        use alloy::primitives::{Address, U256};
+        use std::str::FromStr;
+        use vaughan_core::core::{V3LpPositionView, V3PositionInfo};
+
+        let mut v = LpView::for_chain(943);
+        v.v3_positions
+            .push(V3LpPositionView::from_info_only(V3PositionInfo {
+                token_id: U256::from(7u64),
+                nonce: 0,
+                operator: Address::ZERO,
+                token0: Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap(),
+                token1: Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap(),
+                fee: 500,
+                tick_lower: 0,
+                tick_upper: 10,
+                liquidity: 42,
+                fee_growth_inside0_last_x128: U256::ZERO,
+                fee_growth_inside1_last_x128: U256::ZERO,
+                tokens_owed0: 0,
+                tokens_owed1: 0,
+            }));
+        v.clamp_list_sel();
+        v.open_list_actions();
+        assert_eq!(v.list_action_idx, Some(0));
+        assert!(v.apply_list_action_key('d'));
+        assert_eq!(v.tab, Tab::Decrease);
+        assert!(v.list_action_idx.is_none());
+
+        v.tab = Tab::List;
+        v.open_list_actions();
+        v.enter_list_action();
+        assert_eq!(v.tab, Tab::Increase, "Enter opens first action");
+        assert!(v.list_action_idx.is_none());
+
+        v.tab = Tab::List;
+        v.open_list_actions();
+        v.close_list_actions();
+        assert!(v.list_action_idx.is_none());
     }
 }

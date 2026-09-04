@@ -1,6 +1,7 @@
 //! Optional web dApps: whitelisted origins for the EIP-1193 bridge.
 //!
-//! Not the default Browserless Pulse path — use Ag / Dex / Browse / MCP first.
+//! Not the default Browserless Pulse path — use Ag / Dex / LP / MCP first.
+//! Contract browser (power tool) lives under Settings → c.
 //! Enter opens **VB** when installed, else Freedom (dev fallback; integration
 //! parked until upstream PR #195) — never the system browser.
 

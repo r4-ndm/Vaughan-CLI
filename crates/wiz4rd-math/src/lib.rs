@@ -16,12 +16,14 @@ pub mod swap_math;
 
 pub mod mint_amounts;
 pub mod pool_price;
+pub mod position_amounts;
 
 pub use mint_amounts::{v3_mint_amounts_from_amount0, v3_mint_amounts_from_amount1, V3MintAmounts};
 pub use pool_price::{
     display_price_range_from_preset, pool_price_range_to_usable_ticks, pool_price_to_usable_tick,
     pool_tick_to_human_price,
 };
+pub use position_amounts::{v3_amounts_from_liquidity, V3PositionAmounts};
 
 /// The raw `uniswap-v3-sdk` utils module, re-exported so consumers can reach
 /// deeper helpers (e.g. `sqrt_price_math::get_next_sqrt_price_from_input`)

@@ -1,7 +1,8 @@
 #![allow(unused_imports)]
 use ratatui::text::Line;
 use vaughan_core::core::{
-    DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3PoolLifecycle, V3PositionInfo,
+    DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3LpPositionView, V3PoolLifecycle,
+    V3PositionInfo,
 };
 
 use crate::input::Input;
@@ -219,9 +220,13 @@ pub struct LpView {
     pub(crate) tick: u64,
     pub(crate) status: String,
     pub(crate) chain_id: u64,
-    pub(crate) v3_positions: Vec<V3PositionInfo>,
+    pub(crate) v3_positions: Vec<V3LpPositionView>,
     pub(crate) v2_positions: Vec<V2LpPosition>,
+    /// Bumped on each list request; drop stale job results after F3 switch.
+    pub(crate) list_gen: u64,
     pub(crate) sel: usize,
+    /// When `Some`, List has focused a position and ↑↓ picks a manage action.
+    pub(crate) list_action_idx: Option<usize>,
     pub(crate) add_step: AddStep,
     pub(crate) focus: Focus,
     pub(crate) token0: Input,
@@ -282,4 +287,6 @@ pub struct LpView {
     pub(crate) lp_enable_recheck_pending: bool,
     pub(crate) lp_enable_last_label: String,
     pub(crate) lp_enable_in_confirm: bool,
+    /// Reload the position list after a successful manage tx (decrease/collect/…).
+    pub(crate) lp_reload_pending: bool,
 }

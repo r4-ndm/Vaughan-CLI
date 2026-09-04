@@ -9,14 +9,14 @@ use std::str::FromStr;
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
+use crate::core::dex_catalog::{default_lp_v3_venue, parse_dex_venue_label, DexVenue};
 use crate::core::dex_lp::{
     discover_v3_pool_fee_tier, v3_pool_lifecycle, v3_pool_sqrt_u160,
     v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount1,
     v3_sqrt_and_tick_for_preview, V3LpDeployParams, V3PoolLifecycle,
 };
-use crate::core::dex_catalog::{default_lp_v3_venue, parse_dex_venue_label, DexVenue};
-use crate::core::wiz4rd::{parse_addr, WPLS_943, WZRD_SMOKE_943};
 use crate::core::transaction::{format_display_amount, parse_native_amount};
+use crate::core::wiz4rd::{parse_addr, WPLS_943, WZRD_SMOKE_943};
 use crate::error::WalletError;
 
 /// On-chain sorted token pair plus whether the user's "token A" is `token0`.
@@ -169,7 +169,8 @@ pub fn resolve_lp_brew_token(raw: &str, chain_id: u64) -> Result<Address, Wallet
         || s.eq_ignore_ascii_case("pls")
         || s.eq_ignore_ascii_case("wpls")
     {
-        return parse_addr(WPLS_943).ok_or_else(|| WalletError::InvalidTransaction("no WPLS".into()));
+        return parse_addr(WPLS_943)
+            .ok_or_else(|| WalletError::InvalidTransaction("no WPLS".into()));
     }
     if s.eq_ignore_ascii_case("wzrd") {
         return parse_addr(WZRD_SMOKE_943)
@@ -257,8 +258,7 @@ pub async fn lp_human_inputs_to_deploy_params(
     )
     .await?;
 
-    let pool_initial =
-        user_price_to_pool_price(pair.first_is_token0, &inputs.price)?;
+    let pool_initial = user_price_to_pool_price(pair.first_is_token0, &inputs.price)?;
 
     let (pool_min, pool_max) = match &inputs.range {
         LpRangeInput::Full => (String::new(), String::new()),
@@ -360,10 +360,7 @@ async fn compute_deposit_amounts(
             fee,
         )
         .await?;
-        (
-            v3_pool_sqrt_u160(info.sqrt_price_x96)?,
-            info.tick,
-        )
+        (v3_pool_sqrt_u160(info.sqrt_price_x96)?, info.tick)
     } else {
         v3_sqrt_and_tick_for_preview(
             inputs.chain_id,

@@ -315,8 +315,7 @@ impl ApproveView {
                     .fg(brand::accent_color())
                     .add_modifier(Modifier::BOLD),
             )));
-            for line in
-                verify_table_compact_lines(&self.verify_table, area.width.saturating_sub(4))
+            for line in verify_table_compact_lines(&self.verify_table, area.width.saturating_sub(4))
             {
                 text.push(line);
             }
@@ -454,7 +453,10 @@ fn compact_verify_row(
 ) -> Line<'static> {
     let value_w = inner_width.saturating_sub(label_w + 2).max(12);
     Line::from(vec![
-        Span::styled(format!(" {:label_w$}", truncate_display(label, label_w)), label_style),
+        Span::styled(
+            format!(" {:label_w$}", truncate_display(label, label_w)),
+            label_style,
+        ),
         Span::raw(" "),
         Span::styled(truncate_display(value, value_w), value_style),
     ])
@@ -630,7 +632,12 @@ mod tests {
 
     #[test]
     fn non_transaction_prompt_has_no_fee_editor() {
-        let mut view = ApproveView::new("Sign message".into(), None, vec!["Message: hi".into()], vec![]);
+        let mut view = ApproveView::new(
+            "Sign message".into(),
+            None,
+            vec!["Message: hi".into()],
+            vec![],
+        );
         assert!(!view.has_fee_editor());
         assert_eq!(
             view.handle_fee_key(key(KeyCode::Char('3'))),

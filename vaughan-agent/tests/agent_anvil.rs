@@ -67,7 +67,7 @@ async fn test_agent_sensory_inspection_against_anvil() {
         rpc_url: anvil.rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     let inspect_res = registry
@@ -100,7 +100,7 @@ async fn test_agent_proposal_to_human_approval_to_broadcast_flow() {
         rpc_url: rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(sender),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     let registry = default_assist_registry();
@@ -237,7 +237,7 @@ async fn test_agent_v3_dex_swap_proposal_simulation_and_broadcast() {
         rpc_url: rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(sender),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     // Agent executes propose_contract_call for exactInputSingle

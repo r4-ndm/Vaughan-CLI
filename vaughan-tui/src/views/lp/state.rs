@@ -183,8 +183,161 @@ impl LpView {
         matches!(self.tab, Tab::Decrease | Tab::Remove)
     }
 
+    /// Manage actions offered after Enter on a List row.
+    pub(crate) fn list_manage_actions(&self) -> &'static [Tab] {
+        match self.stack {
+            LpStack::V3 { .. } => &[Tab::Increase, Tab::Decrease, Tab::Collect],
+            LpStack::V2 { .. } => &[Tab::Remove],
+        }
+    }
+
+    /// Prefer positions with meaningful liquidity (skip Empty/Dust for ↑↓).
+    pub(crate) fn position_has_liquidity(&self, idx: usize) -> bool {
+        match self.stack {
+            LpStack::V3 { .. } => self
+                .v3_positions
+                .get(idx)
+                .is_some_and(|p| p.liquidity > 1),
+            LpStack::V2 { .. } => self
+                .v2_positions
+                .get(idx)
+                .is_some_and(|p| !p.lp_balance.is_zero()),
+        }
+    }
+
+    pub(crate) fn list_len(&self) -> usize {
+        match self.stack {
+            LpStack::V3 { .. } => self.v3_positions.len(),
+            LpStack::V2 { .. } => self.v2_positions.len(),
+        }
+    }
+
+    /// Indices to walk with ↑↓ — prefer positions that still hold liquidity.
+    pub(crate) fn list_nav_indices(&self) -> Vec<usize> {
+        let len = self.list_len();
+        let liquid: Vec<usize> = (0..len).filter(|&i| self.position_has_liquidity(i)).collect();
+        if liquid.is_empty() {
+            (0..len).collect()
+        } else {
+            liquid
+        }
+    }
+
+    /// Keep `sel` on a navigable row (prefer liquid).
+    pub(crate) fn clamp_list_sel(&mut self) {
+        let nav = self.list_nav_indices();
+        if nav.is_empty() {
+            self.sel = 0;
+            self.list_action_idx = None;
+            return;
+        }
+        if !nav.contains(&self.sel) {
+            self.sel = nav[0];
+        }
+        self.sync_decrease_from_selection();
+    }
+
+    pub(crate) fn move_list_sel(&mut self, down: bool) {
+        let nav = self.list_nav_indices();
+        if nav.is_empty() {
+            return;
+        }
+        let pos = nav.iter().position(|&i| i == self.sel).unwrap_or(0);
+        let next = if down {
+            (pos + 1) % nav.len()
+        } else if pos == 0 {
+            nav.len() - 1
+        } else {
+            pos - 1
+        };
+        self.sel = nav[next];
+        self.list_action_idx = None;
+        self.sync_decrease_from_selection();
+    }
+
+    pub(crate) fn open_list_actions(&mut self) {
+        if self.list_len() == 0 {
+            self.status = "No positions — Add LP or press r to reload".into();
+            return;
+        }
+        self.clamp_list_sel();
+        self.list_action_idx = Some(0);
+        // Key shortcuts live on the bottom hint bar only (avoid duplicating status).
+        self.status = match self.stack {
+            LpStack::V3 { .. } => self
+                .v3_positions
+                .get(self.sel)
+                .and_then(|p| {
+                    super::helpers::v3_manage_hint(p.liquidity, p.tokens_owed0, p.tokens_owed1)
+                })
+                .unwrap_or("")
+                .into(),
+            LpStack::V2 { .. } => String::new(),
+        };
+    }
+
+    /// Letter shortcut from the focused position view (`i` / `d` / `c`, or V2 `r`).
+    pub(crate) fn apply_list_action_key(&mut self, key: char) -> bool {
+        if self.list_action_idx.is_none() {
+            return false;
+        }
+        let tab = match (self.stack, key.to_ascii_lowercase()) {
+            (LpStack::V3 { .. }, 'i') => Tab::Increase,
+            (LpStack::V3 { .. }, 'd') => Tab::Decrease,
+            (LpStack::V3 { .. }, 'c') => Tab::Collect,
+            (LpStack::V2 { .. }, 'r') => Tab::Remove,
+            _ => return false,
+        };
+        self.list_action_idx = None;
+        self.tab = tab;
+        self.on_tab_changed();
+        let pos_label = match self.stack {
+            LpStack::V3 { .. } => self
+                .v3_positions
+                .get(self.sel)
+                .map(|p| format!("NFT #{}", p.token_id))
+                .unwrap_or_else(|| format!("row {}", self.sel + 1)),
+            LpStack::V2 { .. } => format!("pair {}", self.sel + 1),
+        };
+        self.status = format!(
+            "{} · {pos_label} · ←→ tabs · Enter confirm · Esc list",
+            tab.label()
+        );
+        true
+    }
+
+    /// Leave List action focus and open the chosen manage tab for `sel`.
+    pub(crate) fn enter_list_action(&mut self) {
+        let actions = self.list_manage_actions();
+        let Some(tab) = actions.first().copied() else {
+            self.list_action_idx = None;
+            return;
+        };
+        self.list_action_idx = None;
+        self.tab = tab;
+        self.on_tab_changed();
+        let pos_label = match self.stack {
+            LpStack::V3 { .. } => self
+                .v3_positions
+                .get(self.sel)
+                .map(|p| format!("NFT #{}", p.token_id))
+                .unwrap_or_else(|| format!("row {}", self.sel + 1)),
+            LpStack::V2 { .. } => format!("pair {}", self.sel + 1),
+        };
+        self.status = format!(
+            "{} · {pos_label} · ←→ tabs · Enter confirm · Esc list",
+            tab.label()
+        );
+    }
+
+    pub(crate) fn close_list_actions(&mut self) {
+        self.list_action_idx = None;
+        self.status = "↑↓ select · Enter open · ←→ tabs · r reload".into();
+    }
+
     pub(crate) fn on_tab_changed(&mut self) {
         self.focus = Focus::None;
+        self.list_action_idx = None;
         self.reset_enable_state();
         if self.tab == Tab::AddLp {
             self.add_step = AddStep::SelectPair;

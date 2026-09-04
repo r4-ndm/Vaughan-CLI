@@ -54,7 +54,10 @@ fn anvil_propose_v3_lp_deploy_first_step() {
         let step = raw["step"].as_str().expect("step label");
         assert_eq!(step, "createPool");
         let job_id = raw["job_id"].as_str().expect("job_id");
-        let job_path = dir.path().join("lp_deploy_jobs").join(format!("{job_id}.json"));
+        let job_path = dir
+            .path()
+            .join("lp_deploy_jobs")
+            .join(format!("{job_id}.json"));
         assert!(job_path.exists(), "job persisted at {}", job_path.display());
     });
 }

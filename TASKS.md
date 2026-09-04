@@ -308,6 +308,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] CLI: `vaughan [--profile sentient] policy show|set|confirm-unsafe|reload`
 
 ### P0 — Finish in-TUI trade (kills PulseX-in-Chrome)
+- [x] DexScreener research tools + e*/p* origin catalog (`docs/dexscreener.md`) — Advisor discovery; Sentient foundation
+- [x] HEX stake reads + TUI Hex view (`u`) + `propose_hex_stake_*` + MCP proposal review/safety hints (`docs/hex-stake.md`)
 - [x] Ag Anvil: SquirrelSwap `/swap` fixture → mock router → native + approve/swap broadcast (`vaughan-tui/tests/ag_view.rs`)
 - [x] Ag end-to-end polish: SquirrelSwap quote → route preview → ERC-20 approve (if needed) → swap confirm → broadcast (explicit approval only)
 - [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/piteas.md`)
@@ -335,6 +337,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
 - [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md); EmpX + 7702 AA exec + stealth scan/sweep MCP shipped
 - [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
+- [x] **Sentient re-enabled (Track B)** — `sentient_mode_enabled() = true`; unlock role picker restored; gate sizes approve/unwrap + allowlisted agg routers; raw zero-value `contract_call` still refused; `default` never auto-signs ([`docs/sentient-ops.md`](docs/sentient-ops.md))
 - [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/sentient-presets.md`](docs/sentient-presets.md), `vaughan-agent/presets/`)
 - [x] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `sentient-policy.toml`)
 - [x] **`vaughan serve`** — headless unlock + MCP control plane (`--password-env`); see `docs/mcp.md`

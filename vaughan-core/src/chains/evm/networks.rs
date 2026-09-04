@@ -63,6 +63,9 @@ pub fn rpc_endpoint_label(url: &str) -> String {
         "https://bsc-dataseed3.binance.org" => "Binance 4".into(),
         "https://mainnet.base.org" => "Base official".into(),
         "https://base-rpc.publicnode.com" => "PublicNode".into(),
+        "https://arb1.arbitrum.io/rpc" => "Arbitrum official".into(),
+        "https://arbitrum-one-rpc.publicnode.com" => "PublicNode".into(),
+        "https://rpc.ankr.com/arbitrum" => "Ankr".into(),
         other => url::Url::parse(other)
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
@@ -172,6 +175,7 @@ pub fn eip3770_short_name(chain_id: u64) -> &'static str {
         137 => "matic",
         369 => "pls",
         8453 => "base",
+        42161 => "arb1",
         943 => "tpls",
         11155111 => "sep",
         _ => "eth",
@@ -190,6 +194,7 @@ pub fn dapp_chain_picker_labels(chain_id: u64) -> Vec<String> {
         8453 => &["Base"],
         56 => &["BNB Chain", "BSC", "Binance"],
         137 => &["Polygon", "MATIC"],
+        42161 => &["Arbitrum", "Arbitrum One", "Arb"],
         11155111 => &["Sepolia"],
         _ => &[],
     };
@@ -334,6 +339,29 @@ pub fn base_mainnet() -> EvmNetworkConfig {
     .with_explorer("https://basescan.org")
 }
 
+/// Arbitrum One mainnet (chain id 42161).
+///
+/// Primary funding/exit rail for Hyperliquid USDC deposits; also a LibertySwap
+/// Pulse ↔ Arb bridge leg.
+pub fn arbitrum_one() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "arbitrum",
+        "Arbitrum One",
+        42_161,
+        "https://arb1.arbitrum.io/rpc",
+        "ETH",
+        "Ethereum",
+        false,
+    )
+    .with_fallback_rpcs(&[
+        "https://arbitrum-one-rpc.publicnode.com",
+        "https://rpc.ankr.com/arbitrum",
+    ])
+    // L2 tips are near-zero; 1.5 gwei would overpay.
+    .with_priority_fee_wei(1_000_000) // 0.001 gwei
+    .with_explorer("https://arbiscan.io")
+}
+
 /// All built-in EVM networks, PulseChain first.
 pub fn builtin_networks() -> Vec<EvmNetworkConfig> {
     vec![
@@ -344,6 +372,7 @@ pub fn builtin_networks() -> Vec<EvmNetworkConfig> {
         polygon_mainnet(),
         bsc_mainnet(),
         base_mainnet(),
+        arbitrum_one(),
     ]
 }
 
@@ -384,8 +413,11 @@ mod tests {
     #[test]
     fn builtin_networks_has_pulsechain_first() {
         let nets = builtin_networks();
-        assert_eq!(nets.len(), 7);
+        assert_eq!(nets.len(), 8);
         assert_eq!(nets[0].id, "pulsechain");
+        assert_eq!(get_network_by_chain_id(42_161).unwrap().id, "arbitrum");
+        assert_eq!(eip3770_short_name(42_161), "arb1");
+        assert!(dapp_chain_picker_labels(42_161).contains(&"Arbitrum".to_string()));
     }
 
     #[test]

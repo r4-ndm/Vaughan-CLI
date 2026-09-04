@@ -1,10 +1,12 @@
 //! Structured Sensory and Proposal Tool Engine.
 
+pub mod dexscreener;
 pub mod discover_v3_pool_fee;
 pub mod execute_sentient_swap;
 pub mod get_balance;
 pub mod get_dex_reserves;
 pub mod get_v3_pool;
+pub mod hex_stake;
 pub mod inspect_contract;
 pub mod list_allowances;
 pub mod list_transfers;
@@ -24,11 +26,15 @@ pub mod watch_balance;
 pub mod watch_quote;
 pub mod wiz4rd_common;
 
+pub use dexscreener::{
+    DexscreenerPairTool, DexscreenerSearchTool, DexscreenerTokenPairsTool, DexscreenerTokensTool,
+};
 pub use discover_v3_pool_fee::DiscoverV3PoolFeeTool;
 pub use execute_sentient_swap::ExecuteSentientSwapTool;
 pub use get_balance::GetBalanceTool;
 pub use get_dex_reserves::GetDexReservesTool;
 pub use get_v3_pool::GetV3PoolTool;
+pub use hex_stake::{HexGlobalStateTool, HexStakesForAddressTool};
 pub use inspect_contract::InspectContractTool;
 pub use list_allowances::ListAllowancesTool;
 pub use list_transfers::ListTransfersTool;
@@ -39,7 +45,8 @@ pub use proposals::{
     ProposeRevokeTool, ProposeStealthSendTool, ProposeSwapTool, ProposeTokenLaunchTool,
     ProposeTransferTool, ProposeUnwrapTool, ProposeV2AddTool, ProposeV2RemoveTool,
     ProposeV3CollectTool, ProposeV3CreatePoolTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
-    ProposeV3InitializePoolTool, ProposeV3LpDeployTool, ProposeV3MintTool, ProposeV3SwapTool, ProposeWrapTool,
+    ProposeV3InitializePoolTool, ProposeV3LpDeployTool, ProposeV3MintTool, ProposeV3SwapTool,
+    ProposeWrapTool, ProposeHexStakeEndTool, ProposeHexStakeStartTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
@@ -92,6 +99,12 @@ pub fn default_sensory_registry() -> ToolRegistry {
     registry.register(Arc::new(QuoteBridgeTool::new()));
     registry.register(Arc::new(WatchBalanceTool::new()));
     registry.register(Arc::new(WatchQuoteTool::new()));
+    registry.register(Arc::new(DexscreenerSearchTool::new()));
+    registry.register(Arc::new(DexscreenerTokenPairsTool::new()));
+    registry.register(Arc::new(DexscreenerPairTool::new()));
+    registry.register(Arc::new(DexscreenerTokensTool::new()));
+    registry.register(Arc::new(HexGlobalStateTool::new()));
+    registry.register(Arc::new(HexStakesForAddressTool::new()));
     registry
 }
 
@@ -118,6 +131,8 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry.register(Arc::new(ProposeV2RemoveTool::new()));
     registry.register(Arc::new(ProposeWrapTool::new()));
     registry.register(Arc::new(ProposeUnwrapTool::new()));
+    registry.register(Arc::new(ProposeHexStakeStartTool::new()));
+    registry.register(Arc::new(ProposeHexStakeEndTool::new()));
     registry.register(Arc::new(ProposeApproveTool::new()));
     registry.register(Arc::new(ProposeRevokeTool::new()));
     registry.register(Arc::new(ProposeBridgeTool::new()));

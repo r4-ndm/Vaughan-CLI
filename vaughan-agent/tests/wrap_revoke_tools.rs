@@ -12,7 +12,7 @@ async fn propose_wrap_builds_deposit_proposal() {
         rpc_url: "http://127.0.0.1:1".into(),
         chain_id: 943,
         active_address: Some(address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
-            profile_dir: None,
+        profile_dir: None,
     };
     let raw = registry
         .execute(
@@ -40,7 +40,7 @@ async fn propose_revoke_builds_approve_zero() {
         rpc_url: "http://127.0.0.1:1".into(),
         chain_id: 943,
         active_address: Some(address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
-            profile_dir: None,
+        profile_dir: None,
     };
     let token = "0x70499adEBB11Efd915E3b69E700c331778628707";
     let spender = "0xfC656c95eCd418536844FeeaA46949bb9365BEaF";

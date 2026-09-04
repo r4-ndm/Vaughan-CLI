@@ -59,7 +59,7 @@ async fn test_tool_registry_and_sensory_tools_with_anvil() {
         rpc_url: anvil.rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     // 1. Test get_balance tool
@@ -191,7 +191,7 @@ async fn test_get_dex_reserves_spot_price_on_anvil() {
         rpc_url: anvil.rpc_url.clone(),
         chain_id: 31337,
         active_address: Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")),
-            profile_dir: None,
+        profile_dir: None,
     };
 
     let res = registry

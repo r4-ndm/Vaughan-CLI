@@ -91,7 +91,7 @@ impl SettingsView {
             Stage::List => {
                 let networks = wallet.networks();
                 let active_id = networks.active_id();
-                let items: Vec<ListItem> = networks
+                let mut items: Vec<ListItem> = networks
                     .networks()
                     .iter()
                     .enumerate()
@@ -115,12 +115,43 @@ impl SettingsView {
                         ListItem::new(Line::from(Span::styled(label, style)))
                     })
                     .collect();
+                let ctrl_style = |idx: usize, selected: usize| {
+                    if idx == selected {
+                        Style::default().fg(Color::Black).bg(Color::Cyan)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    }
+                };
+                let net_len = networks.networks().len();
+                let cdp_row = format!(
+                    "   Agent browser control (CDP): {}",
+                    if wallet.agent_browser_control() {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+                items.push(ListItem::new(Line::from(Span::styled(
+                    cdp_row,
+                    ctrl_style(net_len, self.selected),
+                ))));
+                let auto_row = format!(
+                    "   Agent autonomy: {}",
+                    match wallet.agent_autonomy_tier() {
+                        AgentAutonomyTier::Advisor => "Advisor (manual Connect)",
+                        AgentAutonomyTier::Operator => "Operator (auto-connect allowlisted dApps)",
+                    }
+                );
+                items.push(ListItem::new(Line::from(Span::styled(
+                    auto_row,
+                    ctrl_style(net_len + 1, self.selected),
+                ))));
 
                 let list = List::new(items);
                 let cdp_label = if wallet.agent_browser_control() {
-                    "Agent browser control (CDP): ON"
+                    "Status  CDP: ON"
                 } else {
-                    "Agent browser control (CDP): OFF"
+                    "Status  CDP: OFF"
                 };
                 let cdp_style = if wallet.agent_browser_control() {
                     Style::default().fg(Color::Green)
@@ -129,9 +160,9 @@ impl SettingsView {
                 };
                 let tier = wallet.agent_autonomy_tier();
                 let tier_label = match tier {
-                    AgentAutonomyTier::Advisor => "Agent autonomy: Advisor (manual Connect)",
+                    AgentAutonomyTier::Advisor => "        Autonomy: Advisor (manual Connect)",
                     AgentAutonomyTier::Operator => {
-                        "Agent autonomy: Operator (auto-connect allowlisted dApps)"
+                        "        Autonomy: Operator (auto-connect allowlisted)"
                     }
                 };
                 let tier_style = match tier {
@@ -144,40 +175,62 @@ impl SettingsView {
                             .unwrap_or_else(|| "policy: unknown".into());
                         (
                             format!(
-                                "Agent mode: Sentient (auto-exec) — {policy} · lock (l) to switch"
+                                "        Mode: Sentient (auto-exec) — {policy} · lock (l) to switch"
                             ),
                             Style::default().fg(Color::Magenta),
                         )
                     }
                     OperatingMode::AiAssisted => (
-                        "Agent mode: Advisor (MCP on) — switch: lock (l) → pick mode at unlock"
+                        "        Mode: Advisor (MCP on) — lock (l) → pick mode at unlock"
                             .to_string(),
                         Style::default().fg(Color::Green),
                     ),
                     OperatingMode::HumanOnly => (
-                        "Agent mode: Human only (MCP off) — switch: lock (l) → pick mode at unlock"
+                        "        Mode: Human only (MCP off) — lock (l) → pick mode at unlock"
                             .to_string(),
                         Style::default().fg(Color::DarkGray),
                     ),
                 };
+                let assist_line = if vaughan_core::core::assist_burn_gate_enabled() {
+                    (
+                        "        Unlock tools: burn ≥13 WZRD (AI/bridge/…) — Dex/Ag/LP free"
+                            .to_string(),
+                        Style::default().fg(Color::Yellow),
+                    )
+                } else {
+                    (String::new(), Style::default())
+                };
+                // 2 key lines + 3 status (+ optional unlock) + box chrome
+                let footer_h = if assist_line.0.is_empty() { 7 } else { 8 };
                 let [list_area, footer_area] =
-                    Layout::vertical([Constraint::Min(4), Constraint::Length(6)]).areas(content);
+                    Layout::vertical([Constraint::Min(4), Constraint::Length(footer_h)])
+                        .areas(content);
                 let inner =
                     brand::render_faded_box(frame, list_area, Some(brand::fade_line(" Networks ")));
                 frame.render_widget(list, inner);
-                let footer_inner = brand::render_faded_box(frame, footer_area, None);
-                frame.render_widget(
-                    Paragraph::new(vec![
-                        Line::from(Span::styled(
-                            "↑↓ Enter · a add · e edit · r RPC · d delete · h udev · k Keys · p agent CDP · o autonomy · Esc",
-                            Style::default().fg(Color::DarkGray),
-                        )),
-                        Line::from(Span::styled(cdp_label, cdp_style)),
-                        Line::from(Span::styled(tier_label, tier_style)),
-                        Line::from(Span::styled(mode_label, mode_style)),
-                    ]),
-                    footer_inner,
+                let footer_inner = brand::render_faded_box(
+                    frame,
+                    footer_area,
+                    Some(brand::fade_line(" Shortcuts ")),
                 );
+                let key_style = Style::default().fg(Color::DarkGray);
+                let mut footer_lines = vec![
+                    Line::from(Span::styled(
+                        "Select row with ↑↓ · Enter apply/toggle · Esc",
+                        key_style,
+                    )),
+                    Line::from(Span::styled(
+                        "Keys: a add · e edit · r RPC · d delete · h udev · k Keys · c contracts · q Web · w unlock",
+                        key_style,
+                    )),
+                    Line::from(Span::styled(cdp_label, cdp_style)),
+                    Line::from(Span::styled(tier_label, tier_style)),
+                    Line::from(Span::styled(mode_label, mode_style)),
+                ];
+                if !assist_line.0.is_empty() {
+                    footer_lines.push(Line::from(Span::styled(assist_line.0, assist_line.1)));
+                }
+                frame.render_widget(Paragraph::new(footer_lines), footer_inner);
             }
             Stage::HardwareHelp => {
                 let inner = brand::render_faded_box(
@@ -472,51 +525,27 @@ impl SettingsView {
         wallet: &mut WalletState,
         events: &EventBus,
     ) -> KeyOutcome {
-        let len = wallet.networks().networks().len();
+        let net_len = wallet.networks().networks().len();
+        let len = net_len + 2; // + CDP toggle row, + autonomy toggle row
         match key.code {
             KeyCode::Esc => KeyOutcome::Back,
             KeyCode::Char('k') => KeyOutcome::Navigate(Screen::Keys),
-            KeyCode::Char('w') => KeyOutcome::Navigate(Screen::Dapps),
+            KeyCode::Char('q') => KeyOutcome::Navigate(Screen::Dapps),
+            KeyCode::Char('c') => KeyOutcome::Navigate(Screen::Browser),
             KeyCode::Char('h') => {
                 self.stage = Stage::HardwareHelp;
                 self.status.clear();
                 KeyOutcome::Consumed
             }
-            KeyCode::Char('p') => {
-                let next = !wallet.agent_browser_control();
-                match wallet.set_agent_browser_control(next) {
-                    Ok(()) => {
-                        self.status = if next {
-                            "Agent browser control (CDP) enabled — MCP browser_* tools may use loopback CDP."
-                                .into()
-                        } else {
-                            "Agent browser control (CDP) disabled — close VB if open.".into()
-                        };
-                    }
-                    Err(e) => self.status = e.user_message(),
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                if vaughan_core::core::assist_burn_gate_enabled() {
+                    KeyOutcome::AssistBurn
+                } else {
+                    self.status =
+                        "Tools burn gate disabled — unset VAUGHAN_ASSIST_BURN_GATE or remove =0."
+                            .into();
+                    KeyOutcome::Consumed
                 }
-                KeyOutcome::Consumed
-            }
-            KeyCode::Char('o') => {
-                let next = match wallet.agent_autonomy_tier() {
-                    AgentAutonomyTier::Advisor => AgentAutonomyTier::Operator,
-                    AgentAutonomyTier::Operator => AgentAutonomyTier::Advisor,
-                };
-                match wallet.set_agent_autonomy_tier(next) {
-                    Ok(()) => {
-                        self.status = match next {
-                            AgentAutonomyTier::Operator => {
-                                "Operator tier — auto-connect on trusted dApp / Ag hosts (sign still manual)."
-                                    .into()
-                            }
-                            AgentAutonomyTier::Advisor => {
-                                "Advisor tier — manual Connect approval for every site.".into()
-                            }
-                        };
-                    }
-                    Err(e) => self.status = e.user_message(),
-                }
-                KeyOutcome::Consumed
             }
             KeyCode::Char('a') => {
                 self.form_mode = FormMode::Add;
@@ -531,6 +560,10 @@ impl SettingsView {
                 KeyOutcome::Consumed
             }
             KeyCode::Char('e') => {
+                if self.selected >= net_len {
+                    self.status = "Select a network row to edit RPC/name settings.".into();
+                    return KeyOutcome::Consumed;
+                }
                 let Some(net) = wallet.networks().networks().get(self.selected) else {
                     return KeyOutcome::Consumed;
                 };
@@ -543,6 +576,10 @@ impl SettingsView {
                 KeyOutcome::Consumed
             }
             KeyCode::Char('r') => {
+                if self.selected >= net_len {
+                    self.status = "Select a network row first.".into();
+                    return KeyOutcome::Consumed;
+                }
                 self.open_rpc_pick(wallet);
                 KeyOutcome::Consumed
             }
@@ -555,7 +592,39 @@ impl SettingsView {
                 KeyOutcome::Consumed
             }
             KeyCode::Enter => {
-                if let Some(net) = wallet.networks().networks().get(self.selected) {
+                if self.selected == net_len {
+                    let next = !wallet.agent_browser_control();
+                    match wallet.set_agent_browser_control(next) {
+                        Ok(()) => {
+                            self.status = if next {
+                                "Agent browser control (CDP) enabled — MCP browser_* tools may use loopback CDP."
+                                    .into()
+                            } else {
+                                "Agent browser control (CDP) disabled — close VB if open.".into()
+                            };
+                        }
+                        Err(e) => self.status = e.user_message(),
+                    }
+                } else if self.selected == net_len + 1 {
+                    let next = match wallet.agent_autonomy_tier() {
+                        AgentAutonomyTier::Advisor => AgentAutonomyTier::Operator,
+                        AgentAutonomyTier::Operator => AgentAutonomyTier::Advisor,
+                    };
+                    match wallet.set_agent_autonomy_tier(next) {
+                        Ok(()) => {
+                            self.status = match next {
+                                AgentAutonomyTier::Operator => {
+                                    "Operator tier — auto-connect on trusted dApp / Ag hosts (sign still manual)."
+                                        .into()
+                                }
+                                AgentAutonomyTier::Advisor => {
+                                    "Advisor tier — manual Connect approval for every site.".into()
+                                }
+                            };
+                        }
+                        Err(e) => self.status = e.user_message(),
+                    }
+                } else if let Some(net) = wallet.networks().networks().get(self.selected) {
                     let id = net.id.clone();
                     let name = net.name.clone();
                     let chain_id = net.chain_id;
@@ -570,6 +639,10 @@ impl SettingsView {
                 KeyOutcome::Consumed
             }
             KeyCode::Char('d') => {
+                if self.selected >= net_len {
+                    self.status = "Only custom network rows can be deleted.".into();
+                    return KeyOutcome::Consumed;
+                }
                 let Some(net) = wallet.networks().networks().get(self.selected).cloned() else {
                     return KeyOutcome::Consumed;
                 };

@@ -44,26 +44,129 @@ use super::types::*;
 
 impl LpView {
     pub fn render(&self, frame: &mut Frame, area: Rect, _wallet: &WalletState, assets: &[Balance]) {
-        let [content, status_area] = body_areas(area);
         if self.stage == Stage::Confirm {
+            let [content, status_area] = body_areas(area);
             self.render_confirm(frame, content);
-        } else if self.tab == Tab::AddLp {
-            self.render_add_lp(frame, content, assets);
-        } else {
-            let lines = self.body_lines();
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .wrap(Wrap { trim: false })
-                    .style(Style::default().fg(brand::body_color())),
-                content,
-            );
+            let status = if self.busy != Busy::Idle {
+                format!("{} {}", spinner_frame(self.tick), self.status)
+            } else {
+                self.status.clone()
+            };
+            frame.render_widget(status_paragraph(&status), status_area);
+            return;
         }
+        if self.tab == Tab::AddLp {
+            let [content, status_area] = body_areas(area);
+            self.render_add_lp(frame, content, assets);
+            let status = if self.busy != Busy::Idle {
+                format!("{} {}", spinner_frame(self.tick), self.status)
+            } else {
+                self.status.clone()
+            };
+            frame.render_widget(status_paragraph(&status), status_area);
+            return;
+        }
+        self.render_manager(frame, area, assets);
+    }
+
+    /// List / Increase / Decrease / Collect / Remove — full-width table, hints at bottom.
+    fn render_manager(&self, frame: &mut Frame, area: Rect, assets: &[Balance]) {
+        let [header, table, hints, status_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+
+        let title = self.engine_title();
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                title,
+                Style::default()
+                    .fg(brand::accent_color())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Center),
+            header,
+        );
+
+        let lines = self.manager_table_lines(assets, table.width);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(brand::body_color())),
+            table,
+        );
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                self.manager_bottom_hints(),
+                Style::default().fg(Color::DarkGray),
+            )),
+            hints,
+        );
+
         let status = if self.busy != Busy::Idle {
             format!("{} {}", spinner_frame(self.tick), self.status)
-        } else {
+        } else if !self.status.is_empty()
+            && !self.status.starts_with('↑')
+            && !self.status.contains("←→ tab")
+        {
             self.status.clone()
+        } else {
+            String::new()
         };
         frame.render_widget(status_paragraph(&status), status_area);
+    }
+
+    /// Centered chrome title, e.g. `Wiz4rd-Engine V3`.
+    pub(crate) fn engine_title(&self) -> String {
+        let stack = match self.stack {
+            LpStack::V3 { .. } => "V3",
+            LpStack::V2 { .. } => "V2",
+        };
+        format!("{}-Engine {stack}", self.venue.label())
+    }
+
+    fn manager_bottom_hints(&self) -> String {
+        if self.tab == Tab::List && self.list_action_idx.is_some() {
+            return match self.stack {
+                LpStack::V3 { .. } => {
+                    "i Increase · d Decrease · c Collect · Esc list · r reload".into()
+                }
+                LpStack::V2 { .. } => "r Remove · Esc list".into(),
+            };
+        }
+        let tabs = format!("{} · ←→", self.tab_bar());
+        let keys = match self.tab {
+            Tab::List => "↑↓ select · Enter open · ←→ tabs · r reload · Esc back",
+            Tab::Increase => "Enter send · Esc list · r reload",
+            Tab::Decrease | Tab::Remove if self.focus == Focus::Liquidity => {
+                "type units · Enter · Esc · Tab presets"
+            }
+            Tab::Decrease | Tab::Remove => "↑↓ % · Tab custom · Enter send · Esc list",
+            Tab::Collect => "Enter collect · Esc list · r reload",
+            Tab::AddLp => "",
+        };
+        if keys.is_empty() {
+            tabs
+        } else {
+            format!("{tabs}  ·  {keys}")
+        }
+    }
+
+    fn manager_table_lines(&self, assets: &[Balance], width: u16) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        match self.tab {
+            Tab::List => self.render_list(&mut out, assets, width),
+            Tab::Increase => self.render_v3_increase(&mut out, assets, width),
+            Tab::Decrease => self.render_v3_decrease(&mut out, assets, width),
+            Tab::Collect => self.render_v3_collect(&mut out, assets, width),
+            Tab::Remove => self.render_v2_remove(&mut out, assets, width),
+            Tab::AddLp => {}
+        }
+        out
     }
 
     fn render_confirm(&self, frame: &mut Frame, area: Rect) {
@@ -766,103 +869,140 @@ impl LpView {
         }
     }
 
-    pub(crate) fn body_lines(&self) -> Vec<Line<'static>> {
-        let target = match self.stack {
-            LpStack::V3 { .. } => venue_position_manager(self.venue, self.chain_id)
-                .map(|a| format!("NPM {a:#x}"))
-                .unwrap_or_else(|| "—".into()),
-            LpStack::V2 { .. } => venue_swap_router(self.venue, DexProtocol::V2, self.chain_id)
-                .map(|a| format!("router {a:#x}"))
-                .unwrap_or_else(|| "—".into()),
-        };
-        let mut out = vec![
-            Line::from(vec![
-                Span::styled("LP ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!(
-                    "{} · {} · {} · {}",
-                    self.venue.label(),
-                    self.stack.label(),
-                    chain_label(self.chain_id),
-                    target
-                )),
-            ]),
-            Line::from(vec![
-                Span::styled("Tab ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{}   (←→)", self.tab_bar())),
-            ]),
-        ];
-        match self.tab {
-            Tab::List => self.render_list(&mut out),
-            Tab::Increase => self.render_v3_increase(&mut out),
-            Tab::Decrease => self.render_v3_decrease(&mut out),
-            Tab::Collect => self.render_v3_collect(&mut out),
-            Tab::Remove => self.render_v2_remove(&mut out),
-            Tab::AddLp => {}
-        }
-        out
-    }
-
-    pub(crate) fn render_list(&self, out: &mut Vec<Line<'static>>) {
-        out.push(Line::from(
-            "↑↓ select position · Enter actions on other tabs",
-        ));
+    pub(crate) fn render_list(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        width: u16,
+    ) {
         if !self.lp_supported() {
             out.push(Line::from("(LP not available on this network)"));
+            return;
+        }
+        // Focused position: one row + actions live on the bottom hint bar (no under-row ticks).
+        if self.list_action_idx.is_some() {
+            self.render_focused_position(out, assets, width);
             return;
         }
         match self.stack {
             LpStack::V3 { .. } => {
                 if self.v3_positions.is_empty() {
-                    out.push(Line::from("(no positions — Add LP tab or r reload)"));
+                    out.push(Line::from("(no positions — Add LP or r reload)"));
                 } else {
+                    out.push(super::helpers::v3_table_header_line(width));
                     for (i, p) in self.v3_positions.iter().enumerate() {
-                        let mark = if i == self.sel { "▸" } else { " " };
-                        let pair = super::helpers::v3_position_pair_label(
+                        out.push(super::helpers::v3_table_row_line(
                             self.chain_id,
-                            p.token0,
-                            p.token1,
-                        );
-                        let fee = super::helpers::fee_tier_display(p.fee);
-                        out.push(Line::from(format!(
-                            "{mark} {pair} · #{token_id} · {fee} · liq={liq} · owed {owed0}/{owed1}",
-                            token_id = p.token_id,
-                            liq = p.liquidity,
-                            owed0 = p.tokens_owed0,
-                            owed1 = p.tokens_owed1,
-                        )));
+                            p,
+                            assets,
+                            i == self.sel,
+                            width,
+                        ));
                     }
                 }
             }
             LpStack::V2 { .. } => {
                 if self.v2_positions.is_empty() {
-                    out.push(Line::from("(no positions — Add LP tab or r reload)"));
+                    out.push(Line::from("(no positions — Add LP or r reload)"));
                 } else {
+                    out.push(super::helpers::v2_table_header_line(width));
                     for (i, p) in self.v2_positions.iter().enumerate() {
-                        let mark = if i == self.sel { "▸" } else { " " };
-                        out.push(Line::from(format!(
-                            "{mark} pair={:#x} t0={:#x} t1={:#x} lp={}",
-                            p.pair, p.token0, p.token1, p.lp_balance
-                        )));
+                        out.push(super::helpers::v2_table_row_line(
+                            self.chain_id,
+                            p,
+                            assets,
+                            i == self.sel,
+                            width,
+                        ));
                     }
                 }
             }
         }
     }
 
-    pub(crate) fn render_v3_increase(&self, out: &mut Vec<Line<'static>>) {
-        if let Some(p) = self.v3_positions.get(self.sel) {
-            let pair = super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1);
-            out.push(Line::from(format!(
-                "Increase {pair} · NFT #{} ({})",
-                p.token_id,
-                super::helpers::fee_tier_display(p.fee),
-            )));
-        } else {
-            out.push(Line::from("Select a position on List tab first"));
+    fn render_focused_position(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        _width: u16,
+    ) {
+        match self.stack {
+            LpStack::V3 { .. } => {
+                let Some(p) = self.v3_positions.get(self.sel) else {
+                    out.push(Line::from("No position selected"));
+                    return;
+                };
+                for line in super::helpers::v3_focused_detail_lines(
+                    self.chain_id,
+                    self.venue.label(),
+                    p,
+                    assets,
+                ) {
+                    out.push(line);
+                }
+                if let Some(hint) =
+                    super::helpers::v3_manage_hint(p.liquidity, p.tokens_owed0, p.tokens_owed1)
+                {
+                    out.push(Line::from(""));
+                    out.push(Line::from(Span::styled(
+                        format!("  {hint}"),
+                        Style::default().fg(Color::Yellow),
+                    )));
+                }
+            }
+            LpStack::V2 { .. } => {
+                let Some(p) = self.v2_positions.get(self.sel) else {
+                    out.push(Line::from("No position selected"));
+                    return;
+                };
+                for line in super::helpers::v2_focused_detail_lines(
+                    self.chain_id,
+                    self.venue.label(),
+                    p,
+                    assets,
+                ) {
+                    out.push(line);
+                }
+            }
         }
-        out.push(Line::from("Approve extra token0/token1 to NPM if needed"));
-        out.push(Line::from(format!("amount0: {}", self.amount0.value())));
-        out.push(Line::from(format!("amount1: {}", self.amount1.value())));
+    }
+
+    /// Compact selected-row table shared by Increase / Decrease / Collect.
+    fn push_selected_v3_table(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        width: u16,
+    ) -> bool {
+        let Some(p) = self.v3_positions.get(self.sel) else {
+            out.push(Line::from("Select a position on List first"));
+            return false;
+        };
+        out.push(super::helpers::v3_table_header_line(width));
+        out.push(super::helpers::v3_table_row_line(
+            self.chain_id,
+            p,
+            assets,
+            true,
+            width,
+        ));
+        true
+    }
+
+    pub(crate) fn render_v3_increase(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        width: u16,
+    ) {
+        if !self.push_selected_v3_table(out, assets, width) {
+            return;
+        }
+        out.push(Line::from(format!(
+            "amt0 {} · amt1 {}",
+            self.amount0.value(),
+            self.amount1.value()
+        )));
     }
 
     pub(crate) fn decrease_preset_line(&self) -> Line<'static> {
@@ -881,10 +1021,6 @@ impl LpView {
             };
             spans.push(Span::styled(*label, style));
         }
-        spans.push(Span::styled(
-            " · ↑↓ cycle",
-            Style::default().fg(Color::DarkGray),
-        ));
         Line::from(spans)
     }
 
@@ -892,16 +1028,39 @@ impl LpView {
         let remove = alloy::primitives::U256::from_str(self.liquidity.value().trim())
             .unwrap_or(alloy::primitives::U256::ZERO);
         let keep = total.saturating_sub(remove);
-        format!("remove {remove} · keep {keep} · position {total} · Tab custom units")
+        let pct = if total.is_zero() {
+            0u64
+        } else {
+            let raw = (remove * alloy::primitives::U256::from(100u64)) / total;
+            raw.min(alloy::primitives::U256::from(100u64))
+                .to::<u64>()
+        };
+        format!(
+            "−{}%  {} → keep {}",
+            pct,
+            super::helpers::short_units(remove),
+            super::helpers::short_units(keep),
+        )
     }
 
-    pub(crate) fn render_v3_decrease(&self, out: &mut Vec<Line<'static>>) {
+    pub(crate) fn render_v3_decrease(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        width: u16,
+    ) {
+        if !self.push_selected_v3_table(out, assets, width) {
+            return;
+        }
         if let Some(p) = self.v3_positions.get(self.sel) {
-            let pair = super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1);
-            out.push(Line::from(format!(
-                "Decrease {pair} · NFT #{} · liq={}",
-                p.token_id, p.liquidity
-            )));
+            if let Some(hint) =
+                super::helpers::v3_manage_hint(p.liquidity, p.tokens_owed0, p.tokens_owed1)
+            {
+                out.push(Line::from(Span::styled(
+                    hint,
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
             out.push(self.decrease_preset_line());
             out.push(Line::from(self.decrease_amount_summary(
                 alloy::primitives::U256::from(p.liquidity),
@@ -912,45 +1071,58 @@ impl LpView {
                     self.liquidity.value()
                 )));
             }
-        } else {
-            out.push(Line::from("Select a position on List tab first"));
         }
-        out.push(Line::from(
-            "Enter · send decrease · then Collect owed tokens",
-        ));
     }
 
-    pub(crate) fn render_v3_collect(&self, out: &mut Vec<Line<'static>>) {
+    pub(crate) fn render_v3_collect(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        width: u16,
+    ) {
+        if !self.push_selected_v3_table(out, assets, width) {
+            return;
+        }
         if let Some(p) = self.v3_positions.get(self.sel) {
-            let pair = super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1);
-            out.push(Line::from(format!(
-                "Collect {pair} · NFT #{} ({})",
-                p.token_id,
-                super::helpers::fee_tier_display(p.fee),
-            )));
-        } else {
-            out.push(Line::from("Select a position on List tab first"));
-        }
-        out.push(Line::from("Enter · collect"));
-    }
-
-    pub(crate) fn render_v2_remove(&self, out: &mut Vec<Line<'static>>) {
-        if let Some(p) = self.v2_positions.get(self.sel) {
-            out.push(Line::from(format!(
-                "Remove liquidity from pair {:#x}",
-                p.pair
-            )));
-            out.push(self.decrease_preset_line());
-            out.push(Line::from(self.decrease_amount_summary(p.lp_balance)));
-            if self.focus == Focus::Liquidity {
-                out.push(Line::from(format!(
-                    "> remove LP: {}",
-                    self.liquidity.value()
+            if p.tokens_owed0 > 0 || p.tokens_owed1 > 0 {
+                out.push(Line::from(Span::styled(
+                    "Fees/tokens owed ready",
+                    Style::default().fg(brand::accent_color()),
+                )));
+            } else {
+                out.push(Line::from(Span::styled(
+                    "No tokens owed right now",
+                    Style::default().fg(Color::DarkGray),
                 )));
             }
-        } else {
-            out.push(Line::from("Select a position on List tab first"));
         }
-        out.push(Line::from("Approve pair LP token to router if needed"));
+    }
+
+    pub(crate) fn render_v2_remove(
+        &self,
+        out: &mut Vec<Line<'static>>,
+        assets: &[Balance],
+        width: u16,
+    ) {
+        let Some(p) = self.v2_positions.get(self.sel) else {
+            out.push(Line::from("Select a position on List first"));
+            return;
+        };
+        out.push(super::helpers::v2_table_header_line(width));
+        out.push(super::helpers::v2_table_row_line(
+            self.chain_id,
+            p,
+            assets,
+            true,
+            width,
+        ));
+        out.push(self.decrease_preset_line());
+        out.push(Line::from(self.decrease_amount_summary(p.lp_balance)));
+        if self.focus == Focus::Liquidity {
+            out.push(Line::from(format!(
+                "> remove LP: {}",
+                self.liquidity.value()
+            )));
+        }
     }
 }

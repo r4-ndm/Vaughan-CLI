@@ -146,13 +146,7 @@ impl Tool for ProposeV3MintTool {
         let (tick_lower, tick_upper) = resolve_mint_tick_range(&args, &pool, fee)?;
 
         let (amount0_desired, amount1_desired) = resolve_mint_amounts(
-            &args,
-            context,
-            token_a,
-            token_b,
-            &pool,
-            tick_lower,
-            tick_upper,
+            &args, context, token_a, token_b, &pool, tick_lower, tick_upper,
         )
         .await?;
 
@@ -255,7 +249,10 @@ impl Tool for ProposeV3MintTool {
     }
 }
 
-async fn fetch_decimals(rpc_url: &str, token: alloy::primitives::Address) -> Result<u8, AgentError> {
+async fn fetch_decimals(
+    rpc_url: &str,
+    token: alloy::primitives::Address,
+) -> Result<u8, AgentError> {
     use alloy::providers::ProviderBuilder;
     use alloy::sol;
     sol! {
@@ -350,7 +347,9 @@ async fn resolve_mint_amounts(
             .get("deposit_token")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                AgentError::InvalidToolCall("deposit_token required with deposit_amount_human".into())
+                AgentError::InvalidToolCall(
+                    "deposit_token required with deposit_amount_human".into(),
+                )
             })?;
         let (dep_addr, _) = resolve_token(deposit_token, context.chain_id)?;
         let dec_a = fetch_decimals(&context.rpc_url, token_a).await?;
@@ -365,9 +364,10 @@ async fn resolve_mint_amounts(
                 "deposit_token must be token_a or token_b".into(),
             ));
         };
-        let deposit_wei = U256::from_str(&parse_native_amount(deposit, deposit_dec).map_err(
-            |e| AgentError::InvalidToolCall(e.user_message()),
-        )?)
+        let deposit_wei = U256::from_str(
+            &parse_native_amount(deposit, deposit_dec)
+                .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?,
+        )
         .map_err(|e| AgentError::InvalidToolCall(format!("deposit wei: {e}")))?;
         let sqrt = v3_pool_sqrt_u160(pool.sqrt_price_x96)
             .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
@@ -423,26 +423,26 @@ async fn resolve_mint_amounts(
         }
         let dec_a = fetch_decimals(&context.rpc_url, token_a).await?;
         let dec_b = fetch_decimals(&context.rpc_url, token_b).await?;
-        let amount_a = U256::from_str(&parse_native_amount(human_a.unwrap(), dec_a).map_err(
-            |e| AgentError::InvalidToolCall(e.user_message()),
-        )?)
+        let amount_a = U256::from_str(
+            &parse_native_amount(human_a.unwrap(), dec_a)
+                .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?,
+        )
         .map_err(|e| AgentError::InvalidToolCall(format!("amount_a_human: {e}")))?;
-        let amount_b = U256::from_str(&parse_native_amount(human_b.unwrap(), dec_b).map_err(
-            |e| AgentError::InvalidToolCall(e.user_message()),
-        )?)
+        let amount_b = U256::from_str(
+            &parse_native_amount(human_b.unwrap(), dec_b)
+                .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?,
+        )
         .map_err(|e| AgentError::InvalidToolCall(format!("amount_b_human: {e}")))?;
         return map_amounts_to_pool_order(token_a, token_b, pool, amount_a, amount_b);
     }
 
-    let amount_a = U256::from_str(
-        args.get("amount_a")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AgentError::InvalidToolCall(
-                    "Missing amount_a — or use amount_a_human / deposit_amount_human".into(),
-                )
-            })?,
-    )
+    let amount_a = U256::from_str(args.get("amount_a").and_then(|v| v.as_str()).ok_or_else(
+        || {
+            AgentError::InvalidToolCall(
+                "Missing amount_a — or use amount_a_human / deposit_amount_human".into(),
+            )
+        },
+    )?)
     .map_err(|e| AgentError::InvalidToolCall(format!("Invalid amount_a: {e}")))?;
     let amount_b = U256::from_str(
         args.get("amount_b")
@@ -503,10 +503,7 @@ mod tick_range_tests {
         let err = resolve_mint_tick_range(&args, &pool, 500)
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("align to fee spacing"),
-            "unexpected: {err}"
-        );
+        assert!(err.contains("align to fee spacing"), "unexpected: {err}");
     }
 
     #[test]

@@ -117,17 +117,8 @@ impl AssetsView {
                         .enumerate()
                         .map(|(i, b)| {
                             let mark = if i == self.selected { ">" } else { " " };
-                            let kind = if b.token.contract_address.is_none() {
-                                "native"
-                            } else {
-                                "ERC-20"
-                            };
-                            let label = format!(
-                                "{mark} {:<12} {:>22}  ({kind})",
-                                b.token.symbol,
-                                format_display_amount(&b.raw, b.token.decimals, 6)
-                            );
-                            let style = if i == self.selected {
+                            let selected = i == self.selected;
+                            let primary_style = if selected {
                                 Style::default()
                                     .fg(Color::Black)
                                     .bg(Color::Cyan)
@@ -137,7 +128,26 @@ impl AssetsView {
                             } else {
                                 Style::default()
                             };
-                            ListItem::new(Line::from(Span::styled(label, style)))
+                            let addr_style = if selected {
+                                Style::default().fg(Color::Black).bg(Color::Cyan)
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            };
+                            let primary = format!(
+                                "{mark} {:<12} {:>22}",
+                                b.token.symbol,
+                                format_display_amount(&b.raw, b.token.decimals, 6)
+                            );
+                            match b.token.contract_address.as_deref() {
+                                Some(addr) => ListItem::new(vec![
+                                    Line::from(Span::styled(primary, primary_style)),
+                                    Line::from(Span::styled(format!("  {addr}"), addr_style)),
+                                ]),
+                                None => ListItem::new(Line::from(Span::styled(
+                                    format!("{primary}  (native)"),
+                                    primary_style,
+                                ))),
+                            }
                         })
                         .collect()
                 };
@@ -182,7 +192,10 @@ impl AssetsView {
                                 self.stage = Stage::List;
                                 self.status =
                                     format!("Imported {} ({})", token.symbol, token.address);
-                                KeyOutcome::StartJob(UiJob::RefreshAssets)
+                                KeyOutcome::StartJob(UiJob::RefreshAssets {
+                                    owner: String::new(),
+                                    gen: 0,
+                                })
                             }
                             Err(e) => {
                                 self.status = e.user_message();
@@ -194,13 +207,16 @@ impl AssetsView {
             }
             Stage::List => match key.code {
                 KeyCode::Esc => KeyOutcome::Back,
-                KeyCode::Char('r') => KeyOutcome::StartJob(UiJob::RefreshAssets),
+                KeyCode::Char('r') => KeyOutcome::StartJob(UiJob::RefreshAssets {
+                    owner: String::new(),
+                    gen: 0,
+                }),
                 KeyCode::Char('i') => {
                     self.stage = Stage::Import;
                     self.status.clear();
                     KeyOutcome::Consumed
                 }
-                KeyCode::Char('u') if token_launch_allowed(wallet.networks().active().chain_id) => {
+                KeyCode::Char('z') if token_launch_allowed(wallet.networks().active().chain_id) => {
                     KeyOutcome::Navigate(Screen::TokenLaunch)
                 }
                 KeyCode::Up => {
@@ -229,7 +245,10 @@ impl AssetsView {
                         match wallet.remove_custom_token(&addr) {
                             Ok(()) => {
                                 self.status = "Removed custom token.".into();
-                                KeyOutcome::StartJob(UiJob::RefreshAssets)
+                                KeyOutcome::StartJob(UiJob::RefreshAssets {
+                                    owner: String::new(),
+                                    gen: 0,
+                                })
                             }
                             Err(e) => {
                                 self.status = e.user_message();

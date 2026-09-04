@@ -24,7 +24,7 @@ use wiz4rd_sdk::abi::IPancakeV3Factory;
 use wiz4rd_sdk::config::Config;
 use wiz4rd_sdk::pool::{get_pool_info, PoolInfo};
 use wiz4rd_sdk::pool_address::get_pool_key;
-use wiz4rd_sdk::positions::{list_positions_from, PositionInfo};
+use wiz4rd_sdk::positions::{get_position, list_positions_from, PositionInfo};
 use wiz4rd_sdk::tx::liquidity::{
     build_collect_tx, build_decrease_liquidity_tx, build_increase_liquidity_tx, build_mint_tx,
 };
@@ -32,6 +32,108 @@ use wiz4rd_sdk::tx::pool::{build_create_pool_tx, build_initialize_pool_tx};
 
 /// Re-export for TUI / CLI display.
 pub use wiz4rd_sdk::positions::PositionInfo as V3PositionInfo;
+
+/// Spot human price (token1 per token0) from a pool tick — TUI / MCP display.
+pub use wiz4rd_math::pool_tick_to_human_price;
+
+/// Listed V3 NFT plus live pool principal amounts (for TUI / MCP display).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V3LpPositionView {
+    pub info: V3PositionInfo,
+    pub pool: Address,
+    pub sqrt_price_x96: U256,
+    pub tick_current: i32,
+    pub amount0: U256,
+    pub amount1: U256,
+}
+
+impl std::ops::Deref for V3LpPositionView {
+    type Target = V3PositionInfo;
+    fn deref(&self) -> &Self::Target {
+        &self.info
+    }
+}
+
+impl std::ops::DerefMut for V3LpPositionView {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.info
+    }
+}
+
+impl V3LpPositionView {
+    /// Whether the current tick sits inside `[tick_lower, tick_upper)`.
+    pub fn range_status(&self) -> V3RangeStatus {
+        v3_range_status(
+            self.tick_current,
+            self.info.tick_lower,
+            self.info.tick_upper,
+        )
+    }
+
+    /// Rebuild amounts after a fresh `positions()` read (keeps cached pool slot0).
+    pub fn with_updated_info(mut self, info: V3PositionInfo) -> Self {
+        use wiz4rd_math::v3_amounts_from_liquidity;
+        let (amount0, amount1) = if info.liquidity <= 1 {
+            (U256::ZERO, U256::ZERO)
+        } else if let Ok(sqrt) = v3_pool_sqrt_u160(self.sqrt_price_x96) {
+            v3_amounts_from_liquidity(
+                sqrt,
+                self.tick_current,
+                info.tick_lower,
+                info.tick_upper,
+                info.liquidity,
+            )
+            .map(|a| (a.amount0, a.amount1))
+            .unwrap_or((U256::ZERO, U256::ZERO))
+        } else {
+            (U256::ZERO, U256::ZERO)
+        };
+        self.info = info;
+        self.amount0 = amount0;
+        self.amount1 = amount1;
+        self
+    }
+
+    /// Test / offline stub without pool enrichment.
+    pub fn from_info_only(info: V3PositionInfo) -> Self {
+        Self {
+            info,
+            pool: Address::ZERO,
+            sqrt_price_x96: U256::ZERO,
+            tick_current: 0,
+            amount0: U256::ZERO,
+            amount1: U256::ZERO,
+        }
+    }
+}
+
+/// Where the pool price sits relative to a position's tick range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V3RangeStatus {
+    InRange,
+    Below,
+    Above,
+}
+
+pub fn v3_range_status(tick_current: i32, tick_lower: i32, tick_upper: i32) -> V3RangeStatus {
+    if tick_current < tick_lower {
+        V3RangeStatus::Below
+    } else if tick_current < tick_upper {
+        V3RangeStatus::InRange
+    } else {
+        V3RangeStatus::Above
+    }
+}
+
+impl V3RangeStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::InRange => "In range",
+            Self::Below => "Below range",
+            Self::Above => "Above range",
+        }
+    }
+}
 
 /// Build wiz4rd-sdk config for a catalogued V3 LP venue on `chain_id`.
 pub fn v3_lp_sdk_config(
@@ -560,8 +662,7 @@ fn looks_like_user_deposit(raw: &str) -> bool {
 
 fn looks_like_computed_deposit(raw: &str) -> bool {
     let s = raw.trim();
-    s.split_once('.')
-        .is_some_and(|(_, frac)| frac.len() > 4)
+    s.split_once('.').is_some_and(|(_, frac)| frac.len() > 4)
 }
 
 /// Mint deposit amounts in wei for deploy batching or preflight balance checks.
@@ -1301,6 +1402,93 @@ pub async fn list_v3_lp_positions(
     list_positions_from(&provider, &cfg, owner, Some(scan_from), to_block)
         .await
         .map_err(|e| WalletError::NetworkError(format!("list positions: {e}")))
+}
+
+/// Enrich NPM positions with live pool slot0 + principal token amounts.
+pub async fn enrich_v3_lp_positions(
+    rpc_url: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    positions: Vec<V3PositionInfo>,
+) -> Result<Vec<V3LpPositionView>, WalletError> {
+    use std::collections::HashMap;
+    use wiz4rd_math::v3_amounts_from_liquidity;
+
+    let cfg = v3_lp_sdk_config(venue, chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    let mut pool_cache: HashMap<(Address, Address, u32), Option<PoolInfo>> = HashMap::new();
+    let mut out = Vec::with_capacity(positions.len());
+
+    for info in positions {
+        let key = (info.token0, info.token1, info.fee);
+        if let std::collections::hash_map::Entry::Vacant(e) = pool_cache.entry(key) {
+            let pool_key = get_pool_key(info.token0, info.token1, info.fee);
+            let fetched = match get_pool_info(&provider, &cfg, pool_key).await {
+                Ok(p) if !p.pool.is_zero() && p.sqrt_price_x96 > U256::ZERO => Some(p),
+                _ => None,
+            };
+            e.insert(fetched);
+        }
+        let (pool, sqrt_price_x96, tick_current, amount0, amount1) =
+            if let Some(Some(p)) = pool_cache.get(&key) {
+                let (a0, a1) = if info.liquidity <= 1 {
+                    (U256::ZERO, U256::ZERO)
+                } else {
+                    match v3_pool_sqrt_u160(p.sqrt_price_x96).and_then(|sqrt| {
+                        v3_amounts_from_liquidity(
+                            sqrt,
+                            p.tick,
+                            info.tick_lower,
+                            info.tick_upper,
+                            info.liquidity,
+                        )
+                        .map_err(WalletError::Other)
+                    }) {
+                        Ok(am) => (am.amount0, am.amount1),
+                        Err(_) => (U256::ZERO, U256::ZERO),
+                    }
+                };
+                (p.pool, p.sqrt_price_x96, p.tick, a0, a1)
+            } else {
+                (Address::ZERO, U256::ZERO, 0, U256::ZERO, U256::ZERO)
+            };
+        out.push(V3LpPositionView {
+            info,
+            pool,
+            sqrt_price_x96,
+            tick_current,
+            amount0,
+            amount1,
+        });
+    }
+    Ok(out)
+}
+
+/// List + enrich in one call (TUI / MCP).
+pub async fn list_v3_lp_position_views(
+    rpc_url: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    owner: Address,
+    from_block: Option<u64>,
+    to_block: Option<u64>,
+) -> Result<Vec<V3LpPositionView>, WalletError> {
+    let rows = list_v3_lp_positions(rpc_url, venue, chain_id, owner, from_block, to_block).await?;
+    enrich_v3_lp_positions(rpc_url, venue, chain_id, rows).await
+}
+
+/// Fresh `positions(tokenId)` read (avoids stale TUI list before decrease/collect).
+pub async fn get_v3_lp_position(
+    rpc_url: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    token_id: U256,
+) -> Result<PositionInfo, WalletError> {
+    let cfg = v3_lp_sdk_config(venue, chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    get_position(&provider, &cfg, token_id)
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("get position: {e}")))
 }
 
 /// Open a new concentrated LP position (mint NFT).

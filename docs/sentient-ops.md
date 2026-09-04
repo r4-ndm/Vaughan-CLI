@@ -79,11 +79,14 @@ get_proposal_status
 | `watch_quote` | Aggregator quote snapshot + min/max out flags + `suggested_action` |
 | Circuit breakers / `sentient-policy.toml` | Hard stops on size, gas, slippage (sentient) |
 
-Auto-exec additionally re-checks at the gate: per-leg sizing for `Batch7702`
-(unsizeable raw calls are refused), fresh quote + slippage floor, audited DEX
-router allowlist, fresh fee estimate (fail-closed) + pre-broadcast gas-budget
-check, and the mainnet-write guard. Kill-switch: **Ctrl+K** in the TUI trips
-the session breaker.
+Auto-exec additionally re-checks at the gate: per-leg sizing for transfers,
+swaps, sized approve/unwrap (unlimited approve refused), and `Batch7702`
+(unsizeable raw `contract_call` legs are refused), fresh quote + slippage floor
+on DEX routers (agg routers need `min_amount_out > 0`), audited DEX/Agg
+allowlist, fresh fee estimate (fail-closed) + pre-broadcast gas-budget check,
+and the mainnet-write guard.
+Kill-switch: **Ctrl+K** in the TUI trips the session breaker. The human
+`default` profile never auto-signs.
 
 Vaughan does **not** run a background price daemon. The agent (or a cron that
 calls MCP) owns the poll interval.

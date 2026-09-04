@@ -124,8 +124,7 @@ impl UnlockView {
 
     /// Picker construction from an explicit profile list (tests inject fakes).
     pub fn with_profiles(profiles: Vec<ProfileMeta>, current_profile: &str) -> Self {
-        let current_is_sentient =
-            is_sentient_profile(current_profile) && sentient_mode_enabled();
+        let current_is_sentient = is_sentient_profile(current_profile) && sentient_mode_enabled();
         let (stage, selected) = Self::initial_stage_and_selection(&profiles);
         let mut picked_profile = None;
         if !sentient_mode_enabled() && stage == Stage::PickMode {

@@ -58,13 +58,29 @@ impl Tool for ResolveTokenTool {
             .await
             .map_err(|e| AgentError::ProviderError(e.to_string()))?;
         let addr = Address::from_str(token.trim()).unwrap();
-        Ok(json!({
+        let mut out = json!({
             "address": format!("{addr:#x}"),
             "symbol": symbol,
             "name": token_name,
             "decimals": decimals,
             "chain_id": context.chain_id,
-        }))
+        });
+        if let Some(label) = vaughan_core::core::token_origin_lookup(context.chain_id, addr) {
+            let label = label.to_label();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("display_symbol".into(), json!(label.display_symbol));
+                obj.insert("token_origin".into(), json!(label.token_origin));
+                obj.insert("role".into(), json!(label.role));
+                obj.insert("family".into(), json!(label.family));
+                if let Some(note) = label.identity_note {
+                    obj.insert("identity_note".into(), json!(note));
+                }
+                if let Some(w) = label.warning {
+                    obj.insert("warning".into(), json!(w));
+                }
+            }
+        }
+        Ok(out)
     }
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Layout: logo → blank → address (orange mid under AUGHA) → blank →
 //! three status boxes (F1 network · F2 coin · F3 account) → blank →
-//! view body → action footer.
+//! view body → action footer → faint tools-burn hint (when gate on).
 //!
 //! F1–F3: press the key to focus, ↑/↓ to preview, Enter to set, Esc to cancel.
 //! Home send body: F4 focuses recipient, F5 focuses amount. Dex / Ag / Bridge: F4 confirm or quote.
@@ -19,6 +19,7 @@ pub mod dashboard;
 pub mod dex;
 pub mod dex_calldata;
 pub mod history;
+pub mod hex;
 pub mod keys;
 pub mod lp;
 pub mod onboarding;
@@ -42,6 +43,7 @@ pub use dapps::DappsView;
 pub use dashboard::DashboardView;
 pub use dex::DexView;
 pub use history::HistoryView;
+pub use hex::HexView;
 pub use keys::KeysView;
 pub use lp::LpView;
 pub use onboarding::OnboardingView;
@@ -88,7 +90,6 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
             matches!(
                 c.to_ascii_lowercase(),
                 'a' | 'b'
-                    | 'c'
                     | 'd'
                     | 'e'
                     | 'f'
@@ -102,6 +103,7 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
                     | 'n'
                     | 'o'
                     | 'p'
+                    | 'q'
                     | 'r'
                     | 's'
                     | 't'
@@ -109,6 +111,7 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
                     | 'v'
                     | 'w'
                     | 'y'
+                    | 'z'
             )
         }
         _ => false,
@@ -303,6 +306,16 @@ pub(crate) fn token_symbol_hint(addr: &str, chain_id: u64) -> Option<&'static st
         if addr.eq_ignore_ascii_case("0x28Bc040cE32d78aFACb214f5460Adc2bbdaC6B59") {
             return Some("JANE");
         }
+        // Smoke / brew tokens used in LP tours (on-chain symbols).
+        if addr.eq_ignore_ascii_case("0x33df366093ef8ac488e5be40e7ee2eeac2142770") {
+            return Some("T1");
+        }
+        if addr.eq_ignore_ascii_case("0xfc413180d3624349d111fd98ee76bc08a25bc655") {
+            return Some("T2");
+        }
+        if addr.eq_ignore_ascii_case("0x8a810ea8b121d08342e9e7696f4a9915cbe494b7") {
+            return Some("PLSX");
+        }
     }
     None
 }
@@ -343,6 +356,22 @@ fn format_f2_balance(b: &Balance) -> String {
     )
 }
 
+/// Contract address for F2 ←/→ peek (short mid-ellipsis; full address in flash).
+fn format_f2_contract(b: &Balance) -> String {
+    match b.token.contract_address.as_deref() {
+        Some(addr) => short_contract_addr(addr),
+        None => format!("{} · native", b.token.symbol),
+    }
+}
+
+fn short_contract_addr(addr: &str) -> String {
+    let a = addr.trim();
+    if a.len() <= 12 {
+        return a.to_string();
+    }
+    format!("{}…{}", &a[..6], &a[a.len().saturating_sub(4)..])
+}
+
 /// Render the full screen: wordmark, address, need-to-know status, body, footer.
 ///
 /// While the vault is locked (welcome / unlock), chrome is omitted so the splash
@@ -370,21 +399,25 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 
     // Status boxes + blank gap + four rows of footer key chips when unlocked.
+    // Optional faint tools-burn footnote under the chips (gate on only).
     let status_h = 3u16;
     let footer_h = 12u16;
+    let burn_hint = vaughan_core::core::assist_burn_gate_enabled();
+    let hint_h = u16::from(burn_hint);
 
     let flash_h = app.chrome_flash_height(area.width);
 
-    let [logo, _gap_above, addr_row, flash_row, status_bar, _gap_below_status, body, footer] =
+    let [logo, _gap_above, addr_row, flash_row, status_bar, _gap_below_status, body, footer, hint] =
         Layout::vertical([
-            Constraint::Length(1), // VAUGHAN banner
-            Constraint::Length(1), // blank above address
-            Constraint::Length(1), // colour-coded address
+            Constraint::Length(1),       // VAUGHAN banner
+            Constraint::Length(1),       // blank above address
+            Constraint::Length(1),       // colour-coded address
             Constraint::Length(flash_h), // copy toast / LP success table
             Constraint::Length(status_h),
             Constraint::Length(1), // blank under F1–F3
             Constraint::Min(0),
             Constraint::Length(footer_h),
+            Constraint::Length(hint_h),
         ])
         .areas(area);
 
@@ -393,6 +426,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_chrome_flash(frame, flash_row, app);
     render_status_strip(frame, status_bar, app, unlocked);
     render_action_footer(frame, footer, app);
+    if burn_hint {
+        render_tools_burn_hint(frame, hint);
+    }
     app.render_body(frame, body);
     if app.quit_confirm().is_some() {
         render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
@@ -447,10 +483,7 @@ fn render_chrome_flash(frame: &mut Frame, area: Rect, app: &App) {
     if lines.is_empty() {
         return;
     }
-    frame.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Center),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }
 
 fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool) {
@@ -525,11 +558,18 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
     let token_value = if chrome.assets_loading && chrome.assets.is_empty() {
         format!("{} …", spinner_frame(app.tick()))
     } else if let Some(b) = chrome.assets.get(asset_idx) {
-        format_f2_balance(b)
+        if chrome.focus == ChromeFocus::Asset && chrome.f2_show_contract {
+            format_f2_contract(b)
+        } else {
+            format_f2_balance(b)
+        }
     } else if chrome.loading && chrome.balance.is_none() {
         format!("{} …", spinner_frame(app.tick()))
     } else {
         match &chrome.balance {
+            Some(b) if chrome.focus == ChromeFocus::Asset && chrome.f2_show_contract => {
+                format_f2_contract(b)
+            }
             Some(b) => format_f2_balance(b),
             None => format!("— {native_sym}"),
         }
@@ -596,6 +636,21 @@ fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focu
     );
 }
 
+/// Faint permanent footnote: WZRD burn unlocks power features (gate default on).
+fn render_tools_burn_hint(frame: &mut Frame, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Burn ≥13 WZRD (any acct) for AI · tools — Dex/Ag/LP free · press w",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(Alignment::Center),
+        area,
+    );
+}
+
 fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     // Theme (`t`) and Send (`s`) are shown in row 4 / row 1; both still work globally.
     // 28 chips → four rows of 7.
@@ -605,11 +660,11 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("h", "Home"),
         ("s", "Send"),
         ("b", "Batch"),
-        ("w", "Web"),
-        ("c", "Browse"),
+        ("q", "Web"),
         ("d", "Dex"),
         ("g", "Ag"),
         ("e", "Wrap"),
+        ("u", "HEX"),
         ("f", "Bridge"),
         ("p", "LP"),
         ("j", "Appr"),
@@ -618,7 +673,8 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("i", "Settings"),
         ("k", "Keys"),
         ("o", "NFT"),
-        ("u", "Launch"),
+        ("z", "Launch"),
+        ("w", "Burn"),
         ("r", "Refresh"),
         ("l", "Lock"),
         ("t", "Theme"),
@@ -626,8 +682,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("tab", "Field"),
         ("esc", "Back"),
         ("x", "Quit"),
-        ("", ""), // reserved slot
-        ("", ""), // reserved slot
+        ("", ""), // reserved
     ];
 
     let n = keys.len();
@@ -741,13 +796,22 @@ fn render_quit_confirm(frame: &mut Frame, area: Rect, yes_selected: bool) {
     );
 }
 
-/// Active account for the shared chrome strip (every screen).
+/// Active (or F3-preview) account for the shared chrome strip (every screen).
 fn chrome_address(app: &App) -> String {
     match app.try_wallet() {
-        Some(wallet) if wallet.is_unlocked() => wallet
-            .active_address()
-            .map(str::to_string)
-            .unwrap_or_else(|_| "(no account)".into()),
+        Some(wallet) if wallet.is_unlocked() => {
+            if app.chrome().focus == crate::jobs::ChromeFocus::Account {
+                if let Some(idx) = app.chrome().pending_account_index {
+                    if let Ok(addr) = wallet.account_address(idx) {
+                        return addr;
+                    }
+                }
+            }
+            wallet
+                .active_address()
+                .map(str::to_string)
+                .unwrap_or_else(|_| "(no account)".into())
+        }
         Some(wallet) if wallet.is_initialized() => "(locked)".into(),
         Some(_) => "(create or restore a wallet)".into(),
         None => "(busy)".into(),
