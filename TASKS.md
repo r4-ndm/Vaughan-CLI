@@ -478,6 +478,9 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] Live MCP Approve: pass `adjusted_fee` into `execute_approval_with_fee` (parity with queued MCP; provider path already applied overrides)
 - [x] Ag + HEX: estimate and show network fee on confirm before `SendEvmWithFee` (Invariant 3)
 - [x] MCP `LpDeployStep`: enforce 10% fee-spike at approve (same as other MCP writes); threat-model note updated
+- [x] P2: VB session dir uses 128-bit random id under `$XDG_RUNTIME_DIR`/`TMP` (not enumerable port paths)
+- [x] P2: vault Argon2 key in `Zeroizing` so early encrypt/decrypt errors still wipe key material
+- [x] P2: Trezor PIN matrix buffer zeroized on drop/submit
 
 ### Parked — Fable 5 comprehensive audit (before release tag)
 

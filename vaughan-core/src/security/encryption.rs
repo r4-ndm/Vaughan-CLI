@@ -13,7 +13,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::error::WalletError;
 
@@ -104,19 +104,17 @@ pub fn encrypt(plaintext: &[u8], password: &SecretString) -> Result<EncryptedVau
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
 
-    let mut key = [0u8; KEY_LEN];
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, kdf_params())
-        .hash_password_into(password.expose_secret().as_bytes(), &salt, &mut key)
+        .hash_password_into(password.expose_secret().as_bytes(), &salt, key.as_mut_slice())
         .map_err(|e| WalletError::EncryptionFailed(e.to_string()))?;
 
-    let cipher = Aes256Gcm::new_from_slice(&key)
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice())
         .map_err(|e| WalletError::EncryptionFailed(e.to_string()))?;
     let nonce = nonce_from_bytes(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
         .map_err(|e| WalletError::EncryptionFailed(e.to_string()))?;
-
-    key.zeroize();
 
     Ok(EncryptedVault {
         salt: hex::encode(salt),
@@ -139,19 +137,18 @@ pub fn decrypt(vault: &EncryptedVault, password: &SecretString) -> Result<Vec<u8
     let ciphertext = hex::decode(&vault.ciphertext)
         .map_err(|_| WalletError::DecryptionFailed("invalid ciphertext".to_string()))?;
 
-    let mut key = [0u8; KEY_LEN];
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, kdf_params())
-        .hash_password_into(password.expose_secret().as_bytes(), &salt, &mut key)
+        .hash_password_into(password.expose_secret().as_bytes(), &salt, key.as_mut_slice())
         .map_err(|e| WalletError::DecryptionFailed(e.to_string()))?;
 
-    let cipher = Aes256Gcm::new_from_slice(&key)
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice())
         .map_err(|e| WalletError::DecryptionFailed(e.to_string()))?;
     let nonce = nonce_from_bytes(&nonce_bytes);
     let plaintext = cipher.decrypt(&nonce, ciphertext.as_ref()).map_err(|_| {
         WalletError::DecryptionFailed("wrong password or corrupted vault".to_string())
     })?;
 
-    key.zeroize();
     Ok(plaintext)
 }
 

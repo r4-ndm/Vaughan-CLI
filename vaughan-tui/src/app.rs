@@ -9,6 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
+use zeroize::Zeroize;
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
 use vaughan_core::chains::Balance;
@@ -398,12 +399,25 @@ struct TrezorPinEntry {
     cursor: u8,
 }
 
+impl Drop for TrezorPinEntry {
+    fn drop(&mut self) {
+        self.digits.zeroize();
+    }
+}
+
 impl TrezorPinEntry {
     fn new() -> Self {
         Self {
             digits: String::new(),
             cursor: 4, // centre
         }
+    }
+
+    /// Take matrix digits for submit; zeros the buffer.
+    fn take_digits(&mut self) -> String {
+        let pin = std::mem::take(&mut self.digits);
+        self.digits.zeroize();
+        pin
     }
 
     /// Map cursor cell → Trezor matrix position digit (phone keypad).
@@ -1791,20 +1805,14 @@ impl App {
                 if entry.digits.is_empty() {
                     entry.select_cell();
                 } else {
-                    let pin = self
-                        .trezor_pin
-                        .take()
-                        .map(|e| e.digits)
-                        .unwrap_or_default();
+                    let pin = entry.take_digits();
+                    self.trezor_pin = None;
                     self.trezor_ui.submit_pin(Ok(pin));
                 }
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                let pin = self
-                    .trezor_pin
-                    .take()
-                    .map(|e| e.digits)
-                    .unwrap_or_default();
+                let pin = entry.take_digits();
+                self.trezor_pin = None;
                 self.trezor_ui.submit_pin(Ok(pin));
             }
             KeyCode::Backspace => {

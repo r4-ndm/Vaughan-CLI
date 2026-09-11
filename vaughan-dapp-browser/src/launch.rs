@@ -197,12 +197,38 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .ok()
-        .and_then(|l| l.local_addr().ok())
-        .map(|a| a.port())
-        .unwrap_or(0)
+/// Owner-only session root under `$XDG_RUNTIME_DIR` (preferred) or temp.
+///
+/// Uses a 128-bit random suffix (not a TCP port) so another local user cannot
+/// pre-create `/tmp/vaughan-dapp-browser-{1..65535}` and DoS launches.
+fn create_session_base_dir() -> Result<PathBuf, String> {
+    let root = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    for _ in 0..8 {
+        let mut buf = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut buf);
+        let base = root.join(format!("vaughan-dapp-browser-{}", hex::encode(buf)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            match std::fs::DirBuilder::new().mode(0o700).create(&base) {
+                Ok(()) => return Ok(base),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("session dir: {e}")),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::create_dir(&base) {
+                Ok(()) => return Ok(base),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("session dir: {e}")),
+            }
+        }
+    }
+    Err("session dir: exhausted random retries".into())
 }
 
 fn random_session_token() -> String {
@@ -345,30 +371,10 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     let chrome = pick_chrome(&opts.chrome)?;
     let export_cdp = opts.cdp_port != 0;
     let cdp_port = if export_cdp { opts.cdp_port } else { 0 };
-    // Always use a random session id so temp dirs are not predictable from CDP port.
-    let session_id = free_port().max(1);
 
-    let base = std::env::temp_dir().join(format!("vaughan-dapp-browser-{session_id}"));
+    let base = create_session_base_dir()?;
     let profile = base.join("profile");
     let ext = base.join("ext");
-    let _ = std::fs::remove_dir_all(&base);
-    // Create the session dir atomically and owner-only. The extension bundle
-    // embeds the provider session token and $TMPDIR is shared: a plain
-    // create_dir_all between the remove and create would follow a symlink
-    // planted by another local user, leaking the token into their directory.
-    // `create` fails if anything appears in between, so races fail closed.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&base)
-            .map_err(|e| format!("session dir: {e}"))?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir(&base).map_err(|e| format!("session dir: {e}"))?;
-    }
     // Defense in depth: never write the token-bearing bundle through a link.
     let meta = std::fs::symlink_metadata(&base).map_err(|e| format!("session dir stat: {e}"))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
