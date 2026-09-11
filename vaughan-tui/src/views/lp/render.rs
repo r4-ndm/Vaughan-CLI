@@ -31,8 +31,9 @@ use crate::input::{Input, InputAction};
 use crate::jobs::{spinner_frame, UiJob, UiJobResult};
 use crate::views::swap_form::SWAP_DISPLAY_FRAC;
 use crate::views::{
-    body_areas, cycle_token_picker, manual_edit_resets_token_pick, render_labeled_input,
-    render_labeled_input_aligned, status_paragraph, token_symbol_for_address, TOKEN_PICK_UNINIT,
+    body_areas, cycle_token_picker, manual_edit_resets_token_pick, render_fkey_labeled_input,
+    render_labeled_input, render_labeled_input_aligned, status_paragraph, token_symbol_for_address,
+    TOKEN_PICK_UNINIT,
 };
 use crate::views::{parse_swap_amount, parse_token_address};
 
@@ -56,6 +57,12 @@ impl LpView {
             frame.render_widget(status_paragraph(&status), status_area);
             return;
         }
+        if self.stage == Stage::Done {
+            let [content, status_area] = body_areas(area);
+            self.render_done(frame, content);
+            frame.render_widget(status_paragraph(&self.status), status_area);
+            return;
+        }
         if self.tab == Tab::AddLp {
             let [content, status_area] = body_areas(area);
             self.render_add_lp(frame, content, assets);
@@ -71,6 +78,7 @@ impl LpView {
     }
 
     /// List / Increase / Decrease / Collect / Remove — full-width table, hints at bottom.
+    /// Transfer uses Send-style F4/F5 boxes (recipient + locked LP contract).
     fn render_manager(
         &self,
         frame: &mut Frame,
@@ -78,6 +86,11 @@ impl LpView {
         assets: &[Balance],
         custom: &[vaughan_core::core::CustomToken],
     ) {
+        if self.tab == Tab::Transfer {
+            self.render_transfer_form(frame, area, assets, custom);
+            return;
+        }
+
         let [header, table, hints, status_area] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
@@ -116,10 +129,109 @@ impl LpView {
 
         let status = if self.busy != Busy::Idle {
             format!("{} {}", spinner_frame(self.tick), self.status)
+        } else if self.tab == Tab::List && self.list_action_idx.is_some() {
+            // Keys are on the hints bar; status is tip-only (often empty).
+            self.status.clone()
         } else if !self.status.is_empty()
             && !self.status.starts_with('↑')
             && !self.status.contains("←→ tab")
         {
+            self.status.clone()
+        } else {
+            String::new()
+        };
+        frame.render_widget(status_paragraph(&status), status_area);
+    }
+
+    /// Transfer: F4 recipient · F5 locked LP token contract (not editable).
+    fn render_transfer_form(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        assets: &[Balance],
+        custom: &[vaughan_core::core::CustomToken],
+    ) {
+        let [header, to_area, lp_area, summary, hints, status_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                self.engine_title(),
+                Style::default()
+                    .fg(brand::accent_color())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Center),
+            header,
+        );
+
+        render_fkey_labeled_input(
+            frame,
+            to_area,
+            "F4",
+            "Send to",
+            &self.transfer_to,
+            self.focus == Focus::Recipient,
+        );
+        // Never focused — contract is fixed for this Transfer session.
+        render_fkey_labeled_input(frame, lp_area, "F5", "LP token", &self.transfer_lp, false);
+
+        let mut summary_lines = Vec::new();
+        if let Some(lock) = self.transfer_lock.as_deref() {
+            let (token0, token1) = match lock {
+                TransferLock::V3 { token0, token1, .. }
+                | TransferLock::V2 { token0, token1, .. } => (*token0, *token1),
+            };
+            let pair = super::helpers::v3_position_pair_label(
+                self.chain_id,
+                token0,
+                token1,
+                assets,
+                custom,
+            );
+            summary_lines.push(Line::from(format!("Pair · {pair}")));
+            match lock {
+                TransferLock::V3 { token_id, .. } => {
+                    summary_lines.push(Line::from(format!(
+                        "Transfers entire position NFT #{token_id}"
+                    )));
+                }
+                TransferLock::V2 { amount, .. } => {
+                    summary_lines.push(Line::from(format!(
+                        "Transfers full LP balance ({amount} units)"
+                    )));
+                }
+            }
+        } else {
+            summary_lines.push(Line::from(
+                "No LP locked — Esc to list and open Transfer again",
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(summary_lines)
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(Color::DarkGray)),
+            summary,
+        );
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                self.manager_bottom_hints(),
+                Style::default().fg(Color::DarkGray),
+            )),
+            hints,
+        );
+
+        let status = if self.busy != Busy::Idle {
+            format!("{} {}", spinner_frame(self.tick), self.status)
+        } else if !self.status.is_empty() && !self.status.starts_with('↑') {
             self.status.clone()
         } else {
             String::new()
@@ -137,23 +249,48 @@ impl LpView {
     }
 
     fn manager_bottom_hints(&self) -> String {
+        // Focused List row: one key guide only (status line may show a tip).
         if self.tab == Tab::List && self.list_action_idx.is_some() {
-            return match self.stack {
-                LpStack::V3 { .. } => {
-                    "i Increase · d Decrease · c Collect · Esc list · r reload".into()
+            let actions = self.list_manage_actions();
+            let sel = self.list_action_idx.unwrap_or(0);
+            let mut parts = Vec::with_capacity(actions.len());
+            for (i, tab) in actions.iter().enumerate() {
+                let key = match tab {
+                    Tab::Increase => "i",
+                    Tab::Decrease => "d",
+                    Tab::Collect => "c",
+                    Tab::Remove => "r",
+                    Tab::Transfer => "s",
+                    _ => "?",
+                };
+                let label = tab.label();
+                if i == sel {
+                    parts.push(format!("[{key} {label}]"));
+                } else {
+                    parts.push(format!("{key} {label}"));
                 }
-                LpStack::V2 { .. } => "r Remove · Esc list".into(),
-            };
-        }
-        let tabs = format!("{} · ←→", self.tab_bar());
-        let keys = match self.tab {
-            Tab::List => "↑↓ select · Enter open · ←→ tabs · r reload · Esc back",
-            Tab::Increase => "Enter send · Esc list · r reload",
-            Tab::Decrease | Tab::Remove if self.focus == Focus::Liquidity => {
-                "type units · Enter · Esc · Tab presets"
             }
-            Tab::Decrease | Tab::Remove => "↑↓ % · Tab custom · Enter send · Esc list",
-            Tab::Collect => "Enter collect · Esc list · r reload",
+            return format!("{} · ↑↓ · Enter · y copy · o · Esc", parts.join(" · "));
+        }
+        let tabs = if self.tab == Tab::Transfer {
+            format!("{} · locked", self.tab_bar())
+        } else {
+            format!("{} · ←→", self.tab_bar())
+        };
+        let keys = match self.tab {
+            // ←→ already on the tab strip — don't repeat.
+            Tab::List => "↑↓ · Enter manage · r reload · Esc",
+            Tab::Increase if matches!(self.focus, Focus::Amount0 | Focus::Amount1) => {
+                "type · Tab · Enter · Esc"
+            }
+            Tab::Increase => "Tab amounts · Enter · y copy · o · Esc · r",
+            Tab::Decrease | Tab::Remove if self.focus == Focus::Liquidity => {
+                "type · Tab presets · Enter · Esc"
+            }
+            Tab::Decrease | Tab::Remove => "↑↓ % · Tab custom · Enter · y · o · Esc",
+            Tab::Collect => "Enter · y copy · o · Esc · r",
+            Tab::Transfer if self.focus == Focus::Recipient => "F4 type · Enter · Esc",
+            Tab::Transfer => "F4 recipient · F5 locked · Enter · y · o · Esc",
             Tab::AddLp => "",
         };
         if keys.is_empty() {
@@ -176,9 +313,67 @@ impl LpView {
             Tab::Decrease => self.render_v3_decrease(&mut out, assets, custom, width),
             Tab::Collect => self.render_v3_collect(&mut out, assets, custom, width),
             Tab::Remove => self.render_v2_remove(&mut out, assets, custom, width),
+            // Transfer uses [`Self::render_transfer_form`] (F4/F5 boxes).
+            Tab::Transfer => {}
             Tab::AddLp => {}
         }
         out
+    }
+
+    fn render_done(&self, frame: &mut Frame, area: Rect) {
+        let hash = self.done_tx_hash.as_deref().unwrap_or("");
+        let title = if self.done_title.is_empty() {
+            "LP transaction broadcast"
+        } else {
+            self.done_title.as_str()
+        };
+        let box_title = format!(" {title} ");
+        let explorer_name = if self.chain_id == 943 {
+            "Look Scanner"
+        } else if self.chain_id == 369 {
+            "PulseScan"
+        } else {
+            "block explorer"
+        };
+        let has_scan =
+            vaughan_core::chains::evm::networks::explorer_tx_url(self.chain_id, hash).is_some();
+        let mut lines = vec![
+            Line::from(Span::styled(
+                title.to_string(),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("Transaction hash:"),
+            Line::from(Span::styled(
+                hash.to_string(),
+                Style::default().fg(Color::Green),
+            )),
+            Line::from(""),
+        ];
+        if has_scan {
+            lines.push(Line::from(vec![
+                Span::raw("y copy hash · o open on "),
+                Span::styled(
+                    explorer_name,
+                    Style::default()
+                        .fg(brand::action_key_color())
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            ]));
+        } else {
+            lines.push(Line::from("y copy hash"));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from("Enter / Esc — back to list"));
+        let inner = brand::render_faded_box(frame, area, Some(brand::fade_line(&box_title)));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(brand::body_color())),
+            inner,
+        );
     }
 
     fn render_confirm(&self, frame: &mut Frame, area: Rect) {
@@ -194,6 +389,7 @@ impl LpView {
                     LpConfirmAction::Collect => " Confirm collect ",
                     LpConfirmAction::V2Add => " Confirm add LP ",
                     LpConfirmAction::V2Remove => " Confirm remove ",
+                    LpConfirmAction::Transfer => " Confirm transfer ",
                 })
                 .unwrap_or(" Confirm LP ")
         } else {
@@ -1006,6 +1202,11 @@ impl LpView {
             true,
             width,
         ));
+        if !p.pool.is_zero() {
+            for line in super::helpers::contract_explorer_lines(self.chain_id, "Pool", p.pool) {
+                out.push(line);
+            }
+        }
         true
     }
 
@@ -1019,9 +1220,43 @@ impl LpView {
         if !self.push_selected_v3_table(out, assets, custom, width) {
             return;
         }
+        let (sym0, sym1) = self
+            .v3_positions
+            .get(self.sel)
+            .map(|p| {
+                (
+                    super::helpers::symbol_for_token_address(
+                        self.chain_id,
+                        p.token0,
+                        assets,
+                        custom,
+                    ),
+                    super::helpers::symbol_for_token_address(
+                        self.chain_id,
+                        p.token1,
+                        assets,
+                        custom,
+                    ),
+                )
+            })
+            .unwrap_or_else(|| ("TOKEN0".into(), "TOKEN1".into()));
+        out.push(Line::from(""));
+        let a0_mark = if self.focus == Focus::Amount0 {
+            ">"
+        } else {
+            " "
+        };
+        let a1_mark = if self.focus == Focus::Amount1 {
+            ">"
+        } else {
+            " "
+        };
         out.push(Line::from(format!(
-            "amt0 {} · amt1 {}",
-            self.amount0.value(),
+            "{a0_mark} Add {sym0}: {}",
+            self.amount0.value()
+        )));
+        out.push(Line::from(format!(
+            "{a1_mark} Add {sym1}: {}",
             self.amount1.value()
         )));
     }
@@ -1053,8 +1288,7 @@ impl LpView {
             0u64
         } else {
             let raw = (remove * alloy::primitives::U256::from(100u64)) / total;
-            raw.min(alloy::primitives::U256::from(100u64))
-                .to::<u64>()
+            raw.min(alloy::primitives::U256::from(100u64)).to::<u64>()
         };
         format!(
             "−{}%  {} → keep {}",
@@ -1141,6 +1375,9 @@ impl LpView {
             true,
             width,
         ));
+        for line in super::helpers::contract_explorer_lines(self.chain_id, "Pair", p.pair) {
+            out.push(line);
+        }
         out.push(self.decrease_preset_line());
         out.push(Line::from(self.decrease_amount_summary(p.lp_balance)));
         if self.focus == Focus::Liquidity {

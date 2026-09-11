@@ -319,10 +319,11 @@ alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
     }
 
-    /// Minimal ERC721 surface needed for position ownership checks.
+    /// Minimal ERC721 surface needed for position ownership checks and transfers.
     interface IERC721Minimal {
         event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
         function ownerOf(uint256 tokenId) external view returns (address);
+        function transferFrom(address from, address to, uint256 tokenId) external;
     }
 }
 
@@ -422,5 +423,15 @@ mod tests {
         };
         assert_eq!(params.fee, U24::try_from(500u32).unwrap());
         assert_eq!(params.tickLower, I24::try_from(-600i32).unwrap());
+    }
+
+    #[test]
+    fn erc721_transfer_from_selector() {
+        // transferFrom(address,address,uint256) -> 0x23b872dd
+        assert_eq!(
+            IERC721Minimal::transferFromCall::SELECTOR,
+            [0x23, 0xb8, 0x72, 0xdd],
+            "transferFrom selector"
+        );
     }
 }

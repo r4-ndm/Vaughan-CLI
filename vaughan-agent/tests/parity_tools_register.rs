@@ -13,6 +13,8 @@ fn assist_registry_includes_parity_verbs() {
         "propose_v3_increase",
         "propose_v3_decrease",
         "propose_v3_collect",
+        "propose_v3_transfer_position",
+        "propose_v2_transfer_lp",
         "quote_bridge",
         "propose_bridge",
         "list_transfers",

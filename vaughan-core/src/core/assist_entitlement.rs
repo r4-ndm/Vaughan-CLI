@@ -442,7 +442,8 @@ fn write_cache_file(path: &Path, cache: &AssistUnlockCache) -> Result<(), Wallet
     }
     let raw = serde_json::to_string_pretty(cache)
         .map_err(|e| WalletError::Other(format!("assist cache encode: {e}")))?;
-    std::fs::write(path, raw).map_err(|e| WalletError::Other(format!("assist cache write: {e}")))?;
+    std::fs::write(path, raw)
+        .map_err(|e| WalletError::Other(format!("assist cache write: {e}")))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

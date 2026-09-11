@@ -42,11 +42,12 @@ pub use list_v2_positions::ListV2PositionsTool;
 pub use list_v3_positions::ListV3PositionsTool;
 pub use proposals::{
     ProposeAggSwapTool, ProposeApproveTool, ProposeBatch7702Tool, ProposeContractCallTool,
-    ProposeRevokeTool, ProposeStealthSendTool, ProposeSwapTool, ProposeTokenLaunchTool,
-    ProposeTransferTool, ProposeUnwrapTool, ProposeV2AddTool, ProposeV2RemoveTool,
-    ProposeV3CollectTool, ProposeV3CreatePoolTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
+    ProposeHexStakeEndTool, ProposeHexStakeStartTool, ProposeRevokeTool, ProposeStealthSendTool,
+    ProposeSwapTool, ProposeTokenLaunchTool, ProposeTransferTool, ProposeUnwrapTool,
+    ProposeV2AddTool, ProposeV2RemoveTool, ProposeV2TransferLpTool, ProposeV3CollectTool,
+    ProposeV3CreatePoolTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
     ProposeV3InitializePoolTool, ProposeV3LpDeployTool, ProposeV3MintTool, ProposeV3SwapTool,
-    ProposeWrapTool, ProposeHexStakeEndTool, ProposeHexStakeStartTool,
+    ProposeV3TransferPositionTool, ProposeWrapTool,
 };
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
@@ -127,8 +128,10 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry.register(Arc::new(ProposeV3IncreaseTool::new()));
     registry.register(Arc::new(ProposeV3DecreaseTool::new()));
     registry.register(Arc::new(ProposeV3CollectTool::new()));
+    registry.register(Arc::new(ProposeV3TransferPositionTool::new()));
     registry.register(Arc::new(ProposeV2AddTool::new()));
     registry.register(Arc::new(ProposeV2RemoveTool::new()));
+    registry.register(Arc::new(ProposeV2TransferLpTool::new()));
     registry.register(Arc::new(ProposeWrapTool::new()));
     registry.register(Arc::new(ProposeUnwrapTool::new()));
     registry.register(Arc::new(ProposeHexStakeStartTool::new()));

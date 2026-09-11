@@ -348,3 +348,74 @@ impl Tool for ProposeV3CollectTool {
         .await
     }
 }
+
+#[derive(Default)]
+pub struct ProposeV3TransferPositionTool;
+
+impl ProposeV3TransferPositionTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Tool for ProposeV3TransferPositionTool {
+    fn name(&self) -> &str {
+        "propose_v3_transfer_position"
+    }
+
+    fn description(&self) -> &str {
+        "Draft transfer of a V3 LP position NFT to another wallet (NPM transferFrom). \
+         Never signs. Sentient auto-exec refuses — human Advisor approval required."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "token_id": { "type": "string" },
+                "to": { "type": "string", "description": "Recipient wallet address" },
+                "venue": venue_param_schema()["venue"],
+                "explanation": { "type": "string" }
+            },
+            "required": ["token_id", "to", "explanation"]
+        })
+    }
+
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value, AgentError> {
+        let from = require_active(context)?;
+        let token_id = require_token_id(&args)?;
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::InvalidToolCall("Missing to".into()))?;
+        let explanation = require_explanation(&args)?;
+        let venue = resolve_lp_venue(&args, context.chain_id)?;
+        let evm = vaughan_core::core::build_v3_position_transfer_evm_checked(
+            &format!("{from:#x}"),
+            venue,
+            context.chain_id,
+            &context.rpc_url,
+            token_id,
+            to,
+        )
+        .await
+        .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
+        let npm = alloy::primitives::Address::from_str(&evm.to)
+            .map_err(|e| AgentError::InvalidToolCall(format!("npm: {e}")))?;
+        let calldata = hex::decode(evm.data.as_deref().unwrap_or("0x").trim_start_matches("0x"))
+            .map_err(|e| AgentError::InvalidToolCall(format!("calldata: {e}")))?;
+        proposal_from_npm(
+            "v3_transfer_position",
+            npm,
+            alloy::primitives::Bytes::from(calldata),
+            80_000,
+            format!(
+                "{explanation} [{} transfer NFT #{token_id} → {to}]",
+                venue.label()
+            ),
+            context,
+        )
+        .await
+    }
+}

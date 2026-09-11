@@ -52,6 +52,9 @@ impl LpView {
     ) -> KeyOutcome {
         let _ = events;
         let tab_focus = matches!(key.code, KeyCode::Tab | KeyCode::BackTab);
+        if self.stage == Stage::Done {
+            return self.handle_done_key(key);
+        }
         if self.busy == Busy::Sending {
             return KeyOutcome::Consumed;
         }
@@ -67,10 +70,21 @@ impl LpView {
         }
 
         match key.code {
+            KeyCode::F(4) if self.tab == Tab::Transfer => {
+                self.focus = Focus::Recipient;
+                KeyOutcome::Consumed
+            }
+            KeyCode::F(5) if self.tab == Tab::Transfer => {
+                self.focus = Focus::None;
+                self.status = "LP token is locked for this transfer".into();
+                KeyOutcome::Consumed
+            }
             KeyCode::Up if self.tab == Tab::List && self.list_action_idx.is_some() => {
+                self.cycle_list_action(false);
                 KeyOutcome::Consumed
             }
             KeyCode::Down if self.tab == Tab::List && self.list_action_idx.is_some() => {
+                self.cycle_list_action(true);
                 KeyOutcome::Consumed
             }
             KeyCode::Up if self.tab == Tab::List => {
@@ -81,15 +95,36 @@ impl LpView {
                 self.move_list_sel(true);
                 KeyOutcome::Consumed
             }
-            KeyCode::Up if self.on_manage_tab() && self.focus == Focus::None => {
+            KeyCode::Up
+                if matches!(self.tab, Tab::Decrease | Tab::Remove) && self.focus == Focus::None =>
+            {
                 self.cycle_decrease_preset(false);
                 KeyOutcome::Consumed
             }
-            KeyCode::Down if self.on_manage_tab() && self.focus == Focus::None => {
+            KeyCode::Down
+                if matches!(self.tab, Tab::Decrease | Tab::Remove) && self.focus == Focus::None =>
+            {
                 self.cycle_decrease_preset(true);
                 KeyOutcome::Consumed
             }
-            KeyCode::Tab | KeyCode::BackTab if self.on_manage_tab() => {
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Increase => {
+                let forward = matches!(key.code, KeyCode::Tab);
+                self.focus = match (self.focus, forward) {
+                    (Focus::None | Focus::Amount1, true) | (Focus::Amount1, false) => {
+                        Focus::Amount0
+                    }
+                    (Focus::Amount0, true) => Focus::Amount1,
+                    (Focus::Amount0, false) | (Focus::None, false) => Focus::Amount1,
+                    _ => Focus::Amount0,
+                };
+                KeyOutcome::Consumed
+            }
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Transfer => {
+                // F5 LP token is locked — Tab only cycles the recipient field.
+                self.focus = Focus::Recipient;
+                KeyOutcome::Consumed
+            }
+            KeyCode::Tab | KeyCode::BackTab if matches!(self.tab, Tab::Decrease | Tab::Remove) => {
                 self.focus = if self.focus == Focus::Liquidity {
                     Focus::None
                 } else {
@@ -97,8 +132,21 @@ impl LpView {
                 };
                 KeyOutcome::Consumed
             }
-            KeyCode::Enter if self.focus == Focus::Liquidity => {
+            KeyCode::Enter
+                if matches!(
+                    self.focus,
+                    Focus::Liquidity | Focus::Amount0 | Focus::Amount1 | Focus::Recipient
+                ) =>
+            {
                 self.focus = Focus::None;
+                KeyOutcome::Consumed
+            }
+            // Transfer is locked to one LP — no ←→ tab hopping (Esc → list).
+            KeyCode::Left | KeyCode::Right
+                if self.tab == Tab::Transfer && self.focus == Focus::None =>
+            {
+                self.status =
+                    "Transfer is locked to this LP — Esc back to list to pick another".into();
                 KeyOutcome::Consumed
             }
             KeyCode::Left if self.focus == Focus::None && self.list_action_idx.is_none() => {
@@ -117,6 +165,47 @@ impl LpView {
                     && self.apply_list_action_key(c) =>
             {
                 KeyOutcome::Consumed
+            }
+            // List idle: `s` = Transfer (do not fall through to global Home Send).
+            KeyCode::Char('s') | KeyCode::Char('S') if self.tab == Tab::List => {
+                let has = match self.stack {
+                    LpStack::V3 { .. } => !self.v3_positions.is_empty(),
+                    LpStack::V2 { .. } => !self.v2_positions.is_empty(),
+                };
+                if has {
+                    self.open_manage_tab(Tab::Transfer);
+                } else {
+                    self.status = "No LP position to transfer".into();
+                }
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('o') | KeyCode::Char('O')
+                if self.focus == Focus::None
+                    && (self.list_action_idx.is_some()
+                        || matches!(
+                            self.tab,
+                            Tab::Increase
+                                | Tab::Decrease
+                                | Tab::Collect
+                                | Tab::Remove
+                                | Tab::Transfer
+                        )) =>
+            {
+                self.open_selected_pool_scanner()
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y')
+                if self.focus == Focus::None
+                    && (self.list_action_idx.is_some()
+                        || matches!(
+                            self.tab,
+                            Tab::Increase
+                                | Tab::Decrease
+                                | Tab::Collect
+                                | Tab::Remove
+                                | Tab::Transfer
+                        )) =>
+            {
+                self.copy_selected_pool_address()
             }
             KeyCode::Char('r') | KeyCode::Char('R')
                 if !(self.tab == Tab::List
@@ -142,7 +231,10 @@ impl LpView {
             }
             KeyCode::Enter => self.submit_manage(wallet, handle),
             KeyCode::Esc => {
-                if self.focus == Focus::Liquidity {
+                if matches!(
+                    self.focus,
+                    Focus::Liquidity | Focus::Amount0 | Focus::Amount1 | Focus::Recipient
+                ) {
                     self.focus = Focus::None;
                     KeyOutcome::Consumed
                 } else if self.tab == Tab::List && self.list_action_idx.is_some() {
@@ -150,8 +242,9 @@ impl LpView {
                     KeyOutcome::Consumed
                 } else if matches!(
                     self.tab,
-                    Tab::Increase | Tab::Decrease | Tab::Collect | Tab::Remove
+                    Tab::Increase | Tab::Decrease | Tab::Collect | Tab::Remove | Tab::Transfer
                 ) {
+                    self.clear_transfer_lock();
                     self.tab = Tab::List;
                     self.on_tab_changed();
                     self.status = "↑↓ select · Enter open · ←→ tabs · r reload".into();
@@ -170,6 +263,30 @@ impl LpView {
                     self.clear_decrease_preset_if_edited();
                     KeyOutcome::Consumed
                 }
+            },
+            _ if self.focus == Focus::Amount0 => match self.amount0.handle_key(key) {
+                InputAction::Ignored => KeyOutcome::NotHandled,
+                InputAction::Submitted => {
+                    self.focus = Focus::Amount1;
+                    KeyOutcome::Consumed
+                }
+                InputAction::Consumed => KeyOutcome::Consumed,
+            },
+            _ if self.focus == Focus::Amount1 => match self.amount1.handle_key(key) {
+                InputAction::Ignored => KeyOutcome::NotHandled,
+                InputAction::Submitted => {
+                    self.focus = Focus::None;
+                    KeyOutcome::Consumed
+                }
+                InputAction::Consumed => KeyOutcome::Consumed,
+            },
+            _ if self.focus == Focus::Recipient => match self.transfer_to.handle_key(key) {
+                InputAction::Ignored => KeyOutcome::NotHandled,
+                InputAction::Submitted => {
+                    self.focus = Focus::None;
+                    KeyOutcome::Consumed
+                }
+                InputAction::Consumed => KeyOutcome::Consumed,
             },
             _ => KeyOutcome::NotHandled,
         }
@@ -340,7 +457,8 @@ impl LpView {
                     | Focus::Fee
                     | Focus::Venue
                     | Focus::RangePresets
-                    | Focus::Liquidity => unreachable!(),
+                    | Focus::Liquidity
+                    | Focus::Recipient => unreachable!(),
                 };
                 let Some(input) = input else {
                     return KeyOutcome::Consumed;
@@ -413,6 +531,7 @@ impl LpView {
             Focus::Amount0 => Some(&mut self.amount0),
             Focus::Amount1 => Some(&mut self.amount1),
             Focus::Liquidity => Some(&mut self.liquidity),
+            Focus::Recipient => Some(&mut self.transfer_to),
             Focus::None | Focus::Fee | Focus::Venue | Focus::RangePresets => None,
         }
     }
@@ -655,15 +774,12 @@ impl LpView {
         }
     }
 
-    pub(crate) fn submit_manage(
-        &mut self,
-        wallet: &WalletState,
-        handle: &Handle,
-    ) -> KeyOutcome {
+    pub(crate) fn submit_manage(&mut self, wallet: &WalletState, handle: &Handle) -> KeyOutcome {
         if !self.lp_supported() {
             self.status = self.default_status_hint();
             return KeyOutcome::Consumed;
         }
+        self.confirm_custom_tokens = wallet.custom_tokens_for_active_chain();
         match self.tab {
             Tab::List => KeyOutcome::Consumed,
             Tab::Increase | Tab::Decrease | Tab::Collect => {
@@ -672,13 +788,18 @@ impl LpView {
                     return KeyOutcome::Consumed;
                 }
                 match self.tab {
-                    Tab::Increase => match self.build_increase_tx(wallet) {
-                        Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Increase),
-                        Err(e) => {
-                            self.status = e;
-                            KeyOutcome::Consumed
+                    Tab::Increase => {
+                        if let Some(outcome) = self.try_increase_enable_first(wallet, handle) {
+                            return outcome;
                         }
-                    },
+                        match self.build_increase_tx(wallet) {
+                            Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Increase),
+                            Err(e) => {
+                                self.status = e;
+                                KeyOutcome::Consumed
+                            }
+                        }
+                    }
                     Tab::Decrease => {
                         if let Some(p) = self.v3_positions.get(self.sel) {
                             if let Some(hint) = super::helpers::v3_manage_hint(
@@ -715,8 +836,136 @@ impl LpView {
                     KeyOutcome::Consumed
                 }
             },
+            Tab::Transfer => match self.build_transfer_tx(wallet, handle) {
+                Ok(tx) => self.confirm_tx(tx, LpConfirmAction::Transfer),
+                Err(e) => {
+                    self.status = e;
+                    KeyOutcome::Consumed
+                }
+            },
             Tab::AddLp => KeyOutcome::Consumed,
         }
+    }
+
+    /// If NPM allowance is short for the Increase amounts, open Enable confirm first.
+    fn try_increase_enable_first(
+        &mut self,
+        wallet: &WalletState,
+        handle: &Handle,
+    ) -> Option<KeyOutcome> {
+        let pos = self.v3_positions.get(self.sel)?;
+        let custom = wallet.custom_tokens_for_active_chain();
+        let d0 = super::helpers::decimals_for_token(pos.token0, &[], &custom);
+        let d1 = super::helpers::decimals_for_token(pos.token1, &[], &custom);
+        let amount0 = parse_swap_amount(self.amount0.value(), "amount0", d0).ok()?;
+        let amount1 = parse_swap_amount(self.amount1.value(), "amount1", d1).ok()?;
+        let from = wallet.active_address().ok()?.to_string();
+        let rpc = wallet.active_rpc_url();
+        let token0 = pos.token0;
+        let token1 = pos.token1;
+        let needed = handle.block_on(vaughan_core::core::v3_lp_increase_enable_tx(
+            &from,
+            self.venue,
+            self.chain_id,
+            &rpc,
+            token0,
+            token1,
+            amount0,
+            amount1,
+        ));
+        match needed {
+            Ok(Some((tx, label))) => {
+                let sym = if label.contains("token0") {
+                    super::helpers::symbol_for_token_address(self.chain_id, token0, &[], &custom)
+                } else {
+                    super::helpers::symbol_for_token_address(self.chain_id, token1, &[], &custom)
+                };
+                Some(self.open_enable_confirm_outcome(tx, sym, label))
+            }
+            Ok(None) => None,
+            Err(e) => {
+                self.status = e.user_message();
+                Some(KeyOutcome::Consumed)
+            }
+        }
+    }
+
+    fn open_enable_confirm_outcome(
+        &mut self,
+        tx: vaughan_core::chains::EvmTransaction,
+        symbol: String,
+        label: String,
+    ) -> KeyOutcome {
+        self.open_enable_confirm(tx, symbol, label);
+        KeyOutcome::Consumed
+    }
+
+    fn handle_done_key(&mut self, key: KeyEvent) -> KeyOutcome {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let Some(hash) = self.done_tx_hash.as_deref().filter(|h| !h.is_empty()) else {
+                    self.status = "No transaction hash to copy".into();
+                    return KeyOutcome::Consumed;
+                };
+                match crate::clipboard::copy_text(hash) {
+                    Ok(()) => KeyOutcome::Flash("Transaction hash copied".into()),
+                    Err(e) => {
+                        self.status = e;
+                        KeyOutcome::Consumed
+                    }
+                }
+            }
+            KeyCode::Char('o') | KeyCode::Char('O') => self.open_done_tx_scanner(),
+            KeyCode::Enter | KeyCode::Esc => {
+                self.dismiss_done();
+                KeyOutcome::Consumed
+            }
+            _ => KeyOutcome::Consumed,
+        }
+    }
+
+    fn open_done_tx_scanner(&mut self) -> KeyOutcome {
+        use vaughan_core::chains::evm::networks::explorer_tx_url;
+
+        let Some(hash) = self.done_tx_hash.as_deref().filter(|h| !h.is_empty()) else {
+            self.status = "No transaction hash".into();
+            return KeyOutcome::Consumed;
+        };
+        let Some(url) = explorer_tx_url(self.chain_id, hash) else {
+            self.status = "No block explorer configured for this network".into();
+            return KeyOutcome::Consumed;
+        };
+        match super::helpers::open_explorer_url(&url) {
+            Ok(()) => {
+                let name = if self.chain_id == 943 {
+                    "Look Scanner"
+                } else if self.chain_id == 369 {
+                    "PulseScan"
+                } else {
+                    "block explorer"
+                };
+                KeyOutcome::Flash(format!("Opened {name}"))
+            }
+            Err(e) => {
+                self.status = e;
+                KeyOutcome::Consumed
+            }
+        }
+    }
+
+    pub(crate) fn dismiss_done(&mut self) {
+        self.done_tx_hash = None;
+        self.done_title.clear();
+        self.stage = Stage::Input;
+        self.tab = Tab::List;
+        self.focus = Focus::None;
+        self.list_action_idx = None;
+        self.clear_transfer_lock();
+        self.status = if self.lp_reload_pending || self.busy == Busy::Loading {
+            "Refreshing positions…".into()
+        } else {
+            "↑↓ select · Enter open · ←→ tabs · r reload".into()
+        };
     }
 
     /// Re-read `positions(tokenId)` so decrease amounts match chain (not a stale list).

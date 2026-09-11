@@ -179,25 +179,52 @@ impl LpView {
         self.decrease_preset_applied = None;
     }
 
-    pub(crate) fn on_manage_tab(&self) -> bool {
-        matches!(self.tab, Tab::Decrease | Tab::Remove)
-    }
-
     /// Manage actions offered after Enter on a List row.
     pub(crate) fn list_manage_actions(&self) -> &'static [Tab] {
         match self.stack {
-            LpStack::V3 { .. } => &[Tab::Increase, Tab::Decrease, Tab::Collect],
-            LpStack::V2 { .. } => &[Tab::Remove],
+            LpStack::V3 { .. } => &[Tab::Increase, Tab::Decrease, Tab::Collect, Tab::Transfer],
+            LpStack::V2 { .. } => &[Tab::Remove, Tab::Transfer],
+        }
+    }
+
+    /// ↑↓ while a List row is focused — cycle the manage action highlight.
+    pub(crate) fn cycle_list_action(&mut self, down: bool) {
+        let actions = self.list_manage_actions();
+        if actions.is_empty() {
+            return;
+        }
+        let cur = self.list_action_idx.unwrap_or(0) % actions.len();
+        let next = if down {
+            (cur + 1) % actions.len()
+        } else if cur == 0 {
+            actions.len() - 1
+        } else {
+            cur - 1
+        };
+        self.list_action_idx = Some(next);
+        self.status = self.list_action_status_line();
+    }
+
+    /// Contextual tip while a List row’s actions are focused (not a key guide —
+    /// keys live on the bottom hints bar only).
+    pub(crate) fn list_action_status_line(&self) -> String {
+        match self.stack {
+            LpStack::V3 { .. } => self
+                .v3_positions
+                .get(self.sel)
+                .and_then(|p| {
+                    super::helpers::v3_manage_hint(p.liquidity, p.tokens_owed0, p.tokens_owed1)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default(),
+            LpStack::V2 { .. } => String::new(),
         }
     }
 
     /// Prefer positions with meaningful liquidity (skip Empty/Dust for ↑↓).
     pub(crate) fn position_has_liquidity(&self, idx: usize) -> bool {
         match self.stack {
-            LpStack::V3 { .. } => self
-                .v3_positions
-                .get(idx)
-                .is_some_and(|p| p.liquidity > 1),
+            LpStack::V3 { .. } => self.v3_positions.get(idx).is_some_and(|p| p.liquidity > 1),
             LpStack::V2 { .. } => self
                 .v2_positions
                 .get(idx)
@@ -215,7 +242,9 @@ impl LpView {
     /// Indices to walk with ↑↓ — prefer positions that still hold liquidity.
     pub(crate) fn list_nav_indices(&self) -> Vec<usize> {
         let len = self.list_len();
-        let liquid: Vec<usize> = (0..len).filter(|&i| self.position_has_liquidity(i)).collect();
+        let liquid: Vec<usize> = (0..len)
+            .filter(|&i| self.position_has_liquidity(i))
+            .collect();
         if liquid.is_empty() {
             (0..len).collect()
         } else {
@@ -262,21 +291,10 @@ impl LpView {
         }
         self.clamp_list_sel();
         self.list_action_idx = Some(0);
-        // Key shortcuts live on the bottom hint bar only (avoid duplicating status).
-        self.status = match self.stack {
-            LpStack::V3 { .. } => self
-                .v3_positions
-                .get(self.sel)
-                .and_then(|p| {
-                    super::helpers::v3_manage_hint(p.liquidity, p.tokens_owed0, p.tokens_owed1)
-                })
-                .unwrap_or("")
-                .into(),
-            LpStack::V2 { .. } => String::new(),
-        };
+        self.status = self.list_action_status_line();
     }
 
-    /// Letter shortcut from the focused position view (`i` / `d` / `c`, or V2 `r`).
+    /// Letter shortcut from the focused position view (`i` / `d` / `c` / `s`, or V2 `r` / `s`).
     pub(crate) fn apply_list_action_key(&mut self, key: char) -> bool {
         if self.list_action_idx.is_none() {
             return false;
@@ -285,54 +303,183 @@ impl LpView {
             (LpStack::V3 { .. }, 'i') => Tab::Increase,
             (LpStack::V3 { .. }, 'd') => Tab::Decrease,
             (LpStack::V3 { .. }, 'c') => Tab::Collect,
+            (LpStack::V3 { .. }, 's') => Tab::Transfer,
             (LpStack::V2 { .. }, 'r') => Tab::Remove,
+            (LpStack::V2 { .. }, 's') => Tab::Transfer,
             _ => return false,
         };
-        self.list_action_idx = None;
-        self.tab = tab;
-        self.on_tab_changed();
-        let pos_label = match self.stack {
-            LpStack::V3 { .. } => self
-                .v3_positions
-                .get(self.sel)
-                .map(|p| format!("NFT #{}", p.token_id))
-                .unwrap_or_else(|| format!("row {}", self.sel + 1)),
-            LpStack::V2 { .. } => format!("pair {}", self.sel + 1),
-        };
-        self.status = format!(
-            "{} · {pos_label} · ←→ tabs · Enter confirm · Esc list",
-            tab.label()
-        );
+        self.open_manage_tab(tab);
         true
     }
 
     /// Leave List action focus and open the chosen manage tab for `sel`.
     pub(crate) fn enter_list_action(&mut self) {
         let actions = self.list_manage_actions();
-        let Some(tab) = actions.first().copied() else {
+        let idx = self.list_action_idx.unwrap_or(0);
+        let Some(tab) = actions.get(idx).copied() else {
             self.list_action_idx = None;
             return;
         };
+        self.open_manage_tab(tab);
+    }
+
+    pub(crate) fn open_manage_tab(&mut self, tab: Tab) {
         self.list_action_idx = None;
         self.tab = tab;
         self.on_tab_changed();
-        let pos_label = match self.stack {
-            LpStack::V3 { .. } => self
-                .v3_positions
-                .get(self.sel)
-                .map(|p| format!("NFT #{}", p.token_id))
-                .unwrap_or_else(|| format!("row {}", self.sel + 1)),
-            LpStack::V2 { .. } => format!("pair {}", self.sel + 1),
+        if tab == Tab::Increase {
+            self.prefill_increase_amounts();
+        }
+        if tab == Tab::Transfer {
+            self.lock_transfer_from_selection();
+            self.focus = Focus::Recipient;
+        }
+        let pos_label = match (&tab, self.transfer_lock.as_deref()) {
+            (Tab::Transfer, Some(TransferLock::V3 { token_id, .. })) => {
+                format!("NFT #{token_id}")
+            }
+            (Tab::Transfer, Some(TransferLock::V2 { .. })) => "V2 LP".into(),
+            (Tab::Transfer, None) | (_, _) => match self.stack {
+                LpStack::V3 { .. } => self
+                    .v3_positions
+                    .get(self.sel)
+                    .map(|p| format!("NFT #{}", p.token_id))
+                    .unwrap_or_else(|| format!("row {}", self.sel + 1)),
+                LpStack::V2 { .. } => format!("pair {}", self.sel + 1),
+            },
         };
-        self.status = format!(
-            "{} · {pos_label} · ←→ tabs · Enter confirm · Esc list",
-            tab.label()
-        );
+        let nav = if tab == Tab::Transfer {
+            "locked · Enter confirm · Esc list"
+        } else {
+            "←→ tabs · Enter confirm · Esc list"
+        };
+        self.status = format!("{} · {pos_label} · {nav}", tab.label());
+    }
+
+    /// Pin pool/pair (+ full V2 balance) so Transfer cannot drift to another LP.
+    pub(crate) fn lock_transfer_from_selection(&mut self) {
+        self.transfer_lock = match self.stack {
+            LpStack::V3 { .. } => self.v3_positions.get(self.sel).map(|p| {
+                Box::new(TransferLock::V3 {
+                    token_id: p.token_id,
+                    pool: p.pool,
+                    token0: p.token0,
+                    token1: p.token1,
+                })
+            }),
+            LpStack::V2 { .. } => self.v2_positions.get(self.sel).map(|p| {
+                Box::new(TransferLock::V2 {
+                    pair: p.pair,
+                    token0: p.token0,
+                    token1: p.token1,
+                    amount: p.lp_balance,
+                })
+            }),
+        };
+        if let Some(TransferLock::V2 { amount, .. }) = self.transfer_lock.as_deref() {
+            self.liquidity.set_value(amount.to_string());
+            self.decrease_preset_idx = super::types::DECREASE_PRESETS.len().saturating_sub(1);
+            self.decrease_preset_applied = Some(self.decrease_preset_idx);
+        }
+        let lp_addr = self
+            .transfer_lock
+            .as_deref()
+            .map(|l| l.contract())
+            .filter(|a| !a.is_zero())
+            .map(super::helpers::full_contract_addr)
+            .unwrap_or_default();
+        self.transfer_lp.set_value(lp_addr);
+        self.transfer_to.set_value("");
+    }
+
+    pub(crate) fn clear_transfer_lock(&mut self) {
+        self.transfer_lock = None;
+        self.transfer_lp.set_value("");
+    }
+
+    /// Small default deposits for Increase (human units); user edits before send.
+    pub(crate) fn prefill_increase_amounts(&mut self) {
+        if self.amount0.value().trim().is_empty() || self.amount0.value().trim() == "0.0" {
+            self.amount0.set_value("0.01");
+        }
+        if self.amount1.value().trim().is_empty() || self.amount1.value().trim() == "0.0" {
+            self.amount1.set_value("0.01");
+        }
     }
 
     pub(crate) fn close_list_actions(&mut self) {
         self.list_action_idx = None;
         self.status = "↑↓ select · Enter open · ←→ tabs · r reload".into();
+    }
+
+    /// Open the selected V3 pool / V2 pair in Look Scanner (or the chain explorer).
+    pub(crate) fn open_selected_pool_scanner(&mut self) -> KeyOutcome {
+        use vaughan_core::chains::evm::networks::explorer_address_url;
+
+        let addr = if self.tab == Tab::Transfer {
+            self.transfer_lock
+                .as_ref()
+                .map(|l| l.contract())
+                .filter(|a| !a.is_zero())
+        } else {
+            match self.stack {
+                LpStack::V3 { .. } => self.v3_positions.get(self.sel).map(|p| p.pool),
+                LpStack::V2 { .. } => self.v2_positions.get(self.sel).map(|p| p.pair),
+            }
+            .filter(|a| !a.is_zero())
+        };
+        let Some(addr) = addr else {
+            self.status = "No pool contract on this position".into();
+            return KeyOutcome::Consumed;
+        };
+        let Some(url) = explorer_address_url(self.chain_id, addr) else {
+            self.status = "No block explorer configured for this network".into();
+            return KeyOutcome::Consumed;
+        };
+        match super::helpers::open_explorer_url(&url) {
+            Ok(()) => {
+                let name = if self.chain_id == 943 {
+                    "Look Scanner"
+                } else if self.chain_id == 369 {
+                    "PulseScan"
+                } else {
+                    "block explorer"
+                };
+                KeyOutcome::Flash(format!("Opened {name}"))
+            }
+            Err(e) => {
+                self.status = e;
+                KeyOutcome::Consumed
+            }
+        }
+    }
+
+    /// Copy the selected pool / pair contract (checksummed) to the clipboard.
+    pub(crate) fn copy_selected_pool_address(&mut self) -> KeyOutcome {
+        let addr = if self.tab == Tab::Transfer {
+            self.transfer_lock
+                .as_ref()
+                .map(|l| l.contract())
+                .filter(|a| !a.is_zero())
+        } else {
+            match self.stack {
+                LpStack::V3 { .. } => self.v3_positions.get(self.sel).map(|p| p.pool),
+                LpStack::V2 { .. } => self.v2_positions.get(self.sel).map(|p| p.pair),
+            }
+            .filter(|a| !a.is_zero())
+        };
+        let Some(addr) = addr else {
+            self.status = "No pool contract on this position".into();
+            return KeyOutcome::Consumed;
+        };
+        let text = super::helpers::full_contract_addr(addr);
+        match crate::clipboard::copy_text(&text) {
+            Ok(()) => KeyOutcome::Flash("Contract address copied".into()),
+            Err(e) => {
+                self.status = e;
+                KeyOutcome::Consumed
+            }
+        }
     }
 
     pub(crate) fn on_tab_changed(&mut self) {
@@ -348,6 +495,18 @@ impl LpView {
                 self.decrease_preset_idx = 0;
             }
             self.sync_decrease_from_selection();
+        }
+        if self.tab == Tab::Increase {
+            self.prefill_increase_amounts();
+        }
+        if self.tab == Tab::Transfer {
+            // ←→ / on_tab_changed can land here; keep or refresh the lock.
+            if self.transfer_lock.is_none() {
+                self.lock_transfer_from_selection();
+            }
+            self.focus = Focus::Recipient;
+        } else {
+            self.clear_transfer_lock();
         }
     }
 

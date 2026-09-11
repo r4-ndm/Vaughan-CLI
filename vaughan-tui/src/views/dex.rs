@@ -20,8 +20,8 @@ use vaughan_core::core::is_allowed_dex_router;
 use vaughan_core::core::wiz4rd::{deployment_for_chain, WIZ4RD_FEE_TIERS, WZRD_SMOKE_943};
 use vaughan_core::core::{
     chain_label, cycle_dex_swap_venue, format_base_units, format_display_amount,
-    min_out_after_slippage, missing_router_hint, venue_quoter_v2, venue_swap_router, wpls_for_chain,
-    DexProtocol, DexVenue, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    min_out_after_slippage, missing_router_hint, venue_quoter_v2, venue_swap_router,
+    wpls_for_chain, DexProtocol, DexVenue, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;

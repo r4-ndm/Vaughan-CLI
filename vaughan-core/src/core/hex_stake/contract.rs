@@ -53,13 +53,9 @@ pub fn resolve_hex_contract(which: &str) -> Result<HexContractRef, String> {
                    views (currentDay/stakeLists). Use contract=phex for stake reads.",
         });
     }
-    let addr: Address = key
-        .parse()
-        .map_err(|_| {
-            format!(
-                "Invalid HEX contract selector \"{which}\". Use phex, ehex, or 0x address."
-            )
-        })?;
+    let addr: Address = key.parse().map_err(|_| {
+        format!("Invalid HEX contract selector \"{which}\". Use phex, ehex, or 0x address.")
+    })?;
     if addr == phex_address() {
         return resolve_hex_contract("phex");
     }
@@ -81,7 +77,10 @@ mod tests {
 
     #[test]
     fn resolves_phex_aliases_and_ehex() {
-        assert_eq!(resolve_hex_contract("HEX").unwrap().kind, HexContractKind::Phex);
+        assert_eq!(
+            resolve_hex_contract("HEX").unwrap().kind,
+            HexContractKind::Phex
+        );
         assert!(!resolve_hex_contract("ehex").unwrap().supports_staking);
         assert_eq!(
             resolve_hex_contract(&format!("{:#x}", phex_address()))

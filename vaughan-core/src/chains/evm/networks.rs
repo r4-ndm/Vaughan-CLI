@@ -383,6 +383,37 @@ pub fn get_network_by_chain_id(chain_id: u64) -> Option<EvmNetworkConfig> {
         .find(|n| n.chain_id == chain_id)
 }
 
+/// Block-explorer address page (`{explorer}/address/0x…`) when the chain has one.
+///
+/// Pulse testnet 943 → Look Scanner / PulseScan
+/// (`https://scan.v4.testnet.pulsechain.com/address/…`).
+pub fn explorer_address_url(chain_id: u64, address: alloy::primitives::Address) -> Option<String> {
+    let base = get_network_by_chain_id(chain_id)?
+        .explorer_url?
+        .trim_end_matches('/')
+        .to_string();
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{base}/address/{}", address.to_checksum(None)))
+}
+
+/// Block-explorer transaction page (`{explorer}/tx/0x…`) when the chain has one.
+pub fn explorer_tx_url(chain_id: u64, tx_hash: &str) -> Option<String> {
+    let base = get_network_by_chain_id(chain_id)?
+        .explorer_url?
+        .trim_end_matches('/')
+        .to_string();
+    if base.is_empty() {
+        return None;
+    }
+    let hash = tx_hash.trim();
+    if hash.is_empty() {
+        return None;
+    }
+    Some(format!("{base}/tx/{hash}"))
+}
+
 /// Resolve `wallet_switchEthereumChain` after hex/decimal quantity parsing.
 ///
 /// Some PulseChain dApps (Switch.win) send `chainId: "0x369"` meaning decimal
@@ -418,6 +449,36 @@ mod tests {
         assert_eq!(get_network_by_chain_id(42_161).unwrap().id, "arbitrum");
         assert_eq!(eip3770_short_name(42_161), "arb1");
         assert!(dapp_chain_picker_labels(42_161).contains(&"Arbitrum".to_string()));
+    }
+
+    #[test]
+    fn explorer_address_url_pulse_testnet_look_scanner() {
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+        let pool = Address::from_str("0x249e763770a8fa4535d54cc271594f9e0a4b8def").unwrap();
+        let url = explorer_address_url(943, pool).expect("943 has Look Scanner");
+        assert_eq!(
+            url,
+            format!(
+                "https://scan.v4.testnet.pulsechain.com/address/{}",
+                pool.to_checksum(None)
+            )
+        );
+        let main = explorer_address_url(369, pool).unwrap();
+        assert!(main.starts_with("https://scan.pulsechain.com/address/"));
+    }
+
+    #[test]
+    fn explorer_tx_url_pulse_testnet() {
+        let url = explorer_tx_url(
+            943,
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("943 has explorer");
+        assert_eq!(
+            url,
+            "https://scan.v4.testnet.pulsechain.com/tx/0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 
     #[test]

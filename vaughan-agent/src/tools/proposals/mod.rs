@@ -30,11 +30,12 @@ pub use propose_stealth_send::ProposeStealthSendTool;
 pub use propose_swap::ProposeSwapTool;
 pub use propose_token_launch::ProposeTokenLaunchTool;
 pub use propose_transfer::ProposeTransferTool;
-pub use propose_v2_lp::{ProposeV2AddTool, ProposeV2RemoveTool};
+pub use propose_v2_lp::{ProposeV2AddTool, ProposeV2RemoveTool, ProposeV2TransferLpTool};
 pub use propose_v3_create_pool::{ProposeV3CreatePoolTool, ProposeV3InitializePoolTool};
 pub use propose_v3_lp_deploy::ProposeV3LpDeployTool;
 pub use propose_v3_lp_lifecycle::{
     ProposeV3CollectTool, ProposeV3DecreaseTool, ProposeV3IncreaseTool,
+    ProposeV3TransferPositionTool,
 };
 pub use propose_v3_mint::ProposeV3MintTool;
 pub use propose_v3_swap::ProposeV3SwapTool;

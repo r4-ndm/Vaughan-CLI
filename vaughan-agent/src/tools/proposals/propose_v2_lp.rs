@@ -241,3 +241,97 @@ impl Tool for ProposeV2RemoveTool {
         Ok(serde_json::to_value(&proposal)?)
     }
 }
+
+#[derive(Default)]
+pub struct ProposeV2TransferLpTool;
+
+impl ProposeV2TransferLpTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Tool for ProposeV2TransferLpTool {
+    fn name(&self) -> &str {
+        "propose_v2_transfer_lp"
+    }
+
+    fn description(&self) -> &str {
+        "Draft transfer of V2 LP ERC-20 shares to another wallet. \
+         Never signs. Sentient auto-exec refuses — human Advisor approval required."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pair": { "type": "string", "description": "Pair / LP token contract address" },
+                "to": { "type": "string" },
+                "amount": {
+                    "type": "string",
+                    "description": "LP amount in raw base units (18 decimals typical)"
+                },
+                "explanation": { "type": "string" }
+            },
+            "required": ["pair", "to", "amount", "explanation"]
+        })
+    }
+
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value, AgentError> {
+        let from = context
+            .active_address
+            .ok_or_else(|| AgentError::InvalidToolCall("wallet_locked".into()))?;
+        let pair = parse_addr(
+            args.get("pair")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AgentError::InvalidToolCall("Missing pair".into()))?,
+            "pair",
+        )?;
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::InvalidToolCall("Missing to".into()))?;
+        let amount_raw = args
+            .get("amount")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::InvalidToolCall("Missing amount".into()))?;
+        let amount = U256::from_str(amount_raw.trim())
+            .map_err(|e| AgentError::InvalidToolCall(format!("amount: {e}")))?;
+        let explanation = require_explanation(&args)?;
+        let evm = vaughan_core::core::build_v2_transfer_lp_evm(
+            &format!("{from:#x}"),
+            context.chain_id,
+            pair,
+            to,
+            amount,
+        )
+        .map_err(|e| AgentError::InvalidToolCall(e.user_message()))?;
+        let calldata = hex::decode(evm.data.as_deref().unwrap_or("0x").trim_start_matches("0x"))
+            .map_err(|e| AgentError::InvalidToolCall(format!("calldata: {e}")))?;
+        let network = match context.chain_id {
+            369 => Some("pulsechain".into()),
+            943 => Some("pulsechain-testnet-v4".into()),
+            _ => None,
+        };
+        let proposal = attach_estimated_fee(
+            TxProposal::new(
+                format!("v2xfer_{}", rand_id()),
+                ProposalType::ContractCall {
+                    target: pair,
+                    function_name: Some("v2_transfer_lp".into()),
+                },
+                pair,
+                U256::ZERO,
+                Bytes::from(calldata),
+                65_000,
+                true,
+                format!("{explanation} — V2 LP transfer → {to}"),
+            )
+            .with_chain(context.chain_id, network),
+            context,
+        )
+        .await;
+        Ok(serde_json::to_value(&proposal)?)
+    }
+}

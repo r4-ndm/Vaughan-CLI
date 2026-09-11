@@ -10,9 +10,7 @@ use std::str::FromStr;
 use crate::error::WalletError;
 
 use super::contract::{resolve_hex_contract, HexContractRef};
-use super::types::{
-    HexGlobalState, HexSoftFail, HexStakeResult, HexStakeRow, HexStakesForAddress,
-};
+use super::types::{HexGlobalState, HexSoftFail, HexStakeResult, HexStakeRow, HexStakesForAddress};
 
 sol! {
     /// Minimal HEX stake view surface (Ethereum HEX / PulseChain state-fork).
@@ -68,10 +66,7 @@ async fn eth_call_raw(
 }
 
 /// Read HEX global stake state (`currentDay` + `globals`).
-pub async fn fetch_hex_global_state(
-    rpc_url: &str,
-    which: &str,
-) -> HexStakeResult<HexGlobalState> {
+pub async fn fetch_hex_global_state(rpc_url: &str, which: &str) -> HexStakeResult<HexGlobalState> {
     let contract = match resolve_hex_contract(which) {
         Ok(c) => c,
         Err(e) => {
@@ -179,11 +174,9 @@ async fn fetch_stakes_inner(
     let count_data = eth_call_raw(
         &provider,
         contract.address,
-        IHexStakeView::stakeCountCall {
-            stakerAddr: staker,
-        }
-        .abi_encode()
-        .into(),
+        IHexStakeView::stakeCountCall { stakerAddr: staker }
+            .abi_encode()
+            .into(),
     )
     .await?;
     let count = IHexStakeView::stakeCountCall::abi_decode_returns(&count_data)

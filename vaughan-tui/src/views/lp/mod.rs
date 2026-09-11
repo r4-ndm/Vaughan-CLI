@@ -1,8 +1,11 @@
 //! Browserless LP — wiz4rd V3 on testnet 943, 9inch V3 on Pulse mainnet 369.
 //!
 //! **List** opens first: ↑↓ select positions with liquidity, Enter focuses that
-//! row and ↑↓ picks Increase / Decrease / Collect (or V2 Remove), Enter opens
-//! the manage tab. Esc returns to the list.
+//! row and ↑↓ picks Increase / Decrease / Collect / Transfer (or V2 Remove /
+//! Transfer), Enter opens the manage tab. Esc returns to the list.
+//!
+//! **Transfer** locks the selected pool/pair into **F5 LP token** (not editable);
+//! **F4 Send to** is the only field. Esc back to the list to pick a different LP.
 //!
 //! **Add LP** mirrors [9inch V3 add liquidity](https://9inch.io/liquidity/add/v3?chain=pulse)
 //! and [9mm V3 range UI](https://dex.9mm.pro/add/PLS/…): pair + fee, four-column
@@ -70,6 +73,9 @@ impl LpView {
             dec0: Input::new(false, "decimals0"),
             dec1: Input::new(false, "decimals1"),
             liquidity: Input::new(false, "remove · raw units"),
+            transfer_to: Input::new(false, "0x recipient"),
+            transfer_lp: Input::new(false, "LP contract"),
+            transfer_lock: None,
             confirm_lines: Vec::new(),
             confirm_ui: None,
             range_preset_idx: 3,
@@ -98,6 +104,9 @@ impl LpView {
             lp_enable_last_label: String::new(),
             lp_enable_in_confirm: false,
             lp_reload_pending: false,
+            done_tx_hash: None,
+            done_title: String::new(),
+            confirm_custom_tokens: Vec::new(),
         };
         v.amount0.set_value("1");
         v.amount1.set_value("1");
@@ -116,6 +125,9 @@ impl LpView {
     }
 
     pub fn allows_footer_shortcuts(&self) -> bool {
+        if self.stage == Stage::Done {
+            return false;
+        }
         if self.stage != Stage::Input {
             if self.stage == Stage::Confirm {
                 return self
@@ -135,9 +147,21 @@ impl LpView {
         {
             return false;
         }
-        if self.tab != Tab::AddLp {
+        // Manage-row picker uses i/d/c/s — must not lose to global `s` → Home Send.
+        if self.list_action_idx.is_some() {
+            return false;
+        }
+        // Transfer / increase / … own F4–F5 and letter hotkeys; keep footer away.
+        if matches!(
+            self.tab,
+            Tab::Increase | Tab::Decrease | Tab::Collect | Tab::Remove | Tab::Transfer
+        ) {
+            return false;
+        }
+        if self.tab == Tab::List {
             return true;
         }
+        // AddLp
         match self.focus {
             Focus::None | Focus::Fee | Focus::Venue | Focus::RangePresets => true,
             Focus::Token0 => !self.token0_editing,
@@ -148,7 +172,8 @@ impl LpView {
             | Focus::Ratio
             | Focus::Amount0
             | Focus::Amount1
-            | Focus::Liquidity => false,
+            | Focus::Liquidity
+            | Focus::Recipient => false,
         }
     }
 

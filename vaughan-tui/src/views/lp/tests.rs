@@ -78,6 +78,40 @@ mod tests {
     }
 
     #[test]
+    fn full_pool_addr_is_checksummed_not_ellipsized() {
+        use super::super::helpers::{full_contract_addr, short_pair_addr};
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+        use vaughan_core::chains::evm::networks::explorer_address_url;
+        let pool = Address::from_str("0x249e763770a8fa4535d54cc271594f9e0a4b8def").unwrap();
+        let full = full_contract_addr(pool);
+        assert!(full.starts_with("0x"));
+        assert_eq!(full.len(), 42);
+        assert!(!full.contains('…'));
+        assert_ne!(full, short_pair_addr(pool));
+        let url = explorer_address_url(943, pool).unwrap();
+        assert!(url.contains("scan.v4.testnet.pulsechain.com"));
+        let lines = super::super::helpers::contract_explorer_lines(943, "Pool", pool);
+        let plain = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(plain.contains(&full));
+        assert!(!plain.contains('\u{1b}'));
+        assert!(!plain.contains("https://"));
+        let hint = lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(hint.contains("scan"));
+        assert!(hint.contains("y copy"));
+        assert!(!hint.contains("https://"));
+        assert!(!hint.contains('\u{1b}'));
+    }
+
+    #[test]
     fn v3_opens_on_list_tab() {
         let v = LpView::for_chain(369);
         assert_eq!(v.tab, Tab::List);
@@ -520,13 +554,109 @@ mod tests {
 
         v.tab = Tab::List;
         v.open_list_actions();
+        v.cycle_list_action(true); // → Decrease
         v.enter_list_action();
-        assert_eq!(v.tab, Tab::Increase, "Enter opens first action");
+        assert_eq!(v.tab, Tab::Decrease, "Enter opens selected action");
         assert!(v.list_action_idx.is_none());
 
         v.tab = Tab::List;
         v.open_list_actions();
+        v.enter_list_action();
+        assert_eq!(v.tab, Tab::Increase, "default selection is first action");
+        assert!(v.list_action_idx.is_none());
+
+        v.tab = Tab::List;
+        v.open_list_actions();
+        assert!(v.apply_list_action_key('s'));
+        assert_eq!(v.tab, Tab::Transfer);
+        assert!(
+            matches!(
+                v.transfer_lock.as_deref(),
+                Some(TransferLock::V3 { token_id, .. }) if *token_id == U256::from(7u64)
+            ),
+            "Transfer must lock the selected NFT"
+        );
+        assert!(
+            !v.allows_footer_shortcuts(),
+            "Transfer must not yield `s` to global Home Send"
+        );
+
+        v.tab = Tab::List;
+        v.clear_transfer_lock();
+        v.open_list_actions();
+        assert!(
+            !v.allows_footer_shortcuts(),
+            "list action picker must keep i/d/c/s"
+        );
         v.close_list_actions();
         assert!(v.list_action_idx.is_none());
+        assert!(v.allows_footer_shortcuts(), "idle list allows footer");
+    }
+
+    #[test]
+    fn done_screen_holds_tx_hash_for_copy_and_scan() {
+        let mut v = LpView::for_chain(943);
+        v.done_title = "Transfer broadcast".into();
+        v.done_tx_hash =
+            Some("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into());
+        v.stage = Stage::Done;
+        assert!(!v.allows_footer_shortcuts());
+        let url = vaughan_core::chains::evm::networks::explorer_tx_url(
+            943,
+            v.done_tx_hash.as_deref().unwrap(),
+        )
+        .expect("tx url");
+        assert!(url.contains("/tx/0xbbbb"));
+        v.dismiss_done();
+        assert_eq!(v.stage, Stage::Input);
+        assert_eq!(v.tab, Tab::List);
+        assert!(v.done_tx_hash.is_none());
+    }
+
+    #[test]
+    fn transfer_lock_pins_v2_pair_and_full_balance() {
+        use alloy::primitives::{Address, U256};
+        use std::str::FromStr;
+
+        let mut v = LpView::for_chain(369);
+        v.stack = LpStack::V2 {
+            venue: DexVenue::NineInch,
+        };
+        let pair = Address::from_str("0x249e763770a8fa4535d54cc271594f9e0a4b8def").unwrap();
+        let t0 = Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap();
+        let t1 = Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap();
+        v.v2_positions.push(V2LpPosition {
+            pair,
+            token0: t0,
+            token1: t1,
+            lp_balance: U256::from(1_000u64),
+            reserve0: U256::ZERO,
+            reserve1: U256::ZERO,
+            total_supply: U256::from(1_000u64),
+        });
+        v.sel = 0;
+        v.tab = Tab::Transfer;
+        v.lock_transfer_from_selection();
+        v.focus = Focus::Recipient;
+        match v.transfer_lock.as_deref() {
+            Some(TransferLock::V2 {
+                pair: locked_pair,
+                amount,
+                ..
+            }) => {
+                assert_eq!(*locked_pair, pair);
+                assert_eq!(*amount, U256::from(1_000u64));
+                assert_eq!(v.liquidity.value(), "1000");
+                assert!(
+                    v.transfer_lp
+                        .value()
+                        .eq_ignore_ascii_case(&format!("{pair:#x}")),
+                    "F5 must show locked pair: {}",
+                    v.transfer_lp.value()
+                );
+            }
+            other => panic!("expected V2 lock, got {other:?}"),
+        }
+        assert_eq!(v.focus, Focus::Recipient);
     }
 }

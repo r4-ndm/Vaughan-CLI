@@ -272,6 +272,7 @@ pub(crate) fn v3_liquidity_status(liquidity: u128) -> &'static str {
 }
 
 /// Compact Liq column for the position table.
+#[allow(dead_code)] // exercised by unit tests; list render uses full labels
 pub(crate) fn v3_liq_short(liquidity: u128) -> &'static str {
     match liquidity {
         0 => "Emp",
@@ -301,6 +302,7 @@ pub(crate) fn v3_range_label(tick_lower: i32, tick_upper: i32) -> &'static str {
 }
 
 /// Compact Range column.
+#[allow(dead_code)] // exercised by unit tests; list render uses full labels
 pub(crate) fn v3_range_short(tick_lower: i32, tick_upper: i32) -> &'static str {
     if tick_lower <= -887_000 && tick_upper >= 887_000 {
         "Full"
@@ -319,6 +321,7 @@ pub(crate) fn v3_fees_owed_label(owed0: u128, owed1: u128) -> &'static str {
 }
 
 /// Compact Fee column (`2%` / `.05%`).
+#[allow(dead_code)] // exercised by unit tests; list render uses full fee labels
 pub(crate) fn fee_tier_short(fee: u32) -> String {
     let pct = fee as f64 / 10_000.0;
     if pct >= 1.0 {
@@ -341,8 +344,6 @@ pub(crate) fn short_units(n: alloy::primitives::U256) -> String {
     let lead: String = s.chars().take(3).collect();
     if lead.len() == 1 {
         format!("{lead}e{exp}")
-    } else if lead.len() == 2 {
-        format!("{}.{}e{exp}", &lead[..1], &lead[1..])
     } else {
         format!("{}.{}e{exp}", &lead[..1], &lead[1..])
     }
@@ -461,7 +462,10 @@ pub(crate) fn v3_table_row_line(
     row.push(' ');
     row.push_str(&pad_col(v3_liquidity_status(p.liquidity), c.liq));
     row.push(' ');
-    row.push_str(&pad_col(v3_range_label(p.tick_lower, p.tick_upper), c.range));
+    row.push_str(&pad_col(
+        v3_range_label(p.tick_lower, p.tick_upper),
+        c.range,
+    ));
     row.push(' ');
     row.push_str(&pad_col(
         v3_fees_owed_label(p.tokens_owed0, p.tokens_owed1),
@@ -502,27 +506,21 @@ pub(crate) fn v3_focused_detail_lines(
     let fee1 = compact_token_amount(&U256::from(p.tokens_owed1), d1);
     let range_st = p.range_status().label();
     let range_kind = v3_range_label(p.tick_lower, p.tick_upper);
-    let pool_s = if p.pool.is_zero() {
-        "—".into()
-    } else {
-        short_pair_addr(p.pool)
-    };
 
     let (unit0, unit1) = if p.sqrt_price_x96.is_zero() {
         ("—".into(), "—".into())
     } else {
-        match pool_tick_to_human_price(
-            chain_id,
-            p.token0,
-            p.token1,
-            d0,
-            d1,
-            p.tick_current,
-        ) {
+        match pool_tick_to_human_price(chain_id, p.token0, p.token1, d0, d1, p.tick_current) {
             Ok(spot) => (
                 format!("1={spot} {sym1}"),
-                match pool_tick_to_human_price(chain_id, p.token1, p.token0, d1, d0, -p.tick_current)
-                {
+                match pool_tick_to_human_price(
+                    chain_id,
+                    p.token1,
+                    p.token0,
+                    d1,
+                    d0,
+                    -p.tick_current,
+                ) {
                     Ok(inv) => format!("1={inv} {sym0}"),
                     Err(_) => "—".into(),
                 },
@@ -537,19 +535,19 @@ pub(crate) fn v3_focused_detail_lines(
         .fg(brand::accent_color())
         .add_modifier(Modifier::BOLD);
 
-    vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             format!("YOUR POSITION · NFT #{} · {range_st}", p.token_id),
             title,
         )),
-        Line::from(Span::styled(
-            format!("  DEX   · {venue_label} V3"),
-            muted,
-        )),
-        Line::from(Span::styled(
-            format!("  Pool  · {pool_s}"),
-            muted,
-        )),
+        Line::from(Span::styled(format!("  DEX   · {venue_label} V3"), muted)),
+    ];
+    if !p.pool.is_zero() {
+        lines.extend(contract_explorer_lines(chain_id, "Pool", p.pool));
+    } else {
+        lines.push(Line::from(Span::styled("  Pool  · —", muted)));
+    }
+    lines.extend([
         Line::from(Span::styled(
             format!("  Fee   · {}", fee_tier_display(p.fee)),
             muted,
@@ -592,11 +590,8 @@ pub(crate) fn v3_focused_detail_lines(
             body,
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            format!("  Liquidity   {}", p.liquidity),
-            body,
-        )),
-    ]
+    ]);
+    lines
 }
 
 /// V2 column widths (Pair · Share · Amt0 · Amt1 · LP · Pair#) — even split; drop trailing on narrow.
@@ -636,7 +631,7 @@ pub(crate) fn v2_table_cols(term_width: u16) -> V2TableCols {
     }
 }
 
-fn decimals_for_token(
+pub(crate) fn decimals_for_token(
     addr: alloy::primitives::Address,
     assets: &[Balance],
     custom: &[CustomToken],
@@ -684,7 +679,10 @@ fn compact_human_float(human: &str) -> String {
     } else if abs >= 1.0 {
         trim_float_string(v)
     } else if abs > 0.0 {
-        format!("{v:.4}").trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{v:.4}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     } else {
         "0".into()
     }
@@ -706,6 +704,90 @@ pub(crate) fn short_pair_addr(addr: alloy::primitives::Address) -> String {
         return raw;
     }
     format!("{}…{}", &raw[..6], &raw[raw.len().saturating_sub(4)..])
+}
+
+/// Checksummed `0x…` contract for copy-paste into a block explorer.
+pub(crate) fn full_contract_addr(addr: alloy::primitives::Address) -> String {
+    addr.to_checksum(None)
+}
+
+/// Pool / pair: plain address + short `scan` affordance (`o` opens Look Scanner).
+///
+/// No OSC-8 hyperlinks — many terminals (and ratatui) print the escape junk
+/// literally. `o` / system browser is the reliable open path.
+pub(crate) fn contract_explorer_lines(
+    chain_id: u64,
+    label: &str,
+    addr: alloy::primitives::Address,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use vaughan_core::chains::evm::networks::explorer_address_url;
+
+    let checksum = full_contract_addr(addr);
+    let muted = Style::default().fg(Color::DarkGray);
+    let body = Style::default().fg(brand::body_color());
+    let link_style = Style::default()
+        .fg(brand::accent_color())
+        .add_modifier(Modifier::UNDERLINED);
+
+    let mut out = vec![Line::from(vec![
+        Span::styled(format!("  {label}  · "), muted),
+        Span::styled(checksum, body),
+    ])];
+
+    if explorer_address_url(chain_id, addr).is_some() {
+        out.push(Line::from(vec![
+            Span::styled("         ", muted),
+            Span::styled("scan", link_style),
+            Span::styled(" · y copy · o open", muted),
+        ]));
+    } else {
+        out.push(Line::from(Span::styled("         y copy address", muted)));
+    }
+    out
+}
+
+/// Open a Vaughan-built explorer HTTPS URL in the system browser (Look Scanner, etc.).
+pub(crate) fn open_explorer_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    let parsed = url::Url::parse(url).map_err(|e| format!("invalid explorer URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("explorer URL must be https".into());
+    }
+    let host = parsed.host_str().unwrap_or("");
+    let allowed = vaughan_core::chains::evm::networks::builtin_networks()
+        .into_iter()
+        .filter_map(|n| n.explorer_url)
+        .filter_map(|base| url::Url::parse(&base).ok())
+        .filter_map(|u| u.host_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    if !allowed.iter().any(|h| h == host) {
+        return Err(format!("refusing to open non-catalog explorer host {host}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open failed: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|e| format!("start failed: {e}"))?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("xdg-open failed: {e}"))?;
+    }
+    Ok(())
 }
 
 /// V2 position table header (shared by List + manage).
@@ -793,13 +875,11 @@ pub(crate) fn v2_focused_detail_lines(
     let share = format_share_pct(p.pool_share_bps());
     // V2 positions are 50/50 of the underlying basket by design.
     let side_share = "50%";
-    let spot = v2_spot_token1_per_token0(p.reserve0, p.reserve1, d0, d1)
-        .unwrap_or_else(|| "—".into());
+    let spot =
+        v2_spot_token1_per_token0(p.reserve0, p.reserve1, d0, d1).unwrap_or_else(|| "—".into());
     // Inverse for token0 unit price in token1 terms already; token0 row shows 1 SYM0 = spot SYM1
     let unit0 = format!("1={spot} {sym1}");
-    let unit1 = if let Some(inv) =
-        v2_spot_token1_per_token0(p.reserve1, p.reserve0, d1, d0)
-    {
+    let unit1 = if let Some(inv) = v2_spot_token1_per_token0(p.reserve1, p.reserve0, d1, d0) {
         format!("1={inv} {sym0}")
     } else {
         "—".into()
@@ -816,19 +896,15 @@ pub(crate) fn v2_focused_detail_lines(
         .fg(brand::accent_color())
         .add_modifier(Modifier::BOLD);
 
-    vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             format!("YOUR POSITION · pool share {share}"),
             title,
         )),
-        Line::from(Span::styled(
-            format!("  DEX   · {venue_label} V2"),
-            muted,
-        )),
-        Line::from(Span::styled(
-            format!("  Pair  · {}", short_pair_addr(p.pair)),
-            muted,
-        )),
+        Line::from(Span::styled(format!("  DEX   · {venue_label} V2"), muted)),
+    ];
+    lines.extend(contract_explorer_lines(chain_id, "Pair", p.pair));
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled(
             format!(
@@ -860,19 +936,14 @@ pub(crate) fn v2_focused_detail_lines(
             body,
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            format!("  Pool share     {share}"),
-            body,
-        )),
-        Line::from(Span::styled(
-            format!("  LP balance     {lp}"),
-            body,
-        )),
+        Line::from(Span::styled(format!("  Pool share     {share}"), body)),
+        Line::from(Span::styled(format!("  LP balance     {lp}"), body)),
         Line::from(Span::styled(
             format!("  Total reserves {res0} {sym0} · {res1} {sym1}"),
             body,
         )),
-    ]
+    ]);
+    lines
 }
 
 fn trunc(s: &str, width: usize) -> String {

@@ -241,11 +241,7 @@ impl HexView {
         } else {
             for (i, s) in self.stakes.iter().enumerate() {
                 let hearts = format_display_amount(&s.staked_hearts, PHEX_HEARTS_DECIMALS, 4);
-                let lock = if s.still_locked {
-                    "locked"
-                } else {
-                    "ended"
-                };
+                let lock = if s.still_locked { "locked" } else { "ended" };
                 let mark = if i == self.selected { "›" } else { " " };
                 lines.push(ListItem::new(Line::from(format!(
                     "{mark} #{i} id={} · {hearts} HEX · {}d · {lock}",
@@ -371,7 +367,7 @@ impl HexView {
                     self.status = "No stake selected — press s to start".into();
                     return KeyOutcome::Consumed;
                 };
-                match self.build_end_tx(&from, &row) {
+                match self.build_end_tx(from, &row) {
                     Ok(tx) => {
                         let hearts =
                             format_display_amount(&row.staked_hearts, PHEX_HEARTS_DECIMALS, 4);
@@ -427,7 +423,7 @@ impl HexView {
                         return KeyOutcome::Consumed;
                     }
                 };
-                match self.prepare_start_confirm(&from) {
+                match self.prepare_start_confirm(from) {
                     Ok(()) => KeyOutcome::Consumed,
                     Err(e) => {
                         self.status = e;
@@ -442,10 +438,8 @@ impl HexView {
                 };
                 match input.handle_key(key) {
                     InputAction::Consumed => KeyOutcome::Consumed,
-                    InputAction::Submitted => self.handle_start_input(
-                        KeyEvent::new(KeyCode::Enter, key.modifiers),
-                        wallet,
-                    ),
+                    InputAction::Submitted => self
+                        .handle_start_input(KeyEvent::new(KeyCode::Enter, key.modifiers), wallet),
                     InputAction::Ignored => KeyOutcome::NotHandled,
                 }
             }
@@ -530,7 +524,8 @@ impl HexView {
             .stake_id
             .parse()
             .map_err(|_| "bad stake_id".to_string())?;
-        let data = encode_stake_end(u64::from(row.index), stake_id).map_err(|e| e.user_message())?;
+        let data =
+            encode_stake_end(u64::from(row.index), stake_id).map_err(|e| e.user_message())?;
         Ok(EvmTransaction {
             from: from.to_string(),
             to: format!("{:#x}", phex_address()),
@@ -554,8 +549,7 @@ pub async fn load_hex_stakes(
     HexStakeResult<HexStakesForAddress>,
     HexStakeResult<HexGlobalState>,
 ) {
-    let stakes =
-        vaughan_core::core::fetch_hex_stakes_for_address(rpc_url, owner, "phex", 50).await;
+    let stakes = vaughan_core::core::fetch_hex_stakes_for_address(rpc_url, owner, "phex", 50).await;
     let globals = vaughan_core::core::fetch_hex_global_state(rpc_url, "phex").await;
     (stakes, globals)
 }

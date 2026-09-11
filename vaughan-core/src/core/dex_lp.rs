@@ -24,7 +24,7 @@ use wiz4rd_sdk::abi::IPancakeV3Factory;
 use wiz4rd_sdk::config::Config;
 use wiz4rd_sdk::pool::{get_pool_info, PoolInfo};
 use wiz4rd_sdk::pool_address::get_pool_key;
-use wiz4rd_sdk::positions::{get_position, list_positions_from, PositionInfo};
+use wiz4rd_sdk::positions::{get_position, list_positions_from, position_owner, PositionInfo};
 use wiz4rd_sdk::tx::liquidity::{
     build_collect_tx, build_decrease_liquidity_tx, build_increase_liquidity_tx, build_mint_tx,
 };
@@ -1609,6 +1609,133 @@ pub fn build_v3_collect_evm(
     tx_to_evm(from, chain_id, req)
 }
 
+/// Transfer a V3 position NFT to another wallet (`transferFrom` on the venue NPM).
+///
+/// Does not call `ownerOf` — prefer [`build_v3_position_transfer_evm_checked`] when
+/// an RPC is available so a wrong `token_id` fails before broadcast.
+pub fn build_v3_position_transfer_evm(
+    from: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    token_id: U256,
+    recipient: &str,
+) -> Result<EvmTransaction, WalletError> {
+    use wiz4rd_sdk::abi::IERC721Minimal;
+
+    let npm = venue_position_manager(venue, chain_id).ok_or_else(|| {
+        WalletError::Other(format!(
+            "{} has no V3 NPM on chain {}",
+            venue.label(),
+            chain_id
+        ))
+    })?;
+    if !is_allowed_dex_router(chain_id, npm) {
+        return Err(WalletError::InvalidTransaction(format!(
+            "position_manager {npm:#x} not allowlisted for chain {chain_id}"
+        )));
+    }
+    let owner = Address::from_str(from.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
+    let to = Address::from_str(recipient.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid recipient address".into()))?;
+    if to == Address::ZERO {
+        return Err(WalletError::InvalidTransaction(
+            "recipient cannot be the zero address".into(),
+        ));
+    }
+    if to == owner {
+        return Err(WalletError::InvalidTransaction(
+            "recipient is already the position owner".into(),
+        ));
+    }
+    let call = IERC721Minimal::transferFromCall {
+        from: owner,
+        to,
+        tokenId: token_id,
+    };
+    let data = format!("0x{}", hex::encode(call.abi_encode()));
+    Ok(EvmTransaction {
+        from: from.to_string(),
+        to: format!("{npm:#x}"),
+        value: "0".into(),
+        data: Some(data),
+        gas_limit: None,
+        gas_price: None,
+        max_fee_per_gas: None,
+        max_priority_fee_per_gas: None,
+        nonce: None,
+        chain_id,
+    })
+}
+
+/// Like [`build_v3_position_transfer_evm`], but requires on-chain `ownerOf(tokenId) == from`.
+pub async fn build_v3_position_transfer_evm_checked(
+    from: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    rpc_url: &str,
+    token_id: U256,
+    recipient: &str,
+) -> Result<EvmTransaction, WalletError> {
+    let owner = Address::from_str(from.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
+    let cfg = v3_lp_sdk_config(venue, chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    let on_chain = position_owner(&provider, &cfg, token_id)
+        .await
+        .map_err(|e| WalletError::Other(format!("ownerOf({token_id}): {e}")))?;
+    if on_chain != owner {
+        return Err(WalletError::InvalidTransaction(format!(
+            "position NFT #{token_id} is owned by {on_chain:#x}, not the active wallet"
+        )));
+    }
+    build_v3_position_transfer_evm(from, venue, chain_id, token_id, recipient)
+}
+
+/// Next Enable (NPM approve) tx when increasing liquidity by `need0` / `need1`.
+#[allow(clippy::too_many_arguments)]
+pub async fn v3_lp_increase_enable_tx(
+    from: &str,
+    venue: DexVenue,
+    chain_id: u64,
+    rpc_url: &str,
+    token0: Address,
+    token1: Address,
+    need0: U256,
+    need1: U256,
+) -> Result<Option<(EvmTransaction, String)>, WalletError> {
+    let npm = venue_position_manager(venue, chain_id).ok_or_else(|| {
+        WalletError::Other(format!(
+            "{} has no V3 NPM on chain {}",
+            venue.label(),
+            chain_id
+        ))
+    })?;
+    let provider = connect_http(rpc_url)?;
+    v3_lp_first_needed_approve(&provider, from, chain_id, npm, token0, token1, need0, need1).await
+}
+
+/// Proportional principal mins for a partial decrease (then apply slippage BPS).
+pub fn v3_decrease_amount_mins(
+    pos_amount0: U256,
+    pos_amount1: U256,
+    pos_liquidity: u128,
+    remove_liquidity: u128,
+    slippage_bps: u32,
+) -> (U256, U256) {
+    if pos_liquidity == 0 || remove_liquidity == 0 {
+        return (U256::ZERO, U256::ZERO);
+    }
+    let remove = U256::from(remove_liquidity.min(pos_liquidity));
+    let total = U256::from(pos_liquidity);
+    let est0 = pos_amount0.saturating_mul(remove) / total;
+    let est1 = pos_amount1.saturating_mul(remove) / total;
+    (
+        min_out_after_slippage(est0, slippage_bps),
+        min_out_after_slippage(est1, slippage_bps),
+    )
+}
+
 pub use wiz4rd_math::display_price_range_from_preset;
 
 /// Full-range concentrated LP ticks for `fee` (smoke / first mint).
@@ -1800,5 +1927,52 @@ mod tests {
             lp_positions_scan_from_block(943, NPM_LOG_SCAN_FROM_BLOCK_943),
             NPM_LOG_SCAN_FROM_BLOCK_943
         );
+    }
+
+    #[test]
+    fn decrease_mins_are_proportional_then_slippage() {
+        let pos0 = U256::from(1_000_000u64);
+        let pos1 = U256::from(2_000_000u64);
+        let (a, b) = v3_decrease_amount_mins(pos0, pos1, 100, 25, 50);
+        // 25% of principal, then 50 bps (0.5%) haircut.
+        let raw0 = pos0 * U256::from(25u64) / U256::from(100u64);
+        let raw1 = pos1 * U256::from(25u64) / U256::from(100u64);
+        assert_eq!(a, min_out_after_slippage(raw0, 50));
+        assert_eq!(b, min_out_after_slippage(raw1, 50));
+        assert!(a > U256::ZERO && b > U256::ZERO);
+    }
+
+    #[test]
+    fn transfer_rejects_zero_and_self_recipient() {
+        let from = "0x0000000000000000000000000000000000000001";
+        let err = build_v3_position_transfer_evm(
+            from,
+            DexVenue::Wiz4rd,
+            943,
+            U256::from(1u64),
+            "0x0000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(err.user_message().contains("zero"));
+        let err =
+            build_v3_position_transfer_evm(from, DexVenue::Wiz4rd, 943, U256::from(1u64), from)
+                .unwrap_err();
+        assert!(err.user_message().contains("already"));
+    }
+
+    #[test]
+    fn transfer_calldata_is_erc721_transfer_from() {
+        use alloy::sol_types::SolCall;
+        use wiz4rd_sdk::abi::IERC721Minimal;
+
+        let from = "0x0000000000000000000000000000000000000001";
+        let to = "0x0000000000000000000000000000000000000002";
+        let tx = build_v3_position_transfer_evm(from, DexVenue::Wiz4rd, 943, U256::from(42u64), to)
+            .unwrap();
+        let data = tx.data.as_deref().unwrap();
+        let hex = data.trim_start_matches("0x");
+        assert!(hex.starts_with(&hex::encode(IERC721Minimal::transferFromCall::SELECTOR)));
+        let npm = venue_position_manager(DexVenue::Wiz4rd, 943).unwrap();
+        assert_eq!(tx.to.to_lowercase(), format!("{npm:#x}").to_lowercase());
     }
 }

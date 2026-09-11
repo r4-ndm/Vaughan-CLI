@@ -38,7 +38,11 @@ pub struct ProposalReview {
 ///
 /// LP Brew steps should still use [`crate::core::lp_deploy_step_verify_rows`];
 /// this covers the general typed / calldata cases.
-pub fn review_mcp_proposal(proposal: &TxProposal, native_symbol: &str, native_decimals: u8) -> ProposalReview {
+pub fn review_mcp_proposal(
+    proposal: &TxProposal,
+    native_symbol: &str,
+    native_decimals: u8,
+) -> ProposalReview {
     let mut review = ProposalReview::default();
     match &proposal.proposal_type {
         ProposalType::NativeTransfer { to, amount_wei } => {
@@ -195,7 +199,13 @@ pub fn review_mcp_proposal(proposal: &TxProposal, native_symbol: &str, native_de
                 label: "Target".into(),
                 value: format!("{target:#x}"),
             });
-            enrich_from_calldata(proposal, *target, &mut review, native_symbol, native_decimals);
+            enrich_from_calldata(
+                proposal,
+                *target,
+                &mut review,
+                native_symbol,
+                native_decimals,
+            );
         }
     }
 
@@ -265,9 +275,9 @@ fn enrich_from_calldata(
             },
         });
         if c.amount == U256::MAX {
-            review.safety_hints.push(
-                "Unlimited approve — spender can drain this token until revoked".into(),
-            );
+            review
+                .safety_hints
+                .push("Unlimited approve — spender can drain this token until revoked".into());
         } else if c.amount.is_zero() {
             review
                 .safety_hints
@@ -316,9 +326,9 @@ fn enrich_from_calldata(
             ));
         }
         if target == ehex_address() {
-            review.safety_hints.push(
-                "Target is eHEX (bridged) — staking lives on pHEX, not eHEX".into(),
-            );
+            review
+                .safety_hints
+                .push("Target is eHEX (bridged) — staking lives on pHEX, not eHEX".into());
         } else if target != phex_address() {
             review
                 .safety_hints
@@ -347,9 +357,9 @@ fn enrich_from_calldata(
                 .into(),
         );
         if target == ehex_address() {
-            review.safety_hints.push(
-                "Target is eHEX — stakeEnd belongs on pHEX".into(),
-            );
+            review
+                .safety_hints
+                .push("Target is eHEX — stakeEnd belongs on pHEX".into());
         } else if target != phex_address() {
             review
                 .safety_hints
@@ -370,9 +380,9 @@ fn enrich_from_calldata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, Bytes, U256};
     use crate::core::hex_stake::encode_stake_start;
     use crate::core::proposal::ProposalType;
+    use alloy::primitives::{address, Bytes, U256};
 
     #[test]
     fn reviews_unlimited_approve() {

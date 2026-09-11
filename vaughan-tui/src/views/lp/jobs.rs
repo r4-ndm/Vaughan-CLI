@@ -240,7 +240,7 @@ impl LpView {
                 self.lp_deploy_sent_step = LpDeployLastStep::None;
                 if self.lp_deploy_active {
                     if sent == LpDeployLastStep::AddLiquidity {
-                        self.stage = Stage::Input;
+                        self.stage = Stage::Done;
                         self.confirm_lines.clear();
                         self.lp_deploy_active = false;
                         self.lp_deploy_pending_resume = false;
@@ -249,7 +249,10 @@ impl LpView {
                         self.lp_pipeline_custom_gwei.clear();
                         self.lp_deploy_last_label.clear();
                         self.lp_deploy_followup_wait = None;
-                        self.status = format!("LP added ({})", receipt.hash);
+                        self.done_tx_hash = Some(receipt.hash.clone());
+                        self.done_title = "LP added".into();
+                        self.lp_reload_pending = true;
+                        self.status = "y copy hash · o open scan · Enter list".into();
                     } else {
                         self.lp_deploy_followup_wait = Some(match sent {
                             LpDeployLastStep::CreatePool => V3LpDeployWait::AfterCreatePool,
@@ -266,10 +269,16 @@ impl LpView {
                         self.status = "Preparing next LP step…".into();
                     }
                 } else {
-                    self.stage = Stage::Input;
+                    // One-shot manage tx (Transfer / increase / …): show Done with hash.
                     self.confirm_lines.clear();
+                    self.clear_transfer_lock();
+                    self.done_tx_hash = Some(receipt.hash.clone());
+                    if self.done_title.is_empty() {
+                        self.done_title = "LP transaction broadcast".into();
+                    }
+                    self.stage = Stage::Done;
                     self.lp_reload_pending = true;
-                    self.status = format!("LP tx ok ({}) — refreshing positions…", receipt.hash);
+                    self.status = "y copy hash · o open scan · Enter list".into();
                 }
             }
             UiJobResult::Send(Err(e)) => {

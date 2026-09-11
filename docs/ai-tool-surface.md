@@ -98,6 +98,8 @@ Same tool names on both profiles. Behavior differs by grant level:
 | `propose_v3_increase` | Yes | wiz4rd V3 increase liquidity |
 | `propose_v3_decrease` | Yes | wiz4rd V3 decrease liquidity |
 | `propose_v3_collect` | Yes | wiz4rd V3 collect fees |
+| `propose_v3_transfer_position` | Yes | Transfer V3 LP NFT (`transferFrom`); Sentient auto-exec refuses |
+| `propose_v2_transfer_lp` | Yes | Transfer V2 LP ERC-20 shares; Sentient auto-exec refuses |
 | `propose_wrap` | Yes | Native → WPLS (`deposit`) |
 | `propose_unwrap` | Yes | WPLS → native (`withdraw`) |
 | `propose_hex_stake_start` | Yes | pHEX `stakeStart` (hearts + days; 369) |

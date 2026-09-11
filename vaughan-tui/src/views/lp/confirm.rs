@@ -13,10 +13,11 @@ use tokio::runtime::Handle;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee, FeeSpeed};
 use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
-    build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v3_collect_evm,
-    build_v3_decrease_evm, build_v3_increase_evm, chain_label, default_full_range_ticks,
+    build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v2_transfer_lp_evm,
+    build_v3_collect_evm, build_v3_decrease_evm, build_v3_increase_evm,
+    build_v3_position_transfer_evm_checked, chain_label, default_full_range_ticks,
     display_price_range_from_preset, format_display_amount, lp_stack_for_chain, lp_v3_venue_picker,
-    min_out_after_slippage, v3_preview_mint_deposits_from_amount0,
+    min_out_after_slippage, v3_decrease_amount_mins, v3_preview_mint_deposits_from_amount0,
     v3_preview_mint_deposits_from_amount1, v3_range_ticks_from_human_prices,
     v3_sqrt_and_tick_for_preview, venue_position_manager, venue_swap_router, wpls_for_chain,
     DexProtocol, DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3PoolLifecycle, V3PositionInfo,
@@ -302,23 +303,21 @@ impl LpView {
             LpConfirmAction::Increase => {
                 lines.push(Line::from("Increase liquidity"));
                 if let Some(p) = self.v3_positions.get(self.sel) {
-                    let pair =
-                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1, &[], &[]);
+                    let pair = self.selected_v3_pair_label(p.token0, p.token1);
+                    let (sym0, sym1) = self.selected_v3_symbols(p.token0, p.token1);
                     lines.push(Line::from(format!("Position: {pair} · #{}", p.token_id)));
+                    lines.push(Line::from(format!(
+                        "Add:     {} {sym0} + {} {sym1}",
+                        self.amount0.value().trim(),
+                        self.amount1.value().trim()
+                    )));
                 }
-                let (sym0, sym1) = self.form_token_symbols();
-                lines.push(Line::from(format!(
-                    "Add:     {} {sym0} + {} {sym1}",
-                    self.amount0.value().trim(),
-                    self.amount1.value().trim()
-                )));
                 lines.push(Line::from(format!("Network: {net}")));
             }
             LpConfirmAction::Decrease => {
                 lines.push(Line::from("Remove liquidity"));
                 if let Some(p) = self.v3_positions.get(self.sel) {
-                    let pair =
-                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1, &[], &[]);
+                    let pair = self.selected_v3_pair_label(p.token0, p.token1);
                     lines.push(Line::from(format!("Position: {pair} · #{}", p.token_id)));
                     lines.push(Line::from(format!(
                         "Remove:  {} units (position {})",
@@ -332,12 +331,23 @@ impl LpView {
             LpConfirmAction::Collect => {
                 lines.push(Line::from("Collect tokens"));
                 if let Some(p) = self.v3_positions.get(self.sel) {
-                    let pair =
-                        super::helpers::v3_position_pair_label(self.chain_id, p.token0, p.token1, &[], &[]);
+                    let pair = self.selected_v3_pair_label(p.token0, p.token1);
+                    let (sym0, sym1) = self.selected_v3_symbols(p.token0, p.token1);
+                    let d0 = super::helpers::decimals_for_token(
+                        p.token0,
+                        &[],
+                        &self.confirm_custom_tokens,
+                    );
+                    let d1 = super::helpers::decimals_for_token(
+                        p.token1,
+                        &[],
+                        &self.confirm_custom_tokens,
+                    );
+                    let owed0 = format_display_amount(&p.tokens_owed0.to_string(), d0, 6);
+                    let owed1 = format_display_amount(&p.tokens_owed1.to_string(), d1, 6);
                     lines.push(Line::from(format!("Position: {pair} · #{}", p.token_id)));
                     lines.push(Line::from(format!(
-                        "Owed:    {} / {} (raw units)",
-                        p.tokens_owed0, p.tokens_owed1
+                        "Owed:    {owed0} {sym0} + {owed1} {sym1}"
                     )));
                 }
                 lines.push(Line::from(format!("Network: {net}")));
@@ -362,8 +372,86 @@ impl LpView {
                 )));
                 lines.push(Line::from(format!("Network: {net}")));
             }
+            LpConfirmAction::Transfer => {
+                lines.push(Line::from("Transfer LP position (locked)"));
+                match self.transfer_lock.as_deref() {
+                    Some(TransferLock::V3 {
+                        token_id,
+                        pool,
+                        token0,
+                        token1,
+                    }) => {
+                        let pair = self.selected_v3_pair_label(*token0, *token1);
+                        lines.push(Line::from(format!("NFT:     {pair} · #{token_id}")));
+                        if !pool.is_zero() {
+                            lines.push(Line::from(format!(
+                                "Pool:    {}",
+                                super::helpers::full_contract_addr(*pool)
+                            )));
+                        }
+                        lines.push(Line::from("Amount:  entire position NFT"));
+                    }
+                    Some(TransferLock::V2 {
+                        pair,
+                        token0,
+                        token1,
+                        amount,
+                    }) => {
+                        let label = self.selected_v3_pair_label(*token0, *token1);
+                        lines.push(Line::from(format!("Pair:    {label}")));
+                        lines.push(Line::from(format!(
+                            "Contract:{}",
+                            super::helpers::full_contract_addr(*pair)
+                        )));
+                        lines.push(Line::from(format!("LP:      {amount} units (100%)")));
+                    }
+                    None => {
+                        lines.push(Line::from("LP:      (lock missing)"));
+                    }
+                }
+                lines.push(Line::from(format!(
+                    "To:      {}",
+                    self.transfer_to.value().trim()
+                )));
+                lines.push(Line::from(format!("Network: {net}")));
+            }
         }
         lines
+    }
+
+    fn selected_v3_pair_label(
+        &self,
+        token0: alloy::primitives::Address,
+        token1: alloy::primitives::Address,
+    ) -> String {
+        super::helpers::v3_position_pair_label(
+            self.chain_id,
+            token0,
+            token1,
+            &[],
+            &self.confirm_custom_tokens,
+        )
+    }
+
+    fn selected_v3_symbols(
+        &self,
+        token0: alloy::primitives::Address,
+        token1: alloy::primitives::Address,
+    ) -> (String, String) {
+        (
+            super::helpers::symbol_for_token_address(
+                self.chain_id,
+                token0,
+                &[],
+                &self.confirm_custom_tokens,
+            ),
+            super::helpers::symbol_for_token_address(
+                self.chain_id,
+                token1,
+                &[],
+                &self.confirm_custom_tokens,
+            ),
+        )
     }
 
     fn form_pair_label(&self) -> String {
@@ -512,8 +600,14 @@ impl LpView {
             .map_err(|e| e.user_message())?
             .to_string();
         let rpc = wallet.active_rpc_url();
-        let amount0 = parse_swap_amount(self.amount0.value(), "amount0", 18)?;
-        let amount1 = parse_swap_amount(self.amount1.value(), "amount1", 18)?;
+        let custom = wallet.custom_tokens_for_active_chain();
+        let d0 = super::helpers::decimals_for_token(pos.token0, &[], &custom);
+        let d1 = super::helpers::decimals_for_token(pos.token1, &[], &custom);
+        let amount0 = parse_swap_amount(self.amount0.value(), "amount0", d0)?;
+        let amount1 = parse_swap_amount(self.amount1.value(), "amount1", d1)?;
+        if amount0.is_zero() && amount1.is_zero() {
+            return Err("Enter at least one deposit amount".into());
+        }
         build_v3_increase_evm(
             &from,
             self.venue,
@@ -544,6 +638,13 @@ impl LpView {
             .map_err(|e| e.user_message())?
             .to_string();
         let rpc = wallet.active_rpc_url();
+        let (amount0_min, amount1_min) = v3_decrease_amount_mins(
+            pos.amount0,
+            pos.amount1,
+            pos.liquidity,
+            liquidity,
+            DEFAULT_DEX_SLIPPAGE_BPS,
+        );
         build_v3_decrease_evm(
             &from,
             self.venue,
@@ -551,11 +652,52 @@ impl LpView {
             &rpc,
             pos.token_id,
             liquidity,
-            U256::ZERO,
-            U256::ZERO,
+            amount0_min,
+            amount1_min,
             None,
         )
         .map_err(|e| e.user_message())
+    }
+
+    pub(crate) fn build_transfer_tx(
+        &self,
+        wallet: &WalletState,
+        handle: &Handle,
+    ) -> Result<vaughan_core::chains::EvmTransaction, String> {
+        let to = self.transfer_to.value().trim();
+        if to.is_empty() {
+            return Err("Enter recipient address".into());
+        }
+        let lock = self
+            .transfer_lock
+            .as_deref()
+            .ok_or_else(|| "No LP locked — Esc to list and open Transfer again".to_string())?;
+        let from = wallet
+            .active_address()
+            .map_err(|e| e.user_message())?
+            .to_string();
+        match lock {
+            TransferLock::V3 { token_id, .. } => {
+                let rpc = wallet.active_rpc_url();
+                handle
+                    .block_on(build_v3_position_transfer_evm_checked(
+                        &from,
+                        self.venue,
+                        self.chain_id,
+                        &rpc,
+                        *token_id,
+                        to,
+                    ))
+                    .map_err(|e| e.user_message())
+            }
+            TransferLock::V2 { pair, amount, .. } => {
+                if amount.is_zero() {
+                    return Err("Locked LP balance is zero".into());
+                }
+                build_v2_transfer_lp_evm(&from, self.chain_id, *pair, to, *amount)
+                    .map_err(|e| e.user_message())
+            }
+        }
     }
 
     pub(crate) fn build_collect_tx(
@@ -797,6 +939,19 @@ impl LpView {
             return KeyOutcome::Consumed;
         };
         let tx = ui.pending_tx;
+        self.done_title = match &ui.action {
+            LpConfirmAction::Transfer => "Transfer broadcast".into(),
+            LpConfirmAction::Increase => "Increase broadcast".into(),
+            LpConfirmAction::Decrease => "Decrease broadcast".into(),
+            LpConfirmAction::Collect => "Collect broadcast".into(),
+            LpConfirmAction::V2Add => "Add LP broadcast".into(),
+            LpConfirmAction::V2Remove => "Remove LP broadcast".into(),
+            LpConfirmAction::Enable { symbol, .. } => format!("Enable {symbol} broadcast"),
+            LpConfirmAction::AddReview => "Add LP broadcast".into(),
+            LpConfirmAction::Deploy { label, .. } => {
+                format!("{} broadcast", friendly_deploy_action(label))
+            }
+        };
         if !matches!(ui.action, LpConfirmAction::Enable { .. }) {
             self.lp_deploy_sent_step = self.lp_deploy_last_step;
             self.lp_deploy_last_label = match &ui.action {

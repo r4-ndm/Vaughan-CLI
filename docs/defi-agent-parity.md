@@ -96,6 +96,7 @@ Legend: `[x]` agent-ready · `[~]` partial / escape-hatch only · `[ ]` missing
 | List my V3 positions | `list_v3_positions` | [x] |
 | Increase / decrease liquidity | `propose_v3_increase` / `_decrease` | [x] Phase E |
 | Collect fees | `propose_v3_collect` | [x] Phase E |
+| Transfer V3 NFT / V2 LP shares | `propose_v3_transfer_position` / `propose_v2_transfer_lp` | [x] (Sentient auto-exec refuses) |
 | Create V3 pool | `propose_v3_create_pool` / `propose_v3_initialize_pool` | [x] wiz4rd 943, 9inch 369 |
 | V2 add / remove LP | `propose_v2_add` / `propose_v2_remove` | [x] 9inch 369 |
 | List V2 positions | `list_v2_positions` | [x] 9inch 369 |

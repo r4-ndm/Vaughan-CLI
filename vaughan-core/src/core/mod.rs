@@ -14,7 +14,6 @@ pub mod dex_routers;
 pub mod dexscreener;
 pub mod hex_stake;
 pub mod lp_brew;
-pub mod proposal_review;
 pub mod lp_deploy;
 pub mod lp_smoke;
 pub mod mcp_host;
@@ -24,6 +23,7 @@ pub mod persistence;
 pub mod piteas;
 pub mod profile;
 pub mod proposal;
+pub mod proposal_review;
 pub mod proposal_verify;
 pub mod provider_session;
 pub mod site_grants;
@@ -74,19 +74,21 @@ pub use dex_catalog::{
 pub use dex_lp::{
     build_v3_collect_evm, build_v3_create_pool_evm, build_v3_decrease_evm, build_v3_increase_evm,
     build_v3_initialize_pool_evm, build_v3_initialize_pool_from_human_price_evm,
-    build_v3_initialize_pool_from_tick_evm, build_v3_mint_evm, default_full_range_ticks,
-    discover_v3_pool_fee_tier, display_price_range_from_preset, enrich_v3_lp_positions,
-    fetch_v3_lp_pool_quote, get_v3_lp_position, is_lp_rpc_transport, list_v3_lp_position_views,
-    list_v3_lp_positions, load_v3_lp_pool, lp_deploy_fixup_swapped_amounts, merge_rpc_urls,
-    pool_tick_to_human_price, sqrt_price_x96_from_tick, v3_initial_tick_from_human_price,
-    v3_lp_build_next_enable_tx, v3_lp_deploy_mint_amounts, v3_lp_mint_tick_range,
-    v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, v3_lp_sdk_config, v3_lp_token_enable_status,
-    v3_pool_lifecycle, v3_pool_sqrt_u160, v3_preview_mint_deposits_from_amount0,
-    v3_preview_mint_deposits_from_amount0_ticks, v3_preview_mint_deposits_from_amount1,
-    v3_preview_mint_deposits_from_amount1_ticks, v3_range_status, v3_range_ticks_from_human_prices,
-    v3_sqrt_and_tick_for_preview, with_lp_rpc_urls, wiz4rd_sdk_config, V3LpDeployContext,
-    V3LpDeployParams, V3LpDeployWait, V3LpPoolQuote, V3LpPositionView, V3PoolLifecycle,
-    V3PositionInfo, V3RangeStatus, V3_LP_FEE_TIERS,
+    build_v3_initialize_pool_from_tick_evm, build_v3_mint_evm, build_v3_position_transfer_evm,
+    build_v3_position_transfer_evm_checked, default_full_range_ticks, discover_v3_pool_fee_tier,
+    display_price_range_from_preset, enrich_v3_lp_positions, fetch_v3_lp_pool_quote,
+    get_v3_lp_position, is_lp_rpc_transport, list_v3_lp_position_views, list_v3_lp_positions,
+    load_v3_lp_pool, lp_deploy_fixup_swapped_amounts, merge_rpc_urls, pool_tick_to_human_price,
+    sqrt_price_x96_from_tick, v3_decrease_amount_mins, v3_initial_tick_from_human_price,
+    v3_lp_build_next_enable_tx, v3_lp_deploy_mint_amounts, v3_lp_increase_enable_tx,
+    v3_lp_mint_tick_range, v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, v3_lp_sdk_config,
+    v3_lp_token_enable_status, v3_pool_lifecycle, v3_pool_sqrt_u160,
+    v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount0_ticks,
+    v3_preview_mint_deposits_from_amount1, v3_preview_mint_deposits_from_amount1_ticks,
+    v3_range_status, v3_range_ticks_from_human_prices, v3_sqrt_and_tick_for_preview,
+    with_lp_rpc_urls, wiz4rd_sdk_config, V3LpDeployContext, V3LpDeployParams, V3LpDeployWait,
+    V3LpPoolQuote, V3LpPositionView, V3PoolLifecycle, V3PositionInfo, V3RangeStatus,
+    V3_LP_FEE_TIERS,
 };
 pub use dex_quote::{
     discover_v3_swap_route, encode_v3_packed_path, erc20_allowance_covers, min_out_after_slippage,
@@ -99,6 +101,12 @@ pub use dex_routers::{
 pub use dexscreener::{
     catalog_chain_id_for_dex_slug, resolve_dex_chain, DexScreenerClient, DEFAULT_DEXSCREENER_CHAIN,
     DEXSCREENER_API_BASE,
+};
+pub use hex_stake::{
+    ehex_address, encode_stake_end, encode_stake_start, fetch_hex_global_state,
+    fetch_hex_stakes_for_address, phex_address, resolve_hex_contract, HexContractKind,
+    HexContractRef, HexGlobalState, HexSoftFail, HexStakeResult, HexStakeRow, HexStakesForAddress,
+    HEX_STAKE_SOURCE, MAX_STAKE_DAYS, MIN_STAKE_DAYS, PHEX_HEARTS_DECIMALS,
 };
 pub use lp_brew::{
     load_brew_file, lp_human_inputs_to_deploy_params, pool_price_to_user_price,
@@ -141,12 +149,6 @@ pub use proposal::{
     MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT, MCP_ENQUEUE_RATE_WINDOW_SECS,
     MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
 };
-pub use hex_stake::{
-    ehex_address, encode_stake_end, encode_stake_start, fetch_hex_global_state,
-    fetch_hex_stakes_for_address, phex_address, resolve_hex_contract, HexContractKind,
-    HexContractRef, HexGlobalState, HexSoftFail, HexStakeResult, HexStakeRow, HexStakesForAddress,
-    HEX_STAKE_SOURCE, MAX_STAKE_DAYS, MIN_STAKE_DAYS, PHEX_HEARTS_DECIMALS,
-};
 pub use proposal_review::{review_mcp_proposal, ProposalReview};
 pub use proposal_verify::{
     lp_deploy_mint_success_rows, lp_deploy_step_verify_rows, lp_deploy_step_verify_title,
@@ -167,9 +169,9 @@ pub use transaction::{
     format_base_units, format_display_amount, parse_native_amount, TransactionService,
 };
 pub use v2_lp::{
-    build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, default_v2_watch_pairs,
-    get_v2_pair_address, list_v2_lp_positions, v2_pool_share_bps, v2_spot_token1_per_token0,
-    v2_underlying_amounts, V2LpPosition,
+    build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v2_transfer_lp_evm,
+    default_v2_watch_pairs, get_v2_pair_address, list_v2_lp_positions, v2_pool_share_bps,
+    v2_spot_token1_per_token0, v2_underlying_amounts, V2LpPosition,
 };
 pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, UnlockPayload, WalletState};
 pub use wiz4rd::{

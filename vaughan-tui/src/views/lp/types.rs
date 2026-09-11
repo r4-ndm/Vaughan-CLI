@@ -32,6 +32,8 @@ pub(crate) enum Tab {
     Decrease,
     Collect,
     Remove,
+    /// Send V3 NFT or V2 LP shares to another wallet.
+    Transfer,
 }
 
 impl Tab {
@@ -43,6 +45,7 @@ impl Tab {
             Self::Decrease => "Decrease",
             Self::Collect => "Collect",
             Self::Remove => "Remove",
+            Self::Transfer => "Transfer",
         }
     }
 
@@ -53,11 +56,12 @@ impl Tab {
             Self::Increase,
             Self::Decrease,
             Self::Collect,
+            Self::Transfer,
         ]
     }
 
     pub(crate) fn v2_cycle() -> &'static [Self] {
-        &[Self::List, Self::AddLp, Self::Remove]
+        &[Self::List, Self::AddLp, Self::Remove, Self::Transfer]
     }
 
     pub(crate) fn next(self, stack: LpStack) -> Self {
@@ -83,6 +87,8 @@ impl Tab {
 pub(crate) enum Stage {
     Input,
     Confirm,
+    /// Post-broadcast success (tx hash + copy / open explorer).
+    Done,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +124,8 @@ pub(crate) enum LpConfirmAction {
     Collect,
     V2Add,
     V2Remove,
+    /// Send V3 position NFT or V2 LP ERC-20 to `recipient`.
+    Transfer,
 }
 
 /// V3 add-LP: review once (PCS preview modal), then execute setup/approve/mint steps.
@@ -157,6 +165,35 @@ pub(crate) enum Focus {
     Amount1,
     /// Custom remove amount on Decrease / V2 Remove tabs.
     Liquidity,
+    /// Destination wallet on Transfer tab.
+    Recipient,
+}
+
+/// Snapshot of the List row that opened Transfer — identity is fixed until Esc.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TransferLock {
+    V3 {
+        token_id: alloy::primitives::U256,
+        pool: alloy::primitives::Address,
+        token0: alloy::primitives::Address,
+        token1: alloy::primitives::Address,
+    },
+    V2 {
+        pair: alloy::primitives::Address,
+        token0: alloy::primitives::Address,
+        token1: alloy::primitives::Address,
+        /// Full LP balance at lock time (partial sends are not offered).
+        amount: alloy::primitives::U256,
+    },
+}
+
+impl TransferLock {
+    pub(crate) fn contract(&self) -> alloy::primitives::Address {
+        match self {
+            Self::V3 { pool, .. } => *pool,
+            Self::V2 { pair, .. } => *pair,
+        }
+    }
 }
 
 pub(crate) struct SortedPair {
@@ -245,6 +282,12 @@ pub struct LpView {
     pub(crate) dec0: Input,
     pub(crate) dec1: Input,
     pub(crate) liquidity: Input,
+    /// Recipient for Transfer tab (checksummed `0x…`).
+    pub(crate) transfer_to: Input,
+    /// Locked LP / pool contract shown in F5 (not editable).
+    pub(crate) transfer_lp: Input,
+    /// Locked position for Transfer (set when opening the tab from List).
+    pub(crate) transfer_lock: Option<Box<TransferLock>>,
     /// Non-interactive status lines (e.g. between deploy steps).
     pub(crate) confirm_lines: Vec<Line<'static>>,
     pub(crate) confirm_ui: Option<Box<LpConfirmUi>>,
@@ -289,4 +332,10 @@ pub struct LpView {
     pub(crate) lp_enable_in_confirm: bool,
     /// Reload the position list after a successful manage tx (decrease/collect/…).
     pub(crate) lp_reload_pending: bool,
+    /// Last broadcast hash for [`Stage::Done`].
+    pub(crate) done_tx_hash: Option<String>,
+    /// Short title on the Done screen (e.g. "Transfer broadcast").
+    pub(crate) done_title: String,
+    /// Custom tokens snapshot for confirm pair labels (filled at submit).
+    pub(crate) confirm_custom_tokens: Vec<vaughan_core::core::CustomToken>,
 }

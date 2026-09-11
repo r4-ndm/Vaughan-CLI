@@ -795,13 +795,14 @@ fn mcp_proposal_verify_table(
     let net = wallet.networks().active();
     let review =
         vaughan_core::core::review_mcp_proposal(proposal, &net.native_symbol, net.decimals);
-    review.rows.into_iter().map(|r| (r.label, r.value)).collect()
+    review
+        .rows
+        .into_iter()
+        .map(|r| (r.label, r.value))
+        .collect()
 }
 
-fn mcp_proposal_safety_hints(
-    wallet: &WalletState,
-    proposal: &TxProposal,
-) -> Vec<String> {
+fn mcp_proposal_safety_hints(wallet: &WalletState, proposal: &TxProposal) -> Vec<String> {
     let net = wallet.networks().active();
     vaughan_core::core::review_mcp_proposal(proposal, &net.native_symbol, net.decimals).safety_hints
 }

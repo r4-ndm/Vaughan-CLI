@@ -474,6 +474,54 @@ pub fn build_v2_remove_liquidity_evm(
     })
 }
 
+/// Transfer V2 LP ERC-20 shares from the pair contract to another wallet.
+pub fn build_v2_transfer_lp_evm(
+    from: &str,
+    chain_id: u64,
+    pair: Address,
+    recipient: &str,
+    amount: U256,
+) -> Result<EvmTransaction, WalletError> {
+    if pair.is_zero() {
+        return Err(WalletError::InvalidTransaction(
+            "pair address cannot be zero".into(),
+        ));
+    }
+    if amount.is_zero() {
+        return Err(WalletError::InvalidTransaction(
+            "transfer amount must be > 0".into(),
+        ));
+    }
+    let to = Address::from_str(recipient.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid recipient address".into()))?;
+    if to == Address::ZERO {
+        return Err(WalletError::InvalidTransaction(
+            "recipient cannot be the zero address".into(),
+        ));
+    }
+    let owner = Address::from_str(from.trim())
+        .map_err(|_| WalletError::InvalidTransaction("invalid from address".into()))?;
+    if to == owner {
+        return Err(WalletError::InvalidTransaction(
+            "recipient is already the LP holder".into(),
+        ));
+    }
+    let service = crate::core::transaction::TransactionService::new();
+    let tx = service.build_erc20_transfer(
+        from,
+        format!("{pair:#x}"),
+        recipient,
+        amount.to_string(),
+        chain_id,
+    )?;
+    match tx {
+        crate::chains::ChainTransaction::Evm(evm) => Ok(evm),
+        _ => Err(WalletError::InvalidTransaction(
+            "expected an EVM LP transfer".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +604,22 @@ mod tests {
         let r1 = U256::from(2u64) * r0;
         let p = v2_spot_token1_per_token0(r0, r1, 18, 18).unwrap();
         assert_eq!(p, "2");
+    }
+
+    #[test]
+    fn transfer_lp_rejects_bad_recipient() {
+        let pair = Address::from_str("0x5b9F077A77db37F3Be0A5b5d31BAeff4bc5C0bD7").unwrap();
+        let from = "0x0000000000000000000000000000000000000001";
+        let err = build_v2_transfer_lp_evm(from, 369, pair, from, U256::from(1u64)).unwrap_err();
+        assert!(err.user_message().contains("already"));
+        let err = build_v2_transfer_lp_evm(
+            from,
+            369,
+            pair,
+            "0x0000000000000000000000000000000000000000",
+            U256::from(1u64),
+        )
+        .unwrap_err();
+        assert!(err.user_message().contains("zero"));
     }
 }
