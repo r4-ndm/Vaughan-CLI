@@ -1179,6 +1179,17 @@ impl WalletState {
         adapter.get_token_balance(token_address, address).await
     }
 
+    /// Read ERC-20 symbol / name / decimals for Send paste (strict: must be a
+    /// real contract with `decimals()` or a curated registry entry).
+    pub async fn resolve_erc20_metadata(
+        &self,
+        token_address: &str,
+    ) -> Result<(String, String, u8), WalletError> {
+        let (net, _) = self.active_context()?;
+        let adapter = self.adapter_for(net).await?;
+        adapter.resolve_erc20_for_transfer(token_address).await
+    }
+
     /// Import an ERC-20 by contract address (reads on-chain metadata, persists).
     pub async fn import_custom_token(
         &mut self,

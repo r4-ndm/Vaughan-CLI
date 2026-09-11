@@ -33,6 +33,11 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::from(code)
 }
 
+/// Anvil tests are not Pulse entitlement chains — disable the WZRD burn gate.
+fn disable_assist_gate() {
+    std::env::set_var("VAUGHAN_ASSIST_BURN_GATE", "0");
+}
+
 /// Apply a background job the same way the app's worker thread would.
 fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handle) {
     let result = match job {
@@ -99,7 +104,9 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::LpEnableWait { .. }
         | UiJob::LpV3PoolQuote { .. }
         | UiJob::DeployToken { .. }
-        | UiJob::McpQueuedApprove { .. } => return,
+        | UiJob::McpQueuedApprove { .. }
+        | UiJob::AssistBurnVerify
+        | UiJob::RefreshHexStakes { .. } => return,
     };
     view.apply_job_result(result);
 }
@@ -170,7 +177,8 @@ fn drive_send(
     events: &EventBus,
 ) {
     type_text(view, recipient, wallet, handle, events);
-    press(view, KeyCode::Tab, wallet, handle, events);
+    // F6 skips Coin (empty = native) and focuses Amount.
+    press(view, KeyCode::F(6), wallet, handle, events);
     type_text(view, amount, wallet, handle, events);
     press(view, KeyCode::Enter, wallet, handle, events); // amount submitted → fee estimate
     press(view, KeyCode::Enter, wallet, handle, events); // confirm → broadcast
@@ -198,7 +206,7 @@ fn send_view_broadcasts_and_shows_receipt() {
 
     // Fill the form: recipient, Tab, amount, Enter (→ confirm).
     type_text(&mut view, &recipient, &wallet, &handle, &events);
-    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    press(&mut view, KeyCode::F(6), &wallet, &handle, &events);
     type_text(&mut view, "1", &wallet, &handle, &events);
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
 
@@ -363,7 +371,7 @@ fn send_view_esc_cancels_confirm() {
 
     // Reach the confirm stage.
     type_text(&mut view, &recipient, &wallet, &handle, &events);
-    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    press(&mut view, KeyCode::F(6), &wallet, &handle, &events);
     type_text(&mut view, "0.5", &wallet, &handle, &events);
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
     let text = render(&view, &wallet);
@@ -398,7 +406,7 @@ fn send_view_gas_speed_presets() {
     let mut view = SendView::default();
 
     type_text(&mut view, &recipient, &wallet, &handle, &events);
-    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    press(&mut view, KeyCode::F(6), &wallet, &handle, &events);
     type_text(&mut view, "0.01", &wallet, &handle, &events);
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
 
@@ -450,7 +458,7 @@ fn send_view_ape_preset_broadcasts_scaled_fee() {
     let mut view = SendView::default();
 
     type_text(&mut view, &recipient, &wallet, &handle, &events);
-    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    press(&mut view, KeyCode::F(6), &wallet, &handle, &events);
     type_text(&mut view, "0.01", &wallet, &handle, &events);
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
 
@@ -523,7 +531,7 @@ fn send_view_custom_gas_broadcasts() {
     let mut view = SendView::default();
 
     type_text(&mut view, &recipient, &wallet, &handle, &events);
-    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    press(&mut view, KeyCode::F(6), &wallet, &handle, &events);
     type_text(&mut view, "0.01", &wallet, &handle, &events);
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
 
@@ -574,6 +582,7 @@ fn fee_line(screen: &str) -> String {
 /// lands a funded note that `scan_stealth_notes` finds.
 #[test]
 fn send_view_stealth_uri_pay_and_announce() {
+    disable_assist_gate();
     let anvil = Anvil::start();
     plant_announcer(&anvil);
     let dir = tempfile::tempdir().unwrap();
@@ -586,7 +595,7 @@ fn send_view_stealth_uri_pay_and_announce() {
     let mut view = SendView::default();
 
     type_text(&mut view, &uri, &wallet, &handle, &events);
-    press(&mut view, KeyCode::Tab, &wallet, &handle, &events);
+    press(&mut view, KeyCode::F(6), &wallet, &handle, &events);
     type_text(&mut view, "1", &wallet, &handle, &events);
     press(&mut view, KeyCode::Enter, &wallet, &handle, &events);
 
@@ -612,6 +621,7 @@ fn send_view_stealth_uri_pay_and_announce() {
 /// `st:` send without an announcer fails cleanly and does not broadcast.
 #[test]
 fn send_view_stealth_without_announcer() {
+    disable_assist_gate();
     let anvil = Anvil::start();
     let dir = tempfile::tempdir().unwrap();
     let wallet = funded_wallet(dir.path(), &anvil);
@@ -644,6 +654,7 @@ fn send_view_stealth_without_announcer() {
 /// A malformed `st:` URI never leaves the input stage.
 #[test]
 fn send_view_invalid_stealth_uri() {
+    disable_assist_gate();
     let anvil = Anvil::start();
     plant_announcer(&anvil);
     let dir = tempfile::tempdir().unwrap();
@@ -666,6 +677,7 @@ fn send_view_invalid_stealth_uri() {
 /// Alice's send view pays Bob's stealth URI; Bob's scan finds the note.
 #[test]
 fn send_view_alice_pays_bob() {
+    disable_assist_gate();
     let anvil = Anvil::start();
     plant_announcer(&anvil);
     let alice_dir = tempfile::tempdir().unwrap();

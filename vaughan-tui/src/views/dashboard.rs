@@ -1,6 +1,7 @@
 //! Dashboard home: default **send** screen.
 //!
-//! Body: F4 Send to + F5 amount. Chrome F1 / F2 / F3 pick network, coin, and from-account.
+//! Body: F4 Send to · F5 Coin · F6 Amount. Chrome F1 / F2 / F3 pick network,
+//! default coin, and from-account (F2 does not overwrite a pasted coin).
 
 use crossterm::event::KeyEvent;
 use ratatui::{layout::Rect, Frame};

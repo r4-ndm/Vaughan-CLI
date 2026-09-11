@@ -24,7 +24,7 @@ fn runtime_handle() -> (tokio::runtime::Runtime, Handle) {
     (rt, handle)
 }
 
-/// Home shows the send-to and amount fields with F4 / F5 chrome keys.
+/// Home shows Send to / Coin / Amount with F4 / F5 / F6 labels.
 #[test]
 fn dashboard_view_shows_send_to() {
     let anvil = Anvil::start();
@@ -36,6 +36,7 @@ fn dashboard_view_shows_send_to() {
         text.contains("Send to"),
         "home must show Send to field:\n{text}"
     );
+    assert!(text.contains("Coin"), "home must show coin field:\n{text}");
     assert!(
         text.contains("Amount"),
         "home must show amount field:\n{text}"
@@ -44,9 +45,10 @@ fn dashboard_view_shows_send_to() {
         text.contains("F4"),
         "home must label Send to with F4:\n{text}"
     );
+    assert!(text.contains("F5"), "home must label Coin with F5:\n{text}");
     assert!(
-        text.contains("F5"),
-        "home must label Amount with F5:\n{text}"
+        text.contains("F6"),
+        "home must label Amount with F6:\n{text}"
     );
 }
 
@@ -72,7 +74,7 @@ fn dashboard_view_idle_defers_footer_letters() {
     assert!(wallet.is_unlocked(), "lock is global — view must not lock");
 }
 
-/// F4 / F5 focus Send to / Amount from idle home.
+/// F4 / F5 / F6 focus Send to / Coin / Amount from idle home.
 #[test]
 fn dashboard_view_f4_f5_focus_fields() {
     let anvil = Anvil::start();
@@ -107,7 +109,21 @@ fn dashboard_view_f4_f5_focus_fields() {
     let after_f5 = render(&view, &wallet);
     assert!(
         after_f5.contains('9'),
-        "F5 must focus Amount so typing lands there:\n{after_f5}"
+        "F5 must focus Coin so typing lands there:\n{after_f5}"
+    );
+
+    assert!(matches!(
+        view.handle_key(key(KeyCode::F(6)), &mut wallet, &handle, &events),
+        KeyOutcome::Consumed
+    ));
+    assert!(matches!(
+        view.handle_key(key(KeyCode::Char('5')), &mut wallet, &handle, &events),
+        KeyOutcome::Consumed
+    ));
+    let after_f6 = render(&view, &wallet);
+    assert!(
+        after_f6.contains('5'),
+        "F6 must focus Amount so typing lands there:\n{after_f6}"
     );
 }
 

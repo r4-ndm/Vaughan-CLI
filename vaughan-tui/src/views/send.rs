@@ -1,11 +1,14 @@
-//! Send: recipient + amount -> fee estimate -> confirm -> broadcast -> tx hash.
+//! Send: recipient + coin + amount -> fee estimate -> confirm -> broadcast -> tx hash.
 //!
 //! Powers **Home** (`h`) via [`SendView::home`] inside the dashboard view.
 //! Integration tests exercise this type directly (non-home `Default`); the live
 //! app never mounts a separate Send screen.
 //!
-//! Network / coin / from-account come from the F1 / F2 / F3 chrome boxes.
-//! F4 focuses recipient ("Send to"); F5 focuses amount.
+//! Network / from-account come from F1 / F3 chrome. Coin defaults from F2 but
+//! can be overridden by pasting an ERC-20 contract (or ↑↓ through F2 assets).
+//! F4 focuses recipient (↑↓ cycles installed Vaughan wallets); F5 coin (↑↓
+//! cycles F2 assets); F6 amount. Tab / BackTab cycle the three fields with
+//! reverse-video focus (F-keys still jump).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -39,6 +42,7 @@ enum Focus {
     /// Home only: form idle so footer shortcuts (h/d/…) still work.
     Idle,
     Recipient,
+    Coin,
     Amount,
 }
 
@@ -62,11 +66,19 @@ pub struct SendView {
     focus: Focus,
     confirm_focus: ConfirmFocus,
     recipient: Input,
+    /// Label of a vault account selected via ↑↓ on F4 (shown in the box title).
+    recipient_pick_label: Option<String>,
+    /// Empty = native; otherwise paste `0x…` or pick via ↑↓ from F2 assets.
+    coin: Input,
     amount: Input,
     /// Custom max fee in gwei (only when [`FeeSpeed::Custom`] is selected).
     custom_gas: Input,
     /// When set, send ERC-20 `transfer` instead of native.
     token: Option<TokenCtx>,
+    /// User pasted/edited coin (or ↑↓ picked) — ignore F2 chrome until cleared.
+    coin_override: bool,
+    /// F2 chrome asset list for ↑↓ on F5 (avoids a blocking re-fetch each step).
+    asset_choices: Vec<Balance>,
     /// Unscaled Alloy/network fee estimate.
     base_fee: Option<Fee>,
     speed: FeeSpeed,
@@ -78,12 +90,13 @@ pub struct SendView {
     /// Animation tick mirrored from the app loop while busy.
     tick: u64,
     pub(crate) status: String,
-    /// Home (`h`) mode: "Send to" label; coin follows F2 chrome.
+    /// Home (`h`) mode: "Send to" label; coin defaults from F2 unless overridden.
     home_mode: bool,
     /// Locked WZRD→dead burn form (Settings Unlock tools); skip F2 chrome sync.
     assist_burn: bool,
 }
 
+#[derive(Clone)]
 struct TokenCtx {
     address: String,
     symbol: String,
@@ -97,9 +110,13 @@ impl Default for SendView {
             focus: Focus::Recipient,
             confirm_focus: ConfirmFocus::Speed,
             recipient: Input::new(false, "0x… or st:…"),
+            recipient_pick_label: None,
+            coin: Input::new(false, "native / paste 0x…"),
             amount: Input::new(false, "0.0"),
             custom_gas: Input::new(false, "gwei"),
             token: None,
+            coin_override: false,
+            asset_choices: Vec::new(),
             base_fee: None,
             speed: FeeSpeed::Normal,
             tx_hash: None,
@@ -115,13 +132,15 @@ impl Default for SendView {
 }
 
 impl SendView {
-    /// Home screen send form (F1 net · F2 coin · F3 from).
+    /// Home screen send form (F1 net · F2 coin default · F3 from).
     pub fn home() -> Self {
         Self {
             home_mode: true,
             focus: Focus::Idle,
             recipient: Input::new(false, ""),
+            coin: Input::new(false, "native / paste 0x…"),
             amount: Input::new(false, ""),
+            status: "Tab fields · ↑↓ wallets F4 · ↑↓ assets F5 · F4/F5/F6".into(),
             ..Self::default()
         }
     }
@@ -130,6 +149,7 @@ impl SendView {
     pub fn for_asset(balance: Balance) -> Self {
         let mut view = Self::home();
         view.apply_balance_coin(&balance);
+        view.coin_override = false;
         view
     }
 
@@ -137,9 +157,11 @@ impl SendView {
     pub fn for_assist_burn(token: &str, sink: &str, amount: &str) -> Self {
         let mut view = Self::home();
         view.assist_burn = true;
+        view.coin_override = true;
         view.focus = Focus::Amount;
         view.recipient.set_value(sink);
         view.amount.set_value(amount);
+        view.coin.set_value(token);
         view.token = Some(TokenCtx {
             address: token.to_string(),
             symbol: "WZRD".into(),
@@ -154,20 +176,31 @@ impl SendView {
         self.assist_burn
     }
 
-    /// Sync the send coin from F2 chrome (or native when empty).
+    /// Sync the send coin from F2 chrome unless the user overrode the coin field.
     pub fn sync_from_chrome(&mut self, chrome: &ChromeSnapshot) {
         if self.assist_burn || !self.home_mode || !matches!(self.stage, Stage::Input) {
+            return;
+        }
+        // Always refresh the F5 picker list so ↑↓ matches chrome even after override.
+        self.asset_choices = chrome.assets.clone();
+        if self.coin_override {
             return;
         }
         if let Some(b) = chrome.assets.get(chrome.asset_idx) {
             self.apply_balance_coin(b);
         } else {
-            self.token = None;
+            self.clear_to_native();
         }
+    }
+
+    fn clear_to_native(&mut self) {
+        self.token = None;
+        self.coin.set_value("");
     }
 
     fn apply_balance_coin(&mut self, balance: &Balance) {
         if let Some(addr) = balance.token.contract_address.clone() {
+            self.coin.set_value(addr.clone());
             self.token = Some(TokenCtx {
                 address: addr,
                 symbol: balance.token.symbol.clone(),
@@ -175,7 +208,117 @@ impl SendView {
             });
         } else {
             self.token = None;
+            self.coin.set_value("");
         }
+    }
+
+    fn coin_label(&self, wallet: &WalletState) -> String {
+        if let Some(t) = &self.token {
+            format!("Coin ({})", t.symbol)
+        } else if self.coin.value().trim().is_empty() {
+            format!("Coin ({})", wallet.networks().active().native_symbol)
+        } else {
+            "Coin".into()
+        }
+    }
+
+    /// Apply pasted/edited coin text: empty → native; `0x` → resolve metadata.
+    fn apply_coin_field(&mut self, wallet: &WalletState, handle: &Handle) -> Result<(), String> {
+        let raw = self.coin.value().trim();
+        let native = wallet.networks().active().native_symbol.clone();
+        if raw.is_empty() || raw.eq_ignore_ascii_case(&native) {
+            self.token = None;
+            self.coin.set_value("");
+            return Ok(());
+        }
+        let addr = crate::views::parse_token_address(raw, "Coin")?;
+        let checksum = format!("{addr:#x}");
+        if self
+            .token
+            .as_ref()
+            .is_some_and(|t| t.address.eq_ignore_ascii_case(&checksum))
+        {
+            self.coin.set_value(checksum);
+            return Ok(());
+        }
+        let (symbol, _name, decimals) = handle
+            .block_on(wallet.resolve_erc20_metadata(&checksum))
+            .map_err(|e| match e {
+            vaughan_core::error::WalletError::InvalidTransaction(m) => m,
+            other => other.user_message(),
+        })?;
+        self.coin.set_value(checksum.clone());
+        self.token = Some(TokenCtx {
+            address: checksum,
+            symbol,
+            decimals,
+        });
+        Ok(())
+    }
+
+    /// ↑↓ on F5: cycle installed assets (chrome/F2 list, else live wallet fetch).
+    fn cycle_coin_from_wallet(
+        &mut self,
+        wallet: &WalletState,
+        handle: &Handle,
+        down: bool,
+    ) -> KeyOutcome {
+        let assets = if !self.asset_choices.is_empty() {
+            self.asset_choices.clone()
+        } else {
+            match handle.block_on(wallet.assets()) {
+                Ok(a) => {
+                    self.asset_choices = a.clone();
+                    a
+                }
+                Err(e) => {
+                    self.status = e.user_message();
+                    return KeyOutcome::Consumed;
+                }
+            }
+        };
+        if assets.is_empty() {
+            self.status = "No assets yet — wait for F2 load, press r, or paste 0x".into();
+            return KeyOutcome::Consumed;
+        }
+        let cur = if let Some(t) = &self.token {
+            assets
+                .iter()
+                .position(|b| {
+                    b.token
+                        .contract_address
+                        .as_ref()
+                        .is_some_and(|a| a.eq_ignore_ascii_case(&t.address))
+                })
+                .unwrap_or(usize::MAX)
+        } else {
+            assets
+                .iter()
+                .position(|b| b.token.contract_address.is_none())
+                .unwrap_or(0)
+        };
+        let next = if down {
+            if cur == usize::MAX {
+                0
+            } else {
+                (cur + 1) % assets.len()
+            }
+        } else if cur == usize::MAX || cur == 0 {
+            assets.len() - 1
+        } else {
+            cur - 1
+        };
+        if let Some(b) = assets.get(next) {
+            self.coin_override = true;
+            self.apply_balance_coin(b);
+            let sym = b.token.symbol.as_str();
+            self.status = if b.token.contract_address.is_some() {
+                format!("F5: {sym}")
+            } else {
+                format!("F5: {sym} (native)")
+            };
+        }
+        KeyOutcome::Consumed
     }
 
     fn amount_decimals(&self, wallet: &WalletState) -> u8 {
@@ -208,11 +351,104 @@ impl SendView {
         }
     }
 
-    fn recipient_label(&self) -> &'static str {
-        if self.home_mode {
+    fn recipient_label(&self) -> String {
+        let base = if self.home_mode {
             "Send to"
         } else {
             "Recipient"
+        };
+        match self.recipient_pick_label.as_deref() {
+            Some(name) if !name.is_empty() => format!("{base} · {name}"),
+            _ => base.to_string(),
+        }
+    }
+
+    /// Cycle F4 through installed vault accounts (name in title, address in field).
+    fn cycle_recipient_from_wallet(&mut self, wallet: &WalletState, down: bool) -> KeyOutcome {
+        let choices = match wallet.account_choices() {
+            Ok(c) => c,
+            Err(e) => {
+                self.status = e.user_message();
+                return KeyOutcome::Consumed;
+            }
+        };
+        if choices.is_empty() {
+            self.status = "No Vaughan wallets installed".into();
+            return KeyOutcome::Consumed;
+        }
+        let cur_addr = self.recipient.value().trim();
+        let cur = choices
+            .iter()
+            .position(|(idx, _)| {
+                wallet
+                    .account_address(*idx)
+                    .ok()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(cur_addr))
+            })
+            .unwrap_or(usize::MAX);
+        let next = if down {
+            if cur == usize::MAX {
+                0
+            } else {
+                (cur + 1) % choices.len()
+            }
+        } else if cur == usize::MAX || cur == 0 {
+            choices.len() - 1
+        } else {
+            cur - 1
+        };
+        let Some((idx, label)) = choices.get(next) else {
+            return KeyOutcome::Consumed;
+        };
+        let addr = match wallet.account_address(*idx) {
+            Ok(a) => a,
+            Err(e) => {
+                self.status = e.user_message();
+                return KeyOutcome::Consumed;
+            }
+        };
+        self.recipient.set_value(&addr);
+        self.recipient_pick_label = Some(label.clone());
+        self.stealth = None;
+        self.status = format!("F4: {label} · {}", short_addr(&addr));
+        KeyOutcome::Consumed
+    }
+
+    fn tab_focus(&mut self, forward: bool, wallet: &WalletState, handle: &Handle) -> KeyOutcome {
+        match self.focus {
+            Focus::Idle => {
+                self.focus = if forward {
+                    Focus::Recipient
+                } else {
+                    Focus::Amount
+                };
+                self.status.clear();
+                KeyOutcome::Consumed
+            }
+            Focus::Recipient => {
+                self.focus = if forward { Focus::Coin } else { Focus::Amount };
+                KeyOutcome::Consumed
+            }
+            Focus::Coin => {
+                if forward {
+                    if let Err(e) = self.apply_coin_field(wallet, handle) {
+                        self.status = e;
+                        return KeyOutcome::Consumed;
+                    }
+                    self.focus = Focus::Amount;
+                } else {
+                    self.focus = Focus::Recipient;
+                }
+                KeyOutcome::Consumed
+            }
+            Focus::Amount => {
+                self.focus = if forward {
+                    Focus::Recipient
+                } else {
+                    Focus::Coin
+                };
+                KeyOutcome::Consumed
+            }
         }
     }
 
@@ -336,9 +572,9 @@ impl SendView {
 
         match self.stage {
             Stage::Input => {
-                let [to_area, _gap, amount_area] = Layout::vertical([
+                let [to_area, coin_area, amount_area] = Layout::vertical([
                     Constraint::Length(3),
-                    Constraint::Length(1), // blank between F4 Send to and F5 Amount
+                    Constraint::Length(3),
                     Constraint::Length(3),
                 ])
                 .areas(content);
@@ -347,9 +583,18 @@ impl SendView {
                     frame,
                     to_area,
                     "F4",
-                    self.recipient_label(),
+                    &self.recipient_label(),
                     &self.recipient,
                     self.focus == Focus::Recipient,
+                );
+                let coin_label = self.coin_label(wallet);
+                render_fkey_labeled_input(
+                    frame,
+                    coin_area,
+                    "F5",
+                    &coin_label,
+                    &self.coin,
+                    self.focus == Focus::Coin,
                 );
                 let amount_label = format!(
                     "Amount ({})",
@@ -361,7 +606,7 @@ impl SendView {
                 render_fkey_labeled_input(
                     frame,
                     amount_area,
-                    "F5",
+                    "F6",
                     &amount_label,
                     &self.amount,
                     self.focus == Focus::Amount,
@@ -444,6 +689,14 @@ impl SendView {
                             .map(|t| t.symbol.as_str())
                             .unwrap_or(&net.native_symbol)
                     )),
+                    if let Some(t) = &self.token {
+                        Line::from(Span::styled(
+                            format!("token {}", t.address),
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                    } else {
+                        Line::from("")
+                    },
                     if let Some(hint) = &stealth_hint {
                         Line::from(Span::styled(
                             hint.clone(),
@@ -529,19 +782,37 @@ impl SendView {
         }
         match self.stage {
             Stage::Input => {
-                // F4 / F5 jump to recipient / amount from any input focus (incl. Idle).
+                // F4 / F5 / F6 jump to recipient / coin / amount from any input focus.
                 if let KeyCode::F(4) = key.code {
                     self.focus = Focus::Recipient;
                     return KeyOutcome::Consumed;
                 }
                 if let KeyCode::F(5) = key.code {
+                    self.focus = Focus::Coin;
+                    if self.status.is_empty()
+                        || self.status.starts_with("Tab fields")
+                        || self.status.starts_with("F4:")
+                    {
+                        self.status = "F5 · ↑↓ select asset".into();
+                    }
+                    return KeyOutcome::Consumed;
+                }
+                if let KeyCode::F(6) = key.code {
                     self.focus = Focus::Amount;
                     return KeyOutcome::Consumed;
                 }
                 match self.focus {
                     Focus::Idle => match key.code {
+                        KeyCode::Tab | KeyCode::BackTab => {
+                            self.tab_focus(key.code == KeyCode::Tab, wallet, handle)
+                        }
+                        KeyCode::Up | KeyCode::Down => {
+                            self.focus = Focus::Recipient;
+                            self.cycle_recipient_from_wallet(wallet, key.code == KeyCode::Down)
+                        }
                         KeyCode::Enter | KeyCode::Char(' ') => {
                             self.focus = Focus::Recipient;
+                            self.status.clear();
                             KeyOutcome::Consumed
                         }
                         _ => KeyOutcome::NotHandled,
@@ -550,25 +821,34 @@ impl SendView {
                         if key.code == KeyCode::Esc {
                             return if self.home_mode {
                                 self.focus = Focus::Idle;
+                                self.status =
+                                    "Tab fields · ↑↓ wallets F4 · ↑↓ assets F5 · F4/F5/F6"
+                                        .into();
                                 KeyOutcome::Consumed
                             } else {
                                 KeyOutcome::Back
                             };
                         }
-                        if key.code == KeyCode::Tab {
-                            self.focus = Focus::Amount;
-                            return KeyOutcome::Consumed;
+                        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                            return self.tab_focus(key.code == KeyCode::Tab, wallet, handle);
+                        }
+                        if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                            return self
+                                .cycle_recipient_from_wallet(wallet, key.code == KeyCode::Down);
                         }
                         match self.recipient.handle_key(key) {
                             InputAction::Ignored => KeyOutcome::NotHandled,
                             InputAction::Submitted => {
-                                self.focus = Focus::Amount;
+                                self.focus = Focus::Coin;
                                 KeyOutcome::Consumed
                             }
-                            InputAction::Consumed => KeyOutcome::Consumed,
+                            InputAction::Consumed => {
+                                self.recipient_pick_label = None;
+                                KeyOutcome::Consumed
+                            }
                         }
                     }
-                    Focus::Amount => {
+                    Focus::Coin => {
                         if key.code == KeyCode::Esc {
                             self.focus = if self.home_mode {
                                 Focus::Idle
@@ -577,9 +857,52 @@ impl SendView {
                             };
                             return KeyOutcome::Consumed;
                         }
-                        if key.code == KeyCode::Tab {
-                            self.focus = Focus::Recipient;
+                        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                            return self.tab_focus(key.code == KeyCode::Tab, wallet, handle);
+                        }
+                        if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                            return self.cycle_coin_from_wallet(
+                                wallet,
+                                handle,
+                                key.code == KeyCode::Down,
+                            );
+                        }
+                        match self.coin.handle_key(key) {
+                            InputAction::Ignored => KeyOutcome::NotHandled,
+                            InputAction::Submitted => {
+                                self.coin_override = true;
+                                match self.apply_coin_field(wallet, handle) {
+                                    Ok(()) => {
+                                        self.status.clear();
+                                        self.focus = Focus::Amount;
+                                    }
+                                    Err(e) => self.status = e,
+                                }
+                                KeyOutcome::Consumed
+                            }
+                            InputAction::Consumed => {
+                                self.coin_override = true;
+                                // Invalidate stale metadata until resolve.
+                                if let Some(t) = &self.token {
+                                    if !self.coin.value().trim().eq_ignore_ascii_case(&t.address) {
+                                        self.token = None;
+                                    }
+                                }
+                                KeyOutcome::Consumed
+                            }
+                        }
+                    }
+                    Focus::Amount => {
+                        if key.code == KeyCode::Esc {
+                            self.focus = if self.home_mode {
+                                Focus::Idle
+                            } else {
+                                Focus::Coin
+                            };
                             return KeyOutcome::Consumed;
+                        }
+                        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                            return self.tab_focus(key.code == KeyCode::Tab, wallet, handle);
                         }
                         match self.amount.handle_key(key) {
                             InputAction::Ignored => KeyOutcome::NotHandled,
@@ -597,6 +920,12 @@ impl SendView {
                     return KeyOutcome::Consumed;
                 }
                 if let KeyCode::F(5) = key.code {
+                    self.stage = Stage::Input;
+                    self.focus = Focus::Coin;
+                    self.confirm_focus = ConfirmFocus::Speed;
+                    return KeyOutcome::Consumed;
+                }
+                if let KeyCode::F(6) = key.code {
                     self.stage = Stage::Input;
                     self.focus = Focus::Amount;
                     self.confirm_focus = ConfirmFocus::Speed;
@@ -699,6 +1028,16 @@ impl SendView {
                 KeyCode::F(5) => {
                     if self.home_mode {
                         *self = Self::home();
+                        self.focus = Focus::Coin;
+                    } else {
+                        self.stage = Stage::Input;
+                        self.focus = Focus::Coin;
+                    }
+                    KeyOutcome::Consumed
+                }
+                KeyCode::F(6) => {
+                    if self.home_mode {
+                        *self = Self::home();
                         self.focus = Focus::Amount;
                     } else {
                         self.stage = Stage::Input;
@@ -721,6 +1060,11 @@ impl SendView {
     }
 
     fn begin_estimate(&mut self, wallet: &WalletState, handle: &Handle) -> KeyOutcome {
+        if let Err(e) = self.apply_coin_field(wallet, handle) {
+            self.status = e;
+            self.focus = Focus::Coin;
+            return KeyOutcome::Consumed;
+        }
         if let Some(msg) = self.assist_burn_amount_error() {
             self.status = msg;
             return KeyOutcome::Consumed;
@@ -856,11 +1200,22 @@ impl SendView {
     }
 }
 
+/// Compact `0xabcd…1234` for status / chrome (full address stays in the F4 field).
+fn short_addr(addr: &str) -> String {
+    let a = addr.trim();
+    if a.len() > 12 {
+        format!("{}…{}", &a[..6], &a[a.len() - 4..])
+    } else {
+        a.to_string()
+    }
+}
+
 fn stealth_power_ok(wallet: &WalletState, handle: &Handle) -> bool {
     use vaughan_core::core::{
-        assist_burn_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
+        assist_burn_gate_enabled, assist_unlock_bypass, entitlement_chain_id,
+        power_features_unlocked_blocking,
     };
-    if !assist_burn_gate_enabled() {
+    if !assist_burn_gate_enabled() || assist_unlock_bypass() {
         return true;
     }
     let Some(chain_id) = entitlement_chain_id() else {
@@ -891,5 +1246,108 @@ fn max_fee_gwei_display(fee: &Fee) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vaughan_core::chains::TokenInfo;
+
+    fn erc20_balance(addr: &str, symbol: &str) -> Balance {
+        Balance {
+            token: TokenInfo {
+                symbol: symbol.into(),
+                name: symbol.into(),
+                decimals: 18,
+                contract_address: Some(addr.into()),
+            },
+            raw: "0".into(),
+            formatted: "0".into(),
+            usd_value: None,
+        }
+    }
+
+    #[test]
+    fn sync_from_chrome_skips_when_coin_overridden() {
+        let mut v = SendView::home();
+        let wzrd = erc20_balance("0x29bab93456c0E97EE931C1554c7C215480aa7766", "WZRD");
+        v.apply_balance_coin(&wzrd);
+        assert!(v.token.is_some());
+        v.coin_override = true;
+        v.coin
+            .set_value("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        v.token = None;
+        let chrome = ChromeSnapshot {
+            assets: vec![wzrd],
+            asset_idx: 0,
+            ..ChromeSnapshot::default()
+        };
+        v.sync_from_chrome(&chrome);
+        assert!(v.token.is_none(), "override must block F2 sync");
+        assert_eq!(v.coin.value(), "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    }
+
+    #[test]
+    fn sync_from_chrome_applies_f2_when_not_overridden() {
+        let mut v = SendView::home();
+        assert!(!v.coin_override);
+        let wzrd = erc20_balance("0x29bab93456c0E97EE931C1554c7C215480aa7766", "WZRD");
+        let chrome = ChromeSnapshot {
+            assets: vec![wzrd],
+            asset_idx: 0,
+            ..ChromeSnapshot::default()
+        };
+        v.sync_from_chrome(&chrome);
+        assert_eq!(v.token.as_ref().map(|t| t.symbol.as_str()), Some("WZRD"));
+        assert!(v.coin.value().starts_with("0x"));
+        assert_eq!(v.asset_choices.len(), 1);
+    }
+
+    #[test]
+    fn sync_from_chrome_refreshes_f5_asset_choices_even_when_overridden() {
+        let mut v = SendView::home();
+        v.coin_override = true;
+        let wzrd = erc20_balance("0x29bab93456c0E97EE931C1554c7C215480aa7766", "WZRD");
+        let chrome = ChromeSnapshot {
+            assets: vec![wzrd],
+            asset_idx: 0,
+            ..ChromeSnapshot::default()
+        };
+        v.sync_from_chrome(&chrome);
+        assert_eq!(v.asset_choices.len(), 1);
+        assert_eq!(v.asset_choices[0].token.symbol, "WZRD");
+    }
+
+    #[test]
+    fn clear_to_native_clears_token_and_coin() {
+        let mut v = SendView::home();
+        v.token = Some(TokenCtx {
+            address: "0x29bab93456c0E97EE931C1554c7C215480aa7766".into(),
+            symbol: "WZRD".into(),
+            decimals: 18,
+        });
+        v.coin
+            .set_value("0x29bab93456c0E97EE931C1554c7C215480aa7766");
+        v.clear_to_native();
+        assert!(v.token.is_none());
+        assert!(v.coin.value().is_empty());
+    }
+
+    #[test]
+    fn recipient_label_includes_picked_wallet_name() {
+        let mut v = SendView::home();
+        assert_eq!(v.recipient_label(), "Send to");
+        v.recipient_pick_label = Some("Trezor 1".into());
+        assert_eq!(v.recipient_label(), "Send to · Trezor 1");
+    }
+
+    #[test]
+    fn short_addr_compacts_long_hex() {
+        assert_eq!(
+            short_addr("0x1234567890abcdef1234567890abcdef12345678"),
+            "0x1234…5678"
+        );
+        assert_eq!(short_addr("0xabc"), "0xabc");
     }
 }

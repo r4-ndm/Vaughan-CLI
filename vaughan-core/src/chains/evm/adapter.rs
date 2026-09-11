@@ -456,21 +456,70 @@ impl EvmAdapter {
         Ok(bal)
     }
 
-    /// EVM-specific: best-effort ERC-20 metadata (EIP-20 `symbol`/`name`/
-    /// `decimals`), cached for an hour. Each accessor falls back individually
-    /// (EIP-20 does not require any of them) — the registry entry wins when
-    /// the contract doesn't provide the value, and a raw address defaults to
-    /// a shortened address + 18 decimals.
+    /// Soft ERC-20 metadata for asset lists (EIP-20 fields are optional).
+    /// Falls back to registry / shortened address + 18 decimals.
     pub async fn get_token_metadata(
         &self,
         token_address: &str,
     ) -> Result<(String, String, u8), WalletError> {
+        self.token_metadata_inner(token_address, false).await
+    }
+
+    /// Strict metadata for Send paste / transfers: requires contract code and
+    /// a working `decimals()` (or a curated registry hit). Rejects EOAs and
+    /// wrong-chain pastes instead of inventing `0x1234…abcd` as a symbol.
+    pub async fn resolve_erc20_for_transfer(
+        &self,
+        token_address: &str,
+    ) -> Result<(String, String, u8), WalletError> {
+        self.token_metadata_inner(token_address, true).await
+    }
+
+    async fn token_metadata_inner(
+        &self,
+        token_address: &str,
+        strict: bool,
+    ) -> Result<(String, String, u8), WalletError> {
         let key = token_address.to_ascii_lowercase();
-        if let Some(cached) = self.token_meta_cache.get(&key).await {
-            return Ok(cached);
+        // Soft lookups may cache short-address fallbacks; strict must re-check.
+        if !strict {
+            if let Some(cached) = self.token_meta_cache.get(&key).await {
+                return Ok(cached);
+            }
         }
         let token = parse_address(token_address)?;
+        let checksum = format!("{token:#x}");
         let registry = crate::chains::evm::find_token(self.chain_id, token_address);
+
+        if strict {
+            let code = self
+                .with_provider(|provider| async move {
+                    provider
+                        .get_code_at(token)
+                        .await
+                        .map_err(|e| WalletError::RpcError(e.to_string()))
+                })
+                .await?;
+            if code.is_empty() {
+                return Err(WalletError::InvalidTransaction(format!(
+                    "no contract at {checksum} on {} — switch network (F1) or check the address",
+                    self.network_name
+                )));
+            }
+        }
+
+        let on_chain_decimals = self.eth_call_decimals(token).await;
+        if strict && on_chain_decimals.is_none() && registry.is_none() {
+            if self.looks_like_v3_pool(token).await {
+                return Err(WalletError::InvalidTransaction(format!(
+                    "{checksum} is a V3 pool, not an LP token — open LP (p), select the position, press s (Transfer)"
+                )));
+            }
+            return Err(WalletError::InvalidTransaction(format!(
+                "{checksum} is not a standard ERC-20 on {} (decimals() failed)",
+                self.network_name
+            )));
+        }
 
         // `symbol()` — fallback: registry symbol, else a shortened address.
         let symbol = self
@@ -495,9 +544,7 @@ impl EvmAdapter {
                     .unwrap_or_else(|| symbol.clone())
             });
         // `decimals()` — fallback: registry decimals, else 18.
-        let decimals = self
-            .eth_call_decimals(token)
-            .await
+        let decimals = on_chain_decimals
             .unwrap_or_else(|| registry.as_ref().map(|t| t.decimals).unwrap_or(18));
         let meta = (symbol, name, decimals);
         self.token_meta_cache.insert(key, meta.clone()).await;
@@ -779,6 +826,29 @@ impl EvmAdapter {
         let call = IERC20Metadata::decimalsCall {};
         let raw = self.eth_call_raw(token, &call).await?;
         IERC20Metadata::decimalsCall::abi_decode_returns(&raw).ok()
+    }
+
+    /// True when `token` responds to Uniswap V3 / Pancake V3 `slot0()` (pool,
+    /// not an ERC-20 LP share). Used to steer Send paste toward LP Transfer.
+    async fn looks_like_v3_pool(&self, token: Address) -> bool {
+        // selector(slot0()) = 0x3850c7bd
+        let input = Bytes::from_static(&[0x38, 0x50, 0xc7, 0xbd]);
+        let Ok(raw) = self
+            .with_provider(|provider| {
+                let input = input.clone();
+                async move {
+                    provider
+                        .call(TransactionRequest::default().to(token).input(input.into()))
+                        .await
+                        .map_err(|e| WalletError::RpcError(e.to_string()))
+                }
+            })
+            .await
+        else {
+            return false;
+        };
+        // slot0 returns several words; reject empty/short reverts-as-success.
+        raw.len() >= 64
     }
 
     /// Run `call` against `token` via `eth_call` (typed encoding, typed
