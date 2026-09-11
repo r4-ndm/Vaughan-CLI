@@ -16,6 +16,7 @@ use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_core::chains::Balance;
 use vaughan_core::chains::EvmTransaction;
+use vaughan_core::chains::Fee;
 use vaughan_core::core::{
     rank_agg_quote_outcomes, AggAccess, AggQuote, AggQuoteOutcome, AggVenue, WalletState,
 };
@@ -116,6 +117,7 @@ enum Focus {
 enum Busy {
     Idle,
     Quoting,
+    EstimatingFee,
     Approving,
     Swapping,
 }
@@ -145,6 +147,11 @@ pub struct AgView {
     compare_pick: usize,
     tx_hash: Option<String>,
     approve_hash: Option<String>,
+    /// Built approve/swap tx waiting for fee estimate then broadcast.
+    pending_tx: Option<EvmTransaction>,
+    pending_step: Option<ConfirmStep>,
+    /// Network fee shown on confirm (Normal speed).
+    base_fee: Option<Fee>,
 }
 
 impl Default for AgView {
@@ -172,6 +179,9 @@ impl Default for AgView {
             compare_pick: 0,
             tx_hash: None,
             approve_hash: None,
+            pending_tx: None,
+            pending_step: None,
+            base_fee: None,
         }
     }
 }
@@ -233,6 +243,9 @@ impl AgView {
         self.compare.clear();
         self.compare_ranked.clear();
         self.compare_pick = 0;
+        self.pending_tx = None;
+        self.pending_step = None;
+        self.base_fee = None;
     }
 
     fn select_compare_pick(&mut self, pick: usize) {
@@ -294,11 +307,31 @@ impl AgView {
                 self.status = e.user_message();
                 self.stage = Stage::Input;
             }
+            UiJobResult::Fee(Ok(fee)) => {
+                self.busy = Busy::Idle;
+                let step = self
+                    .pending_step
+                    .unwrap_or(ConfirmStep::Swap)
+                    .label();
+                self.status = format!("Fee {} {} · Enter to {step}", fee.total, fee.currency);
+                self.base_fee = Some(fee);
+            }
+            UiJobResult::Fee(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.pending_tx = None;
+                self.pending_step = None;
+                self.base_fee = None;
+                self.status = e.user_message();
+                self.stage = Stage::Input;
+            }
             UiJobResult::Send(Ok(receipt)) => match self.busy {
                 Busy::Approving => {
                     let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
+                    self.pending_tx = None;
+                    self.pending_step = None;
+                    self.base_fee = None;
                     self.status = format!("Approve sent ({hash}). Confirm swap next.");
                     self.stage = Stage::Confirm(ConfirmStep::Swap);
                 }
@@ -306,6 +339,9 @@ impl AgView {
                     let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.tx_hash = Some(hash);
+                    self.pending_tx = None;
+                    self.pending_step = None;
+                    self.base_fee = None;
                     self.stage = Stage::Done;
                     self.status = "Aggregator swap broadcast.".into();
                 }
@@ -313,6 +349,9 @@ impl AgView {
             },
             UiJobResult::Send(Err(e)) => {
                 self.busy = Busy::Idle;
+                self.pending_tx = None;
+                self.pending_step = None;
+                self.base_fee = None;
                 self.status = e.user_message();
                 self.stage = Stage::Input;
             }
@@ -330,6 +369,7 @@ impl AgView {
         }
         let status_text = match self.busy {
             Busy::Quoting => format!("{} quoting…", spinner_frame(self.tick)),
+            Busy::EstimatingFee => format!("{} estimating fee…", spinner_frame(self.tick)),
             Busy::Approving => format!("{} approving…", spinner_frame(self.tick)),
             Busy::Swapping => format!("{} swapping…", spinner_frame(self.tick)),
             Busy::Idle => self.status.clone(),
@@ -591,6 +631,16 @@ impl AgView {
                     lines.push(Line::from(format!("Slippage  {slippage}%")));
                 }
             }
+        }
+        if let Some(fee) = &self.base_fee {
+            lines.push(Line::from(""));
+            lines.push(Line::from(format!(
+                "Fee      {} {}",
+                fee.total, fee.currency
+            )));
+        } else if matches!(self.busy, Busy::EstimatingFee) {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Fee      estimating…"));
         }
         lines
     }
@@ -935,13 +985,15 @@ impl AgView {
         } else {
             ConfirmStep::Swap
         };
+        self.pending_tx = None;
+        self.pending_step = None;
+        self.base_fee = None;
         let out_sym = token_display_symbol(false, &self.token_out, &[], self.chain_id);
         let out_amt = fmt_swap_wei_amount(&q.amount_out, 18);
         self.stage = Stage::Confirm(step);
         self.status = format!(
-            "{} — receive ~{out_amt} {out_sym} · Enter to {}",
+            "{} — receive ~{out_amt} {out_sym} · Enter to estimate fee",
             q.venue.label(),
-            step.label()
         );
     }
 
@@ -966,7 +1018,20 @@ impl AgView {
             }
         };
         let chain_id = wallet.networks().active().chain_id;
-        match step {
+
+        // Second Enter: broadcast with the fee the user already saw.
+        if let (Some(fee), Some(tx)) = (self.base_fee.take(), self.pending_tx.take()) {
+            self.pending_step = None;
+            self.busy = match step {
+                ConfirmStep::Approve => Busy::Approving,
+                ConfirmStep::Swap => Busy::Swapping,
+            };
+            self.status.clear();
+            return KeyOutcome::StartJob(UiJob::SendEvmWithFee { tx, fee });
+        }
+
+        // First Enter: build tx and estimate fee before broadcast.
+        let tx = match step {
             ConfirmStep::Approve => {
                 let token = match Address::from_str(self.token_in.value().trim()) {
                     Ok(a) => a,
@@ -975,13 +1040,11 @@ impl AgView {
                         return KeyOutcome::Consumed;
                     }
                 };
-                let tx = build_approve_tx(token, q.spender, q.amount_in, &from, chain_id);
-                self.busy = Busy::Approving;
-                KeyOutcome::StartJob(UiJob::SendEvm { tx })
+                build_approve_tx(token, q.spender, q.amount_in, &from, chain_id)
             }
             ConfirmStep::Swap => {
                 let data_hex = format!("0x{}", hex::encode(q.tx.data.as_ref()));
-                let tx = EvmTransaction {
+                EvmTransaction {
                     from,
                     to: format!("{:#x}", q.tx.to),
                     value: q.tx.value.to_string(),
@@ -992,11 +1055,15 @@ impl AgView {
                     max_priority_fee_per_gas: None,
                     nonce: None,
                     chain_id,
-                };
-                self.busy = Busy::Swapping;
-                KeyOutcome::StartJob(UiJob::SendEvm { tx })
+                }
             }
-        }
+        };
+        self.pending_tx = Some(tx.clone());
+        self.pending_step = Some(step);
+        self.base_fee = None;
+        self.busy = Busy::EstimatingFee;
+        self.status = "estimating fee…".into();
+        KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx })
     }
 }
 

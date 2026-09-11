@@ -2109,16 +2109,20 @@ impl App {
                     return;
                 }
                 // Apply the fee the user adjusted in the prompt (if any) so
-                // what they saw is exactly what gets signed.
-                if let View::Approve(view) = &self.view {
-                    if let Some(fee) = view.adjusted_fee() {
-                        match &mut kind {
-                            ApprovalKind::SendTransaction(tx)
-                            | ApprovalKind::SignTransaction(tx) => {
-                                provider::apply_fee_override(tx, &fee)
-                            }
-                            _ => {}
+                // what they saw is exactly what gets signed — provider txs and
+                // live MCP proposals (same as queued MCP).
+                let fee_override = if let View::Approve(view) = &self.view {
+                    view.adjusted_fee()
+                } else {
+                    None
+                };
+                if let Some(fee) = fee_override.as_ref() {
+                    match &mut kind {
+                        ApprovalKind::SendTransaction(tx)
+                        | ApprovalKind::SignTransaction(tx) => {
+                            provider::apply_fee_override(tx, fee)
                         }
+                        _ => {}
                     }
                 }
                 // Hardware personal_sign / typed / tx must not block the UI
@@ -2134,7 +2138,12 @@ impl App {
                     return;
                 }
                 let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
-                let result = provider::execute_approval_sync(&kind, &mut wallet, &self.handle);
+                let result = provider::execute_approval_sync_with_fee(
+                    &kind,
+                    &mut wallet,
+                    &self.handle,
+                    fee_override.as_ref(),
+                );
                 let _ = reply.send(result);
             }
             PendingReply::LocalSign => {
