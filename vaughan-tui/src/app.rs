@@ -29,8 +29,8 @@ use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
     AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
-    DashboardView, DexView, HexView, HistoryView, KeysView, LpView, OnboardingView, PlaceholderView,
-    ReceiveView, SettingsView, TokenLaunchView, UnlockView, WrapView,
+    DashboardView, DexView, HexView, HistoryView, KeysView, LpView, OnboardingView,
+    PlaceholderView, ReceiveView, SettingsView, TokenLaunchView, UnlockView, WrapView,
 };
 
 /// The active screen.
@@ -92,6 +92,7 @@ impl Screen {
 /// The app uses this to decide whether global shortcuts apply: a `Consumed`
 /// key (e.g. `'q'` typed into a text field) must never trigger a
 /// global action.
+#[allow(clippy::large_enum_variant)]
 pub enum KeyOutcome {
     /// The view consumed the key; the app must not apply global shortcuts.
     Consumed,
@@ -137,6 +138,7 @@ impl std::fmt::Debug for KeyOutcome {
 }
 
 /// The active view (screen + its state).
+#[allow(clippy::large_enum_variant)]
 pub enum View {
     Onboarding(OnboardingView),
     Unlock(UnlockView),
@@ -188,6 +190,7 @@ impl View {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         frame: &mut Frame,
@@ -379,6 +382,66 @@ pub struct App {
     /// Tracks the last lock state the provider token was synced to (edge
     /// detection for rotation).
     provider_session_unlocked: bool,
+    /// Same Arc as [`WalletState::trezor_ui`] — PIN overlay works while jobs hold the wallet lock.
+    trezor_ui: std::sync::Arc<vaughan_core::security::TrezorUiBridge>,
+    /// Host PIN matrix while Trezor One asks for PIN (`None` = overlay hidden).
+    trezor_pin: Option<TrezorPinEntry>,
+    /// F3 rename buffer (`→` while Account focused); Enter commits.
+    f3_rename: Option<crate::input::Input>,
+}
+
+/// Blank 3×3 matrix entry (digits only on the device; host shows empty cells).
+struct TrezorPinEntry {
+    /// Position codes `1`–`9` in phone-keypad layout (never logged).
+    digits: String,
+    /// Highlighted cell `0..8` (row-major: top-left → bottom-right).
+    cursor: u8,
+}
+
+impl TrezorPinEntry {
+    fn new() -> Self {
+        Self {
+            digits: String::new(),
+            cursor: 4, // centre
+        }
+    }
+
+    /// Map cursor cell → Trezor matrix position digit (phone keypad).
+    fn cursor_digit(cursor: u8) -> char {
+        // 0 1 2    → 7 8 9
+        // 3 4 5    → 4 5 6
+        // 6 7 8    → 1 2 3
+        match cursor.min(8) {
+            0 => '7',
+            1 => '8',
+            2 => '9',
+            3 => '4',
+            4 => '5',
+            5 => '6',
+            6 => '1',
+            7 => '2',
+            _ => '3',
+        }
+    }
+
+    fn move_cursor(&mut self, key: KeyCode) {
+        let c = self.cursor.min(8);
+        let (row, col) = (c / 3, c % 3);
+        let (row, col) = match key {
+            KeyCode::Left => (row, col.saturating_sub(1)),
+            KeyCode::Right => (row, (col + 1).min(2)),
+            KeyCode::Up => (row.saturating_sub(1), col),
+            KeyCode::Down => ((row + 1).min(2), col),
+            _ => (row, col),
+        };
+        self.cursor = row * 3 + col;
+    }
+
+    fn select_cell(&mut self) {
+        if self.digits.len() < 9 {
+            self.digits.push(Self::cursor_digit(self.cursor));
+        }
+    }
 }
 
 impl App {
@@ -426,6 +489,7 @@ impl App {
             connected_sites.clone(),
         );
         let mcp = McpService::new(&profile_dir, mcp_tx);
+        let trezor_ui = wallet.trezor_ui();
         let mut app = Self {
             wallet: Arc::new(Mutex::new(wallet)),
             handle,
@@ -454,6 +518,9 @@ impl App {
             provider_slots,
             provider_session_unlocked: false,
             nav_back: Vec::new(),
+            trezor_ui,
+            trezor_pin: None,
+            f3_rename: None,
         };
         app.navigate(screen);
         Ok(app)
@@ -539,6 +606,29 @@ impl App {
         self.quit_confirm
     }
 
+    /// Trezor One host PIN matrix is visible (digits never logged).
+    pub fn trezor_pin_active(&self) -> bool {
+        self.trezor_pin.is_some()
+    }
+
+    /// Number of PIN matrix positions entered (shown as dots).
+    pub fn trezor_pin_len(&self) -> usize {
+        self.trezor_pin
+            .as_ref()
+            .map(|e| e.digits.len())
+            .unwrap_or(0)
+    }
+
+    /// Highlighted blank cell `0..8` on the host matrix.
+    pub fn trezor_pin_cursor(&self) -> u8 {
+        self.trezor_pin.as_ref().map(|e| e.cursor).unwrap_or(4)
+    }
+
+    /// F3 rename-in-progress line (includes cursor).
+    pub fn f3_rename_line(&self) -> Option<ratatui::text::Line<'static>> {
+        self.f3_rename.as_ref().map(|i| i.line())
+    }
+
     pub fn render_body(&self, frame: &mut Frame, area: Rect) {
         if let Some(wallet) = self.try_wallet() {
             let bridge_line = self
@@ -581,6 +671,11 @@ impl App {
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
+            self.sync_trezor_pin_overlay();
+            if let View::Keys(v) = &mut self.view {
+                let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                v.poll(&mut wallet, self.tick);
+            }
             if self.screen() == Screen::Approve
                 && self.pending_approval.is_none()
                 && !self.mcp_approve_inflight
@@ -652,6 +747,12 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Trezor One PIN matrix owns the keyboard until submit / Esc.
+        if self.trezor_pin.is_some() {
+            self.handle_trezor_pin_key(key);
+            return;
+        }
+
         // Quit confirm owns the keyboard until Yes/No/Esc.
         if self.quit_confirm.is_some() {
             self.handle_quit_confirm_key(key);
@@ -701,26 +802,15 @@ impl App {
             }
         }
 
-        let before_addr = self
-            .wallet()
-            .active_address()
-            .ok()
-            .map(|a| a.to_string());
+        let before_addr = self.wallet().active_address().ok().map(|a| a.to_string());
         let outcome = {
             let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
             self.view
                 .handle_key(key, &mut wallet, &self.handle, &self.events)
         };
-        let after_addr = self
-            .wallet()
-            .active_address()
-            .ok()
-            .map(|a| a.to_string());
+        let after_addr = self.wallet().active_address().ok().map(|a| a.to_string());
         // Keys import (and any path that flips the active account) must refresh F2.
-        if before_addr.is_some()
-            && after_addr.is_some()
-            && before_addr != after_addr
-        {
+        if before_addr.is_some() && after_addr.is_some() && before_addr != after_addr {
             if let Some(owner) = after_addr {
                 self.events
                     .publish(ProviderEvent::AccountsChanged(vec![owner.clone()]));
@@ -737,6 +827,22 @@ impl App {
             GlobalAction::Navigate(screen) => {
                 if self.wallet().is_unlocked() && screen != self.screen() {
                     self.navigate(screen);
+                }
+                return;
+            }
+            GlobalAction::NavigateHardware => {
+                if self.wallet().is_unlocked() {
+                    // Same back-stack rules as navigate(Keys), but mount the Hardware hub.
+                    let from = self.screen();
+                    if from != Screen::Keys
+                        && Self::records_back_stack(from)
+                        && Self::records_back_stack(Screen::Keys)
+                        && self.nav_back.last() != Some(&from)
+                    {
+                        self.nav_back.push(from);
+                    }
+                    self.settle_chrome_before_navigate();
+                    self.view = View::Keys(KeysView::hardware_hub());
                 }
                 return;
             }
@@ -797,7 +903,8 @@ impl App {
             KeyOutcome::Navigate(screen) => self.navigate(screen),
             KeyOutcome::Back => self.navigate_back(),
             KeyOutcome::StartJob(job) => {
-                if matches!(job, crate::jobs::UiJob::SendStealth { .. }) && !self.power_features_ok()
+                if matches!(job, crate::jobs::UiJob::SendStealth { .. })
+                    && !self.power_features_ok()
                 {
                     self.flash_tools_locked();
                 } else if matches!(
@@ -855,6 +962,7 @@ impl App {
         // Carry the picked mode onto the fresh (locked) wallet so onboarding
         // and the password screen inherit it; unlock re-asserts it anyway.
         wallet.set_operating_mode(mode);
+        self.trezor_ui = wallet.trezor_ui();
         *self.wallet() = wallet;
         self.mcp.set_profile_dir(&dir);
         // Provider bridge: the server keeps running on the shared token slot,
@@ -1645,6 +1753,71 @@ impl App {
     }
 
     /// Soft quit: Enter confirms Yes (default), Esc / No cancels.
+    fn sync_trezor_pin_overlay(&mut self) {
+        // Profile switch replaces WalletState — keep the App bridge on the live Arc.
+        if let Ok(w) = self.wallet.try_lock() {
+            self.trezor_ui = w.trezor_ui();
+        }
+        let keys_busy = matches!(&self.view, View::Keys(v) if v.trezor_connect_busy());
+        // Show blank pad while connecting (Trezor One) or when the device asks.
+        let show = keys_busy || self.trezor_ui.pin_pending();
+        if show {
+            if self.trezor_pin.is_none() {
+                self.trezor_pin = Some(TrezorPinEntry::new());
+            }
+        } else if self.trezor_pin.is_some() {
+            self.trezor_pin = None;
+        }
+    }
+
+    fn handle_trezor_pin_key(&mut self, key: KeyEvent) {
+        // Stay on the live wallet bridge (jobs / profile switch).
+        if let Ok(w) = self.wallet.try_lock() {
+            self.trezor_ui = w.trezor_ui();
+        }
+        let Some(entry) = self.trezor_pin.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                entry.move_cursor(key.code);
+            }
+            KeyCode::Char(' ') => {
+                entry.select_cell();
+            }
+            KeyCode::Enter => {
+                // Space selects; Enter submits once at least one cell is chosen
+                // (also selects first if the buffer is still empty).
+                if entry.digits.is_empty() {
+                    entry.select_cell();
+                } else {
+                    let pin = self
+                        .trezor_pin
+                        .take()
+                        .map(|e| e.digits)
+                        .unwrap_or_default();
+                    self.trezor_ui.submit_pin(Ok(pin));
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                let pin = self
+                    .trezor_pin
+                    .take()
+                    .map(|e| e.digits)
+                    .unwrap_or_default();
+                self.trezor_ui.submit_pin(Ok(pin));
+            }
+            KeyCode::Backspace => {
+                entry.digits.pop();
+            }
+            KeyCode::Esc => {
+                self.trezor_pin = None;
+                self.trezor_ui.cancel_pin();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_quit_confirm_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Hard abort still available mid-dialog.
@@ -2071,7 +2244,7 @@ impl App {
                 let w = self.wallet();
                 let chain_id = w.networks().active().chain_id;
                 let owner = w.active_address().ok().unwrap_or_default();
-                View::Hex(HexView::for_chain(chain_id, &owner))
+                View::Hex(HexView::for_chain(chain_id, owner))
             }
             Screen::TokenLaunch => {
                 let chain_id = self.wallet().networks().active().chain_id;
@@ -2191,8 +2364,8 @@ impl App {
     }
 
     fn kick_f2_chrome(&mut self, owner: &str) {
-        self.chrome.f2_gen = self.chrome.f2_gen.wrapping_add(1);
-        let gen = self.chrome.f2_gen;
+        self.chrome.f2_chrome_gen = self.chrome.f2_chrome_gen.wrapping_add(1);
+        let gen = self.chrome.f2_chrome_gen;
         self.chrome.balance = None;
         self.chrome.loading = true;
         self.chrome.error = None;
@@ -2203,8 +2376,8 @@ impl App {
     }
 
     fn kick_f2_assets(&mut self, owner: &str) {
-        self.chrome.f2_gen = self.chrome.f2_gen.wrapping_add(1);
-        let gen = self.chrome.f2_gen;
+        self.chrome.f2_assets_gen = self.chrome.f2_assets_gen.wrapping_add(1);
+        let gen = self.chrome.f2_assets_gen;
         self.chrome.assets.clear();
         self.chrome.asset_idx = 0;
         self.chrome.assets_loading = true;
@@ -2216,27 +2389,23 @@ impl App {
 
     /// Clear F2 and refetch native + assets for `owner` (F3 must match F2).
     fn sync_f2_to_owner(&mut self, owner: &str) {
-        self.chrome.f2_gen = self.chrome.f2_gen.wrapping_add(1);
-        let gen = self.chrome.f2_gen;
-        self.chrome.balance = None;
-        self.chrome.assets.clear();
-        self.chrome.asset_idx = 0;
         self.chrome.pending_asset_address = None;
-        self.chrome.loading = true;
-        self.chrome.assets_loading = true;
         self.chrome.error = None;
-        self.spawn_job(UiJob::RefreshChrome {
-            owner: owner.to_string(),
-            gen,
-        });
-        self.spawn_job(UiJob::RefreshAssets {
-            owner: owner.to_string(),
-            gen,
-        });
+        // Independent gens — each kick bumps only its own counter.
+        self.kick_f2_chrome(owner);
+        self.kick_f2_assets(owner);
     }
 
-    fn f2_result_current(&self, owner: &str, gen: u64) -> bool {
-        if gen != self.chrome.f2_gen {
+    fn f2_chrome_result_current(&self, owner: &str, gen: u64) -> bool {
+        if gen != self.chrome.f2_chrome_gen {
+            return false;
+        }
+        self.chrome_display_owner()
+            .is_some_and(|want| want.eq_ignore_ascii_case(owner))
+    }
+
+    fn f2_assets_result_current(&self, owner: &str, gen: u64) -> bool {
+        if gen != self.chrome.f2_assets_gen {
             return false;
         }
         self.chrome_display_owner()
@@ -2287,6 +2456,12 @@ impl App {
             self.copy_chrome_f3_address();
             return true;
         }
+
+        // F3 rename mode owns typing until Enter / Esc.
+        if self.f3_rename.is_some() {
+            return self.handle_f3_rename_key(key);
+        }
+
         match key.code {
             KeyCode::F(1) => {
                 self.begin_chrome_focus(ChromeFocus::Network);
@@ -2303,8 +2478,8 @@ impl App {
                 self.begin_chrome_focus(ChromeFocus::Account);
                 true
             }
-            // F4/F5 are home send fields — clear F1–F3 so ↑/↓ reach the form.
-            KeyCode::F(4) | KeyCode::F(5) => {
+            // F4–F6 are home send fields — clear F1–F3 so ↑/↓ reach the form.
+            KeyCode::F(4) | KeyCode::F(5) | KeyCode::F(6) => {
                 if self.chrome.focus != ChromeFocus::None {
                     self.cancel_chrome_focus();
                 }
@@ -2326,6 +2501,10 @@ impl App {
             KeyCode::Up | KeyCode::Down if self.chrome.focus != ChromeFocus::None => {
                 let forward = matches!(key.code, KeyCode::Down);
                 self.preview_chrome_cycle(forward);
+                true
+            }
+            KeyCode::Right if self.chrome.focus == ChromeFocus::Account => {
+                self.begin_f3_rename();
                 true
             }
             KeyCode::Left | KeyCode::Right if self.chrome.focus == ChromeFocus::Asset => {
@@ -2356,14 +2535,84 @@ impl App {
         }
     }
 
+    fn begin_f3_rename(&mut self) {
+        let idx = self
+            .chrome
+            .pending_account_index
+            .or_else(|| self.wallet().active_account_index().ok());
+        let Some(idx) = idx else {
+            self.set_flash("No account to rename");
+            return;
+        };
+        let current = self
+            .wallet()
+            .account_label(idx)
+            .unwrap_or_else(|_| String::new());
+        let mut input = crate::input::Input::new(false, "new name");
+        input.set_value(current);
+        self.chrome.pending_account_index = Some(idx);
+        self.chrome.focus = ChromeFocus::Account;
+        self.f3_rename = Some(input);
+        self.set_flash("F3 rename — type a name, Enter to save, Esc cancel");
+    }
+
+    fn handle_f3_rename_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.f3_rename = None;
+                self.set_flash("Rename cancelled");
+                true
+            }
+            KeyCode::F(1) | KeyCode::F(2) | KeyCode::F(3) | KeyCode::F(4) | KeyCode::F(5)
+            | KeyCode::F(6) => {
+                self.f3_rename = None;
+                false
+            }
+            _ => {
+                let Some(input) = self.f3_rename.as_mut() else {
+                    return true;
+                };
+                match input.handle_key(key) {
+                    crate::input::InputAction::Submitted => {
+                        let name = self
+                            .f3_rename
+                            .as_mut()
+                            .map(|i| i.take_string())
+                            .unwrap_or_default();
+                        self.f3_rename = None;
+                        let idx = self
+                            .chrome
+                            .pending_account_index
+                            .or_else(|| self.wallet().active_account_index().ok());
+                        match idx {
+                            Some(idx) => {
+                                let result = {
+                                    let mut wallet =
+                                        self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                                    wallet.rename_account(idx, &name)
+                                };
+                                match result {
+                                    Ok(label) => self.set_flash(format!("Renamed to {label}")),
+                                    Err(e) => self.set_flash(e.user_message()),
+                                }
+                            }
+                            None => self.set_flash("No account to rename"),
+                        }
+                        true
+                    }
+                    crate::input::InputAction::Consumed => true,
+                    crate::input::InputAction::Ignored => true,
+                }
+            }
+        }
+    }
+
     /// Copy the address shown under the wordmark (F3 ↑/↓ preview when Account focused).
     fn copy_chrome_f3_address(&mut self) {
-        let Some(addr) = self.chrome_display_owner().or_else(|| {
-            self.wallet()
-                .active_address()
-                .ok()
-                .map(|a| a.to_string())
-        }) else {
+        let Some(addr) = self
+            .chrome_display_owner()
+            .or_else(|| self.wallet().active_address().ok().map(|a| a.to_string()))
+        else {
             self.set_flash("No account address to copy");
             return;
         };
@@ -2427,11 +2676,13 @@ impl App {
     }
 
     fn cancel_chrome_focus(&mut self) {
+        self.f3_rename = None;
         self.clear_chrome_pending();
         self.chrome.focus = ChromeFocus::None;
     }
 
     fn begin_chrome_focus(&mut self, focus: ChromeFocus) {
+        self.f3_rename = None;
         self.clear_chrome_pending();
         self.chrome.focus = focus;
         match focus {
@@ -3649,6 +3900,7 @@ impl App {
                         source,
                         proposal: Box::new(proposal),
                     };
+                    #[allow(clippy::await_holding_lock)]
                     let result = handle.block_on(async {
                         let mut w = wallet.lock().unwrap_or_else(|e| e.into_inner());
                         execute_approval_with_fee(&kind, &mut w, fee_override.as_ref())
@@ -3731,26 +3983,26 @@ impl App {
                     gen,
                     result: r,
                 } => {
-                    if !self.f2_result_current(&owner, gen) {
-                        // Stale F3 race — keep waiting for the current owner fetch.
+                    if !self.f2_chrome_result_current(&owner, gen) {
+                        // Stale F3 / superseded chrome fetch.
                     } else {
-                    self.chrome.loading = false;
-                    match r {
-                        Ok((bal, gas)) => {
-                            if let View::Dashboard(v) = &mut self.view {
-                                v.apply_balance(Ok(bal.clone()));
+                        self.chrome.loading = false;
+                        match r {
+                            Ok((bal, gas)) => {
+                                if let View::Dashboard(v) = &mut self.view {
+                                    v.apply_balance(Ok(bal.clone()));
+                                }
+                                self.chrome.balance = Some(bal);
+                                self.chrome.gas_gwei = Some(gas);
+                                self.chrome.error = None;
                             }
-                            self.chrome.balance = Some(bal);
-                            self.chrome.gas_gwei = Some(gas);
-                            self.chrome.error = None;
-                        }
-                        Err(e) => {
-                            self.chrome.error = Some(e.user_message());
-                            if let View::Dashboard(v) = &mut self.view {
-                                v.apply_balance(Err(e));
+                            Err(e) => {
+                                self.chrome.error = Some(e.user_message());
+                                if let View::Dashboard(v) = &mut self.view {
+                                    v.apply_balance(Err(e));
+                                }
                             }
                         }
-                    }
                     }
                 }
                 UiJobResult::Balance(r) => {
@@ -3763,38 +4015,40 @@ impl App {
                     gen,
                     result: r,
                 } => {
-                    if !self.f2_result_current(&owner, gen) {
-                        // Stale F3 race.
+                    if !self.f2_assets_result_current(&owner, gen) {
+                        // Stale F3 / superseded assets fetch.
                     } else {
-                    self.chrome.assets_loading = false;
-                    match &r {
-                        Ok(assets) => {
-                            self.chrome.assets = chrome_assets_from_fetch(assets.clone());
-                            if self.chrome.asset_idx >= self.chrome.assets.len() {
-                                self.chrome.asset_idx = self.chrome.assets.len().saturating_sub(1);
-                            }
-                            if let Some(pending) = self.chrome.pending_asset_idx {
-                                if pending >= self.chrome.assets.len() {
-                                    self.chrome.pending_asset_idx =
-                                        Some(self.chrome.assets.len().saturating_sub(1));
+                        self.chrome.assets_loading = false;
+                        match &r {
+                            Ok(assets) => {
+                                self.chrome.assets = chrome_assets_from_fetch(assets.clone());
+                                if self.chrome.asset_idx >= self.chrome.assets.len() {
+                                    self.chrome.asset_idx =
+                                        self.chrome.assets.len().saturating_sub(1);
+                                }
+                                if let Some(pending) = self.chrome.pending_asset_idx {
+                                    if pending >= self.chrome.assets.len() {
+                                        self.chrome.pending_asset_idx =
+                                            Some(self.chrome.assets.len().saturating_sub(1));
+                                    }
+                                }
+                                if let Some(addr) = self.chrome.pending_asset_address.take() {
+                                    if let Some(i) =
+                                        asset_index_for_address(&self.chrome.assets, &addr)
+                                    {
+                                        self.chrome.asset_idx = i;
+                                    }
                                 }
                             }
-                            if let Some(addr) = self.chrome.pending_asset_address.take() {
-                                if let Some(i) = asset_index_for_address(&self.chrome.assets, &addr)
-                                {
-                                    self.chrome.asset_idx = i;
-                                }
+                            Err(e) => {
+                                self.chrome.error = Some(e.user_message());
                             }
                         }
-                        Err(e) => {
-                            self.chrome.error = Some(e.user_message());
+                        match &mut self.view {
+                            View::Assets(v) => v.apply_assets(r),
+                            View::Dashboard(v) => v.sync_from_chrome(&self.chrome),
+                            _ => {}
                         }
-                    }
-                    match &mut self.view {
-                        View::Assets(v) => v.apply_assets(r),
-                        View::Dashboard(v) => v.sync_from_chrome(&self.chrome),
-                        _ => {}
-                    }
                     }
                 }
                 other => {
@@ -3948,6 +4202,8 @@ enum GlobalAction {
     Quit,
     /// Jump to a common task screen (when the view did not consume the key).
     Navigate(Screen),
+    /// Footer `c` — Keys Hardware hub (Ledger / Trezor).
+    NavigateHardware,
     /// Pop the navigation stack (Esc).
     Back,
     /// Refresh status chrome (balance + gas).
@@ -4013,6 +4269,7 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'g' => GlobalAction::Navigate(Screen::Aggregator),
             'n' | 'i' => GlobalAction::Navigate(Screen::Settings),
             'k' => GlobalAction::Navigate(Screen::Keys),
+            'c' => GlobalAction::NavigateHardware,
             'e' => GlobalAction::Navigate(Screen::Wrap),
             'u' => GlobalAction::Navigate(Screen::Hex),
             'p' => GlobalAction::Navigate(Screen::Lp),
@@ -4111,10 +4368,10 @@ mod tests {
     }
 
     #[test]
-    fn q_is_inert_when_unhandled() {
+    fn q_opens_dapps_when_unhandled() {
         assert_eq!(
             global_action(press('q'), &KeyOutcome::NotHandled),
-            GlobalAction::None
+            GlobalAction::Navigate(Screen::Dapps)
         );
     }
 
@@ -4233,8 +4490,12 @@ mod tests {
             GlobalAction::Navigate(Screen::Dapps)
         );
         assert_eq!(
-            global_action(press('z'), &KeyOutcome::NotHandled),
-            GlobalAction::Navigate(Screen::TokenLaunch)
+            global_action(press('c'), &KeyOutcome::NotHandled),
+            GlobalAction::NavigateHardware
+        );
+        assert_eq!(
+            global_action(press('k'), &KeyOutcome::NotHandled),
+            GlobalAction::Navigate(Screen::Keys)
         );
         assert_eq!(
             global_action(press('r'), &KeyOutcome::NotHandled),

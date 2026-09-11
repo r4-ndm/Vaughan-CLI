@@ -111,6 +111,9 @@ pub struct PersistedState {
     /// Hardware watch accounts (address + path; no secrets). Forward-compatible.
     #[serde(default)]
     pub hardware: Vec<crate::security::hardware::HardwareAccountRecord>,
+    /// F3 rename overrides: lowercase address → display label (HD / import / hardware).
+    #[serde(default)]
+    pub account_labels: HashMap<String, String>,
     /// When true, VB may expose loopback CDP for MCP agent navigation (FR-7.5).
     #[serde(default)]
     pub agent_browser_control: bool,
@@ -326,19 +329,40 @@ fn dapp_origin(url: &str) -> Option<String> {
     }
 }
 
-/// Append any missing [`default_trusted_dapps`] entries (matched by origin).
-/// Also backfills `extra_hosts` on existing defaults (e.g. PulseX IPFS gateways).
+/// Append any missing [`default_trusted_dapps`] entries.
+///
+/// Match order: exact URL, then name, then same origin **only when** that origin
+/// appears once in the defaults (so hash-route siblings like SquirrelSwap + Bot
+/// are not collapsed). Also backfills `extra_hosts` (e.g. PulseX IPFS gateways).
 /// Returns `true` when the list changed.
 pub fn merge_default_trusted_dapps(list: &mut Vec<TrustedDapp>) -> bool {
+    let defaults = default_trusted_dapps();
     let mut changed = false;
-    for dapp in default_trusted_dapps() {
+    for dapp in defaults.iter().cloned() {
         let Some(want) = dapp_origin(&dapp.url) else {
             continue;
         };
-        if let Some(existing) = list
-            .iter_mut()
-            .find(|e| dapp_origin(&e.url).as_deref() == Some(want.as_str()))
-        {
+        let origin_unique = defaults
+            .iter()
+            .filter(|d| dapp_origin(&d.url).as_deref() == Some(want.as_str()))
+            .count()
+            == 1;
+
+        let existing_idx = list
+            .iter()
+            .position(|e| e.url == dapp.url)
+            .or_else(|| list.iter().position(|e| e.name == dapp.name))
+            .or_else(|| {
+                if origin_unique {
+                    list.iter()
+                        .position(|e| dapp_origin(&e.url).as_deref() == Some(want.as_str()))
+                } else {
+                    None
+                }
+            });
+
+        if let Some(idx) = existing_idx {
+            let existing = &mut list[idx];
             if existing.extra_hosts.is_empty() && !dapp.extra_hosts.is_empty() {
                 existing.extra_hosts = dapp.extra_hosts.clone();
                 changed = true;
@@ -368,6 +392,7 @@ impl PersistedState {
             trusted_dapps: default_trusted_dapps(),
             custom_networks: Vec::new(),
             hardware: Vec::new(),
+            account_labels: HashMap::new(),
             agent_browser_control: false,
             agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
@@ -391,6 +416,7 @@ impl PersistedState {
             trusted_dapps: default_trusted_dapps(),
             custom_networks: Vec::new(),
             hardware: Vec::new(),
+            account_labels: HashMap::new(),
             agent_browser_control: false,
             agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),

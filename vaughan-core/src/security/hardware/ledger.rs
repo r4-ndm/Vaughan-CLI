@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use alloy::eips::eip2718::Encodable2718;
 use alloy::network::{EthereumWallet, NetworkTransactionBuilder};
-use alloy::primitives::{Address, TxKind, U256};
-use alloy::rpc::types::eth::TransactionRequest;
+use alloy::primitives::Address;
 use alloy::signers::Signer;
 use alloy_signer_ledger::{
     coins_ledger::transports::{Ledger, LedgerAsync},
@@ -273,11 +272,8 @@ async fn sign_prepared_evm_tx_ledger(
     ledger: LedgerSigner,
     evm_tx: &EvmTransaction,
 ) -> Result<Vec<u8>, WalletError> {
-    if evm_tx.nonce.is_none() {
-        return Err(WalletError::InvalidTransaction(
-            "nonce required before Ledger envelope sign".into(),
-        ));
-    }
+    use super::profiles::evm::prepared_evm_tx_request;
+
     let from = Address::from_str(evm_tx.from.trim()).map_err(|_| {
         WalletError::InvalidTransaction(format!("invalid address: {}", evm_tx.from))
     })?;
@@ -286,51 +282,7 @@ async fn sign_prepared_evm_tx_ledger(
             "transaction from does not match Ledger address".into(),
         ));
     }
-    let to = Address::from_str(evm_tx.to.trim())
-        .map_err(|_| WalletError::InvalidTransaction(format!("invalid address: {}", evm_tx.to)))?;
-    let value = U256::from_str(&evm_tx.value)
-        .map_err(|_| WalletError::InvalidAmount(format!("Invalid wei value: {}", evm_tx.value)))?;
-    let is_create = to.is_zero()
-        && evm_tx
-            .data
-            .as_deref()
-            .is_some_and(|d| !d.trim_start_matches("0x").is_empty());
-    let mut req = TransactionRequest {
-        from: Some(from),
-        to: Some(if is_create {
-            TxKind::Create
-        } else {
-            TxKind::Call(to)
-        }),
-        value: Some(value),
-        chain_id: Some(evm_tx.chain_id),
-        nonce: evm_tx.nonce,
-        gas: evm_tx.gas_limit,
-        ..Default::default()
-    };
-    if evm_tx.max_fee_per_gas.is_none() {
-        if let Some(gas_price) = evm_tx.gas_price.as_deref() {
-            let gp = U256::from_str(gas_price).map_err(|_| {
-                WalletError::InvalidAmount(format!("Invalid gas price: {gas_price}"))
-            })?;
-            req.gas_price = Some(gp.to::<u128>());
-        }
-    }
-    if let Some(max_fee) = evm_tx.max_fee_per_gas.as_deref() {
-        let mf = U256::from_str(max_fee)
-            .map_err(|_| WalletError::InvalidAmount(format!("Invalid max fee: {max_fee}")))?;
-        req.max_fee_per_gas = Some(mf.to::<u128>());
-    }
-    if let Some(prio) = evm_tx.max_priority_fee_per_gas.as_deref() {
-        let p = U256::from_str(prio)
-            .map_err(|_| WalletError::InvalidAmount(format!("Invalid priority fee: {prio}")))?;
-        req.max_priority_fee_per_gas = Some(p.to::<u128>());
-    }
-    if let Some(data_hex) = evm_tx.data.as_deref() {
-        let input_bytes = hex::decode(data_hex.trim_start_matches("0x"))
-            .map_err(|_| WalletError::InvalidTransaction("Invalid hex data".to_string()))?;
-        req.input.input = Some(input_bytes.into());
-    }
+    let req = prepared_evm_tx_request(evm_tx)?;
 
     // Alloy EthereumWallet over Ledger TxSigner (confirm-on-device).
     let wallet = EthereumWallet::from(ledger);

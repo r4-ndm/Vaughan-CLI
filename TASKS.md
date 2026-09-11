@@ -328,7 +328,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] MCP history + token: `list_transfers`, `resolve_token`, `import_token`
 - [x] MCP stealth send propose (`propose_stealth_send`); scan/sweep MCP tools shipped
 - [x] MCP `watch_balance` for sentient threshold loops
-- [x] Token discovery without a site: `resolve_token` + `import_token` (TUI paste polish still optional)
+- [x] Token discovery without a site: `resolve_token` + `import_token`; Home Send F5 Coin paste (`0x` resolve, F2 sync unless overridden)
 
 ### P1 — Agent is the URL bar
 - [x] EmpX / EmpSeal Alloy client (on-chain path-find + swap calldata; PulseChain 369)
@@ -375,7 +375,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 #### LP manual 943 walkthrough (operator runbook)
 
-Rebuild TUI (`cargo run -p vaughan-cli`), unlock on **pulsechain-testnet-v4**, open **LP** (`l`). Use small tPLS amounts.
+Rebuild TUI (`cargo run -p vaughan-cli`), unlock on **pulsechain-testnet-v4**, open **LP** (`p`). Use small tPLS amounts.
 
 | Step | Pair | Pass criteria |
 |------|------|----------------|
@@ -383,6 +383,9 @@ Rebuild TUI (`cargo run -p vaughan-cli`), unlock on **pulsechain-testnet-v4**, o
 | 2 | **WZRD/WPLS** Add LP | Default 0.05% fee; full-range mint succeeds |
 | 3 | Cancel mid-pipeline | After first approve broadcast, Esc — view resets cleanly (no stuck “Loading”) |
 | 4 | Collect | Existing position → Collect tab → fees land in wallet |
+| 5 | Increase | Focus NFT → Increase → Tab edit amounts (real decimals) → Enable if prompted → mint add |
+| 6 | Decrease → Collect | Partial remove (25%) → Confirm → Collect owed (human amounts) |
+| 7 | Transfer | Focus NFT → Transfer (`s`) → recipient → Confirm (entire NFT); list reloads without it |
 
 Automated gates (CI / local):
 
@@ -541,7 +544,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
   - [x] HW readiness check (2026-08-25): Phase 0 = Go-with-fixes; see readiness section in plan doc
   - [x] HW Phase 0: modular `security/hardware/` + family-agnostic `SignerBackend` + EVM profile + vault `hardware[]` (no new deps; multichain-ready seams)
   - [x] HW Phase 1: Ledger EOA (`alloy-signer-ledger`, Keys Add Ledger, mock Anvil); live 943 device smoke still optional
-  - [ ] HW Phase 2: Trezor EOA parity
+  - [x] HW Phase 2: Trezor EOA (`trezor-client`, Keys Add Trezor, Trezor One PIN matrix, personal + tx sign); EIP-712 + 943 live smoke still open
   - [ ] HW Phase 3: hardening (re-verify, blind-sign policy); AA/stealth on HW stay out of scope
 
 ## Later — non-EVM families (deferred, no FR yet)

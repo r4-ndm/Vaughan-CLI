@@ -52,24 +52,17 @@ pub fn sign_evm_typed_data_local(
     sign_typed_data(signer, typed_data)
 }
 
-/// Sign a fully prepared EVM tx (nonce/gas/fees set) into an EIP-2718 envelope.
+/// Build an Alloy [`TransactionRequest`] from a fully prepared [`EvmTransaction`].
 ///
-/// Does not query RPC. Callers fill nonce via [`crate::chains::evm::EvmAdapter`].
-pub async fn sign_prepared_evm_tx(
-    signer: &PrivateKeySigner,
-    evm_tx: &EvmTransaction,
-) -> Result<Vec<u8>, WalletError> {
+/// Shared by local, Ledger, and Trezor backends — no signing or HID here.
+/// Caller must ensure `from` matches the active device/local address.
+pub fn prepared_evm_tx_request(evm_tx: &EvmTransaction) -> Result<TransactionRequest, WalletError> {
     if evm_tx.nonce.is_none() {
         return Err(WalletError::InvalidTransaction(
             "nonce required before hardware/local envelope sign".into(),
         ));
     }
     let from = parse_addr(&evm_tx.from)?;
-    if from != signer.address() {
-        return Err(WalletError::SigningFailed(
-            "transaction from does not match signer".into(),
-        ));
-    }
     let to = parse_addr(&evm_tx.to)?;
     let value = U256::from_str(&evm_tx.value)
         .map_err(|_| WalletError::InvalidAmount(format!("Invalid wei value: {}", evm_tx.value)))?;
@@ -114,9 +107,25 @@ pub async fn sign_prepared_evm_tx(
             .map_err(|_| WalletError::InvalidTransaction("Invalid hex data".to_string()))?;
         req.input.input = Some(input_bytes.into());
     }
+    Ok(req)
+}
+
+/// Sign a fully prepared EVM tx (nonce/gas/fees set) into an EIP-2718 envelope.
+///
+/// Does not query RPC. Callers fill nonce via [`crate::chains::evm::EvmAdapter`].
+pub async fn sign_prepared_evm_tx(
+    signer: &PrivateKeySigner,
+    evm_tx: &EvmTransaction,
+) -> Result<Vec<u8>, WalletError> {
+    let from = parse_addr(&evm_tx.from)?;
+    if from != signer.address() {
+        return Err(WalletError::SigningFailed(
+            "transaction from does not match signer".into(),
+        ));
+    }
+    let req = prepared_evm_tx_request(evm_tx)?;
 
     // Local path: Alloy EthereumWallet (MetaMask-family EIP-1559 envelope).
-    // Hardware Phase 1 will sign the same prepared fields via DeviceSession.
     let wallet = EthereumWallet::from(signer.clone());
     let envelope = req
         .build(&wallet)

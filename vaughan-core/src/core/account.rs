@@ -11,7 +11,7 @@ use crate::core::vault_secrets::{
 };
 use crate::error::WalletError;
 use crate::security::hardware::{
-    AccountKind, HardwareAccountRecord, LocalSignerBackend, HARDWARE_INDEX_BASE,
+    AccountKind, HardwareAccountRecord, HardwareVendor, LocalSignerBackend, HARDWARE_INDEX_BASE,
 };
 use crate::security::hd_wallet::{
     derive_account, derive_account_from_parent, derive_account_parent, validate_mnemonic,
@@ -55,6 +55,8 @@ pub struct AccountManager {
     imported: Vec<ImportedKey>,
     hardware: Vec<HardwareAccountRecord>,
     active_index: u32,
+    /// Persisted F3 renames (lowercase address → label); reapplied after rebuild.
+    label_overrides: std::collections::HashMap<String, String>,
 }
 
 /// Default label for a seed-derived HD account.
@@ -125,6 +127,7 @@ impl AccountManager {
             imported,
             hardware,
             active_index: 0,
+            label_overrides: std::collections::HashMap::new(),
         };
         am.rebuild_account_list_with_hd_count(count)?;
         am.set_active(active_index)?;
@@ -146,7 +149,10 @@ impl AccountManager {
     }
 
     /// Append a hardware watch account and select it.
-    pub fn add_hardware(&mut self, record: HardwareAccountRecord) -> Result<Account, WalletError> {
+    ///
+    /// Empty Trezor labels become `Trezor 1`, `Trezor 2`, … (count of existing
+    /// Trezor watches + 1). Other vendors keep [`HardwareAccountRecord::display_label`].
+    pub fn add_hardware(&mut self, mut record: HardwareAccountRecord) -> Result<Account, WalletError> {
         if self
             .accounts
             .iter()
@@ -155,6 +161,15 @@ impl AccountManager {
             return Err(WalletError::Other(
                 "that address is already in this wallet".to_string(),
             ));
+        }
+        if record.label.trim().is_empty() && record.vendor == HardwareVendor::Trezor {
+            let n = self
+                .hardware
+                .iter()
+                .filter(|h| h.vendor == HardwareVendor::Trezor)
+                .count()
+                + 1;
+            record.label = format!("Trezor {n}");
         }
         self.hardware.push(record);
         self.rebuild_account_list()?;
@@ -226,6 +241,7 @@ impl AccountManager {
             });
         }
         self.accounts = accounts;
+        self.reapply_label_overrides();
         if self.accounts.iter().all(|a| a.index != self.active_index) {
             self.active_index = self.accounts.first().map(|a| a.index).unwrap_or(0);
         }
@@ -339,6 +355,85 @@ impl AccountManager {
     }
 
     /// Label for account `index`, if present.
+    /// Apply persisted F3 renames (address → label). Empty values are ignored.
+    pub fn apply_account_labels(&mut self, labels: &std::collections::HashMap<String, String>) {
+        self.label_overrides = labels
+            .iter()
+            .filter_map(|(addr, label)| {
+                let t = label.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some((addr.to_lowercase(), t.to_string()))
+                }
+            })
+            .collect();
+        self.reapply_label_overrides();
+    }
+
+    fn reapply_label_overrides(&mut self) {
+        if self.label_overrides.is_empty() {
+            return;
+        }
+        for account in &mut self.accounts {
+            let key = account.address.to_lowercase();
+            if let Some(label) = self.label_overrides.get(&key) {
+                account.label = label.clone();
+            }
+        }
+    }
+
+    /// Set the display label for account `index` (returns the address for persistence).
+    pub fn set_account_label(
+        &mut self,
+        index: u32,
+        label: impl Into<String>,
+    ) -> Result<String, WalletError> {
+        let label = label.into();
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            return Err(WalletError::Other("account name cannot be empty".into()));
+        }
+        if trimmed.chars().count() > 48 {
+            return Err(WalletError::Other(
+                "account name is too long (max 48 characters)".into(),
+            ));
+        }
+        let account = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.index == index)
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))?;
+        let address = account.address.clone();
+        let is_imported = matches!(account.kind, AccountKind::Imported);
+        let is_hardware = account.kind.is_hardware();
+        account.label = trimmed.to_string();
+        self.label_overrides
+            .insert(address.to_lowercase(), trimmed.to_string());
+        if is_hardware {
+            if let Some(hw) = self
+                .hardware
+                .iter_mut()
+                .find(|h| h.address.eq_ignore_ascii_case(&address))
+            {
+                hw.label = trimmed.to_string();
+            }
+            if let Some(account) = self.accounts.iter_mut().find(|a| a.index == index) {
+                if let AccountKind::Hardware(rec) = &mut account.kind {
+                    rec.label = trimmed.to_string();
+                }
+            }
+        }
+        if is_imported {
+            if let Some(offset) = index.checked_sub(IMPORTED_INDEX_BASE) {
+                if let Some(key) = self.imported.get_mut(offset as usize) {
+                    key.label = trimmed.to_string();
+                }
+            }
+        }
+        Ok(address)
+    }
+
     pub fn label_for(&self, index: u32) -> Option<&str> {
         self.accounts
             .iter()
@@ -556,5 +651,45 @@ mod tests {
             am.stealth_keys(),
             Err(WalletError::HardwareUnsupported(_))
         ));
+    }
+
+    #[test]
+    fn trezor_default_labels_increment() {
+        use crate::security::hardware::{HardwareVendor, HwChainFamily};
+
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 1).unwrap();
+        let a1 = am
+            .add_hardware(HardwareAccountRecord {
+                vendor: HardwareVendor::Trezor,
+                family: HwChainFamily::Evm,
+                derivation_path: "m/44'/60'/0'/0/0".into(),
+                network_id: Some("943".into()),
+                address: "0x2222222222222222222222222222222222222222".into(),
+                label: String::new(),
+            })
+            .unwrap();
+        assert_eq!(a1.label, "Trezor 1");
+        let a2 = am
+            .add_hardware(HardwareAccountRecord {
+                vendor: HardwareVendor::Trezor,
+                family: HwChainFamily::Evm,
+                derivation_path: "m/44'/60'/0'/0/1".into(),
+                network_id: Some("943".into()),
+                address: "0x3333333333333333333333333333333333333333".into(),
+                label: String::new(),
+            })
+            .unwrap();
+        assert_eq!(a2.label, "Trezor 2");
+        let a3 = am
+            .add_hardware(HardwareAccountRecord {
+                vendor: HardwareVendor::Trezor,
+                family: HwChainFamily::Evm,
+                derivation_path: "m/44'/60'/0'/0/2".into(),
+                network_id: None,
+                address: "0x4444444444444444444444444444444444444444".into(),
+                label: "Cold".into(),
+            })
+            .unwrap();
+        assert_eq!(a3.label, "Cold");
     }
 }

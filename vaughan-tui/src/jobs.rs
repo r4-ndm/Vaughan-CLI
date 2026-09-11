@@ -317,8 +317,12 @@ pub struct ChromeSnapshot {
     pub pending_asset_address: Option<String>,
     /// Pending F3 account index (`Account::index`).
     pub pending_account_index: Option<u32>,
-    /// Bumped whenever F2 must refetch; drop chrome/assets results with an older gen.
-    pub f2_gen: u64,
+    /// Bumped on chrome (native/gas) refetch; drop stale [`UiJobResult::Chrome`].
+    pub f2_chrome_gen: u64,
+    /// Bumped on asset-list refetch; drop stale [`UiJobResult::Assets`].
+    /// Kept separate from [`Self::f2_chrome_gen`] so a chrome-only refresh cannot
+    /// orphan an in-flight assets job (that left F2 spinning forever).
+    pub f2_assets_gen: u64,
     /// Count of MCP proposals waiting in the file queue.
     pub mcp_pending: usize,
     /// Loopback MCP listener (Cursor / Claude agents) — shown on F1 network strip.
@@ -334,7 +338,7 @@ pub enum ChromeFocus {
     Network,
     /// F2 — cycle assets with ↑/↓, ←/→ contract address, Enter to set.
     Asset,
-    /// F3 — cycle accounts with ↑/↓, Enter to set.
+    /// F3 — cycle accounts with ↑/↓, → rename, Enter to set.
     Account,
 }
 

@@ -9,6 +9,7 @@ description = "Shared wallet core: chains, core logic, security, persistence"
 alloy = { workspace = true }
 alloy-dyn-abi = { workspace = true }
 alloy-signer-ledger = { workspace = true }
+trezor-client = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 url = { workspace = true }

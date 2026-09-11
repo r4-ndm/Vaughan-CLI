@@ -1,7 +1,7 @@
 //! CI / Anvil mock hardware signer (no USB).
 //!
 //! Lets integration tests exercise the hardware account path with a local
-//! [`PrivateKeySigner`] that pretends to be a Ledger watch record.
+//! [`PrivateKeySigner`] that pretends to be a Ledger or Trezor watch record.
 
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
@@ -33,13 +33,24 @@ impl MockSignerBackend {
 
     /// Watch record pointing at this mock (Ledger vendor label for UX parity).
     pub fn watch_record(&self, path: &str, network_id: Option<String>) -> HardwareAccountRecord {
+        self.watch_record_for(HardwareVendor::Ledger, path, network_id, "Mock Ledger")
+    }
+
+    /// Watch record for any hardware vendor (Anvil/CI — mock still signs locally).
+    pub fn watch_record_for(
+        &self,
+        vendor: HardwareVendor,
+        path: &str,
+        network_id: Option<String>,
+        label: impl Into<String>,
+    ) -> HardwareAccountRecord {
         HardwareAccountRecord {
-            vendor: HardwareVendor::Ledger,
+            vendor,
             family: HwChainFamily::Evm,
             derivation_path: path.to_string(),
             network_id,
             address: self.address.clone(),
-            label: "Mock Ledger".into(),
+            label: label.into(),
         }
     }
 }

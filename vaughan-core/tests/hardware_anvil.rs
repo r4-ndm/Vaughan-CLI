@@ -1,8 +1,8 @@
 //! Anvil coverage for hardware account routing via [`MockSignerBackend`].
 //!
-//! No USB — proves prepare_sign_raw → mock sign → broadcast_raw for a Ledger
-//! watch record. Vault uses the abandon mnemonic so Anvil key0 does not collide
-//! with HD accounts.
+//! No USB — proves prepare_sign_raw → mock sign → broadcast_raw for Ledger and
+//! Trezor watch records (vendor-tagged vault entries; same mock signer). Vault
+//! uses the abandon mnemonic so Anvil key0 does not collide with HD accounts.
 
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
@@ -11,10 +11,13 @@ use std::time::{Duration, Instant};
 use alloy::signers::local::PrivateKeySigner;
 use secrecy::SecretString;
 use serde_json::{json, Value};
+use tempfile::TempDir;
 use vaughan_core::chains::EvmTransaction;
 use vaughan_core::core::WalletState;
 use vaughan_core::security::hd_wallet::validate_mnemonic;
-use vaughan_core::security::{DeviceSession, HwChainFamily, MockDeviceSession, MockSignerBackend};
+use vaughan_core::security::{
+    DeviceSession, HardwareVendor, HwChainFamily, MockDeviceSession, MockSignerBackend,
+};
 
 const VAULT_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -85,9 +88,18 @@ fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
     Ok(v["result"].clone())
 }
 
-#[tokio::test]
-async fn mock_ledger_account_can_send_on_anvil() {
-    let anvil = Anvil::start();
+/// Keep [`TempDir`] alive for the life of the returned wallet.
+struct HwWallet {
+    _dir: TempDir,
+    wallet: WalletState,
+}
+
+/// Unlock vault with a mock HW watch for `vendor` (optional Anvil RPC override).
+fn wallet_with_mock_hw(
+    anvil_url: Option<&str>,
+    vendor: HardwareVendor,
+    label: &str,
+) -> HwWallet {
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = WalletState::load(dir.path().join("wallet.json")).unwrap();
     wallet
@@ -97,17 +109,22 @@ async fn mock_ledger_account_can_send_on_anvil() {
         )
         .unwrap();
     wallet.set_active_network("pulsechain-testnet-v4").unwrap();
-    wallet.set_rpc_override(&anvil.url);
+    if let Some(url) = anvil_url {
+        wallet.set_rpc_override(url);
+    }
 
     let mock = MockSignerBackend::new(ANVIL_KEY0.parse::<PrivateKeySigner>().unwrap());
     assert!(mock.address_string().eq_ignore_ascii_case(ANVIL_ADDR0));
-    let record = mock.watch_record("m/44'/60'/0'/0/0", Some("943".into()));
+    let record = mock.watch_record_for(vendor, "m/44'/60'/0'/0/0", Some("943".into()), label);
     let account = wallet.add_hardware_account(record).unwrap();
     assert!(account.kind.is_hardware());
     wallet.set_hardware_mock(mock);
     wallet.set_active_account(account.index).unwrap();
+    HwWallet { _dir: dir, wallet }
+}
 
-    let tx = EvmTransaction {
+fn sample_tx() -> EvmTransaction {
+    EvmTransaction {
         from: ANVIL_ADDR0.into(),
         to: ANVIL_ADDR1.into(),
         value: "1000000000000000".into(),
@@ -118,13 +135,66 @@ async fn mock_ledger_account_can_send_on_anvil() {
         max_priority_fee_per_gas: None,
         nonce: None,
         chain_id: 943,
-    };
+    }
+}
 
-    let receipt = wallet.broadcast(tx, "hw-mock").await.expect("broadcast");
+#[tokio::test]
+async fn mock_ledger_account_can_send_on_anvil() {
+    let anvil = Anvil::start();
+    let hw = wallet_with_mock_hw(Some(&anvil.url), HardwareVendor::Ledger, "Mock Ledger");
+
+    let receipt = hw
+        .wallet
+        .broadcast(sample_tx(), "hw-mock-ledger")
+        .await
+        .expect("broadcast");
     assert!(receipt.hash.starts_with("0x"));
 
     let pw = SecretString::from(PASSWORD.to_string());
-    assert!(wallet.export_active_private_key(&pw).is_err());
+    assert!(hw.wallet.export_active_private_key(&pw).is_err());
+}
+
+#[tokio::test]
+async fn mock_trezor_account_can_send_on_anvil() {
+    let anvil = Anvil::start();
+    let hw = wallet_with_mock_hw(Some(&anvil.url), HardwareVendor::Trezor, "Trezor 1");
+
+    let label = hw.wallet.active_account_label().expect("label");
+    assert_eq!(label, "Trezor 1");
+
+    let receipt = hw
+        .wallet
+        .broadcast(sample_tx(), "hw-mock-trezor")
+        .await
+        .expect("broadcast");
+    assert!(receipt.hash.starts_with("0x"));
+
+    let pw = SecretString::from(PASSWORD.to_string());
+    assert!(hw.wallet.export_active_private_key(&pw).is_err());
+}
+
+#[tokio::test]
+async fn mock_trezor_account_can_personal_sign() {
+    let anvil = Anvil::start();
+    let hw = wallet_with_mock_hw(Some(&anvil.url), HardwareVendor::Trezor, "Trezor 1");
+
+    let sig = hw
+        .wallet
+        .sign_message_async(b"vaughan-trezor-mock")
+        .await
+        .expect("personal_sign");
+    assert!(
+        sig.starts_with("0x") && sig.len() >= 130,
+        "expected hex signature, got len {}",
+        sig.len()
+    );
+}
+
+#[test]
+fn mock_trezor_empty_label_defaults_to_trezor_n() {
+    // Empty label → AccountManager assigns "Trezor 1" (no chain I/O needed).
+    let hw = wallet_with_mock_hw(None, HardwareVendor::Trezor, "");
+    assert_eq!(hw.wallet.active_account_label().unwrap(), "Trezor 1");
 }
 
 #[tokio::test]

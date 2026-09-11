@@ -5,7 +5,8 @@
 //! view body → action footer → faint tools-burn hint (when gate on).
 //!
 //! F1–F3: press the key to focus, ↑/↓ to preview, Enter to set, Esc to cancel.
-//! Home send body: F4 focuses recipient, F5 focuses amount. Dex / Ag / Bridge: F4 confirm or quote.
+//! F3 → renames the highlighted account; Enter saves.
+//! Home send body: F4 recipient · F5 coin · F6 amount. Dex / Ag / Bridge: F4 confirm or quote.
 
 pub mod aa_send;
 pub mod ag;
@@ -18,8 +19,8 @@ pub mod dapps;
 pub mod dashboard;
 pub mod dex;
 pub mod dex_calldata;
-pub mod history;
 pub mod hex;
+pub mod history;
 pub mod keys;
 pub mod lp;
 pub mod onboarding;
@@ -42,8 +43,8 @@ pub use browser::BrowserView;
 pub use dapps::DappsView;
 pub use dashboard::DashboardView;
 pub use dex::DexView;
-pub use history::HistoryView;
 pub use hex::HexView;
+pub use history::HistoryView;
 pub use keys::KeysView;
 pub use lp::LpView;
 pub use onboarding::OnboardingView;
@@ -90,6 +91,7 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
             matches!(
                 c.to_ascii_lowercase(),
                 'a' | 'b'
+                    | 'c'
                     | 'd'
                     | 'e'
                     | 'f'
@@ -392,6 +394,14 @@ pub fn render(frame: &mut Frame, app: &App) {
                 slogan,
             );
         }
+        if app.trezor_pin_active() {
+            render_trezor_pin_matrix(
+                frame,
+                area,
+                app.trezor_pin_len(),
+                app.trezor_pin_cursor(),
+            );
+        }
         if app.quit_confirm().is_some() {
             render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
         }
@@ -430,6 +440,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_tools_burn_hint(frame, hint);
     }
     app.render_body(frame, body);
+    if app.trezor_pin_active() {
+        render_trezor_pin_matrix(
+            frame,
+            area,
+            app.trezor_pin_len(),
+            app.trezor_pin_cursor(),
+        );
+    }
     if app.quit_confirm().is_some() {
         render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
     }
@@ -575,16 +593,8 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
         }
     };
 
-    let account_value = if chrome.focus == ChromeFocus::Account {
-        chrome
-            .pending_account_index
-            .and_then(|idx| app.try_wallet().and_then(|w| w.account_label(idx).ok()))
-            .unwrap_or_else(|| "—".into())
-    } else {
-        app.try_wallet()
-            .and_then(|w| w.active_account_label().ok().map(str::to_string))
-            .unwrap_or_else(|| "—".into())
-    };
+    let account_focused = chrome.focus == ChromeFocus::Account;
+    let renaming = app.f3_rename_line();
 
     render_stat_box(
         frame,
@@ -600,26 +610,32 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
         &token_value,
         chrome.focus == ChromeFocus::Asset,
     );
-    render_stat_box(
-        frame,
-        acct_area,
-        " F3 ",
-        &account_value,
-        chrome.focus == ChromeFocus::Account,
-    );
+    if let Some(line) = renaming {
+        render_stat_box_line(frame, acct_area, " F3 ", line, true);
+    } else {
+        let account_value = if account_focused {
+            chrome
+                .pending_account_index
+                .and_then(|idx| app.try_wallet().and_then(|w| w.account_label(idx).ok()))
+                .unwrap_or_else(|| "—".into())
+        } else {
+            app.try_wallet()
+                .and_then(|w| w.active_account_label().ok().map(str::to_string))
+                .unwrap_or_else(|| "—".into())
+        };
+        render_stat_box(
+            frame,
+            acct_area,
+            " F3 ",
+            &account_value,
+            account_focused,
+        );
+    }
 }
 
 /// One faded square panel: bright-blue F1/F2/F3 title + centred value (accent ink).
 /// When `focused`, title + value use reverse video so focus is obvious.
 fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focused: bool) {
-    let mut title_style = Style::default()
-        .fg(brand::action_key_color())
-        .add_modifier(Modifier::BOLD);
-    if focused {
-        title_style = title_style.add_modifier(Modifier::REVERSED);
-    }
-    let title_line = Line::from(Span::styled(title.to_string(), title_style));
-    let inner = brand::render_faded_box(frame, area, Some(title_line));
     let value_style = if focused {
         Style::default()
             .fg(brand::accent_color())
@@ -629,9 +645,32 @@ fn render_stat_box(frame: &mut Frame, area: Rect, title: &str, value: &str, focu
             .fg(brand::accent_color())
             .add_modifier(Modifier::BOLD)
     };
+    render_stat_box_line(
+        frame,
+        area,
+        title,
+        Line::from(Span::styled(value.to_string(), value_style)),
+        focused,
+    );
+}
+
+fn render_stat_box_line(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: Line<'static>,
+    focused: bool,
+) {
+    let mut title_style = Style::default()
+        .fg(brand::action_key_color())
+        .add_modifier(Modifier::BOLD);
+    if focused {
+        title_style = title_style.add_modifier(Modifier::REVERSED);
+    }
+    let title_line = Line::from(Span::styled(title.to_string(), title_style));
+    let inner = brand::render_faded_box(frame, area, Some(title_line));
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(value.to_string(), value_style)))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(value).alignment(ratatui::layout::Alignment::Center),
         inner,
     );
 }
@@ -682,7 +721,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("tab", "Field"),
         ("esc", "Back"),
         ("x", "Quit"),
-        ("", ""), // reserved
+        ("c", "Hardware"),
     ];
 
     let n = keys.len();
@@ -741,6 +780,85 @@ fn render_key_chip(frame: &mut Frame, area: Rect, key: &str, label: &str) {
         Paragraph::new(line).alignment(ratatui::layout::Alignment::Center),
         inner,
     );
+}
+
+/// Trezor One host PIN matrix — blank cells; navigate with arrows (digits on device only).
+fn render_trezor_pin_matrix(frame: &mut Frame, area: Rect, entered_len: usize, cursor: u8) {
+    let width = 44u16.min(area.width.saturating_sub(4));
+    let height = 16u16.min(area.height.saturating_sub(2));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let inner = brand::render_faded_box(frame, popup, Some(brand::fade_line(" Trezor PIN ")));
+    let dots = if entered_len == 0 {
+        "·".to_string()
+    } else {
+        "●".repeat(entered_len)
+    };
+
+    let cell = |idx: u8| {
+        let focused = idx == cursor.min(8);
+        let label = if focused { "[ ■ ]" } else { "[   ]" };
+        let style = if focused {
+            Style::default()
+                .fg(brand::accent_color())
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+                .fg(brand::accent_color())
+                .add_modifier(Modifier::BOLD)
+        };
+        Span::styled(label, style)
+    };
+    let gap = Span::raw("  ");
+    let row = |a: u8, b: u8, c: u8| {
+        Line::from(vec![
+            Span::raw("    "),
+            cell(a),
+            gap.clone(),
+            cell(b),
+            gap.clone(),
+            cell(c),
+        ])
+    };
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "Digits are only on the Trezor (scrambled).",
+            Style::default().fg(brand::body_color()),
+        )),
+        Line::from(Span::styled(
+            "Move to the matching blank cell, then select it.",
+            Style::default().fg(brand::body_color()),
+        )),
+        Line::from(""),
+        row(0, 1, 2),
+        Line::from(""),
+        row(3, 4, 5),
+        Line::from(""),
+        row(6, 7, 8),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("PIN ", Style::default().fg(brand::body_color())),
+            Span::styled(
+                dots,
+                Style::default()
+                    .fg(brand::accent_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "↑↓←→ move · Space select · Enter/s submit · Backspace · Esc",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Modal: "Are you sure you want to quit?" — Yes is the default (Enter quits).

@@ -49,6 +49,8 @@ alloy = { version = "2", default-features = false, features = [
 alloy-dyn-abi = { version = "1.6", features = ["eip712"] }
 # Ledger USB signer (Phase 1). eip712 here only — do not enable Alloy top-level eip712.
 alloy-signer-ledger = { version = "2", default-features = false, features = ["eip712"] }
+# Trezor USB client (Phase 2). CC0-1.0; ethereum only (no bitcoin feature).
+trezor-client = { version = "0.1.6", default-features = false, features = ["ethereum"] }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }

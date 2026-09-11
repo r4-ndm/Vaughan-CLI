@@ -128,6 +128,7 @@ listed here requires approval before it is added.
 |---|---|
 | EVM chains, provider, signing, tx building | `alloy` |
 | Ledger hardware signer (Phase 1) | `alloy-signer-ledger` (via Alloy `signer-ledger`; HID via `coins-ledger`) |
+| Trezor hardware signer (Phase 2) | `trezor-client` 0.1.6 (CC0-1.0, feature `ethereum` only; USB via `rusb`) |
 | Async trait objects | `async-trait` |
 | Async runtime | `tokio` |
 | URLs | `url` |

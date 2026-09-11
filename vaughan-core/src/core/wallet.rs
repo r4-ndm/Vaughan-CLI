@@ -156,8 +156,7 @@ impl ChromeRpcSnapshot {
 
 enum OwnedSignerBackend {
     Local(crate::security::LocalSignerBackend),
-    Ledger(crate::security::LedgerSignerBackend),
-    Mock(crate::security::MockSignerBackend),
+    Hardware(crate::security::OwnedHardwareBackend),
 }
 
 impl OwnedSignerBackend {
@@ -168,8 +167,7 @@ impl OwnedSignerBackend {
         use crate::security::SignerBackend;
         match self {
             Self::Local(b) => b.sign(req).await,
-            Self::Ledger(b) => b.sign(req).await,
-            Self::Mock(b) => b.sign(req).await,
+            Self::Hardware(b) => b.sign(req).await,
         }
     }
 }
@@ -202,6 +200,8 @@ pub struct WalletState {
     session_profile: String,
     /// CI / Anvil: sign hardware accounts with this mock instead of USB Ledger.
     hw_mock: Option<crate::security::MockSignerBackend>,
+    /// Shared Trezor One PIN matrix bridge (TUI ↔ USB worker). Always present.
+    trezor_ui: std::sync::Arc<crate::security::TrezorUiBridge>,
 }
 
 /// Everything the expensive half of [`WalletState::unlock`] needs, cloned out of
@@ -264,6 +264,7 @@ impl WalletState {
                     session_mode: mode,
                     session_profile: profile_str,
                     hw_mock: None,
+                    trezor_ui: std::sync::Arc::new(crate::security::TrezorUiBridge::new()),
                 });
             }
             Err(e) => return Err(e),
@@ -296,7 +297,13 @@ impl WalletState {
             session_mode: effective_mode,
             session_profile: effective_profile,
             hw_mock: None,
+            trezor_ui: std::sync::Arc::new(crate::security::TrezorUiBridge::new()),
         })
+    }
+
+    /// Host UI bridge for Trezor One PIN matrix (never logs PIN digits).
+    pub fn trezor_ui(&self) -> std::sync::Arc<crate::security::TrezorUiBridge> {
+        std::sync::Arc::clone(&self.trezor_ui)
     }
 
     /// The active operating mode for this session.
@@ -536,6 +543,56 @@ impl WalletState {
         self.add_hardware_account(record)
     }
 
+    /// Preview Trezor Live-style paths `0..4` (device unlocked; PIN via TUI bridge).
+    pub async fn preview_trezor_accounts(&self) -> Result<Vec<(String, String)>, WalletError> {
+        let chain_id = self.networks.active().chain_id;
+        crate::security::preview_trezor_live_paths(5, Some(chain_id), Some(self.trezor_ui()))
+            .await
+    }
+
+    /// Blocking preview for a Keys worker thread (keeps the TUI free for PIN).
+    pub fn preview_trezor_accounts_blocking(
+        &self,
+    ) -> Result<Vec<(String, String)>, WalletError> {
+        crate::security::preview_trezor_live_paths_blocking(5, Some(self.trezor_ui()))
+    }
+
+    /// Discover a Trezor account at `path` and add it as a watch record.
+    pub async fn add_trezor_account(
+        &mut self,
+        path: &str,
+        label: &str,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        let net = self.networks.active();
+        let record = crate::security::discover_trezor_account(
+            path,
+            Some(net.chain_id),
+            Some(net.chain_id.to_string()),
+            label,
+            Some(self.trezor_ui()),
+        )
+        .await?;
+        self.add_hardware_account(record)
+    }
+
+    /// Blocking add for a Keys worker thread (PIN matrix via [`Self::trezor_ui`]).
+    pub fn add_trezor_account_blocking(
+        &mut self,
+        path: &str,
+        label: &str,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        let net = self.networks.active();
+        let record = crate::security::discover_trezor_account_blocking(
+            path,
+            Some(net.chain_id.to_string()),
+            label,
+            Some(self.trezor_ui()),
+        )?;
+        self.add_hardware_account(record)
+    }
+
     /// CI/Anvil: sign hardware accounts with `mock` instead of USB (address must match).
     pub fn set_hardware_mock(&mut self, mock: crate::security::MockSignerBackend) {
         self.hw_mock = Some(mock);
@@ -563,6 +620,27 @@ impl WalletState {
             .label_for(index)
             .map(str::to_string)
             .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))
+    }
+
+    /// Rename account `index` (F3 →) and persist the label.
+    pub fn rename_account(&mut self, index: u32, label: &str) -> Result<String, WalletError> {
+        self.require_unlocked()?;
+        let address = self
+            .accounts
+            .as_mut()
+            .ok_or(WalletError::WalletLocked)?
+            .set_account_label(index, label)?;
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted
+            .account_labels
+            .insert(address.to_lowercase(), label.trim().to_string());
+        // Hardware labels also live on the watch records.
+        if let Some(accounts) = self.accounts.as_ref() {
+            persisted.hardware = accounts.hardware().to_vec();
+            persisted.active_account_index = accounts.active_index();
+        }
+        self.state.save(persisted)?;
+        Ok(label.trim().to_string())
     }
 
     /// Address for account `index` (F3 chrome preview under the wordmark).
@@ -694,7 +772,10 @@ impl WalletState {
     }
 
     /// Install accounts produced by [`UnlockPayload::decrypt`] (off-thread KDF).
-    pub fn apply_unlocked_accounts(&mut self, accounts: AccountManager) {
+    pub fn apply_unlocked_accounts(&mut self, mut accounts: AccountManager) {
+        if let Some(persisted) = self.persisted.as_ref() {
+            accounts.apply_account_labels(&persisted.account_labels);
+        }
         self.accounts = Some(accounts);
     }
 
@@ -1691,29 +1772,17 @@ impl WalletState {
     }
 
     fn owned_active_backend(&self) -> Result<OwnedSignerBackend, WalletError> {
-        use crate::security::{AccountKind, HardwareVendor, LedgerSignerBackend};
+        use crate::security::{open_hardware_backend, AccountKind};
 
         let accounts = self.require_unlocked()?;
         let chain_id = self.networks.active().chain_id;
         match &accounts.active_account().kind {
-            AccountKind::Hardware(rec) => {
-                if let Some(mock) = &self.hw_mock {
-                    if !mock.address_string().eq_ignore_ascii_case(&rec.address) {
-                        return Err(WalletError::HardwareUnsupported(
-                            "hardware mock address does not match active watch account".into(),
-                        ));
-                    }
-                    return Ok(OwnedSignerBackend::Mock(mock.clone()));
-                }
-                match rec.vendor {
-                    HardwareVendor::Ledger => Ok(OwnedSignerBackend::Ledger(
-                        LedgerSignerBackend::new(rec.clone(), Some(chain_id))?,
-                    )),
-                    HardwareVendor::Trezor => Err(WalletError::HardwareUnsupported(
-                        "Trezor support is Phase 2 — not enabled yet".into(),
-                    )),
-                }
-            }
+            AccountKind::Hardware(rec) => Ok(OwnedSignerBackend::Hardware(open_hardware_backend(
+                rec,
+                Some(chain_id),
+                self.hw_mock.as_ref(),
+                Some(self.trezor_ui()),
+            )?)),
             AccountKind::Hd | AccountKind::Imported => {
                 Ok(OwnedSignerBackend::Local(accounts.active_local_backend()?))
             }

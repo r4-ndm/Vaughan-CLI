@@ -137,7 +137,18 @@ impl WalletError {
             Self::RpcError(_) => {
                 "The blockchain RPC returned an error. Try again or switch networks.".to_string()
             }
-            Self::GasEstimationFailed(_) => "Could not estimate the transaction fee.".to_string(),
+            Self::GasEstimationFailed(_) => {
+                "Could not estimate the fee — check balance, token contract, and network."
+                    .to_string()
+            }
+            Self::SigningFailed(msg)
+                if msg.contains("Trezor")
+                    || msg.contains("Ledger")
+                    || msg.contains("hardware")
+                    || msg.contains("rejected") =>
+            {
+                msg.clone()
+            }
             Self::SigningFailed(_) => "Could not sign the transaction.".to_string(),
             Self::TransactionFailed(_) => {
                 "The transaction was rejected by the network.".to_string()

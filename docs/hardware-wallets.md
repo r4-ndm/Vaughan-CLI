@@ -1,9 +1,9 @@
 # Hardware wallets — Ledger & Trezor plan
 
-**Status:** Phase 1 Ledger landed (USB + mock CI). Live 943 device smoke still optional.  
+**Status:** Phase 1 Ledger + Phase 2 Trezor USB landed (`trezor-client`). EIP-712 on Trezor and live 943 device smoke still open.  
 **Goal:** Optional hardware signer for EOAs on Pulse/EVM, same approval UX as software.
 
-Hardware watch accounts + Ledger signing live under `vaughan-core::security::hardware`. Trezor is Phase 2.
+Hardware watch accounts + Ledger/Trezor signing live under `vaughan-core::security::hardware`.
 
 ---
 
@@ -160,17 +160,22 @@ Keep hardware **one concern** under `vaughan-core`, parallel to `chains/{family}
 
 ```
 vaughan-core/src/security/hardware/
-  mod.rs              // re-exports; no vendor crates
+  mod.rs              // re-exports
   types.rs            // HardwareVendor, HardwareAccountRecord, SignRequest/Result
+  paths.rs            // shared BIP-44 EVM path strings
   backend.rs          // SignerBackend trait + LocalSignerBackend
-  session.rs          // DeviceSession trait (enumerate, address_for_path, sign_raw)
+  factory.rs          // open_hardware_backend / OwnedHardwareBackend
+  session.rs          // DeviceSession trait
   profiles/
     mod.rs
-    evm.rs            // EVM SignRequest variants ↔ Alloy local / future Ledger
-    // bitcoin.rs     // later — do not stub code until family exists
-    // polkadot.rs
-  // ledger.rs        // Phase 1 — feature-gated or separate cfg; implements DeviceSession
-  // trezor.rs        // Phase 2
+    evm.rs            // prepared_evm_tx_request + local sign
+  ledger.rs           // Phase 1 — HID via alloy-signer-ledger
+  trezor/
+    mod.rs            // Phase 2 public API
+    passphrase.rs     // SecretString session passphrase
+    session.rs        // DeviceSession (stub → USB)
+    backend.rs        // SignerBackend (stub → USB)
+  mock.rs             // Anvil/CI
 ```
 
 **Rules:**
@@ -303,12 +308,16 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 
 ### Phase 2 — Trezor EOA
 
-- [ ] **Dependency approval:** Trezor client crate(s) (often heavier / protobuf — review carefully)
-- [ ] Same `SignerBackend` as Ledger; shared TUI flows parameterized by vendor
-- [ ] Path / passphrase UX (Trezor passphrase = extra secret — never log)
-- [ ] 943 smoke parity with Ledger
+- [x] **Dependency approval:** `trezor-client` 0.1.6 (CC0-1.0, `ethereum` only) — approved 2026-09-11
+- [x] Shared BIP-44 helpers + `prepared_evm_tx_request` + vendor `factory`
+- [x] `trezor/{usb,session,backend,passphrase}.rs` — personal sign + EIP-1559/legacy tx
+- [x] TUI Keys: **5 Add Trezor** (shared device-pick flow with Ledger)
+- [x] Trezor One host PIN matrix overlay (numpad positions; non-blocking USB worker)
+- [ ] Optional host passphrase field in Keys (on-device passphrase works via USB ack)
+- [ ] EIP-712 typed-data clear-signing (protos exist; multi-round — follow-up)
+- [ ] 943 live smoke (native send + `personal_sign`) with physical device
 
-**Exit:** F3 can be Ledger *or* Trezor; docs cover both.
+**Exit:** F3 can be Ledger *or* Trezor for send/personal-sign; typed-data still Ledger/software.
 
 ### Phase 3 — Hardening (optional follow-ons)
 
@@ -324,7 +333,7 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 | Need | Candidate direction | Notes |
 |---|---|---|
 | Ledger | Alloy `signer-ledger` + HID transport | Prefer Alloy family; pin versions in workspace |
-| Trezor | Dedicated client (evaluate AGPL/GPL) | Prefer interface-only if license conflicts with MIT/Apache vault |
+| Trezor | `trezor-client` 0.1.6 + `ethereum` (CC0-1.0) | **Allowlisted 2026-09-11** — USB via `rusb`; passphrase via on-device or `TrezorPassphrase` |
 | Async | Existing `tokio` | Device I/O on blocking pool or async USB |
 
 Do **not** add crates in Phase 0.
@@ -348,8 +357,8 @@ unofficial scripts — bugs there are easy to miss):
 | **Trezor** | [Udev rules](https://trezor.io/guides/trezorctl/udev-rules) |
 
 After installing rules per those pages: re-login if asked, replug the device.
-Ledger in Vaughan: unlock → open the **Ethereum** app → Keys → **4 Add Ledger**.
-Trezor signing in Vaughan is **Phase 2**; udev from Trezor’s guide is still fine to install now.
+Ledger in Vaughan: unlock → open the **Ethereum** app → Keys → **4 Add Ledger**.  
+Trezor in Vaughan: unlock → Keys → **5 Add Trezor** (confirm Ethereum on device if asked).
 
 ---
 
