@@ -1253,19 +1253,17 @@ pub async fn execute_approval_with_fee(
                     );
                 }
             }
-            if !is_lp_deploy {
-                if let Ok(fresh_fee) = wallet.estimate_transaction_fee(evm.clone()).await {
-                    if let Some(fresh_wei) = fresh_fee.total_wei_evm() {
-                        if vaughan_core::core::fee_spike_exceeds_threshold(
-                            proposal.estimated_fee_wei,
-                            fresh_wei,
-                        ) {
-                            return Err(ProviderError::InvalidParams(
-                                "network fee is unverified or increased more than 10% since \
-                                 the agent proposal — deny and ask the agent to re-propose"
-                                    .into(),
-                            ));
-                        }
+            if let Ok(fresh_fee) = wallet.estimate_transaction_fee(evm.clone()).await {
+                if let Some(fresh_wei) = fresh_fee.total_wei_evm() {
+                    if vaughan_core::core::fee_spike_exceeds_threshold(
+                        proposal.estimated_fee_wei,
+                        fresh_wei,
+                    ) {
+                        return Err(ProviderError::InvalidParams(
+                            "network fee is unverified or increased more than 10% since \
+                             the agent proposal — deny and ask the agent to re-propose"
+                                .into(),
+                        ));
                     }
                 }
             }

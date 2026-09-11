@@ -14,6 +14,7 @@ use ratatui::{
 use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_core::chains::EvmTransaction;
+use vaughan_core::chains::Fee;
 use vaughan_core::core::{
     encode_stake_end, encode_stake_start, format_display_amount, parse_native_amount, phex_address,
     HexGlobalState, HexStakeResult, HexStakeRow, HexStakesForAddress, WalletState, MAX_STAKE_DAYS,
@@ -39,6 +40,7 @@ enum Stage {
 enum Busy {
     Idle,
     Loading,
+    EstimatingFee,
     Sending,
 }
 
@@ -59,6 +61,8 @@ pub struct HexView {
     status: String,
     confirm_lines: Vec<String>,
     pending_tx: Option<EvmTransaction>,
+    /// Network fee estimate shown on confirm (Normal speed).
+    base_fee: Option<Fee>,
     amount: Input,
     days: Input,
     start_focus: StartFocus,
@@ -85,6 +89,7 @@ impl HexView {
             },
             confirm_lines: Vec::new(),
             pending_tx: None,
+            base_fee: None,
             amount: {
                 let mut i = Input::new(false, "e.g. 1000");
                 i.set_value("1000");
@@ -151,6 +156,7 @@ impl HexView {
                 self.busy = Busy::Idle;
                 self.stage = Stage::List;
                 self.pending_tx = None;
+                self.base_fee = None;
                 self.status = format!("HEX tx sent ({hash}). Reloading…");
                 self.list_gen = self.list_gen.wrapping_add(1);
                 self.busy = Busy::Loading;
@@ -159,6 +165,20 @@ impl HexView {
                 self.busy = Busy::Idle;
                 self.stage = Stage::List;
                 self.pending_tx = None;
+                self.base_fee = None;
+                self.status = e.user_message();
+            }
+            UiJobResult::Fee(Ok(fee)) => {
+                self.busy = Busy::Idle;
+                self.base_fee = Some(fee.clone());
+                self.apply_fee_to_confirm_lines(&fee);
+                self.status = "Enter/y broadcast · Esc cancel".into();
+            }
+            UiJobResult::Fee(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.pending_tx = None;
+                self.base_fee = None;
+                self.stage = Stage::List;
                 self.status = e.user_message();
             }
             _ => {}
@@ -220,6 +240,7 @@ impl HexView {
         }
         let status = match self.busy {
             Busy::Loading => format!("{} loading…", spinner_frame(self.tick)),
+            Busy::EstimatingFee => format!("{} estimating fee…", spinner_frame(self.tick)),
             Busy::Sending => format!("{} sending…", spinner_frame(self.tick)),
             Busy::Idle => self.status.clone(),
         };
@@ -303,7 +324,10 @@ impl HexView {
         _handle: &Handle,
         _events: &EventBus,
     ) -> KeyOutcome {
-        if matches!(self.busy, Busy::Loading | Busy::Sending) {
+        if matches!(
+            self.busy,
+            Busy::Loading | Busy::Sending | Busy::EstimatingFee
+        ) {
             return KeyOutcome::Consumed;
         }
         match self.stage {
@@ -387,11 +411,16 @@ impl HexView {
                                     "unlockedDay set"
                                 }
                             ),
-                            "Enter/y confirm · Esc cancel".into(),
+                            "Network: PulseChain".into(),
+                            "Fee:     estimating…".into(),
+                            "Enter/y after fee · Esc cancel".into(),
                         ];
-                        self.pending_tx = Some(tx);
+                        self.pending_tx = Some(tx.clone());
+                        self.base_fee = None;
                         self.stage = Stage::EndConfirm;
-                        self.status = "confirm end stake".into();
+                        self.busy = Busy::EstimatingFee;
+                        self.status = "estimating fee…".into();
+                        return KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx });
                     }
                     Err(e) => self.status = e,
                 }
@@ -424,7 +453,7 @@ impl HexView {
                     }
                 };
                 match self.prepare_start_confirm(from) {
-                    Ok(()) => KeyOutcome::Consumed,
+                    Ok(outcome) => outcome,
                     Err(e) => {
                         self.status = e;
                         KeyOutcome::Consumed
@@ -446,7 +475,7 @@ impl HexView {
         }
     }
 
-    fn prepare_start_confirm(&mut self, from: &str) -> Result<(), String> {
+    fn prepare_start_confirm(&mut self, from: &str) -> Result<KeyOutcome, String> {
         let hearts_raw = parse_native_amount(self.amount.value(), PHEX_HEARTS_DECIMALS)
             .map_err(|e| e.user_message())?;
         let hearts = U256::from_str(&hearts_raw).map_err(|e| e.to_string())?;
@@ -463,19 +492,38 @@ impl HexView {
             format!("Amount:  {human} HEX"),
             format!("Days:    {days}"),
             format!("Target:  {:#x}", phex_address()),
+            "Network: PulseChain".into(),
             "Early endStake incurs a penalty.".into(),
-            "Enter/y confirm · Esc cancel".into(),
+            "Fee:     estimating…".into(),
+            "Enter/y after fee · Esc cancel".into(),
         ];
-        self.pending_tx = Some(tx);
+        self.pending_tx = Some(tx.clone());
+        self.base_fee = None;
         self.stage = Stage::StartConfirm;
-        self.status = "confirm stakeStart".into();
-        Ok(())
+        self.busy = Busy::EstimatingFee;
+        self.status = "estimating fee…".into();
+        Ok(KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx }))
+    }
+
+    fn apply_fee_to_confirm_lines(&mut self, fee: &Fee) {
+        self.confirm_lines.retain(|l| !l.starts_with("Fee:"));
+        let fee_line = format!("Fee:     {} {}", fee.total, fee.currency);
+        if let Some(pos) = self
+            .confirm_lines
+            .iter()
+            .position(|l| l.starts_with("Enter/y"))
+        {
+            self.confirm_lines.insert(pos, fee_line);
+        } else {
+            self.confirm_lines.push(fee_line);
+        }
     }
 
     fn handle_confirm(&mut self, key: KeyEvent) -> KeyOutcome {
         match key.code {
             KeyCode::Esc => {
                 self.pending_tx = None;
+                self.base_fee = None;
                 self.stage = if matches!(self.stage, Stage::StartConfirm) {
                     Stage::StartInput
                 } else {
@@ -485,13 +533,18 @@ impl HexView {
                 KeyOutcome::Consumed
             }
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let Some(fee) = self.base_fee.clone() else {
+                    self.status = "wait for fee estimate…".into();
+                    return KeyOutcome::Consumed;
+                };
                 let Some(tx) = self.pending_tx.take() else {
                     self.status = "nothing to send".into();
                     return KeyOutcome::Consumed;
                 };
+                self.base_fee = None;
                 self.busy = Busy::Sending;
                 self.status = "sending…".into();
-                KeyOutcome::StartJob(UiJob::SendEvm { tx })
+                KeyOutcome::StartJob(UiJob::SendEvmWithFee { tx, fee })
             }
             // Swallow footer chips on confirm — Esc to leave.
             _ => KeyOutcome::Consumed,

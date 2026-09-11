@@ -471,6 +471,14 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] Origin attestation: per-launch extension secret; AES-256-GCM `vaughan_origin_seal` verified by provider (`vaughan-provider::seal`)
 - [x] MCP server: 1 MiB stdio line cap, `get_network` RPC URL redaction, `import_token` requires unlocked session, `watch_balance` malformed-arg rejection, profile-name validation (path traversal), control-plane status reachability fix, circuit-breaker `saturating_add` gas totals
 
+### Gemini security-only Pass A (2026-09-11) — fee-gate P1s
+
+> Adversarial security-only review (Gemini). Zero P0. Three P1 fee/approval gaps fixed below.
+
+- [x] Live MCP Approve: pass `adjusted_fee` into `execute_approval_with_fee` (parity with queued MCP; provider path already applied overrides)
+- [x] Ag + HEX: estimate and show network fee on confirm before `SendEvmWithFee` (Invariant 3)
+- [x] MCP `LpDeployStep`: enforce 10% fee-spike at approve (same as other MCP writes); threat-model note updated
+
 ### Parked — Fable 5 comprehensive audit (before release tag)
 
 > Prompt ready: [`docs/fable-5-audit-prompt.md`](docs/fable-5-audit-prompt.md). Run after Phase 7

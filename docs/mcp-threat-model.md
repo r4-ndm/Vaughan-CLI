@@ -53,7 +53,7 @@ on-chain contracts.
 | Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes; re-checked at the sentient gate |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
 | Runaway sentient agent | Profile policy + circuit breakers + **Ctrl+K** kill-switch (TUI) |
-| Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`; Batch7702 uses Ambire `estimate_self_pay_fee`) |
+| Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`; Batch7702 uses Ambire `estimate_self_pay_fee`; **includes** `LpDeployStep` multi-step Brew) |
 | TOCTOU | Re-simulate + re-estimate fee before sign |
 | Double-spend proposal | Terminal states; duplicate `proposal_id` rejected at enqueue |
 | Queue HMAC downgrade | HMAC-SHA256 covers the `source` field too; queue dirs 0700, history 0600, reads size-capped |
