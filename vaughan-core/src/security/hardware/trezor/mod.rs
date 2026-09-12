@@ -26,3 +26,4 @@ pub use backend::{
 pub use passphrase::TrezorPassphrase;
 pub use session::TrezorDeviceSession;
 pub use ui_bridge::TrezorUiBridge;
+pub use usb::best_effort_host_cancel;

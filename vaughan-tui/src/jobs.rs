@@ -432,6 +432,11 @@ pub enum UiJobResult {
         proposal: vaughan_core::core::proposal::TxProposal,
         proposal_id: String,
     },
+    /// Provider / local HW sign finished (clear Trezor PIN / confirm overlays).
+    ProviderHwSignDone {
+        /// Browserless local sign outcome for chrome flash.
+        flash: Option<String>,
+    },
     /// Post-burn entitlement scan (true = unlocked).
     AssistBurnVerify(Result<bool, WalletError>),
 }

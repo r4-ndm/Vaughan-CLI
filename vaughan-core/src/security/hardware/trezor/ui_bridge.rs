@@ -16,6 +16,10 @@ type PinReply = Result<String, WalletError>;
 #[derive(Default)]
 pub struct TrezorUiBridge {
     need_pin: AtomicBool,
+    /// True while USB is in / about to enter a ButtonRequest confirm.
+    awaiting_button: AtomicBool,
+    /// Host Esc requested abort (PIN and/or confirm-on-device).
+    abort: AtomicBool,
     /// Rendezvous sender waiting for the user's matrix digits.
     pin_slot: Mutex<Option<SyncSender<PinReply>>>,
     /// PIN entered on the TUI before the device asked (Trezor One connect race).
@@ -40,16 +44,13 @@ impl TrezorUiBridge {
 
         let (tx, rx) = mpsc::sync_channel::<PinReply>(1);
         {
-            let mut slot = self
-                .pin_slot
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut slot = self.pin_slot.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(tx);
         }
         self.need_pin.store(true, Ordering::SeqCst);
-        let result = rx.recv().map_err(|_| {
-            WalletError::HardwareUnsupported("Trezor PIN entry interrupted".into())
-        })?;
+        let result = rx
+            .recv()
+            .map_err(|_| WalletError::HardwareUnsupported("Trezor PIN entry interrupted".into()))?;
         self.need_pin.store(false, Ordering::SeqCst);
         result
     }
@@ -57,6 +58,16 @@ impl TrezorUiBridge {
     /// TUI: true while a worker is blocked in [`Self::request_pin`].
     pub fn pin_pending(&self) -> bool {
         self.need_pin.load(Ordering::SeqCst)
+    }
+
+    /// USB: mark that a ButtonRequest confirm is in flight (for Esc handling).
+    pub fn set_awaiting_button(&self, pending: bool) {
+        self.awaiting_button.store(pending, Ordering::SeqCst);
+    }
+
+    /// TUI: true while USB is waiting on device button confirm.
+    pub fn button_pending(&self) -> bool {
+        self.awaiting_button.load(Ordering::SeqCst)
     }
 
     /// TUI: deliver matrix digits (`"1"`–`"9"` positions) or cancel.
@@ -74,16 +85,27 @@ impl TrezorUiBridge {
             let _ = tx.send(pin);
             return;
         }
-        *self
-            .early_pin
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(pin);
+        *self.early_pin.lock().unwrap_or_else(|e| e.into_inner()) = Some(pin);
     }
 
-    /// Drop any buffered / in-flight PIN wait (Esc on connect screen).
+    /// Drop any buffered / in-flight PIN wait (Esc on connect / PIN pad).
     pub fn cancel_pin(&self) {
         self.submit_pin(Err(WalletError::HardwareUnsupported(
             "Trezor PIN entry cancelled".into(),
         )));
+    }
+
+    /// Esc on PIN pad or confirm-on-device: abort the in-flight USB interaction.
+    ///
+    /// Wakes a blocked [`Self::request_pin`] and sets the abort flag so the USB
+    /// worker can send protobuf `Cancel` and leave the device screen.
+    pub fn request_abort(&self) {
+        self.abort.store(true, Ordering::SeqCst);
+        self.cancel_pin();
+    }
+
+    /// USB worker: consume host abort (Esc). Returns true once per abort.
+    pub fn take_abort(&self) -> bool {
+        self.abort.swap(false, Ordering::SeqCst)
     }
 }

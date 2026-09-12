@@ -61,7 +61,7 @@ pub struct NetworkRpcSnapshot {
 impl NetworkRpcSnapshot {
     const READ_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    async fn adapter(&self) -> Result<EvmAdapter, WalletError> {
+    pub async fn adapter(&self) -> Result<EvmAdapter, WalletError> {
         EvmAdapter::new(
             &self.rpc_url,
             self.chain_id,
@@ -84,6 +84,17 @@ impl NetworkRpcSnapshot {
             Ok(r) => r,
             Err(_) => Err(WalletError::NetworkError(
                 "read RPC timed out — check RPC / network".into(),
+            )),
+        }
+    }
+
+    /// Inclusion status for a broadcast hash (Pending / Confirmed / Failed).
+    pub async fn get_tx_status(&self, tx_hash: &str) -> Result<TxStatus, WalletError> {
+        let adapter = self.adapter().await?;
+        match tokio::time::timeout(Self::READ_RPC_TIMEOUT, adapter.get_tx_status(tx_hash)).await {
+            Ok(r) => r,
+            Err(_) => Err(WalletError::NetworkError(
+                "tx status RPC timed out — check RPC / network".into(),
             )),
         }
     }
@@ -169,6 +180,110 @@ impl OwnedSignerBackend {
             Self::Local(b) => b.sign(req).await,
             Self::Hardware(b) => b.sign(req).await,
         }
+    }
+}
+
+/// Signer handle that can personal-sign / typed-sign after the wallet mutex is released.
+///
+/// Built under a brief [`WalletState`] lock; USB/PIN waits run without holding that lock
+/// so the TUI can paint the Trezor matrix.
+pub struct DetachedMessageSigner {
+    backend: OwnedSignerBackend,
+}
+
+impl DetachedMessageSigner {
+    /// EIP-191 `personal_sign`.
+    pub async fn sign_personal(self, message: Vec<u8>) -> Result<String, WalletError> {
+        use crate::security::{SignRequest, SignResult};
+        match self
+            .backend
+            .sign(SignRequest::EvmPersonal { message })
+            .await?
+        {
+            SignResult::SignatureHex(s) => Ok(s),
+            SignResult::RawTx(_) => {
+                Err(WalletError::SigningFailed("expected signature hex".into()))
+            }
+        }
+    }
+
+    /// EIP-712 typed data.
+    pub async fn sign_typed_data(
+        self,
+        typed_data: serde_json::Value,
+    ) -> Result<String, WalletError> {
+        use crate::security::{SignRequest, SignResult};
+        match self
+            .backend
+            .sign(SignRequest::EvmTypedData {
+                payload: typed_data,
+            })
+            .await?
+        {
+            SignResult::SignatureHex(s) => Ok(s),
+            SignResult::RawTx(_) => {
+                Err(WalletError::SigningFailed("expected signature hex".into()))
+            }
+        }
+    }
+}
+
+/// Signer + RPC cloned out of [`WalletState`] so TUI jobs can drop the wallet
+/// mutex before USB / RPC (Trezor One PIN matrix needs a live render loop).
+pub struct DetachedSignContext {
+    backend: OwnedSignerBackend,
+    rpc: NetworkRpcSnapshot,
+    from: String,
+}
+
+impl DetachedSignContext {
+    /// Fill nonce/fees if needed, sign, and broadcast. Does not touch [`WalletState`].
+    pub async fn broadcast(
+        self,
+        mut tx: EvmTransaction,
+        label: &str,
+    ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
+        use crate::core::broadcasts::{BroadcastEntry, BroadcastReceipt};
+        use crate::security::{SignRequest, SignResult};
+
+        if tx.from.is_empty() {
+            tx.from = self.from;
+        }
+        let adapter = self.rpc.adapter().await?;
+        let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
+        if tx.gas_limit.is_none() || missing_fees {
+            let mut chain_tx = ChainTransaction::Evm(tx);
+            let fee = adapter.estimate_fee(&chain_tx).await?;
+            TransactionService::new().apply_fee(&mut chain_tx, &fee)?;
+            let ChainTransaction::Evm(prepared) = chain_tx else {
+                return Err(WalletError::InvalidTransaction(
+                    "expected an EVM transaction".to_string(),
+                ));
+            };
+            tx = prepared;
+        }
+        if tx.nonce.is_none() {
+            tx.nonce = Some(adapter.get_pending_nonce(&tx.from).await?);
+        }
+        let raw = match self
+            .backend
+            .sign(SignRequest::EvmTransaction { tx: tx.clone() })
+            .await?
+        {
+            SignResult::RawTx(raw) => raw,
+            SignResult::SignatureHex(_) => {
+                return Err(WalletError::SigningFailed(
+                    "expected raw transaction envelope".into(),
+                ));
+            }
+        };
+        let hash = adapter.broadcast_raw(raw).await?;
+        adapter.invalidate_balance_cache().await;
+        let entry = BroadcastEntry::from_prepared(&tx, hash.0.clone(), label);
+        Ok(BroadcastReceipt {
+            hash: hash.0,
+            entry,
+        })
     }
 }
 
@@ -546,14 +661,11 @@ impl WalletState {
     /// Preview Trezor Live-style paths `0..4` (device unlocked; PIN via TUI bridge).
     pub async fn preview_trezor_accounts(&self) -> Result<Vec<(String, String)>, WalletError> {
         let chain_id = self.networks.active().chain_id;
-        crate::security::preview_trezor_live_paths(5, Some(chain_id), Some(self.trezor_ui()))
-            .await
+        crate::security::preview_trezor_live_paths(5, Some(chain_id), Some(self.trezor_ui())).await
     }
 
     /// Blocking preview for a Keys worker thread (keeps the TUI free for PIN).
-    pub fn preview_trezor_accounts_blocking(
-        &self,
-    ) -> Result<Vec<(String, String)>, WalletError> {
+    pub fn preview_trezor_accounts_blocking(&self) -> Result<Vec<(String, String)>, WalletError> {
         crate::security::preview_trezor_live_paths_blocking(5, Some(self.trezor_ui()))
     }
 
@@ -707,6 +819,123 @@ impl WalletState {
             chain_id: net.chain_id,
             network_name: net.name.clone(),
         })
+    }
+
+    /// Snapshot signer + RPC so a background job can drop the wallet mutex
+    /// before Trezor/Ledger USB or broadcast RPC.
+    pub fn detached_sign_context(&self) -> Result<DetachedSignContext, WalletError> {
+        Ok(DetachedSignContext {
+            backend: self.owned_active_backend()?,
+            rpc: self.network_rpc_snapshot()?,
+            from: self.active_address()?.to_string(),
+        })
+    }
+
+    /// Build a native transfer with an already-approved fee (no RPC).
+    pub fn build_native_transfer_with_fee(
+        &self,
+        to: &str,
+        value_wei: &str,
+        fee: &Fee,
+    ) -> Result<EvmTransaction, WalletError> {
+        let accounts = self.require_unlocked()?;
+        let net = self.networks.active();
+        let service = TransactionService::new();
+        let mut tx = service.build_native_transfer(
+            accounts.active_address(),
+            to,
+            value_wei,
+            net.chain_id,
+        )?;
+        service.apply_fee(&mut tx, fee)?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".to_string(),
+            ));
+        };
+        Ok(evm_tx)
+    }
+
+    /// Build an ERC-20 transfer with an already-approved fee (no RPC).
+    pub fn build_erc20_transfer_with_fee(
+        &self,
+        token: &str,
+        to: &str,
+        amount: &str,
+        fee: &Fee,
+    ) -> Result<EvmTransaction, WalletError> {
+        let (net, address) = self.active_context()?;
+        let service = TransactionService::new();
+        let mut tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
+        service.apply_fee(&mut tx, fee)?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".into(),
+            ));
+        };
+        Ok(evm_tx)
+    }
+
+    /// Apply an approved fee to an arbitrary EVM tx (no RPC).
+    pub fn apply_fee_to_evm(
+        &self,
+        tx: EvmTransaction,
+        fee: &Fee,
+    ) -> Result<EvmTransaction, WalletError> {
+        let service = TransactionService::new();
+        let mut chain_tx = ChainTransaction::Evm(tx);
+        service.apply_fee(&mut chain_tx, fee)?;
+        let ChainTransaction::Evm(evm_tx) = chain_tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".to_string(),
+            ));
+        };
+        Ok(evm_tx)
+    }
+
+    /// Build a native transfer without fee fill (no RPC) — estimate/sign later.
+    pub fn build_native_transfer(
+        &self,
+        to: &str,
+        value_wei: &str,
+    ) -> Result<EvmTransaction, WalletError> {
+        let accounts = self.require_unlocked()?;
+        let net = self.networks.active();
+        let tx = TransactionService::new().build_native_transfer(
+            accounts.active_address(),
+            to,
+            value_wei,
+            net.chain_id,
+        )?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".to_string(),
+            ));
+        };
+        Ok(evm_tx)
+    }
+
+    /// Build an ERC-20 transfer without fee fill (no RPC).
+    pub fn build_erc20_transfer(
+        &self,
+        token: &str,
+        to: &str,
+        amount: &str,
+    ) -> Result<EvmTransaction, WalletError> {
+        let (net, address) = self.active_context()?;
+        let tx = TransactionService::new().build_erc20_transfer(
+            address,
+            token,
+            to,
+            amount,
+            net.chain_id,
+        )?;
+        let ChainTransaction::Evm(evm_tx) = tx else {
+            return Err(WalletError::InvalidTransaction(
+                "expected an EVM transaction".into(),
+            ));
+        };
+        Ok(evm_tx)
     }
 
     // ---- onboarding ----
@@ -1412,15 +1641,7 @@ impl WalletState {
         amount: &str,
         fee: &Fee,
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
-        let (net, address) = self.active_context()?;
-        let service = TransactionService::new();
-        let mut tx = service.build_erc20_transfer(address, token, to, amount, net.chain_id)?;
-        service.apply_fee(&mut tx, fee)?;
-        let ChainTransaction::Evm(evm_tx) = tx else {
-            return Err(WalletError::InvalidTransaction(
-                "expected an EVM transaction".into(),
-            ));
-        };
+        let evm_tx = self.build_erc20_transfer_with_fee(token, to, amount, fee)?;
         self.broadcast(evm_tx, "Token").await
     }
 
@@ -1440,19 +1661,7 @@ impl WalletState {
         to: &str,
         value_wei: &str,
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
-        let accounts = self.require_unlocked()?;
-        let net = self.networks.active();
-        let tx = TransactionService::new().build_native_transfer(
-            accounts.active_address(),
-            to,
-            value_wei,
-            net.chain_id,
-        )?;
-        let ChainTransaction::Evm(evm_tx) = tx else {
-            return Err(WalletError::InvalidTransaction(
-                "expected an EVM transaction".to_string(),
-            ));
-        };
+        let evm_tx = self.build_native_transfer(to, value_wei)?;
         self.broadcast(evm_tx, "Send").await
     }
 
@@ -1466,21 +1675,7 @@ impl WalletState {
         value_wei: &str,
         fee: &Fee,
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
-        let accounts = self.require_unlocked()?;
-        let net = self.networks.active();
-        let service = TransactionService::new();
-        let mut tx = service.build_native_transfer(
-            accounts.active_address(),
-            to,
-            value_wei,
-            net.chain_id,
-        )?;
-        service.apply_fee(&mut tx, fee)?;
-        let ChainTransaction::Evm(evm_tx) = tx else {
-            return Err(WalletError::InvalidTransaction(
-                "expected an EVM transaction".to_string(),
-            ));
-        };
+        let evm_tx = self.build_native_transfer_with_fee(to, value_wei, fee)?;
         self.broadcast(evm_tx, "Send").await
     }
 
@@ -1650,14 +1845,7 @@ impl WalletState {
         tx: EvmTransaction,
         fee: &Fee,
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
-        let service = TransactionService::new();
-        let mut chain_tx = ChainTransaction::Evm(tx);
-        service.apply_fee(&mut chain_tx, fee)?;
-        let ChainTransaction::Evm(evm_tx) = chain_tx else {
-            return Err(WalletError::InvalidTransaction(
-                "expected an EVM transaction".to_string(),
-            ));
-        };
+        let evm_tx = self.apply_fee_to_evm(tx, fee)?;
         self.broadcast(evm_tx, "Contract").await
     }
 
@@ -1780,6 +1968,16 @@ impl WalletState {
             }
         };
         Ok((adapter, tx, raw))
+    }
+
+    /// Open the active signer for personal/typed sign without holding this wallet across USB.
+    ///
+    /// Used by the TUI provider approve path so the Trezor PIN matrix can paint while
+    /// the device waits for digits.
+    pub fn detached_message_signer(&self) -> Result<DetachedMessageSigner, WalletError> {
+        Ok(DetachedMessageSigner {
+            backend: self.owned_active_backend()?,
+        })
     }
 
     fn owned_active_backend(&self) -> Result<OwnedSignerBackend, WalletError> {

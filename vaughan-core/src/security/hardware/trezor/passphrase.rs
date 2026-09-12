@@ -53,7 +53,10 @@ mod tests {
         assert!(!p.is_set());
         p.set(SecretString::new("test-passphrase-not-real".into()));
         assert!(p.is_set());
-        assert_eq!(p.secret().unwrap().expose_secret(), "test-passphrase-not-real");
+        assert_eq!(
+            p.secret().unwrap().expose_secret(),
+            "test-passphrase-not-real"
+        );
         p.clear();
         assert!(!p.is_set());
     }

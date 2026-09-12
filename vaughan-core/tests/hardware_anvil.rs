@@ -95,11 +95,7 @@ struct HwWallet {
 }
 
 /// Unlock vault with a mock HW watch for `vendor` (optional Anvil RPC override).
-fn wallet_with_mock_hw(
-    anvil_url: Option<&str>,
-    vendor: HardwareVendor,
-    label: &str,
-) -> HwWallet {
+fn wallet_with_mock_hw(anvil_url: Option<&str>, vendor: HardwareVendor, label: &str) -> HwWallet {
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = WalletState::load(dir.path().join("wallet.json")).unwrap();
     wallet

@@ -395,12 +395,9 @@ pub fn render(frame: &mut Frame, app: &App) {
             );
         }
         if app.trezor_pin_active() {
-            render_trezor_pin_matrix(
-                frame,
-                area,
-                app.trezor_pin_len(),
-                app.trezor_pin_cursor(),
-            );
+            render_trezor_pin_matrix(frame, area, app.trezor_pin_len(), app.trezor_pin_cursor());
+        } else if app.trezor_confirm_device_active() {
+            render_trezor_confirm_device(frame, area);
         }
         if app.quit_confirm().is_some() {
             render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
@@ -441,12 +438,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     app.render_body(frame, body);
     if app.trezor_pin_active() {
-        render_trezor_pin_matrix(
-            frame,
-            area,
-            app.trezor_pin_len(),
-            app.trezor_pin_cursor(),
-        );
+        render_trezor_pin_matrix(frame, area, app.trezor_pin_len(), app.trezor_pin_cursor());
+    } else if app.trezor_confirm_device_active() {
+        render_trezor_confirm_device(frame, area);
     }
     if app.quit_confirm().is_some() {
         render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
@@ -623,13 +617,7 @@ fn render_status_strip(frame: &mut Frame, area: Rect, app: &App, unlocked: bool)
                 .and_then(|w| w.active_account_label().ok().map(str::to_string))
                 .unwrap_or_else(|| "—".into())
         };
-        render_stat_box(
-            frame,
-            acct_area,
-            " F3 ",
-            &account_value,
-            account_focused,
-        );
+        render_stat_box(frame, acct_area, " F3 ", &account_value, account_focused);
     }
 }
 
@@ -784,8 +772,8 @@ fn render_key_chip(frame: &mut Frame, area: Rect, key: &str, label: &str) {
 
 /// Trezor One host PIN matrix — blank cells; navigate with arrows (digits on device only).
 fn render_trezor_pin_matrix(frame: &mut Frame, area: Rect, entered_len: usize, cursor: u8) {
-    let width = 44u16.min(area.width.saturating_sub(4));
-    let height = 16u16.min(area.height.saturating_sub(2));
+    let width = 52u16.min(area.width.saturating_sub(4));
+    let height = 18u16.min(area.height.saturating_sub(2));
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     let popup = Rect {
@@ -795,7 +783,11 @@ fn render_trezor_pin_matrix(frame: &mut Frame, area: Rect, entered_len: usize, c
         height,
     };
     frame.render_widget(Clear, popup);
-    let inner = brand::render_faded_box(frame, popup, Some(brand::fade_line(" Trezor PIN ")));
+    let inner = brand::render_faded_box(
+        frame,
+        popup,
+        Some(brand::fade_line(" Trezor · step 1/2 — PIN ")),
+    );
     let dots = if entered_len == 0 {
         "·".to_string()
     } else {
@@ -830,11 +822,11 @@ fn render_trezor_pin_matrix(frame: &mut Frame, area: Rect, entered_len: usize, c
 
     let lines = vec![
         Line::from(Span::styled(
-            "Digits are only on the Trezor (scrambled).",
+            "Trezor One: digits are only on the device (scrambled).",
             Style::default().fg(brand::body_color()),
         )),
         Line::from(Span::styled(
-            "Move to the matching blank cell, then select it.",
+            "Move to the matching blank cell, Space to select, Enter/s submit.",
             Style::default().fg(brand::body_color()),
         )),
         Line::from(""),
@@ -853,8 +845,57 @@ fn render_trezor_pin_matrix(frame: &mut Frame, area: Rect, entered_len: usize, c
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(""),
         Line::from(Span::styled(
-            "↑↓←→ move · Space select · Enter/s submit · Backspace · Esc",
+            "Model T / Safe: unlock on the touchscreen — pad stays until device is ready.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "Esc — cancel send",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// After host PIN (or Model T unlock) — wait for tx approval on the device.
+fn render_trezor_confirm_device(frame: &mut Frame, area: Rect) {
+    let width = 52u16.min(area.width.saturating_sub(4));
+    let height = 11u16.min(area.height.saturating_sub(2));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let inner = brand::render_faded_box(
+        frame,
+        popup,
+        Some(brand::fade_line(" Trezor · step 2/2 — confirm ")),
+    );
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Confirm the transaction on your Trezor.",
+            Style::default()
+                .fg(brand::accent_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Check recipient, amount, and network on the device screen,",
+            Style::default().fg(brand::body_color()),
+        )),
+        Line::from(Span::styled(
+            "then hold / press to approve (or reject to abort).",
+            Style::default().fg(brand::body_color()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Esc — cancel   (reject on device if it is already prompting)",
             Style::default().fg(Color::DarkGray),
         )),
     ];

@@ -70,6 +70,11 @@ impl DashboardView {
         self.send.followup_poll_status()
     }
 
+    /// Throttled receipt re-check while Done is still pending.
+    pub fn tick_poll_job(&mut self) -> Option<UiJob> {
+        self.send.tick_poll_status()
+    }
+
     /// Keep send coin in sync with F2 chrome selection.
     pub fn sync_from_chrome(&mut self, chrome: &ChromeSnapshot) {
         self.send.sync_from_chrome(chrome);

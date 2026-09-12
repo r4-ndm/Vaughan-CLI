@@ -152,7 +152,10 @@ impl AccountManager {
     ///
     /// Empty Trezor labels become `Trezor 1`, `Trezor 2`, … (count of existing
     /// Trezor watches + 1). Other vendors keep [`HardwareAccountRecord::display_label`].
-    pub fn add_hardware(&mut self, mut record: HardwareAccountRecord) -> Result<Account, WalletError> {
+    pub fn add_hardware(
+        &mut self,
+        mut record: HardwareAccountRecord,
+    ) -> Result<Account, WalletError> {
         if self
             .accounts
             .iter()

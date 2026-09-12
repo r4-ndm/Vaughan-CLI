@@ -1501,6 +1501,62 @@ fn decode_message(message: &str) -> Result<Vec<u8>, ProviderError> {
     }
 }
 
+/// Hardware approve path: brief wallet lock to open the signer, then USB/PIN with
+/// the mutex released so the TUI can paint the Trezor matrix.
+pub fn execute_hw_approval_detached(
+    wallet: &std::sync::Arc<std::sync::Mutex<WalletState>>,
+    handle: &Handle,
+    kind: &ApprovalKind,
+) -> Result<String, ProviderError> {
+    match kind {
+        ApprovalKind::SignMessage { address, message } => {
+            let bytes = decode_message(message)?;
+            let signer = {
+                let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                if !w.is_unlocked() {
+                    return Err(ProviderError::Unauthorized(
+                        "wallet is locked; unlock it first".to_string(),
+                    ));
+                }
+                verify_address(address, &w)?;
+                w.detached_message_signer().map_err(map_wallet_error)?
+            };
+            handle
+                .block_on(signer.sign_personal(bytes))
+                .map_err(map_wallet_error)
+        }
+        ApprovalKind::SignTypedData {
+            address,
+            typed_data,
+        } => {
+            let signer = {
+                let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                if !w.is_unlocked() {
+                    return Err(ProviderError::Unauthorized(
+                        "wallet is locked; unlock it first".to_string(),
+                    ));
+                }
+                verify_address(address, &w)?;
+                w.detached_message_signer().map_err(map_wallet_error)?
+            };
+            handle
+                .block_on(signer.sign_typed_data(typed_data.clone()))
+                .map_err(map_wallet_error)
+        }
+        // Tx paths still need DetachedSignContext; brief lock is wrong for USB.
+        // Fall back to locked sync (same freeze risk) until those are detached too.
+        ApprovalKind::SignTransaction(_)
+        | ApprovalKind::SendTransaction(_)
+        | ApprovalKind::Connect { .. }
+        | ApprovalKind::SwitchChain { .. }
+        | ApprovalKind::McpProposal { .. }
+        | ApprovalKind::StealthSweep { .. } => {
+            let mut w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+            execute_approval_sync(kind, &mut w, handle)
+        }
+    }
+}
+
 /// The request must target the active account; signing with a different
 /// account silently would mirror the browser's "wrong device" failure.
 fn verify_address(address: &str, wallet: &WalletState) -> Result<(), ProviderError> {
@@ -1515,7 +1571,13 @@ fn verify_address(address: &str, wallet: &WalletState) -> Result<(), ProviderErr
 }
 
 fn map_wallet_error(e: WalletError) -> ProviderError {
-    ProviderError::Internal(e.user_message())
+    let msg = e.user_message();
+    let lower = msg.to_lowercase();
+    if lower.contains("cancel") || lower.contains("reject") || lower.contains("denied") {
+        ProviderError::UserRejected
+    } else {
+        ProviderError::Internal(msg)
+    }
 }
 
 /// Spawn an async read-RPC forward (does not block the UI thread).

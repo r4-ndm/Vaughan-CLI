@@ -37,9 +37,10 @@ pub use mock::{MockDeviceSession, MockSignerBackend};
 pub use paths::{evm_ledger_live_path, evm_live_preview_paths, evm_standard_path};
 pub use session::DeviceSession;
 pub use trezor::{
-    discover_trezor_account, discover_trezor_account_blocking, preview_trezor_live_paths,
-    preview_trezor_live_paths_blocking, trezor_address_for_path, trezor_address_for_path_blocking,
-    TrezorDeviceSession, TrezorPassphrase, TrezorSignerBackend, TrezorUiBridge,
+    best_effort_host_cancel, discover_trezor_account, discover_trezor_account_blocking,
+    preview_trezor_live_paths, preview_trezor_live_paths_blocking, trezor_address_for_path,
+    trezor_address_for_path_blocking, TrezorDeviceSession, TrezorPassphrase, TrezorSignerBackend,
+    TrezorUiBridge,
 };
 pub use types::{
     AccountKind, HardwareAccountRecord, HardwareVendor, HwChainFamily, SignRequest, SignResult,

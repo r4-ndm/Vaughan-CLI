@@ -15,7 +15,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Gauge, Paragraph, Wrap},
     Frame,
 };
 use tokio::runtime::Handle;
@@ -363,6 +363,35 @@ impl SendView {
         }
     }
 
+    /// Vault display name for the recipient when known (F4 pick or address match).
+    fn resolve_recipient_name(&self, wallet: &WalletState) -> Option<String> {
+        if let Some(name) = self
+            .recipient_pick_label
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(name.to_string());
+        }
+        let addr = self.recipient.value().trim();
+        if addr.is_empty() {
+            return None;
+        }
+        let Ok(choices) = wallet.account_choices() else {
+            return None;
+        };
+        for (idx, label) in choices {
+            if wallet
+                .account_address(idx)
+                .ok()
+                .is_some_and(|a| a.eq_ignore_ascii_case(addr))
+            {
+                return Some(label);
+            }
+        }
+        None
+    }
+
     /// Cycle F4 through installed vault accounts (name in title, address in field).
     fn cycle_recipient_from_wallet(&mut self, wallet: &WalletState, down: bool) -> KeyOutcome {
         let choices = match wallet.account_choices() {
@@ -506,7 +535,7 @@ impl SendView {
                 self.busy = Busy::Idle;
                 self.status = match status {
                     vaughan_core::chains::TxStatus::Pending => {
-                        "Still pending on RPC · r to re-check".into()
+                        "Pending — auto-checking · r to re-check now".into()
                     }
                     vaughan_core::chains::TxStatus::Confirmed => "Confirmed on-chain".into(),
                     vaughan_core::chains::TxStatus::Failed => {
@@ -524,11 +553,30 @@ impl SendView {
 
     /// After a successful broadcast, return a job to poll inclusion (first hash
     /// only for stealth pay+announce pairs). Marks the view busy while polling.
+    ///
+    /// Re-polls while status is still unknown or [`TxStatus::Pending`]. The first
+    /// call after broadcast (from `apply_job_result` followup) runs immediately;
+    /// later calls from the UI tick loop are throttled (~3s at 80ms ticks).
     pub fn followup_poll_status(&mut self) -> Option<UiJob> {
+        self.followup_poll_status_inner(false)
+    }
+
+    /// Tick-driven re-check while the Done screen is waiting for inclusion.
+    pub fn tick_poll_status(&mut self) -> Option<UiJob> {
+        self.followup_poll_status_inner(true)
+    }
+
+    fn followup_poll_status_inner(&mut self, from_tick: bool) -> Option<UiJob> {
         if self.stage != Stage::Done || self.busy != Busy::Idle {
             return None;
         }
-        if self.receipt_status.is_some() {
+        let waiting = match self.receipt_status {
+            None => !from_tick || self.tick.is_multiple_of(36),
+            // ~3s between polls at an 80ms UI tick.
+            Some(vaughan_core::chains::TxStatus::Pending) => self.tick.is_multiple_of(36),
+            Some(_) => false,
+        };
+        if !waiting {
             return None;
         }
         let hash = self.tx_hash.as_ref()?;
@@ -561,7 +609,13 @@ impl SendView {
         let status = if self.busy != Busy::Idle {
             let label = match self.busy {
                 Busy::Estimating => "estimating fee",
-                Busy::Sending => "broadcasting",
+                Busy::Sending => {
+                    if wallet.active_is_hardware().unwrap_or(false) {
+                        "Trezor: PIN pad → confirm on device → broadcast"
+                    } else {
+                        "broadcasting"
+                    }
+                }
                 Busy::PollingStatus => "checking receipt",
                 Busy::Idle => "",
             };
@@ -680,7 +734,7 @@ impl SendView {
                     Line::from("")
                 };
 
-                let text = vec![
+                let mut text = vec![
                     Line::from(format!(
                         "Send {} {} to:",
                         self.amount.value(),
@@ -697,14 +751,27 @@ impl SendView {
                     } else {
                         Line::from("")
                     },
-                    if let Some(hint) = &stealth_hint {
-                        Line::from(Span::styled(
-                            hint.clone(),
-                            Style::default().fg(Color::Yellow),
-                        ))
-                    } else {
-                        Line::from(brand::colored_address_spans(self.recipient.value()))
-                    },
+                ];
+                if let Some(hint) = &stealth_hint {
+                    text.push(Line::from(Span::styled(
+                        hint.clone(),
+                        Style::default().fg(Color::Yellow),
+                    )));
+                } else {
+                    let mut to_spans = Vec::new();
+                    if let Some(name) = self.resolve_recipient_name(wallet) {
+                        to_spans.push(Span::styled(
+                            name,
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        to_spans.push(Span::raw(" · "));
+                    }
+                    to_spans.extend(brand::colored_address_spans(self.recipient.value()));
+                    text.push(Line::from(to_spans));
+                }
+                text.extend([
                     Line::from(""),
                     Line::from(format!("From:     {from_label}")),
                     Line::from(format!("Network:  {}{testnet}", net.name)),
@@ -722,16 +789,41 @@ impl SendView {
                         fee_detail.as_deref().unwrap_or("—")
                     )),
                     Line::from(""),
-                    Line::from("Gas speed (↑↓ or 1–5):"),
-                    speed_line('1', FeeSpeed::Slow),
-                    speed_line('2', FeeSpeed::Normal),
-                    speed_line('3', FeeSpeed::Fast),
-                    speed_line('4', FeeSpeed::Ape),
-                    speed_line('5', FeeSpeed::Custom),
-                    custom_hint,
-                    Line::from(""),
-                    Line::from("Enter — broadcast   Esc — cancel"),
-                ];
+                ]);
+                let hw_sending =
+                    self.busy == Busy::Sending && wallet.active_is_hardware().unwrap_or(false);
+                if hw_sending {
+                    text.extend([
+                        Line::from(Span::styled(
+                            "Trezor signing",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(
+                            "  1. PIN pad only if the device asks (skipped when already unlocked)",
+                        ),
+                        Line::from("  2. Confirm amount + recipient on the device"),
+                        Line::from("  3. Broadcast when the device returns the signature"),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "Follow the overlay · Esc on overlay cancels",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ]);
+                } else {
+                    text.extend([
+                        Line::from("Gas speed (↑↓ or 1–5):"),
+                        speed_line('1', FeeSpeed::Slow),
+                        speed_line('2', FeeSpeed::Normal),
+                        speed_line('3', FeeSpeed::Fast),
+                        speed_line('4', FeeSpeed::Ape),
+                        speed_line('5', FeeSpeed::Custom),
+                        custom_hint,
+                        Line::from(""),
+                        Line::from("Enter — broadcast   Esc — cancel"),
+                    ]);
+                }
                 let inner = brand::render_faded_box(frame, content, None);
                 frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
@@ -742,11 +834,29 @@ impl SendView {
                 } else {
                     "Transaction broadcast"
                 };
+                let waiting = matches!(
+                    self.receipt_status,
+                    None | Some(vaughan_core::chains::TxStatus::Pending)
+                );
                 let status_line = match self.receipt_status {
-                    Some(vaughan_core::chains::TxStatus::Pending) => "Status:   Pending",
-                    Some(vaughan_core::chains::TxStatus::Confirmed) => "Status:   Confirmed",
-                    Some(vaughan_core::chains::TxStatus::Failed) => "Status:   Failed",
-                    None => "Status:   checking…",
+                    Some(vaughan_core::chains::TxStatus::Pending) => {
+                        format!(
+                            "Status:   {} Pending — waiting for a block…",
+                            spinner_frame(self.tick)
+                        )
+                    }
+                    Some(vaughan_core::chains::TxStatus::Confirmed) => {
+                        "Status:   Confirmed".to_string()
+                    }
+                    Some(vaughan_core::chains::TxStatus::Failed) => "Status:   Failed".to_string(),
+                    None => format!("Status:   {} checking receipt…", spinner_frame(self.tick)),
+                };
+                let status_style = match self.receipt_status {
+                    Some(vaughan_core::chains::TxStatus::Confirmed) => {
+                        Style::default().fg(Color::Green)
+                    }
+                    Some(vaughan_core::chains::TxStatus::Failed) => Style::default().fg(Color::Red),
+                    _ => Style::default().fg(Color::Yellow),
                 };
                 let back = if self.home_mode {
                     "Enter — new send · r — re-check receipt"
@@ -758,12 +868,34 @@ impl SendView {
                     Line::from(""),
                     Line::from(Span::styled(hash, Style::default().fg(Color::Green))),
                     Line::from(""),
-                    Line::from(status_line),
+                    Line::from(Span::styled(status_line, status_style)),
                     Line::from(""),
                     Line::from(back),
                 ];
                 let inner = brand::render_faded_box(frame, content, None);
-                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+                let [info, bar_area] = Layout::vertical([
+                    Constraint::Min(0),
+                    Constraint::Length(if waiting { 3 } else { 0 }),
+                ])
+                .areas(inner);
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), info);
+                if waiting {
+                    // Indeterminate bounce — we don't know confirm % from RPC.
+                    let t = self.tick % 40;
+                    let ratio = if t <= 20 {
+                        t as f64 / 20.0
+                    } else {
+                        (40 - t) as f64 / 20.0
+                    }
+                    .clamp(0.08, 1.0);
+                    frame.render_widget(
+                        Gauge::default()
+                            .gauge_style(Style::default().fg(Color::Yellow).bg(Color::DarkGray))
+                            .ratio(ratio)
+                            .label(format!("{} inclusion…", spinner_frame(self.tick))),
+                        bar_area,
+                    );
+                }
             }
         }
 
@@ -822,8 +954,7 @@ impl SendView {
                             return if self.home_mode {
                                 self.focus = Focus::Idle;
                                 self.status =
-                                    "Tab fields · ↑↓ wallets F4 · ↑↓ assets F5 · F4/F5/F6"
-                                        .into();
+                                    "Tab fields · ↑↓ wallets F4 · ↑↓ assets F5 · F4/F5/F6".into();
                                 KeyOutcome::Consumed
                             } else {
                                 KeyOutcome::Back

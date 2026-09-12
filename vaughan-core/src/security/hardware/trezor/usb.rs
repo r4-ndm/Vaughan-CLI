@@ -94,7 +94,22 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
         TrezorResponse::Ok(res) => Ok(res),
         TrezorResponse::Failure(f) => Err(map_trezor(format!("{f:?}"))),
         TrezorResponse::ButtonRequest(req) => {
-            handle_host_ui(req.ack().map_err(map_trezor)?, passphrase, ui)
+            // Esc on the confirm overlay before ButtonAck — Cancel so firmware
+            // never enters the on-device confirm screen.
+            if ui.is_some_and(|b| b.take_abort()) {
+                send_cancel(req.client);
+                return Err(WalletError::SigningFailed(
+                    "cancelled on host — confirm aborted".into(),
+                ));
+            }
+            if let Some(bridge) = ui {
+                bridge.set_awaiting_button(true);
+            }
+            let next = req.ack().map_err(map_trezor);
+            if let Some(bridge) = ui {
+                bridge.set_awaiting_button(false);
+            }
+            handle_host_ui(next?, passphrase, ui)
         }
         TrezorResponse::PinMatrixRequest(req) => {
             let Some(bridge) = ui else {
@@ -102,13 +117,23 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
                     "Trezor One needs a host PIN matrix — open from the TUI (c Hardware)".into(),
                 ));
             };
-            let pin = bridge.request_pin()?;
-            if pin.is_empty() {
-                return Err(WalletError::HardwareUnsupported(
-                    "Trezor PIN entry cancelled".into(),
-                ));
+            match bridge.request_pin() {
+                Ok(pin) if !pin.is_empty() => {
+                    handle_host_ui(req.ack_pin(pin).map_err(map_trezor)?, passphrase, ui)
+                }
+                Ok(_) => {
+                    // Empty submit — treat as host cancel; tell the device to leave PIN.
+                    send_cancel(req.client);
+                    Err(WalletError::HardwareUnsupported(
+                        "Trezor PIN entry cancelled".into(),
+                    ))
+                }
+                Err(e) => {
+                    // Esc / interrupt — Cancel so the device clears its PIN screen.
+                    send_cancel(req.client);
+                    Err(e)
+                }
             }
-            handle_host_ui(req.ack_pin(pin).map_err(map_trezor)?, passphrase, ui)
         }
         TrezorResponse::PassphraseRequest(req) => {
             if req.on_device() {
@@ -127,6 +152,25 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
             }
         }
     }
+}
+
+/// Host Esc / abort: send protobuf `Cancel` so firmware leaves PIN / confirm.
+fn send_cancel(client: &mut Trezor) {
+    let _ = client.call_raw(protos::Cancel::new());
+}
+
+/// Best-effort Cancel on a fresh USB handle (confirm-on-device Esc).
+///
+/// Often no-ops while the signing thread holds the device; PIN Esc still clears
+/// via [`send_cancel`] on that same session.
+pub fn best_effort_host_cancel() {
+    std::thread::spawn(|| {
+        let Ok(mut device) = trezor_client::unique(false) else {
+            return;
+        };
+        let _ = device.initialize(None);
+        let _ = device.call_raw(protos::Cancel::new());
+    });
 }
 
 /// Address at path (uses host UI for Trezor One PIN — not crate `handle_interaction`).
@@ -220,9 +264,8 @@ pub(crate) fn ethereum_sign_prepared_tx(
         device.model(),
         trezor_client::Model::TrezorLegacy | trezor_client::Model::TrezorBootloader
     );
-    let want_eip1559 = eip1559_ok
-        && evm_tx.max_fee_per_gas.is_some()
-        && evm_tx.max_priority_fee_per_gas.is_some();
+    let want_eip1559 =
+        eip1559_ok && evm_tx.max_fee_per_gas.is_some() && evm_tx.max_priority_fee_per_gas.is_some();
 
     if want_eip1559 {
         let max_fee = evm_tx.max_fee_per_gas.as_deref().unwrap();
@@ -245,7 +288,7 @@ pub(crate) fn ethereum_sign_prepared_tx(
             ui,
         ) {
             Ok(sig) => {
-                return encode_eip1559(
+                match encode_eip1559(
                     chain_id,
                     nonce,
                     prio_u,
@@ -253,10 +296,18 @@ pub(crate) fn ethereum_sign_prepared_tx(
                     gas_limit,
                     tx_kind,
                     value,
-                    data.into(),
+                    data.clone().into(),
                     &sig,
                     from,
-                );
+                ) {
+                    Ok(raw) => return Ok(raw),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Trezor EIP-1559 envelope recover failed; re-signing as legacy"
+                        );
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -351,7 +402,7 @@ fn sign_eip1559(
             ui,
         )?;
     }
-    convert_signature(&resp, Some(chain_id))
+    convert_signature(&resp, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -397,6 +448,7 @@ fn sign_legacy(
             ui,
         )?;
     }
+    // Legacy firmware may return raw recid (0/1) or full EIP-155 v.
     convert_signature(&resp, Some(chain_id))
 }
 
@@ -410,20 +462,33 @@ fn convert_signature(
             v = v + 2 * chain_id + 35;
         }
     }
-    let r = resp
-        .signature_r()
-        .try_into()
-        .map_err(|_| WalletError::SigningFailed("malformed Trezor signature r".into()))?;
-    let s = resp
-        .signature_s()
-        .try_into()
-        .map_err(|_| WalletError::SigningFailed("malformed Trezor signature s".into()))?;
+    let r = sig_component_32(resp.signature_r())?;
+    let s = sig_component_32(resp.signature_s())?;
     Ok(TrezorSignature { r, s, v })
 }
 
+/// Left-pad Trezor `r`/`s` to 32 bytes (device may omit leading zeros).
+fn sig_component_32(bytes: &[u8]) -> Result<[u8; 32], WalletError> {
+    if bytes.len() > 32 {
+        return Err(WalletError::SigningFailed(
+            "malformed Trezor signature component".into(),
+        ));
+    }
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(bytes);
+    Ok(out)
+}
+
 fn u256_minimal_be(v: U256) -> Vec<u8> {
+    // Ethereum RLP encodes integer 0 as the empty byte string (`0x80`), not
+    // `0x00`. Trezor hashes the raw field bytes we send — a leading `0x00` for
+    // nonce 0 produces a different digest than Alloy's sighash and the recovered
+    // signer will not match the watch address.
+    if v.is_zero() {
+        return Vec::new();
+    }
     let full = v.to_be_bytes::<32>();
-    let start = full.iter().position(|&b| b != 0).unwrap_or(31);
+    let start = full.iter().position(|&b| b != 0).unwrap_or(0);
     full[start..].to_vec()
 }
 
@@ -463,11 +528,39 @@ fn y_parity(sig: &TrezorSignature, chain_id: u64) -> Result<bool, WalletError> {
 
 fn alloy_sig(sig: &TrezorSignature, chain_id: u64) -> Result<AlloySignature, WalletError> {
     let parity = y_parity(sig, chain_id)?;
-    let mut raw = [0u8; 65];
-    raw[0..32].copy_from_slice(&sig.r);
-    raw[32..64].copy_from_slice(&sig.s);
-    raw[64] = if parity { 28 } else { 27 };
-    AlloySignature::from_raw(&raw).map_err(|e| WalletError::SigningFailed(e.to_string()))
+    Ok(AlloySignature::from_bytes_and_parity(
+        &[sig.r, sig.s].concat(),
+        parity,
+    ))
+}
+
+/// Prefer the reported y-parity; if recovery misses `expected`, try the flip
+/// (covers ambiguous v encodings without changing the signed digest).
+fn alloy_sig_matching(
+    sig: &TrezorSignature,
+    chain_id: u64,
+    sighash: alloy::primitives::B256,
+    expected_from: Address,
+) -> Result<AlloySignature, WalletError> {
+    let reported = y_parity(sig, chain_id).ok();
+    let mut tried = Vec::with_capacity(2);
+    for parity in [reported, Some(false), Some(true)].into_iter().flatten() {
+        if tried.contains(&parity) {
+            continue;
+        }
+        tried.push(parity);
+        let alloy_sig = AlloySignature::from_bytes_and_parity(&[sig.r, sig.s].concat(), parity);
+        if alloy_sig.recover_address_from_prehash(&sighash).ok() == Some(expected_from) {
+            return Ok(alloy_sig);
+        }
+    }
+    let alloy_sig = alloy_sig(sig, chain_id)?;
+    let recovered = alloy_sig
+        .recover_address_from_prehash(&sighash)
+        .map_err(|e| WalletError::SigningFailed(e.to_string()))?;
+    Err(WalletError::SigningFailed(format!(
+        "Trezor signature recovers to {recovered}, expected {expected_from}"
+    )))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -494,16 +587,8 @@ fn encode_eip1559(
         access_list: Default::default(),
         input,
     };
-    let alloy_sig = alloy_sig(sig, chain_id)?;
     let sighash = tx.signature_hash();
-    let recovered = alloy_sig
-        .recover_address_from_prehash(&sighash)
-        .map_err(|e| WalletError::SigningFailed(e.to_string()))?;
-    if recovered != expected_from {
-        return Err(WalletError::SigningFailed(format!(
-            "Trezor signature recovers to {recovered}, expected {expected_from}"
-        )));
-    }
+    let alloy_sig = alloy_sig_matching(sig, chain_id, sighash, expected_from)?;
     let signed = tx.into_signed(alloy_sig);
     let envelope: TxEnvelope = signed.into();
     Ok(envelope.encoded_2718())
@@ -530,16 +615,8 @@ fn encode_legacy(
         value,
         input,
     };
-    let alloy_sig = alloy_sig(sig, chain_id)?;
     let sighash = tx.signature_hash();
-    let recovered = alloy_sig
-        .recover_address_from_prehash(&sighash)
-        .map_err(|e| WalletError::SigningFailed(e.to_string()))?;
-    if recovered != expected_from {
-        return Err(WalletError::SigningFailed(format!(
-            "Trezor signature recovers to {recovered}, expected {expected_from}"
-        )));
-    }
+    let alloy_sig = alloy_sig_matching(sig, chain_id, sighash, expected_from)?;
     let signed = tx.into_signed(alloy_sig);
     let envelope: TxEnvelope = signed.into();
     Ok(envelope.encoded_2718())
@@ -562,7 +639,31 @@ mod tests {
 
     #[test]
     fn u256_minimal_strips_zeros() {
-        assert_eq!(u256_minimal_be(U256::from(0u64)), vec![0]);
+        assert_eq!(u256_minimal_be(U256::from(0u64)), Vec::<u8>::new());
         assert_eq!(u256_minimal_be(U256::from(0x100u64)), vec![0x01, 0x00]);
+        assert_eq!(u256_minimal_be(U256::from(1u64)), vec![0x01]);
+    }
+
+    #[test]
+    fn convert_signature_eip1559_keeps_y_parity() {
+        // EIP-1559 firmware returns v ∈ {0,1}; do not apply EIP-155 (legacy-only).
+        let mut resp = protos::EthereumTxRequest::new();
+        resp.set_signature_v(1);
+        resp.set_signature_r(vec![1u8; 32]);
+        resp.set_signature_s(vec![2u8; 32]);
+        let sig = convert_signature(&resp, None).unwrap();
+        assert_eq!(sig.v, 1);
+        assert!(y_parity(&sig, 943).unwrap());
+    }
+
+    #[test]
+    fn convert_signature_legacy_applies_eip155_for_recid() {
+        let mut resp = protos::EthereumTxRequest::new();
+        resp.set_signature_v(0);
+        resp.set_signature_r(vec![1u8; 32]);
+        resp.set_signature_s(vec![2u8; 32]);
+        let sig = convert_signature(&resp, Some(943)).unwrap();
+        assert_eq!(sig.v, 2 * 943 + 35);
+        assert!(!y_parity(&sig, 943).unwrap());
     }
 }

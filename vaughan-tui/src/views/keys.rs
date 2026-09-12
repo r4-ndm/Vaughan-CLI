@@ -282,9 +282,7 @@ impl KeysView {
         };
 
         match self.stage {
-            Stage::Password
-                if matches!(self.menu, MenuItem::AddLedger | MenuItem::AddTrezor) =>
-            {
+            Stage::Password if matches!(self.menu, MenuItem::AddLedger | MenuItem::AddTrezor) => {
                 let title = match self.menu {
                     MenuItem::AddTrezor => " Trezor ",
                     _ => " Ledger ",
@@ -344,12 +342,8 @@ impl KeysView {
                         Line::from("Enter — connect   Esc — cancel"),
                     ],
                 };
-                let inner =
-                    brand::render_faded_box(frame, content, Some(brand::fade_line(title)));
-                frame.render_widget(
-                    Paragraph::new(lines).wrap(Wrap { trim: false }),
-                    inner,
-                );
+                let inner = brand::render_faded_box(frame, content, Some(brand::fade_line(title)));
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
             }
             Stage::Password => {
                 let [msg, pw] =
@@ -389,8 +383,7 @@ impl KeysView {
                     DeviceVendor::Ledger => " Ledger ",
                     DeviceVendor::Trezor => " Trezor ",
                 };
-                let inner =
-                    brand::render_faded_box(frame, content, Some(brand::fade_line(title)));
+                let inner = brand::render_faded_box(frame, content, Some(brand::fade_line(title)));
                 frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
             Stage::DeviceBusy => {
@@ -509,22 +502,20 @@ impl KeysView {
                 }
             },
             DeviceJob::Add(rx) => match rx.try_recv() {
-                Ok(Ok(record)) => {
-                    match wallet.add_hardware_account(record) {
-                        Ok(account) => {
-                            self.device_paths.clear();
-                            self.stage = Stage::Menu;
-                            self.status = format!(
-                                "Added {} — F3 selected · confirm on device when signing",
-                                account.label
-                            );
-                        }
-                        Err(e) => {
-                            self.status = e.user_message();
-                            self.stage = Stage::DevicePick;
-                        }
+                Ok(Ok(record)) => match wallet.add_hardware_account(record) {
+                    Ok(account) => {
+                        self.device_paths.clear();
+                        self.stage = Stage::Menu;
+                        self.status = format!(
+                            "Added {} — F3 selected · confirm on device when signing",
+                            account.label
+                        );
                     }
-                }
+                    Err(e) => {
+                        self.status = e.user_message();
+                        self.stage = Stage::DevicePick;
+                    }
+                },
                 Ok(Err(msg)) => {
                     self.status = msg;
                     self.stage = Stage::DevicePick;
@@ -647,9 +638,7 @@ impl KeysView {
                 }
                 _ => KeyOutcome::NotHandled,
             },
-            Stage::Password
-                if matches!(self.menu, MenuItem::AddLedger | MenuItem::AddTrezor) =>
-            {
+            Stage::Password if matches!(self.menu, MenuItem::AddLedger | MenuItem::AddTrezor) => {
                 match key.code {
                     KeyCode::Esc => {
                         self.stage = Stage::Menu;

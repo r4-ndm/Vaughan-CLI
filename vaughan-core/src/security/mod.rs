@@ -11,12 +11,13 @@ pub mod stealth;
 pub use bip39::Mnemonic;
 
 pub use hardware::{
-    discover_ledger_account, discover_trezor_account, discover_trezor_account_blocking,
-    hd_path_from_str, ledger_address_for_path, open_hardware_backend, preview_ledger_live_paths,
-    preview_trezor_live_paths, preview_trezor_live_paths_blocking, trezor_address_for_path,
-    trezor_address_for_path_blocking, AccountKind, DeviceSession, HardwareAccountRecord,
-    HardwareVendor, HwChainFamily, LedgerDeviceSession, LedgerSignerBackend, LocalSignerBackend,
-    MockDeviceSession, MockSignerBackend, OwnedHardwareBackend, SignRequest, SignResult,
-    SignerBackend, TrezorDeviceSession, TrezorPassphrase, TrezorSignerBackend, TrezorUiBridge,
+    best_effort_host_cancel, discover_ledger_account, discover_trezor_account,
+    discover_trezor_account_blocking, hd_path_from_str, ledger_address_for_path,
+    open_hardware_backend, preview_ledger_live_paths, preview_trezor_live_paths,
+    preview_trezor_live_paths_blocking, trezor_address_for_path, trezor_address_for_path_blocking,
+    AccountKind, DeviceSession, HardwareAccountRecord, HardwareVendor, HwChainFamily,
+    LedgerDeviceSession, LedgerSignerBackend, LocalSignerBackend, MockDeviceSession,
+    MockSignerBackend, OwnedHardwareBackend, SignRequest, SignResult, SignerBackend,
+    TrezorDeviceSession, TrezorPassphrase, TrezorSignerBackend, TrezorUiBridge,
     HARDWARE_INDEX_BASE,
 };

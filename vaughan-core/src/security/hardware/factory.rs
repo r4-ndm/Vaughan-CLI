@@ -60,8 +60,11 @@ pub fn open_hardware_backend(
             record.clone(),
             chain_id,
         )?)),
-        HardwareVendor::Trezor => Ok(OwnedHardwareBackend::Trezor(
-            TrezorSignerBackend::with_ui(record.clone(), chain_id, None, trezor_ui)?,
-        )),
+        HardwareVendor::Trezor => Ok(OwnedHardwareBackend::Trezor(TrezorSignerBackend::with_ui(
+            record.clone(),
+            chain_id,
+            None,
+            trezor_ui,
+        )?)),
     }
 }

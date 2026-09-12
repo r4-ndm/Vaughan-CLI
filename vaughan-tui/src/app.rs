@@ -11,7 +11,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
-use vaughan_core::chains::Balance;
+use vaughan_core::chains::{Balance, ChainAdapter};
 use vaughan_core::core::proposal::{ProposalQueue, ProposalType};
 use vaughan_core::core::token_launch::TokenLaunchOutcome;
 use vaughan_core::core::{
@@ -386,8 +386,24 @@ pub struct App {
     trezor_ui: std::sync::Arc<vaughan_core::security::TrezorUiBridge>,
     /// Host PIN matrix while Trezor One asks for PIN (`None` = overlay hidden).
     trezor_pin: Option<TrezorPinEntry>,
+    /// Active hardware sign/broadcast session (Send confirm workflow).
+    trezor_sign: Option<TrezorSignSession>,
     /// F3 rename buffer (`→` while Account focused); Enter commits.
     f3_rename: Option<crate::input::Input>,
+}
+
+/// Host-side phases while a Trezor signs (Send / Keys share the PIN bridge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrezorSignPhase {
+    /// Blank PIN matrix (Trezor One); digits buffered until the device asks.
+    Pin,
+    /// Unlock done — approve the transaction on the device screen.
+    ConfirmOnDevice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrezorSignSession {
+    phase: TrezorSignPhase,
 }
 
 /// Blank 3×3 matrix entry (digits only on the device; host shows empty cells).
@@ -520,6 +536,7 @@ impl App {
             nav_back: Vec::new(),
             trezor_ui,
             trezor_pin: None,
+            trezor_sign: None,
             f3_rename: None,
         };
         app.navigate(screen);
@@ -609,6 +626,16 @@ impl App {
     /// Trezor One host PIN matrix is visible (digits never logged).
     pub fn trezor_pin_active(&self) -> bool {
         self.trezor_pin.is_some()
+    }
+
+    /// Waiting for the user to approve the tx on the Trezor screen.
+    pub fn trezor_confirm_device_active(&self) -> bool {
+        matches!(
+            self.trezor_sign,
+            Some(TrezorSignSession {
+                phase: TrezorSignPhase::ConfirmOnDevice,
+            })
+        ) && self.trezor_pin.is_none()
     }
 
     /// Number of PIN matrix positions entered (shown as dots).
@@ -720,6 +747,9 @@ impl App {
             }
             if let View::Dashboard(v) = &mut self.view {
                 v.set_tick(self.tick);
+                if let Some(job) = v.tick_poll_job() {
+                    self.spawn_job(job);
+                }
             }
             if let View::Assets(v) = &mut self.view {
                 v.set_tick(self.tick);
@@ -752,10 +782,22 @@ impl App {
             self.handle_trezor_pin_key(key);
             return;
         }
-
         // Quit confirm owns the keyboard until Yes/No/Esc.
         if self.quit_confirm.is_some() {
             self.handle_quit_confirm_key(key);
+            return;
+        }
+
+        // Approval owns y/n/Esc even if a HW confirm session is active — otherwise
+        // Esc only clears trezor_sign and the Approve card appears stuck.
+        if self.screen() == Screen::Approve {
+            self.handle_approval_key(key);
+            return;
+        }
+
+        // After PIN: wait for on-device confirm (Esc cancels the session).
+        if self.trezor_confirm_device_active() {
+            self.handle_trezor_confirm_device_key(key);
             return;
         }
 
@@ -782,12 +824,6 @@ impl App {
         // before view handlers so Dex/Ag/LP token ↑/↓ and Browser REPL history
         // cannot steal arrows while a chrome box is focused.
         if self.wallet().is_unlocked() && self.handle_chrome_hotkey(key) {
-            return;
-        }
-
-        // Approval prompt: fee editor + y/n/Enter/Esc; chrome hotkeys above still apply.
-        if self.screen() == Screen::Approve {
-            self.handle_approval_key(key);
             return;
         }
 
@@ -903,6 +939,7 @@ impl App {
             KeyOutcome::Navigate(screen) => self.navigate(screen),
             KeyOutcome::Back => self.navigate_back(),
             KeyOutcome::StartJob(job) => {
+                let refresh_f2 = matches!(key.code, KeyCode::Char('r') | KeyCode::Char('R'));
                 if matches!(job, crate::jobs::UiJob::SendStealth { .. })
                     && !self.power_features_ok()
                 {
@@ -915,6 +952,11 @@ impl App {
                     self.sync_f2_to_displayed();
                 } else {
                     self.spawn_job(job);
+                    // Footer `r` is shared chrome refresh. Views may also start a
+                    // local job (receipt poll, HEX list, …) — still update F2.
+                    if refresh_f2 && self.wallet().is_unlocked() {
+                        self.sync_f2_to_displayed();
+                    }
                 }
             }
             KeyOutcome::SendAsset(balance) => {
@@ -1759,9 +1801,31 @@ impl App {
             self.trezor_ui = w.trezor_ui();
         }
         let keys_busy = matches!(&self.view, View::Keys(v) if v.trezor_connect_busy());
-        // Show blank pad while connecting (Trezor One) or when the device asks.
-        let show = keys_busy || self.trezor_ui.pin_pending();
-        if show {
+        let pin_pending = self.trezor_ui.pin_pending();
+
+        // Only enter Pin when the device actually asks (already-unlocked sessions
+        // never set pin_pending — keep ConfirmOnDevice / no matrix).
+        if pin_pending {
+            if let Some(session) = &mut self.trezor_sign {
+                session.phase = TrezorSignPhase::Pin;
+            }
+        } else if matches!(
+            self.trezor_sign,
+            Some(TrezorSignSession {
+                phase: TrezorSignPhase::Pin,
+            })
+        ) {
+            // Ask finished (submit / cancel) — return to on-device confirm while
+            // the sign job is still running.
+            if let Some(session) = &mut self.trezor_sign {
+                session.phase = TrezorSignPhase::ConfirmOnDevice;
+            }
+        }
+
+        // Matrix only while Keys is connecting (early pad) or the device asked.
+        // Do not force the pad for the whole Send job when the Trezor is unlocked.
+        let show_matrix = keys_busy || pin_pending;
+        if show_matrix {
             if self.trezor_pin.is_none() {
                 self.trezor_pin = Some(TrezorPinEntry::new());
             }
@@ -1791,31 +1855,52 @@ impl App {
                 if entry.digits.is_empty() {
                     entry.select_cell();
                 } else {
-                    let pin = self
-                        .trezor_pin
-                        .take()
-                        .map(|e| e.digits)
-                        .unwrap_or_default();
+                    let pin = self.trezor_pin.take().map(|e| e.digits).unwrap_or_default();
                     self.trezor_ui.submit_pin(Ok(pin));
+                    if let Some(session) = &mut self.trezor_sign {
+                        session.phase = TrezorSignPhase::ConfirmOnDevice;
+                    }
                 }
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                let pin = self
-                    .trezor_pin
-                    .take()
-                    .map(|e| e.digits)
-                    .unwrap_or_default();
+                let pin = self.trezor_pin.take().map(|e| e.digits).unwrap_or_default();
                 self.trezor_ui.submit_pin(Ok(pin));
+                if let Some(session) = &mut self.trezor_sign {
+                    session.phase = TrezorSignPhase::ConfirmOnDevice;
+                }
             }
             KeyCode::Backspace => {
                 entry.digits.pop();
             }
             KeyCode::Esc => {
                 self.trezor_pin = None;
-                self.trezor_ui.cancel_pin();
+                self.trezor_sign = None;
+                self.trezor_ui.request_abort();
+                Self::best_effort_trezor_cancel();
             }
             _ => {}
         }
+    }
+
+    fn handle_trezor_confirm_device_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.trezor_sign = None;
+                self.trezor_ui.request_abort();
+                Self::best_effort_trezor_cancel();
+            }
+            _ => {
+                // Wait for the device — ignore other keys so Confirm Enter isn't stolen.
+            }
+        }
+    }
+
+    /// Fire-and-forget protobuf Cancel on a fresh USB handle.
+    ///
+    /// The signing thread usually holds the exclusive device; this often no-ops.
+    /// PIN Esc still clears the device via Cancel on that same USB session.
+    fn best_effort_trezor_cancel() {
+        vaughan_core::security::best_effort_host_cancel();
     }
 
     fn handle_quit_confirm_key(&mut self, key: KeyEvent) {
@@ -1899,6 +1984,8 @@ impl App {
             return;
         };
         if deny {
+            self.trezor_sign = None;
+            self.trezor_pin = None;
             if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
                 self.reject_queued_proposal(proposal_id, "user rejected");
                 if matches!(pending.reply, PendingReply::Queued) {
@@ -1965,12 +2052,34 @@ impl App {
                         }
                     }
                 }
+                // Hardware personal_sign / typed / tx must not block the UI
+                // thread — otherwise the Trezor PIN pad never paints.
+                let hw = {
+                    let w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    w.active_is_hardware().unwrap_or(false)
+                };
+                if hw && Self::approval_may_need_trezor(&kind) {
+                    self.spawn_provider_hw_sign(kind, PendingReply::Sign(reply));
+                    let back = self.approve_return;
+                    self.navigate(back);
+                    return;
+                }
                 let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
                 let result = provider::execute_approval_sync(&kind, &mut wallet, &self.handle);
                 let _ = reply.send(result);
             }
             PendingReply::LocalSign => {
                 let kind = pending.kind;
+                let hw = {
+                    let w = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                    w.active_is_hardware().unwrap_or(false)
+                };
+                if hw && Self::approval_may_need_trezor(&kind) {
+                    self.spawn_provider_hw_sign(kind, PendingReply::LocalSign);
+                    let back = self.approve_return;
+                    self.navigate(back);
+                    return;
+                }
                 let result = {
                     let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
                     provider::execute_approval_sync(&kind, &mut wallet, &self.handle)
@@ -2563,7 +2672,11 @@ impl App {
                 self.set_flash("Rename cancelled");
                 true
             }
-            KeyCode::F(1) | KeyCode::F(2) | KeyCode::F(3) | KeyCode::F(4) | KeyCode::F(5)
+            KeyCode::F(1)
+            | KeyCode::F(2)
+            | KeyCode::F(3)
+            | KeyCode::F(4)
+            | KeyCode::F(5)
             | KeyCode::F(6) => {
                 self.f3_rename = None;
                 false
@@ -3005,7 +3118,78 @@ impl App {
             .unwrap_or_else(|_| vaughan_core::core::merge_rpc_urls(job_primary, &[]))
     }
 
-    fn spawn_job(&self, job: UiJob) {
+    fn approval_may_need_trezor(kind: &ApprovalKind) -> bool {
+        matches!(
+            kind,
+            ApprovalKind::SignMessage { .. }
+                | ApprovalKind::SignTypedData { .. }
+                | ApprovalKind::SignTransaction(_)
+                | ApprovalKind::SendTransaction(_)
+        )
+    }
+
+    /// Run provider/local HW signing off the UI thread so the Trezor PIN pad can paint.
+    ///
+    /// Must not hold the wallet mutex across USB/PIN — the UI loop also takes that lock
+    /// (poll/chrome), and a held lock freezes the frame so the matrix never appears.
+    fn spawn_provider_hw_sign(&mut self, kind: ApprovalKind, reply: PendingReply) {
+        self.trezor_sign = Some(TrezorSignSession {
+            phase: TrezorSignPhase::ConfirmOnDevice,
+        });
+        let wallet = self.wallet.clone();
+        let handle = self.handle.clone();
+        let tx = self.job_tx.clone();
+        std::thread::spawn(move || {
+            let result = provider::execute_hw_approval_detached(&wallet, &handle, &kind);
+            match reply {
+                PendingReply::Sign(reply) => {
+                    let _ = reply.send(result);
+                    let _ = tx.blocking_send(UiJobResult::ProviderHwSignDone { flash: None });
+                }
+                PendingReply::LocalSign => {
+                    let flash = Some(match result {
+                        Ok(sig) => format!("EIP-712 signature: {sig}"),
+                        Err(e) => format!("Sign failed: {e}"),
+                    });
+                    let _ = tx.blocking_send(UiJobResult::ProviderHwSignDone { flash });
+                }
+                PendingReply::Accounts(_) | PendingReply::Switch(_) | PendingReply::Queued => {
+                    let _ = tx.blocking_send(UiJobResult::ProviderHwSignDone { flash: None });
+                }
+            }
+        });
+    }
+
+    fn job_may_need_trezor_pin(job: &UiJob) -> bool {
+        matches!(
+            job,
+            UiJob::SendWithFee { .. }
+                | UiJob::Send { .. }
+                | UiJob::SendToken { .. }
+                | UiJob::SendTokenWithFee { .. }
+                | UiJob::SendEvm { .. }
+                | UiJob::SendEvmWithFee { .. }
+                | UiJob::SendStealth { .. }
+        )
+    }
+
+    fn spawn_job(&mut self, job: UiJob) {
+        if Self::job_may_need_trezor_pin(&job) {
+            // Blocking lock — try_lock can miss hardware and skip the PIN session
+            // (pad flashes once when pin_pending races, then vanishes).
+            let hw = self
+                .wallet
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .active_is_hardware()
+                .unwrap_or(false);
+            if hw {
+                // Start on confirm-on-device; matrix appears only if pin_pending.
+                self.trezor_sign = Some(TrezorSignSession {
+                    phase: TrezorSignPhase::ConfirmOnDevice,
+                });
+            }
+        }
         let tx = self.job_tx.clone();
         let handle = self.handle.clone();
         let wallet = self.wallet.clone();
@@ -3072,24 +3256,84 @@ impl App {
                     }
                 }
                 UiJob::EstimateFee { to, value_wei } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Fee(handle.block_on(w.estimate_fee(&to, &value_wei)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.build_native_transfer(&to, &value_wei)?;
+                            let snap = w.network_rpc_snapshot()?;
+                            Ok::<_, WalletError>((tx, snap))
+                        })()
+                    };
+                    UiJobResult::Fee(match prepared {
+                        Ok((tx, snap)) => handle.block_on(async move {
+                            let adapter = snap.adapter().await?;
+                            adapter
+                                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
+                                .await
+                        }),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::EstimateTokenFee { token, to, amount } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Fee(handle.block_on(w.estimate_token_fee(&token, &to, &amount)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.build_erc20_transfer(&token, &to, &amount)?;
+                            let snap = w.network_rpc_snapshot()?;
+                            Ok::<_, WalletError>((tx, snap))
+                        })()
+                    };
+                    UiJobResult::Fee(match prepared {
+                        Ok((tx, snap)) => handle.block_on(async move {
+                            let adapter = snap.adapter().await?;
+                            adapter
+                                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
+                                .await
+                        }),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::SendWithFee { to, value_wei, fee } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(handle.block_on(w.send_with_fee(&to, &value_wei, &fee)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.build_native_transfer_with_fee(&to, &value_wei, &fee)?;
+                            let ctx = w.detached_sign_context()?;
+                            Ok::<_, WalletError>((tx, ctx))
+                        })()
+                    };
+                    UiJobResult::Send(match prepared {
+                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::Send { to, value_wei } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(handle.block_on(w.send(&to, &value_wei)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.build_native_transfer(&to, &value_wei)?;
+                            let ctx = w.detached_sign_context()?;
+                            Ok::<_, WalletError>((tx, ctx))
+                        })()
+                    };
+                    UiJobResult::Send(match prepared {
+                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::SendToken { token, to, amount } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(handle.block_on(w.send_token(&token, &to, &amount)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.build_erc20_transfer(&token, &to, &amount)?;
+                            let ctx = w.detached_sign_context()?;
+                            Ok::<_, WalletError>((tx, ctx))
+                        })()
+                    };
+                    UiJobResult::Send(match prepared {
+                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::SendTokenWithFee {
                     token,
@@ -3097,10 +3341,18 @@ impl App {
                     amount,
                     fee,
                 } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(
-                        handle.block_on(w.send_token_with_fee(&token, &to, &amount, &fee)),
-                    )
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.build_erc20_transfer_with_fee(&token, &to, &amount, &fee)?;
+                            let ctx = w.detached_sign_context()?;
+                            Ok::<_, WalletError>((tx, ctx))
+                        })()
+                    };
+                    UiJobResult::Send(match prepared {
+                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::SendStealth {
                     announcement,
@@ -3112,8 +3364,14 @@ impl App {
                     )
                 }
                 UiJob::SendEvm { tx } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(handle.block_on(w.broadcast(tx, "Contract")))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.detached_sign_context().map(|ctx| (tx, ctx))
+                    };
+                    UiJobResult::Send(match prepared {
+                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::AssistBurnVerify => {
                     use vaughan_core::core::{
@@ -3133,8 +3391,19 @@ impl App {
                     })
                 }
                 UiJob::EstimateEvmFee { tx } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Fee(handle.block_on(w.estimate_transaction_fee(tx)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.network_rpc_snapshot().map(|snap| (tx, snap))
+                    };
+                    UiJobResult::Fee(match prepared {
+                        Ok((tx, snap)) => handle.block_on(async move {
+                            let adapter = snap.adapter().await?;
+                            adapter
+                                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
+                                .await
+                        }),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::DexSwapEstimateAfterApprove {
                     rpc_url,
@@ -3191,8 +3460,18 @@ impl App {
                     UiJobResult::DexAllowanceCheck(parsed)
                 }
                 UiJob::SendEvmWithFee { tx, fee } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(handle.block_on(w.send_evm_with_fee(tx, &fee)))
+                    let prepared = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        (|| {
+                            let tx = w.apply_fee_to_evm(tx, &fee)?;
+                            let ctx = w.detached_sign_context()?;
+                            Ok::<_, WalletError>((tx, ctx))
+                        })()
+                    };
+                    UiJobResult::Send(match prepared {
+                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::AggQuote {
                     venue,
@@ -3444,25 +3723,41 @@ impl App {
                     }
                 }
                 UiJob::PollTxStatus { tx_hash } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::TxStatus(handle.block_on(w.get_tx_status(&tx_hash)))
+                    // Brief lock for RPC endpoints only — holding WalletState across
+                    // eth_getTransactionReceipt freezes the Done screen on "working…".
+                    let snap = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.network_rpc_snapshot()
+                    };
+                    UiJobResult::TxStatus(match snap {
+                        Ok(s) => handle.block_on(s.get_tx_status(&tx_hash)),
+                        Err(e) => Err(e),
+                    })
                 }
                 UiJob::RefreshBroadcastStatuses { hashes } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut out = Vec::with_capacity(hashes.len());
-                    let mut err = None;
-                    for h in hashes {
-                        match handle.block_on(w.get_tx_status(&h)) {
-                            Ok(s) => out.push((h, s)),
-                            Err(e) => {
-                                err = Some(e);
-                                break;
+                    let snap = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        w.network_rpc_snapshot()
+                    };
+                    UiJobResult::BroadcastStatuses(match snap {
+                        Ok(s) => {
+                            let mut out = Vec::with_capacity(hashes.len());
+                            let mut err = None;
+                            for h in hashes {
+                                match handle.block_on(s.get_tx_status(&h)) {
+                                    Ok(st) => out.push((h, st)),
+                                    Err(e) => {
+                                        err = Some(e);
+                                        break;
+                                    }
+                                }
+                            }
+                            match err {
+                                Some(e) => Err(e),
+                                None => Ok(out),
                             }
                         }
-                    }
-                    UiJobResult::BroadcastStatuses(match err {
-                        Some(e) => Err(e),
-                        None => Ok(out),
+                        Err(e) => Err(e),
                     })
                 }
                 UiJob::ReplaceBroadcast { entry, kind } => {
@@ -3922,7 +4217,21 @@ impl App {
 
     fn poll_jobs(&mut self) {
         while let Ok(result) = self.job_rx.try_recv() {
+            if matches!(
+                &result,
+                UiJobResult::Send(_)
+                    | UiJobResult::SendStealth(_)
+                    | UiJobResult::ProviderHwSignDone { .. }
+            ) {
+                self.trezor_sign = None;
+                self.trezor_pin = None;
+            }
             match result {
+                UiJobResult::ProviderHwSignDone { flash } => {
+                    if let Some(msg) = flash {
+                        self.set_flash(msg);
+                    }
+                }
                 UiJobResult::McpQueuedApprove {
                     result,
                     proposal,
@@ -4099,6 +4408,12 @@ impl App {
                         if matches!(&self.view, View::Dashboard(v) if v.is_assist_burn()) {
                             self.spawn_job(UiJob::AssistBurnVerify);
                         }
+                        // F2 is shared chrome — refresh on every screen after a send
+                        // (Send Done's `r` only polls receipt and used to leave F2 stale).
+                        self.sync_f2_to_displayed();
+                    }
+                    if matches!(&other, UiJobResult::SendStealth(Ok(_))) {
+                        self.sync_f2_to_displayed();
                     }
                     if let UiJobResult::BroadcastStatuses(Ok(pairs)) = &other {
                         for (hash, status) in pairs {

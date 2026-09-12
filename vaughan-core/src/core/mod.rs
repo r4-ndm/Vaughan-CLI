@@ -173,7 +173,10 @@ pub use v2_lp::{
     default_v2_watch_pairs, get_v2_pair_address, list_v2_lp_positions, v2_pool_share_bps,
     v2_spot_token1_per_token0, v2_underlying_amounts, V2LpPosition,
 };
-pub use wallet::{ChromeRpcSnapshot, NetworkRpcSnapshot, UnlockPayload, WalletState};
+pub use wallet::{
+    ChromeRpcSnapshot, DetachedMessageSigner, DetachedSignContext, NetworkRpcSnapshot,
+    UnlockPayload, WalletState,
+};
 pub use wiz4rd::{
     deployment_for_chain, position_manager as wiz4rd_position_manager,
     swap_router as wiz4rd_swap_router, Wiz4rdDeployment, DEPLOYMENT_943, WIZ4RD_FEE_TIERS,
