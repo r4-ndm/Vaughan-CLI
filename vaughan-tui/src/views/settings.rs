@@ -1,7 +1,10 @@
-//! Settings / Net: switch networks; add, edit, or remove custom EVM networks.
+//! Settings / Net: switch networks; add, edit, or remove custom EVM networks;
+//! Agent CDP / autonomy toggles; manage F3 wallets (remove hardware / imports).
 //!
 //! Footer `n` / `i` both land here. Built-ins are fixed; customs persist in the vault.
 //! Built-in RPC: **`r`**. Custom chains: **`a`** add · **`e`** edit · **`d`** delete.
+//! Agent box (below networks): Enter toggles CDP / autonomy.
+//! Wallets: **`u`** list · **`d`** delete (confirm; imports need vault password).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -13,6 +16,7 @@ use ratatui::{
 };
 use tokio::runtime::Handle;
 use vaughan_core::core::{AgentAutonomyTier, OperatingMode, WalletState};
+use vaughan_core::security::AccountKind;
 use vaughan_provider::{EventBus, ProviderEvent};
 
 use crate::app::{KeyOutcome, Screen};
@@ -30,6 +34,12 @@ enum Stage {
     HardwareHelp,
     /// Pick primary RPC for the highlighted network (built-in fallbacks stay active).
     RpcPick,
+    /// F3 wallets — remove hardware watches / imported keys (not HD).
+    Accounts,
+    /// Confirm delete for the selected removable account.
+    AccountConfirm,
+    /// Vault password before removing an imported key.
+    AccountPassword,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -59,6 +69,14 @@ pub struct SettingsView {
     rpc_pick_index: usize,
     rpc_custom: bool,
     rpc_custom_input: Input,
+    /// Account list cursor ([`Stage::Accounts`]).
+    account_sel: usize,
+    /// Pending delete target (account index + display fields).
+    pending_remove_index: u32,
+    pending_remove_label: String,
+    pending_remove_address: String,
+    pending_remove_imported: bool,
+    account_password: Input,
     status: String,
 }
 
@@ -80,6 +98,12 @@ impl SettingsView {
             rpc_pick_index: 0,
             rpc_custom: false,
             rpc_custom_input: Input::new(false, "https://your-rpc.example"),
+            account_sel: 0,
+            pending_remove_index: 0,
+            pending_remove_label: String::new(),
+            pending_remove_address: String::new(),
+            pending_remove_imported: false,
+            account_password: Input::new(true, "vault password"),
             status: String::new(),
         }
     }
@@ -91,7 +115,8 @@ impl SettingsView {
             Stage::List => {
                 let networks = wallet.networks();
                 let active_id = networks.active_id();
-                let mut items: Vec<ListItem> = networks
+                let net_len = networks.networks().len();
+                let net_items: Vec<ListItem> = networks
                     .networks()
                     .iter()
                     .enumerate()
@@ -115,122 +140,92 @@ impl SettingsView {
                         ListItem::new(Line::from(Span::styled(label, style)))
                     })
                     .collect();
-                let ctrl_style = |idx: usize, selected: usize| {
-                    if idx == selected {
+
+                let agent_style = |offset: usize| {
+                    if self.selected == net_len + offset {
                         Style::default().fg(Color::Black).bg(Color::Cyan)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default()
                     }
                 };
-                let net_len = networks.networks().len();
                 let cdp_row = format!(
-                    "   Agent browser control (CDP): {}",
+                    "   CDP browser control: {}",
                     if wallet.agent_browser_control() {
                         "ON"
                     } else {
                         "OFF"
                     }
                 );
-                items.push(ListItem::new(Line::from(Span::styled(
-                    cdp_row,
-                    ctrl_style(net_len, self.selected),
-                ))));
                 let auto_row = format!(
-                    "   Agent autonomy: {}",
+                    "   Autonomy: {}",
                     match wallet.agent_autonomy_tier() {
                         AgentAutonomyTier::Advisor => "Advisor (manual Connect)",
-                        AgentAutonomyTier::Operator => "Operator (auto-connect allowlisted dApps)",
+                        AgentAutonomyTier::Operator => "Operator (auto-connect allowlist)",
                     }
                 );
-                items.push(ListItem::new(Line::from(Span::styled(
-                    auto_row,
-                    ctrl_style(net_len + 1, self.selected),
-                ))));
+                let agent_items = vec![
+                    ListItem::new(Line::from(Span::styled(cdp_row, agent_style(0)))),
+                    ListItem::new(Line::from(Span::styled(auto_row, agent_style(1)))),
+                ];
 
-                let list = List::new(items);
-                let cdp_label = if wallet.agent_browser_control() {
-                    "Status  CDP: ON"
-                } else {
-                    "Status  CDP: OFF"
-                };
-                let cdp_style = if wallet.agent_browser_control() {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                let tier = wallet.agent_autonomy_tier();
-                let tier_label = match tier {
-                    AgentAutonomyTier::Advisor => "        Autonomy: Advisor (manual Connect)",
-                    AgentAutonomyTier::Operator => {
-                        "        Autonomy: Operator (auto-connect allowlisted)"
-                    }
-                };
-                let tier_style = match tier {
-                    AgentAutonomyTier::Advisor => Style::default().fg(Color::DarkGray),
-                    AgentAutonomyTier::Operator => Style::default().fg(Color::Green),
-                };
                 let (mode_label, mode_style) = match wallet.operating_mode() {
                     OperatingMode::SentientTrader => {
                         let policy = crate::sentient_mcp::sentient_policy_line(wallet)
                             .unwrap_or_else(|| "policy: unknown".into());
                         (
-                            format!(
-                                "        Mode: Sentient (auto-exec) — {policy} · lock (l) to switch"
-                            ),
+                            format!("   Mode: Sentient — {policy} (lock l to switch)"),
                             Style::default().fg(Color::Magenta),
                         )
                     }
                     OperatingMode::AiAssisted => (
-                        "        Mode: Advisor (MCP on) — lock (l) → pick mode at unlock"
-                            .to_string(),
+                        "   Mode: Advisor · MCP on (lock l to switch)".to_string(),
                         Style::default().fg(Color::Green),
                     ),
                     OperatingMode::HumanOnly => (
-                        "        Mode: Human only (MCP off) — lock (l) → pick mode at unlock"
-                            .to_string(),
+                        "   Mode: Human only · MCP off (lock l to switch)".to_string(),
                         Style::default().fg(Color::DarkGray),
                     ),
                 };
-                let assist_line = if vaughan_core::core::assist_burn_gate_enabled() {
-                    (
-                        "        Unlock tools: burn ≥13 WZRD (AI/bridge/…) — Dex/Ag/LP free"
-                            .to_string(),
+                let burn_on = vaughan_core::core::assist_burn_gate_enabled();
+                let agent_h = if burn_on { 7 } else { 6 };
+                let [net_area, agent_area, footer_area] = Layout::vertical([
+                    Constraint::Min(4),
+                    Constraint::Length(agent_h),
+                    Constraint::Length(3),
+                ])
+                .areas(content);
+                let net_inner =
+                    brand::render_faded_box(frame, net_area, Some(brand::fade_line(" Networks ")));
+                frame.render_widget(List::new(net_items), net_inner);
+
+                let agent_inner =
+                    brand::render_faded_box(frame, agent_area, Some(brand::fade_line(" Agent ")));
+                let note_h = if burn_on { 2 } else { 1 };
+                let [agent_list_a, agent_note_a] =
+                    Layout::vertical([Constraint::Length(2), Constraint::Length(note_h)])
+                        .areas(agent_inner);
+                frame.render_widget(List::new(agent_items), agent_list_a);
+                let mut agent_notes = vec![Line::from(Span::styled(mode_label, mode_style))];
+                if burn_on {
+                    agent_notes.push(Line::from(Span::styled(
+                        "   Tools: burn ≥13 WZRD (w) — Dex/Ag/LP free",
                         Style::default().fg(Color::Yellow),
-                    )
-                } else {
-                    (String::new(), Style::default())
-                };
-                // 2 key lines + 3 status (+ optional unlock) + box chrome
-                let footer_h = if assist_line.0.is_empty() { 7 } else { 8 };
-                let [list_area, footer_area] =
-                    Layout::vertical([Constraint::Min(4), Constraint::Length(footer_h)])
-                        .areas(content);
-                let inner =
-                    brand::render_faded_box(frame, list_area, Some(brand::fade_line(" Networks ")));
-                frame.render_widget(list, inner);
+                    )));
+                }
+                frame.render_widget(Paragraph::new(agent_notes), agent_note_a);
+
                 let footer_inner = brand::render_faded_box(
                     frame,
                     footer_area,
                     Some(brand::fade_line(" Shortcuts ")),
                 );
-                let key_style = Style::default().fg(Color::DarkGray);
-                let mut footer_lines = vec![
-                    Line::from(Span::styled(
-                        "Select row with ↑↓ · Enter apply/toggle · Esc",
-                        key_style,
-                    )),
-                    Line::from(Span::styled(
-                        "Keys: a add · e edit · r RPC · d delete · h udev · k Keys · c contracts · q Web · w unlock",
-                        key_style,
-                    )),
-                    Line::from(Span::styled(cdp_label, cdp_style)),
-                    Line::from(Span::styled(tier_label, tier_style)),
-                    Line::from(Span::styled(mode_label, mode_style)),
-                ];
-                if !assist_line.0.is_empty() {
-                    footer_lines.push(Line::from(Span::styled(assist_line.0, assist_line.1)));
-                }
-                frame.render_widget(Paragraph::new(footer_lines), footer_inner);
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "↑↓ move · Enter select · a add · e edit · r RPC · d delete · u wallets · h udev · k Keys · Esc",
+                        Style::default().fg(Color::DarkGray),
+                    ))),
+                    footer_inner,
+                );
             }
             Stage::HardwareHelp => {
                 let inner = brand::render_faded_box(
@@ -392,6 +387,103 @@ impl SettingsView {
                 render_labeled_input(frame, rpc_a, "RPC URL", &self.rpc_url, self.focus == 2);
                 render_labeled_input(frame, sym_a, "Symbol", &self.symbol, self.focus == 3);
             }
+            Stage::Accounts => {
+                let accounts = match wallet.accounts() {
+                    Ok(a) => a,
+                    Err(_) => &[],
+                };
+                let items: Vec<ListItem> = accounts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        let kind = match &a.kind {
+                            AccountKind::Hd => "HD",
+                            AccountKind::Imported => "import",
+                            AccountKind::Hardware(h) => h.vendor.as_str(),
+                        };
+                        let rem = if matches!(a.kind, AccountKind::Hd) {
+                            ""
+                        } else {
+                            "  [d delete]"
+                        };
+                        let short = short_addr(&a.address);
+                        let label = format!("   {kind:<7}  {}  {short}{rem}", a.label);
+                        let style = if i == self.account_sel {
+                            Style::default().fg(Color::Black).bg(Color::Cyan)
+                        } else if matches!(a.kind, AccountKind::Hd) {
+                            Style::default().fg(Color::DarkGray)
+                        } else {
+                            Style::default()
+                        };
+                        ListItem::new(Line::from(Span::styled(label, style)))
+                    })
+                    .collect();
+                let [list_area, hint_area] =
+                    Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(content);
+                let inner =
+                    brand::render_faded_box(frame, list_area, Some(brand::fade_line(" Wallets ")));
+                frame.render_widget(List::new(items), inner);
+                let hint_inner = brand::render_faded_box(frame, hint_area, None);
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "↑↓ select · d delete watch/import · Esc back · HD rows stay (seed)",
+                        Style::default().fg(Color::DarkGray),
+                    ))),
+                    hint_inner,
+                );
+            }
+            Stage::AccountConfirm => {
+                let short = short_addr(&self.pending_remove_address);
+                let kind = if self.pending_remove_imported {
+                    "imported key"
+                } else {
+                    "hardware watch (device unchanged)"
+                };
+                let inner = brand::render_faded_box(
+                    frame,
+                    content,
+                    Some(brand::fade_line(" Remove wallet? ")),
+                );
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(format!(
+                            "Remove «{}» ({short}) from Vaughan?",
+                            self.pending_remove_label
+                        )),
+                        Line::from(Span::styled(kind, Style::default().fg(Color::DarkGray))),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "y confirm · n / Esc cancel",
+                            Style::default().fg(Color::Yellow),
+                        )),
+                    ])
+                    .wrap(Wrap { trim: false }),
+                    inner,
+                );
+            }
+            Stage::AccountPassword => {
+                let [msg, pw] =
+                    Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(content);
+                let msg_inner = brand::render_faded_box(
+                    frame,
+                    msg,
+                    Some(brand::fade_line(" Confirm vault password ")),
+                );
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(format!(
+                            "Removing imported «{}» rewrites the vault.",
+                            self.pending_remove_label
+                        )),
+                        Line::from(Span::styled(
+                            "Enter password · Esc cancel",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ]),
+                    msg_inner,
+                );
+                render_labeled_input(frame, pw, "Password", &self.account_password, true);
+            }
         }
 
         frame.render_widget(status_paragraph(&self.status), status_area);
@@ -419,6 +511,9 @@ impl SettingsView {
                 _ => KeyOutcome::Consumed,
             },
             Stage::RpcPick => self.handle_rpc_pick_key(key, wallet),
+            Stage::Accounts => self.handle_accounts_key(key, wallet),
+            Stage::AccountConfirm => self.handle_account_confirm_key(key, wallet, events),
+            Stage::AccountPassword => self.handle_account_password_key(key, wallet, events),
         }
     }
 
@@ -535,6 +630,12 @@ impl SettingsView {
             KeyCode::Char('h') => {
                 self.stage = Stage::HardwareHelp;
                 self.status.clear();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                self.account_sel = 0;
+                self.stage = Stage::Accounts;
+                self.status = "Select a wallet · d removes hardware watches / imports".into();
                 KeyOutcome::Consumed
             }
             KeyCode::Char('w') | KeyCode::Char('W') => {
@@ -794,6 +895,136 @@ impl SettingsView {
         KeyOutcome::Consumed
     }
 
+    fn handle_accounts_key(&mut self, key: KeyEvent, wallet: &WalletState) -> KeyOutcome {
+        let len = wallet.accounts().map(|a| a.len()).unwrap_or(0);
+        match key.code {
+            KeyCode::Esc => {
+                self.stage = Stage::List;
+                self.status.clear();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Up => {
+                self.account_sel = self.account_sel.saturating_sub(1);
+                KeyOutcome::Consumed
+            }
+            KeyCode::Down if len > 0 => {
+                self.account_sel = (self.account_sel + 1).min(len - 1);
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                let Ok(accounts) = wallet.accounts() else {
+                    self.status = "Unlock the vault first.".into();
+                    return KeyOutcome::Consumed;
+                };
+                let Some(account) = accounts.get(self.account_sel) else {
+                    return KeyOutcome::Consumed;
+                };
+                if matches!(account.kind, AccountKind::Hd) {
+                    self.status =
+                        "HD wallets come from the vault seed — they cannot be removed.".into();
+                    return KeyOutcome::Consumed;
+                }
+                self.pending_remove_index = account.index;
+                self.pending_remove_label = account.label.clone();
+                self.pending_remove_address = account.address.clone();
+                self.pending_remove_imported = account.is_imported;
+                self.stage = Stage::AccountConfirm;
+                self.status.clear();
+                KeyOutcome::Consumed
+            }
+            _ => KeyOutcome::Consumed,
+        }
+    }
+
+    fn handle_account_confirm_key(
+        &mut self,
+        key: KeyEvent,
+        wallet: &mut WalletState,
+        events: &EventBus,
+    ) -> KeyOutcome {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.stage = Stage::Accounts;
+                self.status = "Delete cancelled.".into();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if self.pending_remove_imported {
+                    self.account_password.set_value("");
+                    self.stage = Stage::AccountPassword;
+                    self.status.clear();
+                    return KeyOutcome::Consumed;
+                }
+                self.finish_hardware_remove(wallet, events)
+            }
+            _ => KeyOutcome::Consumed,
+        }
+    }
+
+    fn handle_account_password_key(
+        &mut self,
+        key: KeyEvent,
+        wallet: &mut WalletState,
+        events: &EventBus,
+    ) -> KeyOutcome {
+        if key.code == KeyCode::Esc {
+            let _ = self.account_password.take_secret();
+            self.stage = Stage::Accounts;
+            self.status = "Delete cancelled.".into();
+            return KeyOutcome::Consumed;
+        }
+        match self.account_password.handle_key(key) {
+            InputAction::Ignored => KeyOutcome::NotHandled,
+            InputAction::Consumed => KeyOutcome::Consumed,
+            InputAction::Submitted => {
+                let pw = self.account_password.take_secret();
+                match wallet.remove_imported_account(&pw, self.pending_remove_index) {
+                    Ok(removed) => {
+                        self.after_account_removed(wallet, events, &removed.label, &removed.address)
+                    }
+                    Err(e) => {
+                        self.status = e.user_message();
+                        KeyOutcome::Consumed
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish_hardware_remove(
+        &mut self,
+        wallet: &mut WalletState,
+        events: &EventBus,
+    ) -> KeyOutcome {
+        match wallet.remove_hardware_account(self.pending_remove_index) {
+            Ok(removed) => {
+                self.after_account_removed(wallet, events, &removed.label, &removed.address)
+            }
+            Err(e) => {
+                self.status = e.user_message();
+                self.stage = Stage::Accounts;
+                KeyOutcome::Consumed
+            }
+        }
+    }
+
+    fn after_account_removed(
+        &mut self,
+        wallet: &WalletState,
+        events: &EventBus,
+        label: &str,
+        address: &str,
+    ) -> KeyOutcome {
+        let short = short_addr(address);
+        self.status = format!("Removed {label} ({short}) from Vaughan.");
+        self.account_sel = self.account_sel.saturating_sub(1);
+        self.stage = Stage::Accounts;
+        if let Ok(addr) = wallet.active_address() {
+            events.publish(ProviderEvent::AccountsChanged(vec![addr.to_string()]));
+        }
+        KeyOutcome::AccountListChanged
+    }
+
     fn clear_form(&mut self) {
         self.name.set_value("");
         self.chain_id.set_value("");
@@ -801,5 +1032,14 @@ impl SettingsView {
         self.symbol.set_value("");
         self.edit_network_id.clear();
         self.edit_chain_id = 0;
+    }
+}
+
+fn short_addr(address: &str) -> String {
+    let a = address.trim();
+    if a.len() >= 10 {
+        format!("{}…{}", &a[..6], &a[a.len() - 4..])
+    } else {
+        a.to_string()
     }
 }

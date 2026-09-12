@@ -1207,7 +1207,7 @@ impl SendView {
                     if self.stealth.is_some() && !stealth_power_ok(wallet, handle) {
                         self.stealth = None;
                         self.status =
-                            "Stealth send locked: burn ≥13 WZRD from any account — Settings → Unlock".into();
+                            "Stealth send locked: burn ≥13 WZRD from any wallet — Settings → Unlock".into();
                         return KeyOutcome::Consumed;
                     }
                     self.busy = Busy::Estimating;

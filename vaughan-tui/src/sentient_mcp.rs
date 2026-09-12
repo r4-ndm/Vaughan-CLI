@@ -208,7 +208,7 @@ fn fresh_fee_estimate(
             .active_address()
             .ok()
             .and_then(|a| Address::from_str(a).ok())
-            .ok_or_else(|| ProviderError::Internal("no active account".into()))?;
+            .ok_or_else(|| ProviderError::Internal("no active wallet".into()))?;
         let adapter = handle
             .block_on(wallet.active_adapter())
             .map_err(|e| ProviderError::Internal(e.user_message()))?;

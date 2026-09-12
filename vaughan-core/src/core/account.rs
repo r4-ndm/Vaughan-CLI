@@ -320,6 +320,58 @@ impl AccountManager {
         Ok(account)
     }
 
+    /// Remove an imported key or hardware watch. HD accounts cannot be removed.
+    ///
+    /// Returns the removed account metadata. Caller must persist vault (imports)
+    /// and/or `hardware[]` (watches). If the active account was removed, selects
+    /// the first remaining account.
+    pub fn remove_account(&mut self, index: u32) -> Result<Account, WalletError> {
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.index == index)
+            .cloned()
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))?;
+        match &account.kind {
+            AccountKind::Hd => {
+                return Err(WalletError::Other(
+                    "HD wallets come from the vault seed and cannot be removed".into(),
+                ));
+            }
+            AccountKind::Imported => {
+                let before = self.imported.len();
+                self.imported
+                    .retain(|k| !k.address.eq_ignore_ascii_case(&account.address));
+                if self.imported.len() == before {
+                    return Err(WalletError::AccountNotFound(format!(
+                        "imported account {index}"
+                    )));
+                }
+            }
+            AccountKind::Hardware(_) => {
+                let before = self.hardware.len();
+                self.hardware
+                    .retain(|h| !h.address.eq_ignore_ascii_case(&account.address));
+                if self.hardware.len() == before {
+                    return Err(WalletError::AccountNotFound(format!(
+                        "hardware account {index}"
+                    )));
+                }
+            }
+        }
+        self.label_overrides
+            .remove(&account.address.to_lowercase());
+        self.rebuild_account_list()?;
+        if !self.accounts.iter().any(|a| a.index == self.active_index) {
+            self.active_index = self
+                .accounts
+                .first()
+                .map(|a| a.index)
+                .unwrap_or(0);
+        }
+        Ok(account)
+    }
+
     /// BIP-39 phrase for export (caller must gate on password and clear UI).
     pub fn mnemonic_phrase(&self) -> SecretString {
         SecretString::new(self.mnemonic.to_string())
@@ -395,11 +447,11 @@ impl AccountManager {
         let label = label.into();
         let trimmed = label.trim();
         if trimmed.is_empty() {
-            return Err(WalletError::Other("account name cannot be empty".into()));
+            return Err(WalletError::Other("wallet name cannot be empty".into()));
         }
         if trimmed.chars().count() > 48 {
             return Err(WalletError::Other(
-                "account name is too long (max 48 characters)".into(),
+                "wallet name is too long (max 48 characters)".into(),
             ));
         }
         let account = self
@@ -654,6 +706,38 @@ mod tests {
             am.stealth_keys(),
             Err(WalletError::HardwareUnsupported(_))
         ));
+    }
+
+    #[test]
+    fn remove_hardware_and_imported_accounts() {
+        use crate::security::hardware::{HardwareVendor, HwChainFamily};
+
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 1).unwrap();
+        let imported = am
+            .import_private_key("anvil", &SecretString::new(ANVIL_KEY0.into()))
+            .unwrap();
+        let hw = am
+            .add_hardware(HardwareAccountRecord {
+                vendor: HardwareVendor::Trezor,
+                family: HwChainFamily::Evm,
+                derivation_path: "m/44'/60'/0'/0/0".into(),
+                network_id: Some("943".into()),
+                address: "0x2222222222222222222222222222222222222222".into(),
+                label: "hidden".into(),
+            })
+            .unwrap();
+        assert_eq!(am.accounts().len(), 3);
+        assert!(am.remove_account(0).is_err(), "HD must refuse");
+        am.remove_account(hw.index).unwrap();
+        assert_eq!(am.accounts().len(), 2);
+        assert!(!am
+            .accounts()
+            .iter()
+            .any(|a| a.address.eq_ignore_ascii_case(&hw.address)));
+        am.set_active(imported.index).unwrap();
+        am.remove_account(imported.index).unwrap();
+        assert_eq!(am.accounts().len(), 1);
+        assert_eq!(am.active_index(), 0);
     }
 
     #[test]

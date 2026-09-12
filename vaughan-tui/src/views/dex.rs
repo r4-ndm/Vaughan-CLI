@@ -1787,7 +1787,7 @@ impl DexView {
         let amount_in = self.parse_amount_in()?;
         let min_out = self.parse_min_out()?;
         let to_addr = wallet.active_address().map_err(|e| e.user_message())?;
-        let recipient = Address::from_str(to_addr).map_err(|e| format!("bad account: {e}"))?;
+        let recipient = Address::from_str(to_addr).map_err(|e| format!("bad wallet: {e}"))?;
         let chain_id = wallet.networks().active().chain_id;
 
         build_swap_tx(&DexSwapRequest {

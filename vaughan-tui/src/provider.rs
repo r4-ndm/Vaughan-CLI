@@ -641,7 +641,7 @@ pub fn describe_approval_with_fee(
             title: "Connect dApp (eth_requestAccounts)".into(),
             details: vec![
                 format!("Site:    {site}"),
-                "Grants this site your active account until you lock the wallet.".into(),
+                "Grants this site your active wallet until you lock.".into(),
                 "Sign/send still requires a separate approval.".into(),
             ],
             verify_table: Vec::new(),
@@ -755,7 +755,7 @@ pub fn describe_approval_with_fee(
                     format!("From:    {stealth_address}"),
                     format!("Amount:  {balance_display}"),
                     format!("Network: {}{testnet}", net.name),
-                    "Moves funds to your active public account.".into(),
+                    "Moves funds to your active public wallet.".into(),
                 ],
                 verify_table: vec![
                     ("Action".into(), "Sweep stealth note".into()),
@@ -1400,7 +1400,7 @@ async fn resimulate_mcp_proposal(
     let from_str = wallet.active_address().map_err(map_wallet_error)?;
     let from: Address = from_str
         .parse()
-        .map_err(|_| ProviderError::Internal("active account address is invalid".into()))?;
+        .map_err(|_| ProviderError::Internal("active wallet address is invalid".into()))?;
     let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
     let to = proposal.to;
     let value = proposal.value_wei;
@@ -1565,7 +1565,7 @@ fn verify_address(address: &str, wallet: &WalletState) -> Result<(), ProviderErr
         Ok(())
     } else {
         Err(ProviderError::Unauthorized(format!(
-            "account {address} is not the active account"
+            "address {address} is not the active wallet"
         )))
     }
 }

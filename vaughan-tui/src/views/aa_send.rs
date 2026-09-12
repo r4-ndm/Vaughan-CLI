@@ -245,7 +245,7 @@ impl AaSendView {
                 ];
                 if self.bootstrapped {
                     text.push(Line::from(Span::styled(
-                        "Account delegated to the smart account (one-time bootstrap)",
+                        "Wallet delegated to Ambire (one-time bootstrap)",
                         Style::default().fg(Color::Yellow),
                     )));
                     text.push(Line::from(""));

@@ -167,7 +167,7 @@ impl WalletError {
                 "Could not decrypt the wallet (wrong password?).".to_string()
             }
             Self::KeyDerivationFailed(_) => "Could not derive the account key.".to_string(),
-            Self::AccountNotFound(_) => "The requested account was not found.".to_string(),
+            Self::AccountNotFound(_) => "The requested wallet was not found.".to_string(),
             Self::NetworkNotFound(_) => "The requested network is not configured.".to_string(),
             Self::HardwareUnsupported(msg) => msg.clone(),
         }

@@ -114,6 +114,8 @@ pub enum KeyOutcome {
     Flash(String),
     /// Settings: open Home send prefilled for ≥13 WZRD burn to the dead sink.
     AssistBurn,
+    /// F3 account list changed (add/remove) — refresh chrome + assets.
+    AccountListChanged,
     /// Unlock picker: load a different profile vault and rebind MCP/grants.
     /// Carries the operating mode picked alongside the profile (FR-5.1).
     SwitchProfile(String, OperatingMode),
@@ -132,6 +134,7 @@ impl std::fmt::Debug for KeyOutcome {
             Self::SignTypedData(_) => write!(f, "SignTypedData(..)"),
             Self::Flash(s) => f.debug_tuple("Flash").field(s).finish(),
             Self::AssistBurn => write!(f, "AssistBurn"),
+            Self::AccountListChanged => write!(f, "AccountListChanged"),
             Self::SwitchProfile(p, m) => f.debug_tuple("SwitchProfile").field(p).field(m).finish(),
         }
     }
@@ -386,6 +389,8 @@ pub struct App {
     trezor_ui: std::sync::Arc<vaughan_core::security::TrezorUiBridge>,
     /// Host PIN matrix while Trezor One asks for PIN (`None` = overlay hidden).
     trezor_pin: Option<TrezorPinEntry>,
+    /// Host passphrase while Trezor One asks for hidden-wallet passphrase.
+    trezor_passphrase: Option<crate::input::Input>,
     /// Active hardware sign/broadcast session (Send confirm workflow).
     trezor_sign: Option<TrezorSignSession>,
     /// F3 rename buffer (`→` while Account focused); Enter commits.
@@ -536,6 +541,7 @@ impl App {
             nav_back: Vec::new(),
             trezor_ui,
             trezor_pin: None,
+            trezor_passphrase: None,
             trezor_sign: None,
             f3_rename: None,
         };
@@ -628,6 +634,16 @@ impl App {
         self.trezor_pin.is_some()
     }
 
+    /// Trezor One host passphrase field is visible (never logged).
+    pub fn trezor_passphrase_active(&self) -> bool {
+        self.trezor_passphrase.is_some()
+    }
+
+    /// Masked passphrase line for the overlay (asterisks + cursor).
+    pub fn trezor_passphrase_line(&self) -> Option<ratatui::text::Line<'static>> {
+        self.trezor_passphrase.as_ref().map(|i| i.line())
+    }
+
     /// Waiting for the user to approve the tx on the Trezor screen.
     pub fn trezor_confirm_device_active(&self) -> bool {
         matches!(
@@ -636,6 +652,7 @@ impl App {
                 phase: TrezorSignPhase::ConfirmOnDevice,
             })
         ) && self.trezor_pin.is_none()
+            && self.trezor_passphrase.is_none()
     }
 
     /// Number of PIN matrix positions entered (shown as dots).
@@ -698,10 +715,9 @@ impl App {
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
-            self.sync_trezor_pin_overlay();
+            self.sync_trezor_host_ui();
             if let View::Keys(v) = &mut self.view {
-                let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
-                v.poll(&mut wallet, self.tick);
+                v.poll(self.tick);
             }
             if self.screen() == Screen::Approve
                 && self.pending_approval.is_none()
@@ -780,6 +796,11 @@ impl App {
         // Trezor One PIN matrix owns the keyboard until submit / Esc.
         if self.trezor_pin.is_some() {
             self.handle_trezor_pin_key(key);
+            return;
+        }
+        // Trezor One host passphrase (hidden wallet) — after PIN when asked.
+        if self.trezor_passphrase.is_some() {
+            self.handle_trezor_passphrase_key(key);
             return;
         }
         // Quit confirm owns the keyboard until Yes/No/Esc.
@@ -977,6 +998,11 @@ impl App {
             KeyOutcome::SignTypedData(data) => self.begin_local_typed_data_sign(data),
             KeyOutcome::Flash(msg) => self.set_flash(msg),
             KeyOutcome::AssistBurn => self.begin_assist_burn(),
+            KeyOutcome::AccountListChanged => {
+                self.chrome.pending_account_index = None;
+                self.refresh_chrome();
+                self.spawn_refresh_assets();
+            }
             KeyOutcome::SwitchProfile(profile, mode) => self.switch_profile(&profile, mode),
             KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
         }
@@ -1795,13 +1821,14 @@ impl App {
     }
 
     /// Soft quit: Enter confirms Yes (default), Esc / No cancels.
-    fn sync_trezor_pin_overlay(&mut self) {
+    /// Keep PIN / passphrase / confirm overlays in sync with the USB bridge.
+    fn sync_trezor_host_ui(&mut self) {
         // Profile switch replaces WalletState — keep the App bridge on the live Arc.
         if let Ok(w) = self.wallet.try_lock() {
             self.trezor_ui = w.trezor_ui();
         }
-        let keys_busy = matches!(&self.view, View::Keys(v) if v.trezor_connect_busy());
         let pin_pending = self.trezor_ui.pin_pending();
+        let passphrase_pending = self.trezor_ui.passphrase_pending();
 
         // Only enter Pin when the device actually asks (already-unlocked sessions
         // never set pin_pending — keep ConfirmOnDevice / no matrix).
@@ -1822,15 +1849,56 @@ impl App {
             }
         }
 
-        // Matrix only while Keys is connecting (early pad) or the device asked.
-        // Do not force the pad for the whole Send job when the Trezor is unlocked.
-        let show_matrix = keys_busy || pin_pending;
-        if show_matrix {
+        // Matrix only while the device waits for digits — never while Keys is
+        // merely busy reading paths after passphrase.
+        if pin_pending {
             if self.trezor_pin.is_none() {
                 self.trezor_pin = Some(TrezorPinEntry::new());
             }
-        } else if self.trezor_pin.is_some() {
+        } else {
             self.trezor_pin = None;
+        }
+
+        // Passphrase after PIN clears; hide while PIN still owns the keyboard.
+        if pin_pending {
+            self.trezor_passphrase = None;
+        } else if passphrase_pending {
+            if self.trezor_passphrase.is_none() {
+                self.trezor_passphrase = Some(crate::input::Input::new(
+                    true,
+                    "hidden wallet passphrase (empty = standard)",
+                ));
+            }
+        } else {
+            self.trezor_passphrase = None;
+        }
+    }
+
+    fn handle_trezor_passphrase_key(&mut self, key: KeyEvent) {
+        if let Ok(w) = self.wallet.try_lock() {
+            self.trezor_ui = w.trezor_ui();
+        }
+        let Some(entry) = self.trezor_passphrase.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.trezor_passphrase = None;
+                self.trezor_sign = None;
+                self.trezor_ui.request_abort();
+                Self::best_effort_trezor_cancel();
+            }
+            KeyCode::Enter => {
+                let secret = entry.take_secret();
+                self.trezor_passphrase = None;
+                self.trezor_ui.submit_passphrase(Ok(secret));
+                if let Some(session) = &mut self.trezor_sign {
+                    session.phase = TrezorSignPhase::ConfirmOnDevice;
+                }
+            }
+            _ => {
+                let _ = entry.handle_key(key);
+            }
         }
     }
 
@@ -1986,6 +2054,7 @@ impl App {
         if deny {
             self.trezor_sign = None;
             self.trezor_pin = None;
+            self.trezor_passphrase = None;
             if let ApprovalKind::McpProposal { proposal_id, .. } = &pending.kind {
                 self.reject_queued_proposal(proposal_id, "user rejected");
                 if matches!(pending.reply, PendingReply::Queued) {
@@ -2286,7 +2355,7 @@ impl App {
     }
 
     fn flash_tools_locked(&mut self) {
-        self.set_flash("Tools locked: burn ≥13 WZRD from any account — press w");
+        self.set_flash("Tools locked: burn ≥13 WZRD from any wallet — press w");
     }
 
     fn mount_screen(&mut self, screen: Screen) {
@@ -2650,7 +2719,7 @@ impl App {
             .pending_account_index
             .or_else(|| self.wallet().active_account_index().ok());
         let Some(idx) = idx else {
-            self.set_flash("No account to rename");
+            self.set_flash("No wallet to rename");
             return;
         };
         let current = self
@@ -2709,7 +2778,7 @@ impl App {
                                     Err(e) => self.set_flash(e.user_message()),
                                 }
                             }
-                            None => self.set_flash("No account to rename"),
+                            None => self.set_flash("No wallet to rename"),
                         }
                         true
                     }
@@ -2726,7 +2795,7 @@ impl App {
             .chrome_display_owner()
             .or_else(|| self.wallet().active_address().ok().map(|a| a.to_string()))
         else {
-            self.set_flash("No account address to copy");
+            self.set_flash("No wallet address to copy");
             return;
         };
         match crate::clipboard::copy_text(&addr) {
@@ -2770,7 +2839,7 @@ impl App {
                         if let Some(owner) = self.chrome_display_owner() {
                             self.sync_f2_to_owner(&owner);
                         }
-                        self.enforce_assist_entitlement("F3 account");
+                        self.enforce_assist_entitlement("F3 wallet");
                         self.kick_if_power_screen_locked();
                     }
                 }
@@ -2968,7 +3037,7 @@ impl App {
         ) {
             self.navigate(self.screen());
         }
-        self.enforce_assist_entitlement("F3 account");
+        self.enforce_assist_entitlement("F3 wallet");
         self.kick_if_power_screen_locked();
     }
 
@@ -3052,7 +3121,7 @@ impl App {
             w.set_operating_mode(OperatingMode::HumanOnly);
         }
         self.set_flash(format!(
-            "AI locked ({reason}): burn ≥13 WZRD from any account — press w"
+            "AI locked ({reason}): burn ≥13 WZRD from any wallet — press w"
         ));
     }
 
@@ -4225,6 +4294,7 @@ impl App {
             ) {
                 self.trezor_sign = None;
                 self.trezor_pin = None;
+                self.trezor_passphrase = None;
             }
             match result {
                 UiJobResult::ProviderHwSignDone { flash } => {
@@ -4364,7 +4434,7 @@ impl App {
                     if let UiJobResult::AssistBurnVerify(ref r) = other {
                         match r {
                             Ok(true) => self.set_flash(
-                                "Tools unlocked for this wallet — AI/MCP on every account",
+                                "Tools unlocked for this vault — AI/MCP on every wallet",
                             ),
                             Ok(false) => self.set_flash(
                                 "Burn not seen yet — wait a block, or burn ≥13 WZRD in one tx",

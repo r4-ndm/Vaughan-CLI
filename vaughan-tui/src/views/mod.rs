@@ -394,11 +394,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 slogan,
             );
         }
-        if app.trezor_pin_active() {
-            render_trezor_pin_matrix(frame, area, app.trezor_pin_len(), app.trezor_pin_cursor());
-        } else if app.trezor_confirm_device_active() {
-            render_trezor_confirm_device(frame, area);
-        }
+        render_trezor_host_overlays(frame, area, app);
         if app.quit_confirm().is_some() {
             render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
         }
@@ -437,13 +433,22 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_tools_burn_hint(frame, hint);
     }
     app.render_body(frame, body);
-    if app.trezor_pin_active() {
-        render_trezor_pin_matrix(frame, area, app.trezor_pin_len(), app.trezor_pin_cursor());
-    } else if app.trezor_confirm_device_active() {
-        render_trezor_confirm_device(frame, area);
-    }
+    render_trezor_host_overlays(frame, area, app);
     if app.quit_confirm().is_some() {
         render_quit_confirm(frame, area, app.quit_confirm() == Some(true));
+    }
+}
+
+/// PIN matrix / host passphrase / confirm-on-device (locked + unlocked screens).
+fn render_trezor_host_overlays(frame: &mut Frame, area: Rect, app: &App) {
+    if app.trezor_pin_active() {
+        render_trezor_pin_matrix(frame, area, app.trezor_pin_len(), app.trezor_pin_cursor());
+    } else if app.trezor_passphrase_active() {
+        if let Some(line) = app.trezor_passphrase_line() {
+            render_trezor_passphrase(frame, area, line);
+        }
+    } else if app.trezor_confirm_device_active() {
+        render_trezor_confirm_device(frame, area);
     }
 }
 
@@ -858,6 +863,44 @@ fn render_trezor_pin_matrix(frame: &mut Frame, area: Rect, entered_len: usize, c
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Trezor One host passphrase (hidden wallet) — masked; never logged.
+fn render_trezor_passphrase(frame: &mut Frame, area: Rect, field: Line<'static>) {
+    let width = 56u16.min(area.width.saturating_sub(4));
+    let height = 12u16.min(area.height.saturating_sub(2));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let inner = brand::render_faded_box(
+        frame,
+        popup,
+        Some(brand::fade_line(" Trezor · passphrase ")),
+    );
+    let lines = vec![
+        Line::from(Span::styled(
+            "Trezor One: enter the hidden-wallet passphrase here.",
+            Style::default().fg(brand::body_color()),
+        )),
+        Line::from(Span::styled(
+            "Empty passphrase = standard wallet. Wrong passphrase = different wallets.",
+            Style::default().fg(brand::body_color()),
+        )),
+        Line::from(""),
+        field,
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter — submit · Esc — cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// After host PIN (or Model T unlock) — wait for tx approval on the device.
 fn render_trezor_confirm_device(frame: &mut Frame, area: Rect) {
     let width = 52u16.min(area.width.saturating_sub(4));
@@ -969,7 +1012,7 @@ fn chrome_address(app: &App) -> String {
             wallet
                 .active_address()
                 .map(str::to_string)
-                .unwrap_or_else(|_| "(no account)".into())
+                .unwrap_or_else(|_| "(no wallet)".into())
         }
         Some(wallet) if wallet.is_initialized() => "(locked)".into(),
         Some(_) => "(create or restore a wallet)".into(),

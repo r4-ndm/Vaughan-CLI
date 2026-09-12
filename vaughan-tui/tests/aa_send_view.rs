@@ -112,7 +112,7 @@ fn aa_send_view_broadcasts_batch_and_recipients_receive() {
         "done screen:\n{text}"
     );
     assert!(
-        text.contains("Account delegated"),
+        text.contains("Wallet delegated to Ambire"),
         "bootstrap confirmation:\n{text}"
     );
     let hash_line = text

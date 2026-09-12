@@ -25,8 +25,7 @@ use ratatui::{
 use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
-use vaughan_core::security::HardwareAccountRecord;
-use vaughan_provider::EventBus;
+use vaughan_provider::{EventBus, ProviderEvent};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuItem {
@@ -54,7 +53,6 @@ enum Stage {
 enum DeviceJob {
     Idle,
     Preview(Receiver<Result<Vec<(String, String)>, String>>),
-    Add(Receiver<Result<HardwareAccountRecord, String>>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,9 +141,9 @@ impl KeysView {
                 } else {
                     "HD"
                 };
-                format!("F3 account: {label} ({kind}) · {}", short_addr(&address))
+                format!("F3: {label} ({kind}) · {}", short_addr(&address))
             }
-            Err(_) => "F3 account: —".into(),
+            Err(_) => "F3: —".into(),
         }
     }
 
@@ -170,7 +168,7 @@ impl KeysView {
                 ),
                 menu_line(
                     self.menu == MenuItem::ExportKey,
-                    "2  Export F3 account private key",
+                    "2  Export F3 wallet private key",
                 ),
                 menu_line(self.menu == MenuItem::ImportKey, "3  Import private key"),
                 menu_line(
@@ -190,7 +188,7 @@ impl KeysView {
             ],
             Stage::HardwareHub => vec![
                 Line::from(Span::styled(
-                    "Hardware — add a watch account (keys stay on device)",
+                    "Hardware — add a device watch (keys stay on device)",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -220,7 +218,7 @@ impl KeysView {
                         "Re-enter vault password to show recovery phrase (all HD wallets)"
                     }
                     MenuItem::ExportKey => {
-                        "Re-enter vault password to show this F3 account's private key"
+                        "Re-enter vault password to show this F3 wallet's private key"
                     }
                     MenuItem::ImportKey => "Re-enter vault password to import a key",
                     MenuItem::AddLedger => "Unlock device, open Ethereum app, then continue",
@@ -290,7 +288,7 @@ impl KeysView {
                 let lines = match self.menu {
                     MenuItem::AddTrezor => vec![
                         Line::from(Span::styled(
-                            "Add a Trezor account",
+                            "Add a Trezor wallet",
                             Style::default()
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
@@ -325,7 +323,7 @@ impl KeysView {
                     ],
                     _ => vec![
                         Line::from(Span::styled(
-                            "Add a Ledger account",
+                            "Add a Ledger wallet",
                             Style::default()
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
@@ -459,21 +457,10 @@ impl KeysView {
             && matches!(self.device_job, DeviceJob::Idle)
     }
 
-    /// True while a Trezor USB worker is running (PIN overlay appears when device asks).
-    pub fn trezor_connect_busy(&self) -> bool {
-        matches!(self.stage, Stage::DeviceBusy)
-    }
-
     /// Poll USB worker results (call each UI tick while on Keys).
-    pub fn poll(&mut self, wallet: &mut WalletState, tick: u64) {
+    pub fn poll(&mut self, tick: u64) {
         if matches!(self.stage, Stage::DeviceBusy) {
             self.busy_tick = tick;
-        }
-        match &self.device_job {
-            DeviceJob::Idle => {}
-            DeviceJob::Preview(_) | DeviceJob::Add(_) => {
-                // take ownership briefly via replace
-            }
         }
         let job = std::mem::replace(&mut self.device_job, DeviceJob::Idle);
         match job {
@@ -484,9 +471,9 @@ impl KeysView {
                     self.device_sel = 0;
                     self.stage = Stage::DevicePick;
                     self.status = if self.device_paths.is_empty() {
-                        "No accounts returned".into()
+                        "No wallets returned".into()
                     } else {
-                        "Confirm address matches the device, then Enter".into()
+                        "Pick path · Enter adds (no second PIN/passphrase)".into()
                     };
                 }
                 Ok(Err(msg)) => {
@@ -499,33 +486,6 @@ impl KeysView {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.status = "Trezor connect interrupted".into();
                     self.stage = Stage::Menu;
-                }
-            },
-            DeviceJob::Add(rx) => match rx.try_recv() {
-                Ok(Ok(record)) => match wallet.add_hardware_account(record) {
-                    Ok(account) => {
-                        self.device_paths.clear();
-                        self.stage = Stage::Menu;
-                        self.status = format!(
-                            "Added {} — F3 selected · confirm on device when signing",
-                            account.label
-                        );
-                    }
-                    Err(e) => {
-                        self.status = e.user_message();
-                        self.stage = Stage::DevicePick;
-                    }
-                },
-                Ok(Err(msg)) => {
-                    self.status = msg;
-                    self.stage = Stage::DevicePick;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    self.device_job = DeviceJob::Add(rx);
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.status = "Trezor add interrupted".into();
-                    self.stage = Stage::DevicePick;
                 }
             },
         }
@@ -542,26 +502,9 @@ impl KeysView {
         self.device_job = DeviceJob::Preview(rx);
         self.device_vendor = DeviceVendor::Trezor;
         self.stage = Stage::DeviceBusy;
-        self.status = "Blank PIN pad open — select cells, then s to submit…".into();
-    }
-
-    fn start_trezor_add(&mut self, wallet: &WalletState, path: String) {
-        let ui = wallet.trezor_ui();
-        let network_id = Some(wallet.networks().active().chain_id.to_string());
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let result = vaughan_core::security::discover_trezor_account_blocking(
-                &path,
-                network_id,
-                "",
-                Some(ui),
-            )
-            .map_err(|e| e.user_message());
-            let _ = tx.send(result);
-        });
-        self.device_job = DeviceJob::Add(rx);
-        self.stage = Stage::DeviceBusy;
-        self.status = "Blank PIN pad open if needed — s to submit…".into();
+        self.status =
+            "Unlock once (PIN → passphrase if asked), then pick a path — Enter adds without re-unlock…"
+                .into();
     }
 
     pub fn handle_key(
@@ -569,7 +512,7 @@ impl KeysView {
         key: KeyEvent,
         wallet: &mut WalletState,
         handle: &Handle,
-        _events: &EventBus,
+        events: &EventBus,
     ) -> KeyOutcome {
         match self.stage {
             Stage::Menu => match key.code {
@@ -659,7 +602,7 @@ impl KeysView {
                                         self.device_sel = 0;
                                         self.stage = Stage::DevicePick;
                                         self.status = if self.device_paths.is_empty() {
-                                            "No accounts returned".into()
+                                            "No wallets returned".into()
                                         } else {
                                             "Confirm address matches the device, then Enter".into()
                                         };
@@ -681,7 +624,7 @@ impl KeysView {
             }
             Stage::DeviceBusy => match key.code {
                 KeyCode::Esc => {
-                    wallet.trezor_ui().cancel_pin();
+                    wallet.trezor_ui().request_abort();
                     self.status = "Cancelled".into();
                     KeyOutcome::Consumed
                 }
@@ -724,7 +667,7 @@ impl KeysView {
                                             "Private key · {label} · {}",
                                             short_addr(&address)
                                         ),
-                                        Err(_) => "F3 account private key".into(),
+                                        Err(_) => "F3 wallet private key".into(),
                                     };
                                     self.reveal_title = title;
                                     self.revealed = Some(sk);
@@ -765,9 +708,11 @@ impl KeysView {
                     KeyOutcome::Consumed
                 }
                 KeyCode::Enter => {
-                    if let Some((path, _)) = self.device_paths.get(self.device_sel).cloned() {
-                        match self.device_vendor {
-                            DeviceVendor::Ledger => {
+                    match self.device_vendor {
+                        DeviceVendor::Ledger => {
+                            if let Some((path, _)) =
+                                self.device_paths.get(self.device_sel).cloned()
+                            {
                                 self.status = "Confirm on Ledger if asked…".into();
                                 match handle.block_on(wallet.add_ledger_account(&path, "")) {
                                     Ok(account) => {
@@ -777,12 +722,54 @@ impl KeysView {
                                             "Added {} — F3 selected · confirm on device when signing",
                                             account.label
                                         );
+                                        if let Ok(addr) = wallet.active_address() {
+                                            events.publish(ProviderEvent::AccountsChanged(vec![
+                                                addr.to_string(),
+                                            ]));
+                                        }
+                                        return KeyOutcome::AccountListChanged;
                                     }
                                     Err(e) => self.status = e.user_message(),
                                 }
                             }
-                            DeviceVendor::Trezor => {
-                                self.start_trezor_add(wallet, path);
+                        }
+                        DeviceVendor::Trezor => {
+                            // Address already read in the preview USB session.
+                            // Re-opening would EndSession + PIN + passphrase again.
+                            if let Some((path, address)) =
+                                self.device_paths.get(self.device_sel).cloned()
+                            {
+                                use vaughan_core::security::{
+                                    HardwareAccountRecord, HardwareVendor, HwChainFamily,
+                                };
+                                let network_id =
+                                    Some(wallet.networks().active().chain_id.to_string());
+                                let record = HardwareAccountRecord {
+                                    vendor: HardwareVendor::Trezor,
+                                    family: HwChainFamily::Evm,
+                                    derivation_path: path,
+                                    network_id,
+                                    address,
+                                    label: String::new(),
+                                };
+                                match wallet.add_hardware_account(record) {
+                                    Ok(account) => {
+                                        self.device_paths.clear();
+                                        self.stage = Stage::Menu;
+                                        self.status = format!(
+                                            "Added {} · {} — F3 selected · rename if this is a hidden wallet",
+                                            account.label,
+                                            short_addr(&account.address)
+                                        );
+                                        if let Ok(addr) = wallet.active_address() {
+                                            events.publish(ProviderEvent::AccountsChanged(vec![
+                                                addr.to_string(),
+                                            ]));
+                                        }
+                                        return KeyOutcome::AccountListChanged;
+                                    }
+                                    Err(e) => self.status = e.user_message(),
+                                }
                             }
                         }
                     }

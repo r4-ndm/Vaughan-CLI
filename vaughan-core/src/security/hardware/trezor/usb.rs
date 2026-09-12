@@ -72,11 +72,17 @@ pub(crate) fn path_to_address_n(path: &str) -> Result<Vec<u32>, WalletError> {
 }
 
 /// Open the unique non-debug Trezor and run Initialize (PIN matrix / passphrase aware).
+///
+/// Sends [`protos::EndSession`] first (best-effort) so a prior passphrase on the
+/// same USB plug does not stick — standard vs hidden wallets must not share a
+/// cached session when the user switches F3 accounts.
 pub(crate) fn open_initialized(
     passphrase: Option<&SecretString>,
     ui: Option<&Arc<TrezorUiBridge>>,
 ) -> Result<Trezor, WalletError> {
     let mut device = trezor_client::unique(false).map_err(map_trezor)?;
+    // Clear passphrase cache from a previous Vaughan connect on this plug.
+    let _ = device.call_raw(protos::EndSession::new());
     let init = device.initialize(None).map_err(map_trezor)?;
     let features = handle_host_ui(init, passphrase, ui)?;
     // Cache features for later inspection (model is already set from USB).
@@ -146,9 +152,27 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
                     ui,
                 )
             } else {
-                Err(WalletError::HardwareUnsupported(
-                    "Trezor passphrase required — enter it on the device, or set a session passphrase".into(),
-                ))
+                // Trezor One: passphrase is always entered on the host.
+                let Some(bridge) = ui else {
+                    return Err(WalletError::HardwareUnsupported(
+                        "Trezor passphrase required — host UI bridge missing".into(),
+                    ));
+                };
+                match bridge.request_passphrase() {
+                    Ok(secret) => {
+                        let pass = secret.expose_secret().clone();
+                        handle_host_ui(
+                            req.ack_passphrase(pass).map_err(map_trezor)?,
+                            passphrase,
+                            ui,
+                        )
+                    }
+                    Err(e) => {
+                        // Esc / interrupt — Cancel so firmware leaves the passphrase screen.
+                        send_cancel(req.client);
+                        Err(e)
+                    }
+                }
             }
         }
     }

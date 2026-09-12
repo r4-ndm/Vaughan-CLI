@@ -102,6 +102,14 @@ These expand rules 2, 4, 5, and 7. Every one is binding.
    or module doc. Do **not** copy proprietary MetaMask extension UI code, and do
    **not** treat Ambire or Kohaku as the source for fee/provider convenience —
    Ambire is AA/batching only; Kohaku is deferred privacy (see below).
+7. **UI says “wallet”; code may say “account”.** On-screen TUI copy (Settings
+   **`u wallets`**, Keys, flashes, approve details, `WalletError::user_message`)
+   uses **wallet** for each F3 address/device entry. Prefer that wording in any
+   new user-visible string. Internally, Rust types (`Account`, `AccountManager`,
+   `account_index`, …) and EIP-1193 (`eth_accounts`, `accountsChanged`) stay as
+   **account** — do not mass-rename the codebase to match the UI. Do not put
+   “account” back in chrome/labels the user reads unless it is a protocol name
+   the user must see (e.g. Connect title citing `eth_requestAccounts`).
 
 ### Ambire vs Kohaku (product pair ≠ code couple)
 

@@ -689,6 +689,10 @@ impl WalletState {
     }
 
     /// Blocking add for a Keys worker thread (PIN matrix via [`Self::trezor_ui`]).
+    ///
+    /// Prefer preview ([`Self::preview_trezor_accounts_blocking`]) then
+    /// [`Self::add_hardware_account`] with the previewed address — a second USB
+    /// open clears the session and re-prompts PIN/passphrase.
     pub fn add_trezor_account_blocking(
         &mut self,
         path: &str,
@@ -724,6 +728,80 @@ impl WalletState {
         }
         self.state.save(persisted)?;
         Ok(())
+    }
+
+    /// Remove a hardware watch from the vault (device itself is unchanged).
+    pub fn remove_hardware_account(
+        &mut self,
+        index: u32,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        let accounts = self.accounts.as_mut().ok_or(WalletError::WalletLocked)?;
+        let account = accounts
+            .accounts()
+            .iter()
+            .find(|a| a.index == index)
+            .cloned()
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))?;
+        if !account.kind.is_hardware() {
+            return Err(WalletError::Other(
+                "only hardware watches can be removed here — HD seed wallets stay in the vault"
+                    .into(),
+            ));
+        }
+        let removed = accounts.remove_account(index)?;
+        let addr_key = removed.address.to_lowercase();
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        persisted.account_labels.remove(&addr_key);
+        persisted.hardware = self
+            .accounts
+            .as_ref()
+            .ok_or(WalletError::WalletLocked)?
+            .hardware()
+            .to_vec();
+        persisted.active_account_index = self
+            .accounts
+            .as_ref()
+            .ok_or(WalletError::WalletLocked)?
+            .active_index();
+        self.state.save(persisted)?;
+        Ok(removed)
+    }
+
+    /// Remove an imported private-key account (password-gated vault rewrite).
+    pub fn remove_imported_account(
+        &mut self,
+        password: &secrecy::SecretString,
+        index: u32,
+    ) -> Result<crate::core::account::Account, WalletError> {
+        self.require_unlocked()?;
+        self.verify_password(password)?;
+        let accounts = self.accounts.as_mut().ok_or(WalletError::WalletLocked)?;
+        let account = accounts
+            .accounts()
+            .iter()
+            .find(|a| a.index == index)
+            .cloned()
+            .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))?;
+        if !account.is_imported {
+            return Err(WalletError::Other(
+                "only imported keys can be removed here — HD seed wallets stay in the vault"
+                    .into(),
+            ));
+        }
+        let removed = accounts.remove_account(index)?;
+        let addr_key = removed.address.to_lowercase();
+        self.persist_unlocked_secrets(password)?;
+        if let Some(persisted) = self.persisted.as_mut() {
+            persisted.account_labels.remove(&addr_key);
+            persisted.active_account_index = self
+                .accounts
+                .as_ref()
+                .map(|a| a.active_index())
+                .unwrap_or(0);
+            self.state.save(persisted)?;
+        }
+        Ok(removed)
     }
 
     /// Display label for account `index` (F3 chrome preview).
@@ -763,6 +841,11 @@ impl WalletState {
             .find(|a| a.index == index)
             .map(|a| a.address.clone())
             .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))
+    }
+
+    /// All unlocked accounts (HD, imported, hardware) for Settings / F3.
+    pub fn accounts(&self) -> Result<&[crate::core::account::Account], WalletError> {
+        Ok(self.require_unlocked()?.accounts())
     }
 
     /// All accounts as `(index, label)` for F3 cycling.
