@@ -1,6 +1,6 @@
 //! Headless LP smoke tests — error copy, fee-tier UX, job status (no live RPC).
 #[cfg(test)]
-mod smoke_tests {
+mod lp_smoke {
     use std::str::FromStr;
 
     use vaughan_core::core::lp_smoke::LP_SMOKE_943;

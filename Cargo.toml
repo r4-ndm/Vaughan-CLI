@@ -20,6 +20,9 @@ authors = ["Vaughan Team"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/r4-ndm/Vaughan-CLI"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
 [workspace.dependencies]
 # Chain / Ethereum. Single Alloy version for the whole workspace.
 alloy = { version = "2", default-features = false, features = [

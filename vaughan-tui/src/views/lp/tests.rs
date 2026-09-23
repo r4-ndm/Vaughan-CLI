@@ -40,7 +40,7 @@ use super::helpers::fee_tier_display;
 use super::types::*;
 use super::LpView;
 
-mod tests {
+mod lp_view {
     use super::*;
 
     #[test]

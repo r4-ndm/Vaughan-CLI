@@ -25,3 +25,6 @@ url = { workspace = true }
 rand = { workspace = true }
 # The same crate doubles as the test client; "connect" adds the client side.
 tokio-tungstenite = { workspace = true, features = ["connect"] }
+
+[lints]
+workspace = true

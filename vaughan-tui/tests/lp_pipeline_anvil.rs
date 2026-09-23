@@ -50,7 +50,7 @@ fn anvil_v3_lp_full_deploy_pipeline_broadcasts() {
     plant_erc20_with_approve(&anvil, TOKEN1, 0);
     plant_npm_mint(&anvil);
 
-    let params = deploy_params(&anvil, &from);
+    let params = deploy_params(&anvil, from);
 
     rt.block_on(async {
         // 1. createPool

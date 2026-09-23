@@ -37,6 +37,7 @@ temp-*/
 # Local wallet data (never commit keys)
 *.keystore
 wallet.json
+*.bak
 
 # Node dependencies
 node_modules/

@@ -14,6 +14,8 @@ authoritative for how work gets done here.
 - `vaughan-provider/` — [Phase 2] local EIP-1193 bridge (VB, Freedom when un-parked)
 - `vaughan-cli/` — unified `vaughan` binary (TUI by default; CLI subcommands for scripts)
 - `vaughan-tui/` — ratatui terminal frontend (library + dev `vaughan-tui` binary)
+- `vaughan-dapp-browser/` — optional allowlisted Chromium dApp shell (EIP-1193 → local provider)
+- `crates/wiz4rd-math`, `crates/wiz4rd-sdk` — V3 tick/swap math and pool/LP tx builders
 
 This is a Rust-only repository.
 
@@ -139,6 +141,8 @@ listed here requires approval before it is added.
 | Trezor hardware signer (Phase 2) | `trezor-client` 0.1.6 (CC0-1.0, feature `ethereum` only; USB via `rusb`) |
 | Async trait objects | `async-trait` |
 | Async runtime | `tokio` |
+| HTTP client (aggregator / DexScreener / Piteas APIs) | `reqwest` |
+| EIP-712 typed data / dynamic ABI | `alloy-dyn-abi` |
 | URLs | `url` |
 | In-memory caching | `moka` |
 | Mnemonics (BIP-39) | `bip39` |
@@ -154,6 +158,10 @@ listed here requires approval before it is added.
 | Hex encoding | `hex` |
 | Data/config directories | `dirs` |
 | Hashing | `sha2` |
+| CLI argument parsing (`vaughan-cli`, `vaughan-dapp-browser`) | `clap` |
+| CLI password prompt (no echo) | `rpassword` |
+| Binary-level error plumbing (`vaughan-cli` only) | `anyhow` |
+| Sentient policy / skill config files | `toml` |
 | Terminal UI | `ratatui` |
 | Terminal events | `crossterm` |
 | Provider WebSocket server (Phase 2) | `tokio-tungstenite` |
@@ -173,7 +181,8 @@ cargo run -p vaughan-cli         # run the wallet TUI (or: vaughan after install
 cargo run -p vaughan-cli -- balance   # CLI subcommand (dev)
 cargo test --workspace           # tests
 cargo fmt --check                # formatting
-cargo clippy --workspace -- -D warnings   # lint (treat warnings as errors)
+cargo clippy --workspace --all-targets -- -D warnings   # lint incl. tests (warnings = errors)
+cargo audit                               # RustSec advisories (cargo install cargo-audit)
 ```
 
 Run these before declaring any non-trivial change done.

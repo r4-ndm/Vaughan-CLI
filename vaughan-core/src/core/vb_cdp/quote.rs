@@ -479,7 +479,7 @@ mod tests {
         assert!((parse_amount_token("$12,160").unwrap() - 12.160).abs() < 1e-9);
         assert!((parse_amount_token("$12,000").unwrap() - 12000.0).abs() < 1e-9);
         assert!((parse_amount_token("$11,898.62").unwrap() - 11898.62).abs() < 1e-9);
-        assert!((parse_amount_token("1,611,295.2965").unwrap() - 1_611_295.2965).abs() < 1e-4);
+        assert!((parse_amount_token("1,611,295.2965").unwrap() - 1_611_295.296_5).abs() < 1e-4);
     }
 
     #[test]

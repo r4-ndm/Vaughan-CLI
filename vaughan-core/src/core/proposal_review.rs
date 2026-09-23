@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn reviews_hex_stake_start() {
-        let calldata = encode_stake_start(U256::from(1_000_000_00u64), 365).unwrap();
+        let calldata = encode_stake_start(U256::from(100_000_000u64), 365).unwrap();
         let p = TxProposal::new(
             "t",
             ProposalType::ContractCall {

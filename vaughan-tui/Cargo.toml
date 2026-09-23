@@ -29,3 +29,6 @@ futures-util = { workspace = true }
 serde_json = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 wiz4rd-sdk = { path = "../crates/wiz4rd-sdk" }
+
+[lints]
+workspace = true

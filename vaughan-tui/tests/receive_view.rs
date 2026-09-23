@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use tokio::runtime::Handle;
 use vaughan_core::core::WalletState;
 use vaughan_provider::EventBus;
-use vaughan_tui::app::{KeyOutcome, Screen};
+use vaughan_tui::app::KeyOutcome;
 use vaughan_tui::views::ReceiveView;
 
 fn key(code: KeyCode) -> KeyEvent {
