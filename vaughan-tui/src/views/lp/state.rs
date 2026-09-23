@@ -15,12 +15,12 @@ use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
     build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v3_collect_evm,
     build_v3_decrease_evm, build_v3_increase_evm, chain_label, default_full_range_ticks,
-    display_price_range_from_preset, format_display_amount, lp_stack_for_chain, lp_v3_venue_picker,
-    min_out_after_slippage, v3_preview_mint_deposits_from_amount0,
-    v3_preview_mint_deposits_from_amount1, v3_range_ticks_from_human_prices,
-    v3_sqrt_and_tick_for_preview, venue_position_manager, venue_swap_router, wpls_for_chain,
-    DexProtocol, DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3PoolLifecycle, V3PositionInfo,
-    WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    display_price_range_from_preset, format_display_amount, lp_stack_for_chain,
+    lp_stacks_for_chain, lp_v3_venue_picker, min_out_after_slippage,
+    v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount1,
+    v3_range_ticks_from_human_prices, v3_sqrt_and_tick_for_preview, venue_position_manager,
+    venue_swap_router, wpls_for_chain, DexProtocol, DexVenue, LpStack, V2LpPosition,
+    V3LpDeployWait, V3PoolLifecycle, V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
@@ -53,9 +53,11 @@ impl LpView {
     }
 
     pub(crate) fn default_status_hint(&self) -> String {
+        let stacks = lp_stacks_for_chain(self.chain_id);
+        let venue_hint = if stacks.len() > 1 { " · [ ] DEX" } else { "" };
         if self.lp_supported() {
             format!(
-                "{} · {} · ←→ tab · r reload · Esc back",
+                "{} · {}{venue_hint} · ←→ tab · r reload · Esc back",
                 self.venue.label(),
                 self.stack.label()
             )
@@ -105,6 +107,18 @@ impl LpView {
                     self.range_preset_applied = Some(5);
                 }
             }
+            (10_001, DexVenue::LfgSwap) => {
+                self.token0.set_value(HEX_MAINNET);
+                self.token1.set_value(WETHW_ETHW);
+                self.dec0.set_value("8");
+                self.dec1.set_value("18");
+            }
+            (10_001, DexVenue::PowSwap | DexVenue::UniHedron | DexVenue::UniWswap) => {
+                self.token0.set_value(HEX_MAINNET);
+                self.token1.set_value(WETH_ETHW);
+                self.dec0.set_value("8");
+                self.dec1.set_value("18");
+            }
             _ => {}
         }
     }
@@ -114,6 +128,7 @@ impl LpView {
             (943, DexVenue::Wiz4rd) => self.fee_tier = 500,
             (369, DexVenue::NineInch) => self.fee_tier = 2500,
             (369, DexVenue::NineMm) => self.fee_tier = 10_000,
+            (10_001, DexVenue::UniHedron) => self.fee_tier = 3000,
             _ => {}
         }
     }

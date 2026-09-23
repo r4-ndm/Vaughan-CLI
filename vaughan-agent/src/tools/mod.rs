@@ -1,5 +1,6 @@
 //! Structured Sensory and Proposal Tool Engine.
 
+pub mod cancel_dca_plan;
 pub mod dexscreener;
 pub mod discover_v3_pool_fee;
 pub mod execute_sentient_swap;
@@ -9,10 +10,12 @@ pub mod get_v3_pool;
 pub mod hex_stake;
 pub mod inspect_contract;
 pub mod list_allowances;
+pub mod list_dca_plans;
 pub mod list_transfers;
 pub mod list_v2_positions;
 pub mod list_v3_positions;
 pub mod proposals;
+pub mod propose_dca_plan;
 pub mod propose_policy;
 pub mod quote_bridge;
 pub mod quote_swap;
@@ -26,6 +29,7 @@ pub mod watch_balance;
 pub mod watch_quote;
 pub mod wiz4rd_common;
 
+pub use cancel_dca_plan::CancelDcaPlanTool;
 pub use dexscreener::{
     DexscreenerPairTool, DexscreenerSearchTool, DexscreenerTokenPairsTool, DexscreenerTokensTool,
 };
@@ -37,6 +41,7 @@ pub use get_v3_pool::GetV3PoolTool;
 pub use hex_stake::{HexGlobalStateTool, HexStakesForAddressTool};
 pub use inspect_contract::InspectContractTool;
 pub use list_allowances::ListAllowancesTool;
+pub use list_dca_plans::ListDcaPlansTool;
 pub use list_transfers::ListTransfersTool;
 pub use list_v2_positions::ListV2PositionsTool;
 pub use list_v3_positions::ListV3PositionsTool;
@@ -49,6 +54,7 @@ pub use proposals::{
     ProposeV3InitializePoolTool, ProposeV3LpDeployTool, ProposeV3MintTool, ProposeV3SwapTool,
     ProposeV3TransferPositionTool, ProposeWrapTool,
 };
+pub use propose_dca_plan::ProposeDcaPlanTool;
 pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
 pub use quote_swap::QuoteSwapTool;
@@ -143,8 +149,11 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry.register(Arc::new(ProposeBatch7702Tool::new()));
     registry.register(Arc::new(ProposeContractCallTool::new()));
     registry.register(Arc::new(ProposeTokenLaunchTool::new()));
+    registry.register(Arc::new(ProposeDcaPlanTool::new()));
     if let Some(dir) = profile_dir {
         registry.register(Arc::new(ImportTokenTool::new(dir.to_path_buf())));
+        registry.register(Arc::new(ListDcaPlansTool::new(dir.to_path_buf())));
+        registry.register(Arc::new(CancelDcaPlanTool::new(dir.to_path_buf())));
     }
     registry
 }
@@ -156,6 +165,9 @@ pub fn default_sentient_registry(trader: Arc<SentientTrader>, profile_dir: &Path
     registry.register(Arc::clone(&swap));
     registry.register_alias("execute_degen_swap", swap);
     registry.register(Arc::new(ProposePolicyTool::new(profile_dir.to_path_buf())));
+    registry.register(Arc::new(ProposeDcaPlanTool::new()));
+    registry.register(Arc::new(ListDcaPlansTool::new(profile_dir.to_path_buf())));
+    registry.register(Arc::new(CancelDcaPlanTool::new(profile_dir.to_path_buf())));
     registry
 }
 

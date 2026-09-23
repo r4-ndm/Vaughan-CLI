@@ -106,7 +106,11 @@ pub fn encrypt(plaintext: &[u8], password: &SecretString) -> Result<EncryptedVau
 
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, kdf_params())
-        .hash_password_into(password.expose_secret().as_bytes(), &salt, key.as_mut_slice())
+        .hash_password_into(
+            password.expose_secret().as_bytes(),
+            &salt,
+            key.as_mut_slice(),
+        )
         .map_err(|e| WalletError::EncryptionFailed(e.to_string()))?;
 
     let cipher = Aes256Gcm::new_from_slice(key.as_slice())
@@ -139,7 +143,11 @@ pub fn decrypt(vault: &EncryptedVault, password: &SecretString) -> Result<Vec<u8
 
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, kdf_params())
-        .hash_password_into(password.expose_secret().as_bytes(), &salt, key.as_mut_slice())
+        .hash_password_into(
+            password.expose_secret().as_bytes(),
+            &salt,
+            key.as_mut_slice(),
+        )
         .map_err(|e| WalletError::DecryptionFailed(e.to_string()))?;
 
     let cipher = Aes256Gcm::new_from_slice(key.as_slice())

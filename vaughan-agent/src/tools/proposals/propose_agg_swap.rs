@@ -10,7 +10,9 @@ use crate::proposal::{ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
-use vaughan_core::core::{assert_agg_exec_targets, quote_aggregator, AggQuoteRequest, AggVenue};
+use vaughan_core::core::{
+    assert_agg_exec_targets_on_chain, quote_aggregator, AggQuoteRequest, AggVenue,
+};
 
 #[derive(Default)]
 pub struct ProposeAggSwapTool;
@@ -136,9 +138,6 @@ impl Tool for ProposeAggSwapTool {
             .await
             .map_err(|e| AgentError::ProviderError(e.to_string()))?;
 
-        assert_agg_exec_targets(quote.tx.to, quote.spender)
-            .map_err(|e| AgentError::InvalidToolCall(e.to_string()))?;
-
         let gas_limit = quote.gas_estimate.unwrap_or(350_000).saturating_mul(12) / 10;
         let path = vec![
             if native_in { Address::ZERO } else { token_in },
@@ -152,6 +151,8 @@ impl Tool for ProposeAggSwapTool {
         } else {
             context.chain_id
         };
+        assert_agg_exec_targets_on_chain(proposal_chain, quote.tx.to, quote.spender)
+            .map_err(|e| AgentError::InvalidToolCall(e.to_string()))?;
 
         let proposal = attach_estimated_fee(
             TxProposal::new(

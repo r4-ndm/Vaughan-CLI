@@ -15,6 +15,7 @@ pub fn dexscreener_chain_slug(chain_id: u64) -> Option<&'static str> {
         137 => Some("polygon"),
         8453 => Some("base"),
         42_161 => Some("arbitrum"),
+        10_001 => Some("ethereumpow"),
         _ => None,
     }
 }
@@ -49,5 +50,7 @@ mod tests {
         assert_eq!(resolve_dex_chain(None, None), "pulsechain");
         assert_eq!(resolve_dex_chain(Some(369), None), "pulsechain");
         assert_eq!(resolve_dex_chain(Some(1), Some("pulsechain")), "pulsechain");
+        assert_eq!(dexscreener_chain_slug(10_001), Some("ethereumpow"));
+        assert_eq!(resolve_dex_chain(Some(10_001), None), "ethereumpow");
     }
 }

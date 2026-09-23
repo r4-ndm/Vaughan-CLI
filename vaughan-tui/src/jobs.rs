@@ -152,6 +152,13 @@ pub enum UiJob {
         owner: String,
         gen: u64,
     },
+    /// Fire one due DCA slice (Sentient TUI session).
+    DcaSlice {
+        plan_id: String,
+        profile_dir: std::path::PathBuf,
+        /// Shared session breaker (trip / gas counters).
+        breaker: vaughan_agent::CircuitBreaker,
+    },
     /// Poll inclusion status for a broadcast hash (Send Done screen).
     PollTxStatus {
         tx_hash: String,
@@ -402,6 +409,8 @@ pub enum UiJobResult {
         stakes: vaughan_core::core::HexStakeResult<vaughan_core::core::HexStakesForAddress>,
         globals: vaughan_core::core::HexStakeResult<vaughan_core::core::HexGlobalState>,
     },
+    /// One DCA slice attempt (ok or recorded failure).
+    DcaSlice(Result<vaughan_agent::DcaFireResult, WalletError>),
     TxStatus(Result<vaughan_core::chains::TxStatus, WalletError>),
     /// Updated statuses for session broadcasts `(hash, status)`.
     BroadcastStatuses(Result<Vec<(String, vaughan_core::chains::TxStatus)>, WalletError>),

@@ -192,6 +192,13 @@ impl DexView {
             v.fee = 500;
             v.token_out.set_value(WZRD_SMOKE_943);
             v.token_out_pick = TOKEN_PICK_UNINIT;
+        } else if chain_id == 10_001 {
+            v.venue = DexVenue::LfgSwap;
+            v.protocol = DexProtocol::V2;
+            v.fee = 3000;
+            v.token_out
+                .set_value("0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39");
+            v.token_out_pick = TOKEN_PICK_UNINIT;
         }
         v.amount.set_value("1");
         v.min_out.set_value("0");
@@ -1968,6 +1975,7 @@ mod tests {
     fn native_pls_label_by_chain() {
         assert_eq!(native_pls_label(943), "tPLS");
         assert_eq!(native_pls_label(369), "PLS");
+        assert_eq!(native_pls_label(10_001), "ETHW");
     }
 
     #[test]

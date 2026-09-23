@@ -15,7 +15,10 @@ pub use catalog::{AggAccess, AggVenue, AGG_VENUES};
 pub use empx::{EmpxClient, EMPX_ROUTER_369};
 pub use nine_mm::{NineMmClient, NineMmPreview, NATIVE_EEEE as NINEMM_NATIVE_EEEE, NINEMM_API_URL};
 pub use pulseswap::{PulseSwapClient, PULSESWAP_QUOTE_URL};
-pub use routers::{assert_agg_exec_targets, is_allowed_agg_router, OFFICIAL_AGG_ROUTERS};
+pub use routers::{
+    agg_routers_supported_on, assert_agg_exec_targets, assert_agg_exec_targets_on_chain,
+    is_allowed_agg_router, is_allowed_agg_router_on_chain, OFFICIAL_AGG_ROUTERS,
+};
 pub use squirrelswap::{SquirrelPreview, SquirrelSwapClient, SQUIRRELSWAP_BRAIN_URL};
 pub use types::{AggExecTx, AggQuote, AggQuoteOutcome, AggQuoteRequest, NativeSentinel};
 

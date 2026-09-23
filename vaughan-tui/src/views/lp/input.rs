@@ -14,13 +14,13 @@ use vaughan_core::chains::Balance;
 use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
     build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v3_collect_evm,
-    build_v3_decrease_evm, build_v3_increase_evm, chain_label, default_full_range_ticks,
-    display_price_range_from_preset, format_display_amount, lp_stack_for_chain, lp_v3_venue_picker,
-    min_out_after_slippage, v3_preview_mint_deposits_from_amount0,
-    v3_preview_mint_deposits_from_amount1, v3_range_ticks_from_human_prices,
-    v3_sqrt_and_tick_for_preview, venue_position_manager, venue_swap_router, wpls_for_chain,
-    DexProtocol, DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3PoolLifecycle, V3PositionInfo,
-    WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    build_v3_decrease_evm, build_v3_increase_evm, chain_label, cycle_lp_stack,
+    default_full_range_ticks, display_price_range_from_preset, format_display_amount,
+    lp_stack_for_chain, lp_stacks_for_chain, lp_v3_venue_picker, min_out_after_slippage,
+    v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount1,
+    v3_range_ticks_from_human_prices, v3_sqrt_and_tick_for_preview, venue_position_manager,
+    venue_swap_router, wpls_for_chain, DexProtocol, DexVenue, LpStack, V2LpPosition,
+    V3LpDeployWait, V3PoolLifecycle, V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
@@ -94,6 +94,20 @@ impl LpView {
             KeyCode::Down if self.tab == Tab::List => {
                 self.move_list_sel(true);
                 KeyOutcome::Consumed
+            }
+            KeyCode::Char('[') | KeyCode::Char(']')
+                if self.tab == Tab::List && self.list_action_idx.is_none() =>
+            {
+                let forward = matches!(key.code, KeyCode::Char(']'));
+                self.apply_cycled_lp_stack(forward);
+                if let Some(job) = self.list_job(wallet) {
+                    self.busy = Busy::Loading;
+                    self.status = format!("Loading {} {}…", self.venue.label(), self.stack.label());
+                    KeyOutcome::StartJob(job)
+                } else {
+                    self.status = self.default_status_hint();
+                    KeyOutcome::Consumed
+                }
             }
             KeyCode::Up
                 if matches!(self.tab, Tab::Decrease | Tab::Remove) && self.focus == Focus::None =>
@@ -536,11 +550,10 @@ impl LpView {
         }
     }
 
-    /// ↑/↓ on the venue row during Add LP pair selection.
+    /// ↑/↓ on the venue row during Add LP pair selection (V2 + V3 stacks).
     pub fn cycle_venue_selector(&mut self, forward: bool) -> bool {
         if self.tab != Tab::AddLp
             || self.stage != Stage::Input
-            || !matches!(self.stack, LpStack::V3 { .. })
             || self.add_step != AddStep::SelectPair
         {
             return false;
@@ -548,43 +561,50 @@ impl LpView {
         if !matches!(self.focus, Focus::None | Focus::Venue) {
             return false;
         }
-        self.cycle_v3_venue(forward);
+        self.apply_cycled_lp_stack(forward);
         self.focus = Focus::Venue;
         true
     }
 
-    pub(crate) fn cycle_v3_venue(&mut self, forward: bool) {
-        let venues = lp_v3_venue_picker(self.chain_id);
-        if venues.is_empty() {
-            self.status = format!("No V3 LP venues on {}", chain_label(self.chain_id));
+    pub(crate) fn apply_cycled_lp_stack(&mut self, forward: bool) {
+        let stacks = lp_stacks_for_chain(self.chain_id);
+        if stacks.is_empty() {
+            self.status = format!("No LP venues on {}", chain_label(self.chain_id));
             return;
         }
-        if venues.len() == 1 {
+        if stacks.len() == 1 {
             self.status = format!(
-                "Only {} on {} — ↑↓ has no other venue",
-                venues[0].label(),
+                "Only {} {} on {} — no other DEX on this chain",
+                stacks[0].venue().label(),
+                stacks[0].label(),
                 chain_label(self.chain_id)
             );
             return;
         }
-        let idx = venues.iter().position(|v| *v == self.venue).unwrap_or(0);
-        let next = if forward {
-            (idx + 1) % venues.len()
-        } else {
-            (idx + venues.len() - 1) % venues.len()
-        };
-        let picked = venues[next];
-        self.venue = picked;
-        self.stack = LpStack::V3 { venue: self.venue };
-        if venue_position_manager(picked, self.chain_id).is_none() {
+        let next = cycle_lp_stack(self.stack, self.chain_id, forward);
+        self.stack = next;
+        self.venue = next.venue();
+        self.v3_positions.clear();
+        self.v2_positions.clear();
+        self.sel = 0;
+        self.list_action_idx = None;
+        self.clear_transfer_lock();
+        if matches!(self.stack, LpStack::V3 { .. })
+            && venue_position_manager(self.venue, self.chain_id).is_none()
+        {
             self.status = format!(
                 "{} V3 LP is on testnet 943 — F1 Network → PulseChain testnet",
-                picked.label()
+                self.venue.label()
             );
             return;
         }
-        self.apply_venue_token_defaults(picked == DexVenue::NineMm);
-        self.status = format!("{} · ↑↓ venue · ←→ fee tier", self.venue.label());
+        self.apply_venue_token_defaults(self.venue == DexVenue::NineMm);
+        self.apply_initial_fee_defaults();
+        self.status = format!(
+            "{} · {} · [ ] DEX · r reload",
+            self.venue.label(),
+            self.stack.label()
+        );
     }
 
     pub(crate) fn cycle_fee(&mut self, forward: bool) {

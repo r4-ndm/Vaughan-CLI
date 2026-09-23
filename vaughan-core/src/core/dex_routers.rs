@@ -12,6 +12,7 @@ fn routers_for_chain(chain_id: u64) -> &'static HashSet<[u8; 20]> {
     static MAIN: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
     static TEST: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
     static ANVIL: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static ETHW: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
     static EMPTY: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
 
     let build = |cid: u64| {
@@ -24,6 +25,7 @@ fn routers_for_chain(chain_id: u64) -> &'static HashSet<[u8; 20]> {
         369 => MAIN.get_or_init(|| build(369)),
         943 => TEST.get_or_init(|| build(943)),
         31337 => ANVIL.get_or_init(|| build(369)),
+        10_001 => ETHW.get_or_init(|| build(10_001)),
         _ => EMPTY.get_or_init(HashSet::new),
     }
 }
@@ -37,11 +39,33 @@ pub fn is_allowed_dex_router(chain_id: u64, router: Address) -> bool {
 pub const PULSEX_V2_MAINNET: &str = "0x165C3410fC91EF562C50559f7d2289fEbed552d9";
 
 /// Pulse wrapped native (WPLS / tWPLS) for wrap/unwrap flows.
+///
+/// On EthereumPoW this returns LFGswap's `WETHW` (the native wrap). Venues that
+/// price against canonical WETH must use [`venue_wrapped_native`] instead.
 pub fn wpls_for_chain(chain_id: u64) -> Option<Address> {
     match chain_id {
         369 => "0xA1077a294dDE1B09bB078844df40758a5D0f9a27".parse().ok(),
         943 => "0x70499adEBB11Efd915E3b69E700c331778628707".parse().ok(),
+        // LFGswap WETH() — native wrap on EthereumPoW (not canonical WETH).
+        10_001 => "0x7Bf88d2c0e32dE92Cdaf2D43CcDC23e8EdfD5990".parse().ok(),
         _ => None,
+    }
+}
+
+/// Canonical WETH (pre-merge address) still used by UniWswap / PowSwap / Uniswap on ETHW.
+const ETHW_CANONICAL_WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+
+/// Wrapped native token for a DEX venue's swap path on `chain_id`.
+///
+/// On Pulse this is always WPLS/tWPLS. On EthereumPoW, LFGswap uses WETHW while
+/// UniWswap / PowSwap / Uniswap (Hedron) use canonical WETH.
+pub fn venue_wrapped_native(venue: super::dex_catalog::DexVenue, chain_id: u64) -> Option<Address> {
+    use super::dex_catalog::DexVenue;
+    match (chain_id, venue) {
+        (10_001, DexVenue::UniWswap | DexVenue::PowSwap | DexVenue::UniHedron) => {
+            ETHW_CANONICAL_WETH.parse().ok()
+        }
+        _ => wpls_for_chain(chain_id),
     }
 }
 
@@ -91,5 +115,37 @@ mod tests {
     fn nine_mm_npm_allowed_on_369() {
         let npm = address!("0xCC05bf158202b4F461Ede8843d76dcd7Bbad07f2");
         assert!(is_allowed_dex_router(369, npm));
+    }
+
+    #[test]
+    fn lfgswap_router_allowed_on_ethw() {
+        let r = address!("0x4f381d5fF61ad1D0eC355fEd2Ac4000eA1e67854");
+        assert!(is_allowed_dex_router(10_001, r));
+        assert!(!is_allowed_dex_router(369, r));
+        let npm = address!("0xC36442b4a4522E871399CD717aBDD847Ab11FE88");
+        assert!(is_allowed_dex_router(10_001, npm));
+    }
+
+    #[test]
+    fn venue_wrapped_native_ethw_splits_wethw_and_weth() {
+        use super::super::dex_catalog::DexVenue;
+        let wethw = wpls_for_chain(10_001).unwrap();
+        assert_eq!(
+            venue_wrapped_native(DexVenue::LfgSwap, 10_001).unwrap(),
+            wethw
+        );
+        let weth = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        assert_eq!(
+            venue_wrapped_native(DexVenue::UniWswap, 10_001).unwrap(),
+            weth
+        );
+        assert_eq!(
+            venue_wrapped_native(DexVenue::PowSwap, 10_001).unwrap(),
+            weth
+        );
+        assert_eq!(
+            venue_wrapped_native(DexVenue::PulseX, 369).unwrap(),
+            wpls_for_chain(369).unwrap()
+        );
     }
 }

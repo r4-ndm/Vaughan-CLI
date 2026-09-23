@@ -88,8 +88,11 @@ and the mainnet-write guard.
 Kill-switch: **Ctrl+K** in the TUI trips the session breaker. The human
 `default` profile never auto-signs.
 
-Vaughan does **not** run a background price daemon. The agent (or a cron that
-calls MCP) owns the poll interval.
+Vaughan does **not** run a general background price daemon. The agent (or a cron
+that calls MCP) owns ad-hoc poll intervals. Exception: **TUI-hosted DCA** — while
+a Sentient session is unlocked, the App tick fires due `dca-plans.json` slices
+via aggregators under circuit breakers (see [`dca.md`](dca.md)). Closing the TUI
+pauses DCA.
 
 ## Multi-tenant / multi-user
 

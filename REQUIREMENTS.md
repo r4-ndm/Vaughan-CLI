@@ -44,8 +44,8 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-1.6** HD derivation at `m/44'/60'/0'/0/{index}` producing an Alloy local signer;
   support a list of derived accounts (index 0 active by default).
 - **FR-1.7** Built-in networks: PulseChain mainnet (369), PulseChain testnet v4 (943),
-  Ethereum (1), Sepolia (11155111), Polygon (137), BSC (56), Base (8453),
-  Arbitrum One (42161).
+  Ethereum (1), Sepolia (11155111), EthereumPoW (10001), Polygon (137), BSC (56),
+  Base (8453), Arbitrum One (42161).
 - **FR-1.8** Dashboard: show active account address and native balance.
 - **FR-1.9** Send native asset: recipient + amount -> fee estimate -> sign -> broadcast
   -> show tx hash.
@@ -109,6 +109,7 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-5.4** Autonomous Read/Inspect Tools: Wrap `wiz4rd-engine` and `vaughan-core` for contract capability probing, balance inspection, selector reverse lookup, DEX reserves, and pre-flight call simulation without user prompts.
 - **FR-5.5** Guarded Propose-Only Write Tools (Assist Mode): Draft transfers, DEX swaps, and EIP-7702 batched calls into structured `TxProposal`s that require explicit human approval via the TUI/CLI confirmation card. Private keys are never exposed to the agent.
 - **FR-5.6** Autonomous Execution with Circuit Breakers (Sentient Mode): In Sentient mode, automated signing is governed by hardcoded Rust circuit breakers (max position size %, gas burn rate ceiling, maximum 1.0% slippage, emergency kill-switch).
+- **FR-5.9** TUI-hosted DCA (recurring native→token buys): Human-approved plans in `dca-plans.json`; per-plan **aggregator or direct DEX** venue; Sentient App tick fires slices under FR-5.6 breakers; close TUI = pause. Indicator triggers deferred (Phase 2 — see `docs/dca.md`).
 - **FR-5.7** ~~Multi-Model Provider Integration~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 - **FR-5.8** ~~TUI Agent Console & CLI Commands~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 

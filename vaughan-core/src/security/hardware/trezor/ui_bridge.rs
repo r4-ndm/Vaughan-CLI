@@ -132,7 +132,11 @@ impl TrezorUiBridge {
     pub fn submit_passphrase(&self, passphrase: PassphraseReply) {
         self.need_passphrase.store(false, Ordering::SeqCst);
         // Drop any early PIN buffered if the pad briefly reappeared after PIN.
-        let _ = self.early_pin.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let _ = self
+            .early_pin
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         let sender = self
             .passphrase_slot
             .lock()

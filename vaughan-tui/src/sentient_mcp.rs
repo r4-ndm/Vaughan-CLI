@@ -11,8 +11,9 @@ use vaughan_agent::{breaker_config_for_session, CircuitBreaker, EnforcementMode}
 use vaughan_core::core::is_sentient_profile;
 use vaughan_core::core::proposal::{ProposalType, TxProposal};
 use vaughan_core::core::{
-    apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, is_allowed_agg_router,
-    is_allowed_dex_router, quote_v2_exact_in, OperatingMode, WalletState,
+    apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write,
+    is_allowed_agg_router_on_chain, is_allowed_dex_router, quote_v2_exact_in, OperatingMode,
+    WalletState,
 };
 use vaughan_provider::ProviderError;
 
@@ -133,7 +134,7 @@ pub fn gate_sentient_proposal(
     {
         let net = wallet.networks().active();
         let dex_ok = is_allowed_dex_router(net.chain_id, *router);
-        let agg_ok = is_allowed_agg_router(*router);
+        let agg_ok = is_allowed_agg_router_on_chain(net.chain_id, *router);
         if !dex_ok && !agg_ok {
             return Err(ProviderError::InvalidParams(format!(
                 "router {router} is not on the audited DEX/Agg allowlist for chain {}",

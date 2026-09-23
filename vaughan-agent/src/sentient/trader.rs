@@ -36,9 +36,24 @@ impl SentientTrader {
         chain_id: u64,
         breaker_config: CircuitBreakerConfig,
     ) -> Self {
+        Self::with_breaker(
+            signer,
+            rpc_urls,
+            chain_id,
+            CircuitBreaker::new(breaker_config),
+        )
+    }
+
+    /// Bind to an existing session breaker (shared trip / gas counters).
+    pub fn with_breaker(
+        signer: PrivateKeySigner,
+        rpc_urls: Vec<String>,
+        chain_id: u64,
+        circuit_breaker: CircuitBreaker,
+    ) -> Self {
         Self {
             signer,
-            circuit_breaker: CircuitBreaker::new(breaker_config),
+            circuit_breaker,
             rpc_urls,
             chain_id,
             dry_run: dry_run_from_env(),
@@ -60,6 +75,11 @@ impl SentientTrader {
         self.signer.address()
     }
 
+    /// Primary HTTP RPC (first configured URL).
+    pub fn primary_rpc_url(&self) -> Option<&str> {
+        self.rpc_urls.first().map(String::as_str)
+    }
+
     /// Access the circuit breaker state.
     pub fn circuit_breaker(&self) -> &CircuitBreaker {
         &self.circuit_breaker
@@ -78,15 +98,75 @@ impl SentientTrader {
         trade_amount: U256,
         slippage_bps: u32,
     ) -> Result<SwapExecution, AgentError> {
+        self.execute_swap_inner(
+            router,
+            pair,
+            calldata,
+            value_wei,
+            trade_amount,
+            slippage_bps,
+            false,
+            false, // DEX-only — never open aggregator routers to MCP execute_sentient_swap
+        )
+        .await
+    }
+
+    /// Like [`Self::execute_swap`], but `force_dry_run` skips broadcast even when
+    /// the session trader is live (per-plan paper trading).
+    ///
+    /// `allow_agg` must be true only for aggregator DCA / paths that already
+    /// validated the router against the Pulse agg allowlist — MCP
+    /// `execute_sentient_swap` keeps DEX-only.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_swap_maybe_dry(
+        &self,
+        router: Address,
+        pair: Option<Address>,
+        calldata: Bytes,
+        value_wei: U256,
+        trade_amount: U256,
+        slippage_bps: u32,
+        force_dry_run: bool,
+        allow_agg: bool,
+    ) -> Result<SwapExecution, AgentError> {
+        self.execute_swap_inner(
+            router,
+            pair,
+            calldata,
+            value_wei,
+            trade_amount,
+            slippage_bps,
+            force_dry_run,
+            allow_agg,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_swap_inner(
+        &self,
+        router: Address,
+        pair: Option<Address>,
+        calldata: Bytes,
+        value_wei: U256,
+        trade_amount: U256,
+        slippage_bps: u32,
+        force_dry_run: bool,
+        allow_agg: bool,
+    ) -> Result<SwapExecution, AgentError> {
         if self.rpc_urls.is_empty() {
             return Err(AgentError::InvalidToolCall(
                 "No RPC endpoints configured".to_string(),
             ));
         }
 
-        if !vaughan_core::core::is_allowed_dex_router(self.chain_id, router) {
+        let dex_ok = vaughan_core::core::is_allowed_dex_router(self.chain_id, router);
+        let agg_ok =
+            allow_agg && vaughan_core::core::is_allowed_agg_router_on_chain(self.chain_id, router);
+        if !dex_ok && !agg_ok {
             return Err(AgentError::InvalidToolCall(format!(
-                "router {router:#x} is not on the Pulse DEX allowlist for chain {} — refusing swap",
+                "router {router:#x} is not on the Pulse DEX{} allowlist for chain {} — refusing swap",
+                if allow_agg { " or aggregator" } else { "" },
                 self.chain_id
             )));
         }
@@ -105,6 +185,19 @@ impl SentientTrader {
         // 2. Validate against circuit breaker rules
         self.circuit_breaker
             .validate_trade(trade_amount, balance, slippage_bps)?;
+
+        // Refuse EOAs / empty code — eth_call to a code-less address succeeds and
+        // would otherwise burn native value on the wrong chain.
+        let code = provider
+            .get_code_at(router)
+            .await
+            .map_err(|e| AgentError::ProviderError(format!("eth_getCode({router:#x}): {e}")))?;
+        if code.is_empty() {
+            return Err(AgentError::SecurityViolation(format!(
+                "router {router:#x} has no contract code on chain {} — refusing swap",
+                self.chain_id
+            )));
+        }
 
         // 3. Multi-RPC quorum validation if pair address provided
         if let Some(pair_addr) = pair {
@@ -151,7 +244,7 @@ impl SentientTrader {
             )));
         }
 
-        if self.dry_run {
+        if self.dry_run || force_dry_run {
             self.circuit_breaker.record_success(gas_budget)?;
             return Ok(SwapExecution {
                 tx_hash: B256::ZERO,

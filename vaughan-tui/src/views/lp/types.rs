@@ -7,11 +7,15 @@ use vaughan_core::core::{
 
 use crate::input::Input;
 
-/// HEX on PulseChain mainnet (8 decimals).
+/// HEX on PulseChain / EthereumPoW (8 decimals; same contract address).
 pub(crate) const HEX_MAINNET: &str = "0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39";
+/// Canonical WETH (PowSwap + UniWswap + Uniswap HEX pairs on ETHW).
+pub(crate) const WETH_ETHW: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+/// LFGswap wrapped native on EthereumPoW.
+pub(crate) const WETHW_ETHW: &str = "0x7Bf88d2c0e32dE92Cdaf2D43CcDC23e8EdfD5990";
 
-/// 9inch V3 fee tiers on Pulse (0.01% … 2%).
-pub(crate) const LP_FEE_TIERS: &[u32] = &[100, 500, 2500, 10_000, 20_000];
+/// V3 fee tiers (Pulse Pancake-style 2500/20000 plus Uniswap 3000).
+pub(crate) const LP_FEE_TIERS: &[u32] = &[100, 500, 2500, 3000, 10_000, 20_000];
 
 /// 9mm-style symmetric range shortcuts around the current price (`None` = full range).
 pub(crate) const RANGE_PRESETS: &[(&str, Option<f64>)] = &[

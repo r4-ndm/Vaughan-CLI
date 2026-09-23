@@ -15,9 +15,7 @@ fn optional_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn optional_usize(args: &Value, key: &str) -> Option<usize> {
-    args.get(key)
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
+    args.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
 }
 
 /// `hex_global_state` — currentDay + globals on pHEX (default).

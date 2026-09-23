@@ -45,6 +45,8 @@ fn settings_view_lists_networks_with_active_marker() {
         "chain 943",
         "Ethereum Mainnet",
         "chain 1",
+        "EthereumPoW",
+        "chain 10001",
         "Base Mainnet",
     ] {
         assert!(text.contains(needle), "missing {needle:?}:\n{text}");
@@ -272,4 +274,92 @@ fn settings_view_e_opens_custom_edit_form() {
     assert!(text.contains("Edit custom network"));
     assert!(text.contains("31337"));
     assert!(text.contains("Anvil"));
+}
+
+fn type_text(
+    view: &mut SettingsView,
+    text: &str,
+    wallet: &mut WalletState,
+    handle: &Handle,
+    events: &EventBus,
+) {
+    for c in text.chars() {
+        view.handle_key(key(KeyCode::Char(c)), wallet, handle, events);
+    }
+}
+
+/// `p` opens change-password; full rotate unlocks under the new password only.
+#[test]
+fn settings_view_p_changes_vault_password() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let mut view = SettingsView::new(0);
+
+    view.handle_key(key(KeyCode::Char('p')), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(
+        text.contains("Change vault password"),
+        "p opens password flow:\n{text}"
+    );
+
+    type_text(&mut view, common::PASSWORD, &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(
+        render(&view, &wallet).contains("Choose new password"),
+        "after current password:\n{}",
+        render(&view, &wallet)
+    );
+
+    const NEW: &str = "NewBombProof9!";
+    type_text(&mut view, NEW, &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(
+        render(&view, &wallet).contains("Confirm new password"),
+        "after new password:\n{}",
+        render(&view, &wallet)
+    );
+
+    type_text(&mut view, NEW, &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(
+        text.contains("Vault password updated"),
+        "status after rotate:\n{text}"
+    );
+    assert!(
+        text.contains("PulseChain"),
+        "returns to network list:\n{text}"
+    );
+    assert!(
+        text.contains("p password"),
+        "list footer advertises password:\n{text}"
+    );
+
+    wallet.lock();
+    assert!(wallet
+        .unlock(&secrecy::SecretString::from(common::PASSWORD.to_string()))
+        .is_err());
+    wallet
+        .unlock(&secrecy::SecretString::from(NEW.to_string()))
+        .unwrap();
+}
+
+/// Esc aborts change-password without touching the vault.
+#[test]
+fn settings_view_change_password_esc_cancels() {
+    let anvil = Anvil::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = funded_wallet(dir.path(), &anvil);
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let mut view = SettingsView::new(0);
+
+    view.handle_key(key(KeyCode::Char('p')), &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    assert!(text.contains("Password change cancelled"));
+    assert!(text.contains("PulseChain"));
 }

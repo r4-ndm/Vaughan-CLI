@@ -1,12 +1,15 @@
-//! Uniswap V2–style LP (pair tokens) — 9inch on Pulse mainnet today.
+//! Uniswap V2–style LP (pair tokens) — 9inch on Pulse, LFG/UniWswap/PowSwap/Uniswap on ETHW.
 //!
 //! Browserless add / remove / list using catalogued factory + V2 router.
 //! Pair LP tokens are plain ERC-20 balances on the pair contract address.
+//! On ETHW, LFG/UniWswap/PowSwap listing also walks `allPairs` so non-HEX pools show up.
 
 use alloy::primitives::{Address, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::sol;
 use alloy::sol_types::SolCall;
+use futures_util::stream::{self, StreamExt};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -91,6 +94,8 @@ pub fn v2_spot_token1_per_token0(
 sol! {
     interface IUniswapV2Factory {
         function getPair(address tokenA, address tokenB) external view returns (address pair);
+        function allPairs(uint256 index) external view returns (address pair);
+        function allPairsLength() external view returns (uint256);
     }
 
     interface IUniswapV2Pair {
@@ -143,7 +148,7 @@ sol! {
     }
 }
 
-fn connect_http(rpc_url: &str) -> Result<impl Provider + use<>, WalletError> {
+fn connect_http(rpc_url: &str) -> Result<impl Provider + Clone + use<>, WalletError> {
     let url = rpc_url
         .trim()
         .parse()
@@ -191,17 +196,33 @@ fn v2_factory(venue: DexVenue, chain_id: u64) -> Result<Address, WalletError> {
     })
 }
 
-/// Default token pairs to probe when listing 9inch V2 LP on mainnet.
+/// Default token pairs to probe when listing V2 LP (HEX pools on Pulse + ETHW).
 pub fn default_v2_watch_pairs(chain_id: u64, venue: DexVenue) -> Vec<(Address, Address)> {
-    if chain_id != 369 || venue != DexVenue::NineInch {
-        return Vec::new();
-    }
-    let wpls = match super::dex_routers::wpls_for_chain(chain_id) {
-        Some(w) => w,
-        None => return Vec::new(),
+    let hex = match Address::from_str("0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
     };
-    let hex = Address::from_str("0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39").ok();
-    hex.map(|h| vec![sort_pair(wpls, h)]).unwrap_or_default()
+    match (chain_id, venue) {
+        (369, DexVenue::NineInch) => super::dex_routers::wpls_for_chain(chain_id)
+            .map(|wpls| vec![sort_pair(wpls, hex)])
+            .unwrap_or_default(),
+        (10_001, DexVenue::LfgSwap) => {
+            let mut pairs = Vec::new();
+            if let Some(wethw) = super::dex_routers::wpls_for_chain(chain_id) {
+                pairs.push(sort_pair(wethw, hex));
+            }
+            if let Ok(weth) = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2") {
+                pairs.push(sort_pair(weth, hex));
+            }
+            pairs
+        }
+        (10_001, DexVenue::PowSwap | DexVenue::UniHedron | DexVenue::UniWswap) => {
+            Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+                .map(|weth| vec![sort_pair(weth, hex)])
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve the pair contract for two tokens (sorted internally).
@@ -255,7 +276,14 @@ async fn read_v2_lp_balance(
         .map_err(|e| WalletError::NetworkError(format!("decode balanceOf: {e}")))
 }
 
+/// Walk the factory index when it is small enough (LFG ~1.5k, UniW ~1.3k, PowSwap ~600).
+const V2_FACTORY_SCAN_MAX: u64 = 2_500;
+const V2_FACTORY_SCAN_CONCURRENCY: usize = 24;
+
 /// List V2 LP positions for `owner` across `watch_pairs` (skips zero balances).
+///
+/// On factories with `allPairsLength <= 2500`, also scans every pair so LP
+/// outside the default HEX watch list still appears.
 pub async fn list_v2_lp_positions(
     rpc_url: &str,
     venue: DexVenue,
@@ -264,74 +292,160 @@ pub async fn list_v2_lp_positions(
     watch_pairs: &[(Address, Address)],
 ) -> Result<Vec<V2LpPosition>, WalletError> {
     let provider = connect_http(rpc_url)?;
+    let mut seen = HashSet::new();
     let mut out = Vec::new();
+
     for &(ta, tb) in watch_pairs {
         let pair = match get_v2_pair_address(rpc_url, venue, chain_id, ta, tb).await {
             Ok(p) => p,
             Err(_) => continue,
         };
-        let bal = read_v2_lp_balance(&provider, pair, owner).await?;
-        if bal.is_zero() {
+        if !seen.insert(pair) {
             continue;
         }
-        let t0_call = IUniswapV2Pair::token0Call {};
-        let t1_call = IUniswapV2Pair::token1Call {};
-        let t0_raw = provider
-            .call(
-                alloy::rpc::types::TransactionRequest::default()
-                    .to(pair)
-                    .input(t0_call.abi_encode().into()),
-            )
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("token0: {e}")))?;
-        let t1_raw = provider
-            .call(
-                alloy::rpc::types::TransactionRequest::default()
-                    .to(pair)
-                    .input(t1_call.abi_encode().into()),
-            )
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("token1: {e}")))?;
-        let token0 = IUniswapV2Pair::token0Call::abi_decode_returns(&t0_raw)
-            .map_err(|e| WalletError::NetworkError(format!("decode token0: {e}")))?;
-        let token1 = IUniswapV2Pair::token1Call::abi_decode_returns(&t1_raw)
-            .map_err(|e| WalletError::NetworkError(format!("decode token1: {e}")))?;
+        if let Some(pos) = read_v2_position_if_held(&provider, pair, owner).await? {
+            out.push(pos);
+        }
+    }
 
-        let supply_call = IUniswapV2Pair::totalSupplyCall {};
-        let supply_raw = provider
-            .call(
-                alloy::rpc::types::TransactionRequest::default()
-                    .to(pair)
-                    .input(supply_call.abi_encode().into()),
-            )
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("totalSupply: {e}")))?;
-        let total_supply = IUniswapV2Pair::totalSupplyCall::abi_decode_returns(&supply_raw)
-            .map_err(|e| WalletError::NetworkError(format!("decode totalSupply: {e}")))?;
-
-        let res_call = IUniswapV2Pair::getReservesCall {};
-        let res_raw = provider
-            .call(
-                alloy::rpc::types::TransactionRequest::default()
-                    .to(pair)
-                    .input(res_call.abi_encode().into()),
-            )
-            .await
-            .map_err(|e| WalletError::NetworkError(format!("getReserves: {e}")))?;
-        let reserves = IUniswapV2Pair::getReservesCall::abi_decode_returns(&res_raw)
-            .map_err(|e| WalletError::NetworkError(format!("decode getReserves: {e}")))?;
-
-        out.push(V2LpPosition {
-            pair,
-            token0,
-            token1,
-            lp_balance: bal,
-            reserve0: U256::from(reserves.reserve0),
-            reserve1: U256::from(reserves.reserve1),
-            total_supply,
-        });
+    let factory_pairs = factory_pairs_to_scan(&provider, venue, chain_id).await?;
+    let to_scan: Vec<Address> = factory_pairs
+        .into_iter()
+        .filter(|pair| seen.insert(*pair))
+        .collect();
+    let extras: Vec<Result<Option<V2LpPosition>, WalletError>> = stream::iter(to_scan)
+        .map(|pair| {
+            let provider = provider.clone();
+            async move { read_v2_position_if_held(&provider, pair, owner).await }
+        })
+        .buffer_unordered(V2_FACTORY_SCAN_CONCURRENCY)
+        .collect()
+        .await;
+    for item in extras {
+        if let Some(pos) = item? {
+            out.push(pos);
+        }
     }
     Ok(out)
+}
+
+async fn factory_pairs_to_scan<P: Provider + Clone>(
+    provider: &P,
+    venue: DexVenue,
+    chain_id: u64,
+) -> Result<Vec<Address>, WalletError> {
+    let factory = match venue_v2_factory(venue, chain_id) {
+        Some(f) => f,
+        None => return Ok(Vec::new()),
+    };
+    let len_raw = match provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(factory)
+                .input(IUniswapV2Factory::allPairsLengthCall {}.abi_encode().into()),
+        )
+        .await
+    {
+        Ok(raw) => raw,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let n = match IUniswapV2Factory::allPairsLengthCall::abi_decode_returns(&len_raw) {
+        Ok(v) => u64::try_from(v).unwrap_or(u64::MAX),
+        Err(_) => return Ok(Vec::new()),
+    };
+    if n == 0 || n > V2_FACTORY_SCAN_MAX {
+        return Ok(Vec::new());
+    }
+    let idxs: Vec<u64> = (0..n).collect();
+    let pairs = stream::iter(idxs)
+        .map(|i| {
+            let provider = provider.clone();
+            async move {
+                let call = IUniswapV2Factory::allPairsCall {
+                    index: U256::from(i),
+                };
+                let raw = provider
+                    .call(
+                        alloy::rpc::types::TransactionRequest::default()
+                            .to(factory)
+                            .input(call.abi_encode().into()),
+                    )
+                    .await
+                    .ok()?;
+                IUniswapV2Factory::allPairsCall::abi_decode_returns(&raw).ok()
+            }
+        })
+        .buffer_unordered(V2_FACTORY_SCAN_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    Ok(pairs
+        .into_iter()
+        .flatten()
+        .filter(|a| !a.is_zero())
+        .collect())
+}
+
+async fn read_v2_position_if_held(
+    provider: &impl Provider,
+    pair: Address,
+    owner: Address,
+) -> Result<Option<V2LpPosition>, WalletError> {
+    let bal = read_v2_lp_balance(provider, pair, owner).await?;
+    if bal.is_zero() {
+        return Ok(None);
+    }
+    let t0_raw = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(pair)
+                .input(IUniswapV2Pair::token0Call {}.abi_encode().into()),
+        )
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("token0: {e}")))?;
+    let t1_raw = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(pair)
+                .input(IUniswapV2Pair::token1Call {}.abi_encode().into()),
+        )
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("token1: {e}")))?;
+    let token0 = IUniswapV2Pair::token0Call::abi_decode_returns(&t0_raw)
+        .map_err(|e| WalletError::NetworkError(format!("decode token0: {e}")))?;
+    let token1 = IUniswapV2Pair::token1Call::abi_decode_returns(&t1_raw)
+        .map_err(|e| WalletError::NetworkError(format!("decode token1: {e}")))?;
+
+    let supply_raw = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(pair)
+                .input(IUniswapV2Pair::totalSupplyCall {}.abi_encode().into()),
+        )
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("totalSupply: {e}")))?;
+    let total_supply = IUniswapV2Pair::totalSupplyCall::abi_decode_returns(&supply_raw)
+        .map_err(|e| WalletError::NetworkError(format!("decode totalSupply: {e}")))?;
+
+    let res_raw = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(pair)
+                .input(IUniswapV2Pair::getReservesCall {}.abi_encode().into()),
+        )
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("getReserves: {e}")))?;
+    let reserves = IUniswapV2Pair::getReservesCall::abi_decode_returns(&res_raw)
+        .map_err(|e| WalletError::NetworkError(format!("decode getReserves: {e}")))?;
+
+    Ok(Some(V2LpPosition {
+        pair,
+        token0,
+        token1,
+        lp_balance: bal,
+        reserve0: U256::from(reserves.reserve0),
+        reserve1: U256::from(reserves.reserve1),
+        total_supply,
+    }))
 }
 
 fn parse_human_amount(raw: &str, decimals: u8, label: &str) -> Result<U256, WalletError> {
@@ -531,6 +645,28 @@ mod tests {
         assert_eq!(
             venue_v2_factory(DexVenue::NineInch, 369),
             Some(Address::from_str("0x5b9F077A77db37F3Be0A5b5d31BAeff4bc5C0bD7").unwrap())
+        );
+    }
+
+    #[test]
+    fn ethw_hex_watch_pairs() {
+        let hex = Address::from_str("0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39").unwrap();
+        let wethw = Address::from_str("0x7Bf88d2c0e32dE92Cdaf2D43CcDC23e8EdfD5990").unwrap();
+        let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        let lfg = default_v2_watch_pairs(10_001, DexVenue::LfgSwap);
+        assert!(lfg.contains(&sort_pair(hex, wethw)));
+        assert!(lfg.contains(&sort_pair(hex, weth)));
+        assert_eq!(
+            default_v2_watch_pairs(10_001, DexVenue::PowSwap),
+            vec![sort_pair(hex, weth)]
+        );
+        assert_eq!(
+            default_v2_watch_pairs(10_001, DexVenue::UniHedron),
+            vec![sort_pair(hex, weth)]
+        );
+        assert_eq!(
+            default_v2_watch_pairs(10_001, DexVenue::UniWswap),
+            vec![sort_pair(hex, weth)]
         );
     }
 

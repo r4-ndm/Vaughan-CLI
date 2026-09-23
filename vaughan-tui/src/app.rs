@@ -9,7 +9,6 @@ use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
-use zeroize::Zeroize;
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
 use vaughan_core::chains::{Balance, ChainAdapter};
@@ -21,6 +20,7 @@ use vaughan_core::core::{
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
+use zeroize::Zeroize;
 
 use crate::jobs::{
     asset_index_for_address, chrome_assets_from_fetch, ChromeFocus, ChromeSnapshot, UiJob,
@@ -30,7 +30,7 @@ use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
 use crate::views::{
     AaSendView, AgView, ApprovalsView, ApproveView, AssetsView, BridgeView, BrowserView, DappsView,
-    DashboardView, DexView, HexView, HistoryView, KeysView, LpView, OnboardingView,
+    DashboardView, DcaView, DexView, HexView, HistoryView, KeysView, LpView, OnboardingView,
     PlaceholderView, ReceiveView, SettingsView, TokenLaunchView, UnlockView, WrapView,
 };
 
@@ -56,6 +56,7 @@ pub enum Screen {
     Approvals,
     Wrap,
     Hex,
+    Dca,
     TokenLaunch,
     Approve,
 }
@@ -82,6 +83,7 @@ impl Screen {
             Self::Approvals => "Approvals",
             Self::Wrap => "Wrap",
             Self::Hex => "HEX",
+            Self::Dca => "DCA",
             Self::TokenLaunch => "Launch",
             Self::Approve => "Approve",
         }
@@ -161,6 +163,7 @@ pub enum View {
     Approvals(ApprovalsView),
     Wrap(WrapView),
     Hex(HexView),
+    Dca(DcaView),
     Lp(LpView),
     TokenLaunch(TokenLaunchView),
     Placeholder(PlaceholderView),
@@ -187,6 +190,7 @@ impl View {
             Self::Approvals(_) => Screen::Approvals,
             Self::Wrap(_) => Screen::Wrap,
             Self::Hex(_) => Screen::Hex,
+            Self::Dca(_) => Screen::Dca,
             Self::Lp(_) => Screen::Lp,
             Self::TokenLaunch(_) => Screen::TokenLaunch,
             Self::Placeholder(v) => v.screen(),
@@ -223,6 +227,7 @@ impl View {
             Self::Approvals(v) => v.render(frame, area, wallet),
             Self::Wrap(v) => v.render(frame, area, wallet),
             Self::Hex(v) => v.render(frame, area, wallet),
+            Self::Dca(v) => v.render(frame, area, wallet, vaughan_agent::now_unix()),
             Self::Lp(v) => v.render(frame, area, wallet, assets),
             Self::TokenLaunch(v) => v.render(frame, area, wallet),
             Self::Placeholder(v) => v.render(frame, area, wallet),
@@ -255,6 +260,7 @@ impl View {
             Self::Approvals(v) => v.handle_key(key, wallet, handle, events),
             Self::Wrap(v) => v.handle_key(key, wallet, handle, events),
             Self::Hex(v) => v.handle_key(key, wallet, handle, events),
+            Self::Dca(v) => v.handle_key(key, wallet, handle, events),
             Self::Lp(v) => v.handle_key(key, wallet, handle, events),
             Self::TokenLaunch(v) => v.handle_key(key, wallet, handle, events),
             Self::Placeholder(v) => v.handle_key(key, wallet, handle, events),
@@ -282,6 +288,7 @@ impl View {
             Self::Approvals(v) => v.allows_footer_shortcuts(),
             Self::Wrap(v) => v.allows_footer_shortcuts(),
             Self::Hex(v) => v.allows_footer_shortcuts(),
+            Self::Dca(v) => v.allows_footer_shortcuts(),
             Self::Lp(v) => v.allows_footer_shortcuts(),
             Self::TokenLaunch(v) => v.allows_footer_shortcuts(),
             Self::Placeholder(v) => v.allows_footer_shortcuts(),
@@ -377,6 +384,8 @@ pub struct App {
     /// Session-scoped circuit breaker for sentient auto-exec (created lazily,
     /// dropped on lock so tripwires reset with the session).
     sentient_breaker: Option<vaughan_agent::CircuitBreaker>,
+    /// True while a DCA slice job is in flight (at most one).
+    dca_fire_inflight: bool,
     /// Live provider-bridge secret slots shared with the WS server; the token
     /// rotates on every lock/unlock edge so a stolen token dies at lock, and
     /// the origin-seal key tracks the running VB launch.
@@ -401,6 +410,8 @@ pub struct App {
 /// Host-side phases while a Trezor signs (Send / Keys share the PIN bridge).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrezorSignPhase {
+    /// USB init — waiting for PIN / passphrase ask (no confirm overlay yet).
+    Unlocking,
     /// Blank PIN matrix (Trezor One); digits buffered until the device asks.
     Pin,
     /// Unlock done — approve the transaction on the device screen.
@@ -550,6 +561,7 @@ impl App {
             bridge_status,
             connected_sites,
             sentient_breaker: None,
+            dca_fire_inflight: false,
             provider_slots,
             provider_session_unlocked: false,
             nav_back: Vec::new(),
@@ -573,6 +585,40 @@ impl App {
             self.sentient_breaker = Some(breaker);
         }
         Ok(self.sentient_breaker.as_ref().unwrap().clone())
+    }
+
+    /// When Sentient is unlocked, fire at most one due DCA slice per tick.
+    fn poll_dca_due(&mut self) {
+        if self.dca_fire_inflight {
+            return;
+        }
+        let Ok(wallet) = self.wallet.try_lock() else {
+            return;
+        };
+        if !wallet.is_unlocked()
+            || wallet.operating_mode() != OperatingMode::SentientTrader
+            || !crate::sentient_mcp::mcp_auto_exec_enabled(wallet.profile_name())
+        {
+            return;
+        }
+        let dir = profile_dir(wallet.path());
+        drop(wallet);
+        let now = vaughan_agent::now_unix();
+        let Ok(Some(plan_id)) = vaughan_agent::poll_due_id(&dir, now) else {
+            return;
+        };
+        let Ok(breaker) = self.sentient_breaker() else {
+            return;
+        };
+        if breaker.is_tripped() {
+            return;
+        }
+        self.dca_fire_inflight = true;
+        self.spawn_job(UiJob::DcaSlice {
+            plan_id,
+            profile_dir: dir,
+            breaker,
+        });
     }
 
     /// Ctrl+K kill switch: trip the session breaker so sentient auto-exec
@@ -659,13 +705,13 @@ impl App {
     }
 
     /// Waiting for the user to approve the tx on the Trezor screen.
+    ///
+    /// Only while USB is blocked on a `ButtonRequest`. Do not key this off the
+    /// sign-session start — that flashed "confirm on Trezor" before host
+    /// passphrase entry for hidden wallets.
     pub fn trezor_confirm_device_active(&self) -> bool {
-        matches!(
-            self.trezor_sign,
-            Some(TrezorSignSession {
-                phase: TrezorSignPhase::ConfirmOnDevice,
-            })
-        ) && self.trezor_pin.is_none()
+        self.trezor_ui.button_pending()
+            && self.trezor_pin.is_none()
             && self.trezor_passphrase.is_none()
     }
 
@@ -769,6 +815,10 @@ impl App {
             if let View::Hex(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
+            if let View::Dca(v) = &mut self.view {
+                v.set_tick(self.tick);
+            }
+            self.poll_dca_due();
             if let View::Lp(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
@@ -830,9 +880,18 @@ impl App {
             return;
         }
 
-        // After PIN: wait for on-device confirm (Esc cancels the session).
+        // After PIN / passphrase: on-device confirm (Esc cancels).
         if self.trezor_confirm_device_active() {
             self.handle_trezor_confirm_device_key(key);
+            return;
+        }
+        // Sign job started but PIN/passphrase not shown yet — Esc still aborts.
+        if self.trezor_sign.is_some() && matches!(key.code, KeyCode::Esc) {
+            self.trezor_sign = None;
+            self.trezor_passphrase = None;
+            self.trezor_pin = None;
+            self.trezor_ui.request_abort();
+            Self::best_effort_trezor_cancel();
             return;
         }
 
@@ -875,9 +934,26 @@ impl App {
 
         let before_addr = self.wallet().active_address().ok().map(|a| a.to_string());
         let outcome = {
-            let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
-            self.view
-                .handle_key(key, &mut wallet, &self.handle, &self.events)
+            if matches!(self.view, View::Dca(_)) {
+                let assets = self.chrome.assets.clone();
+                let decimals = self.wallet().networks().active().decimals;
+                let chain_id = self.wallet().networks().active().chain_id;
+                let account = self
+                    .wallet()
+                    .active_address()
+                    .ok()
+                    .and_then(|s| s.parse::<alloy::primitives::Address>().ok());
+                if let View::Dca(v) = &mut self.view {
+                    v.set_chain_id(chain_id);
+                    v.handle_key_with_assets(key, &assets, decimals, account)
+                } else {
+                    KeyOutcome::NotHandled
+                }
+            } else {
+                let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                self.view
+                    .handle_key(key, &mut wallet, &self.handle, &self.events)
+            }
         };
         let after_addr = self.wallet().active_address().ok().map(|a| a.to_string());
         // Keys import (and any path that flips the active account) must refresh F2.
@@ -1843,9 +1919,10 @@ impl App {
         }
         let pin_pending = self.trezor_ui.pin_pending();
         let passphrase_pending = self.trezor_ui.passphrase_pending();
+        let button_pending = self.trezor_ui.button_pending();
 
         // Only enter Pin when the device actually asks (already-unlocked sessions
-        // never set pin_pending — keep ConfirmOnDevice / no matrix).
+        // never set pin_pending — keep Unlocking / ConfirmOnDevice).
         if pin_pending {
             if let Some(session) = &mut self.trezor_sign {
                 session.phase = TrezorSignPhase::Pin;
@@ -1856,8 +1933,16 @@ impl App {
                 phase: TrezorSignPhase::Pin,
             })
         ) {
-            // Ask finished (submit / cancel) — return to on-device confirm while
-            // the sign job is still running.
+            // PIN ask finished — do not jump to ConfirmOnDevice while passphrase
+            // is next (that flashed the wrong overlay for hidden wallets).
+            if let Some(session) = &mut self.trezor_sign {
+                session.phase = if button_pending {
+                    TrezorSignPhase::ConfirmOnDevice
+                } else {
+                    TrezorSignPhase::Unlocking
+                };
+            }
+        } else if button_pending {
             if let Some(session) = &mut self.trezor_sign {
                 session.phase = TrezorSignPhase::ConfirmOnDevice;
             }
@@ -1907,7 +1992,8 @@ impl App {
                 self.trezor_passphrase = None;
                 self.trezor_ui.submit_passphrase(Ok(secret));
                 if let Some(session) = &mut self.trezor_sign {
-                    session.phase = TrezorSignPhase::ConfirmOnDevice;
+                    // Stay Unlocking until ButtonRequest — do not flash confirm early.
+                    session.phase = TrezorSignPhase::Unlocking;
                 }
             }
             _ => {
@@ -1941,7 +2027,8 @@ impl App {
                     self.trezor_pin = None;
                     self.trezor_ui.submit_pin(Ok(pin));
                     if let Some(session) = &mut self.trezor_sign {
-                        session.phase = TrezorSignPhase::ConfirmOnDevice;
+                        // Passphrase may be next — Unlocking until ButtonRequest.
+                        session.phase = TrezorSignPhase::Unlocking;
                     }
                 }
             }
@@ -1950,7 +2037,7 @@ impl App {
                 self.trezor_pin = None;
                 self.trezor_ui.submit_pin(Ok(pin));
                 if let Some(session) = &mut self.trezor_sign {
-                    session.phase = TrezorSignPhase::ConfirmOnDevice;
+                    session.phase = TrezorSignPhase::Unlocking;
                 }
             }
             KeyCode::Backspace => {
@@ -2134,8 +2221,7 @@ impl App {
                 };
                 if let Some(fee) = fee_override.as_ref() {
                     match &mut kind {
-                        ApprovalKind::SendTransaction(tx)
-                        | ApprovalKind::SignTransaction(tx) => {
+                        ApprovalKind::SendTransaction(tx) | ApprovalKind::SignTransaction(tx) => {
                             provider::apply_fee_override(tx, fee)
                         }
                         _ => {}
@@ -2357,7 +2443,9 @@ impl App {
     }
 
     /// True when the burn gate is off or this vault has unlocked tools (any F3 burner).
-    fn power_features_ok(&self) -> bool {
+    ///
+    /// Cache-only unlocks still count when the original burner was removed from F3.
+    pub fn power_features_ok(&self) -> bool {
         use vaughan_core::core::{
             assist_burn_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
         };
@@ -2373,10 +2461,14 @@ impl App {
             let addrs = w.account_addresses().unwrap_or_default();
             (dir, addrs)
         };
-        if addrs.is_empty() {
-            return false;
-        }
         power_features_unlocked_blocking(&self.handle, Some(&dir), chain_id, &addrs)
+    }
+
+    /// Fast chrome check: shared `assist-unlock.json` (no RPC / no `block_on`).
+    pub fn tools_unlock_cached(&self) -> bool {
+        use vaughan_core::core::assist_unlock_cached;
+        let dir = profile_dir(self.wallet().path());
+        assist_unlock_cached(&dir)
     }
 
     fn flash_tools_locked(&mut self) {
@@ -2449,6 +2541,16 @@ impl App {
                 let owner = w.active_address().ok().unwrap_or_default();
                 View::Hex(HexView::for_chain(chain_id, owner))
             }
+            Screen::Dca => {
+                let w = self.wallet();
+                let dir = profile_dir(w.path());
+                let auto = w.operating_mode() == OperatingMode::SentientTrader
+                    && crate::sentient_mcp::mcp_auto_exec_enabled(w.profile_name());
+                let chain_id = w.networks().active().chain_id;
+                let mut view = DcaView::new(dir, auto);
+                view.set_chain_id(chain_id);
+                View::Dca(view)
+            }
             Screen::TokenLaunch => {
                 let chain_id = self.wallet().networks().active().chain_id;
                 View::TokenLaunch(TokenLaunchView::for_chain(chain_id))
@@ -2493,6 +2595,9 @@ impl App {
                         self.spawn_job(job);
                     }
                 }
+            }
+            Screen::Dca => {
+                self.refresh_chrome();
             }
             Screen::Lp => {
                 self.refresh_chrome();
@@ -3058,6 +3163,7 @@ impl App {
                 | Screen::Approvals
                 | Screen::Wrap
                 | Screen::Hex
+                | Screen::Dca
                 | Screen::Bridge
         ) {
             self.navigate(self.screen());
@@ -3100,10 +3206,7 @@ impl App {
             let addrs = w.account_addresses().unwrap_or_default();
             (dir, addrs)
         };
-        if addrs.is_empty() {
-            self.force_human_only_assist_locked(reason);
-            return;
-        }
+        // Empty F3 still OK when `assist-unlock.json` already records a burn.
         let entitled = self
             .handle
             .block_on(vault_has_assist_burn(Some(&dir), chain_id, &addrs))
@@ -3159,6 +3262,10 @@ impl App {
 
         if !assist_burn_gate_enabled() {
             self.set_flash("Tools burn gate disabled (VAUGHAN_ASSIST_BURN_GATE=0)");
+            return;
+        }
+        if self.power_features_ok() {
+            self.set_flash("Tools already unlocked — burn recorded (Dex/Ag/LP were always free)");
             return;
         }
         let Some(chain_id) = entitlement_chain_id() else {
@@ -3228,7 +3335,7 @@ impl App {
     /// (poll/chrome), and a held lock freezes the frame so the matrix never appears.
     fn spawn_provider_hw_sign(&mut self, kind: ApprovalKind, reply: PendingReply) {
         self.trezor_sign = Some(TrezorSignSession {
-            phase: TrezorSignPhase::ConfirmOnDevice,
+            phase: TrezorSignPhase::Unlocking,
         });
         let wallet = self.wallet.clone();
         let handle = self.handle.clone();
@@ -3278,9 +3385,10 @@ impl App {
                 .active_is_hardware()
                 .unwrap_or(false);
             if hw {
-                // Start on confirm-on-device; matrix appears only if pin_pending.
+                // Unlocking until PIN / passphrase / ButtonRequest — do not flash
+                // confirm-on-device before host passphrase for hidden wallets.
                 self.trezor_sign = Some(TrezorSignSession {
-                    phase: TrezorSignPhase::ConfirmOnDevice,
+                    phase: TrezorSignPhase::Unlocking,
                 });
             }
         }
@@ -3478,10 +3586,12 @@ impl App {
                         (dir, addrs)
                     };
                     UiJobResult::AssistBurnVerify(match entitlement_chain_id() {
-                        Some(chain_id) if !addrs.is_empty() => handle.block_on(
-                            vault_has_assist_burn_with_retry(Some(&dir), chain_id, &addrs),
-                        ),
-                        _ => Ok(false),
+                        Some(chain_id) => handle.block_on(vault_has_assist_burn_with_retry(
+                            Some(&dir),
+                            chain_id,
+                            &addrs,
+                        )),
+                        None => Ok(false),
                     })
                 }
                 UiJob::EstimateEvmFee { tx } => {
@@ -3815,6 +3925,39 @@ impl App {
                         stakes,
                         globals,
                     }
+                }
+                UiJob::DcaSlice {
+                    plan_id,
+                    profile_dir,
+                    breaker,
+                } => {
+                    let (signer, rpcs, chain_id) = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        let signer = w.active_signer().map_err(|e| e.to_string());
+                        let mut rpcs = vec![w.active_rpc_url()];
+                        rpcs.extend(w.networks().active().fallback_rpc_urls.iter().cloned());
+                        let chain_id = w.networks().active().chain_id;
+                        (signer, rpcs, chain_id)
+                    };
+                    let result = (|| {
+                        let signer = signer.map_err(WalletError::Other)?;
+                        let trader = vaughan_agent::SentientTrader::with_breaker(
+                            signer, rpcs, chain_id, breaker,
+                        );
+                        let now = vaughan_agent::now_unix();
+                        handle
+                            .block_on(vaughan_agent::fire_plan(
+                                &profile_dir,
+                                &plan_id,
+                                &trader,
+                                chain_id,
+                                Some(profile_dir.as_path()),
+                                None,
+                                now,
+                            ))
+                            .map_err(|e| WalletError::Other(e.to_string()))
+                    })();
+                    UiJobResult::DcaSlice(result)
                 }
                 UiJob::PollTxStatus { tx_hash } => {
                     // Brief lock for RPC endpoints only — holding WalletState across
@@ -4382,6 +4525,28 @@ impl App {
                         }
                     }
                 }
+                UiJobResult::DcaSlice(res) => {
+                    self.dca_fire_inflight = false;
+                    match &res {
+                        Ok(r) if r.ok => {
+                            let msg = if r.dry_run {
+                                format!("DCA {} · dry-run ok", r.plan_id)
+                            } else {
+                                format!("DCA {} · {}", r.plan_id, r.tx_hash)
+                            };
+                            self.set_flash(msg);
+                        }
+                        Ok(r) => {
+                            self.set_flash(format!("DCA {} failed: {}", r.plan_id, r.error));
+                        }
+                        Err(e) => {
+                            self.set_flash(format!("DCA error: {}", e.user_message()));
+                        }
+                    }
+                    if let View::Dca(v) = &mut self.view {
+                        v.apply_job_result(UiJobResult::DcaSlice(res));
+                    }
+                }
                 UiJobResult::Chrome {
                     owner,
                     gen,
@@ -4552,6 +4717,10 @@ impl App {
                             v.apply_job_result(other);
                             v.reload_job()
                         }
+                        View::Dca(v) => {
+                            v.apply_job_result(other);
+                            None
+                        }
                         View::Lp(v) => {
                             v.apply_job_result(other);
                             None
@@ -4686,7 +4855,7 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
             'f' => GlobalAction::Navigate(Screen::Bridge),
             'j' => GlobalAction::Navigate(Screen::Approvals),
             'm' => GlobalAction::Navigate(Screen::History),
-            'o' => GlobalAction::Navigate(Screen::SoonNft),
+            'o' => GlobalAction::Navigate(Screen::Dca),
             'z' => GlobalAction::Navigate(Screen::TokenLaunch),
             'w' => GlobalAction::AssistBurn,
             'r' => GlobalAction::RefreshChrome,
@@ -4827,9 +4996,10 @@ mod tests {
 
     #[test]
     fn other_keys_are_inert() {
+        // `c` is Hardware (footer); digits and already-handled outcomes stay inert.
         assert_eq!(
             global_action(press('c'), &KeyOutcome::NotHandled),
-            GlobalAction::None
+            GlobalAction::NavigateHardware
         );
         assert_eq!(
             global_action(press('1'), &KeyOutcome::NotHandled),
@@ -4889,7 +5059,7 @@ mod tests {
         );
         assert_eq!(
             global_action(press('o'), &KeyOutcome::NotHandled),
-            GlobalAction::Navigate(Screen::SoonNft)
+            GlobalAction::Navigate(Screen::Dca)
         );
         assert_eq!(
             global_action(press('w'), &KeyOutcome::NotHandled),

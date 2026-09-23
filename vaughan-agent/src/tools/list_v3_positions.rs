@@ -27,7 +27,7 @@ impl Tool for ListV3PositionsTool {
 
     fn description(&self) -> &str {
         "List V3 LP NFT positions for an address (includes live principal amounts + tick). \
-         Optional venue (wiz4rd on 943, 9mm on 369). Optional from_block/to_block to bound log scans."
+         Optional venue (wiz4rd on 943, 9mm/9inch on 369, uniswap on 10001). Optional from_block/to_block to bound log scans."
     }
 
     fn parameters(&self) -> Value {

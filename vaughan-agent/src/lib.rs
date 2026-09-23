@@ -4,6 +4,7 @@
 //! was retired in 2026-08; this crate exposes structured tools and safety
 //! boundaries for external agents.
 
+pub mod dca;
 pub mod error;
 pub mod paths;
 pub mod presets;
@@ -12,6 +13,11 @@ pub mod sentient;
 pub mod tools;
 pub mod types;
 
+pub use dca::{
+    add_plan, agg_picker_labels, build_plan, build_proposal, cancel_plan, dex_picker_slugs,
+    fire_plan, load_plans, now_unix, poll_due_id, set_paused, DcaFireResult, DcaPlan, DcaPlanFile,
+    DcaPlanProposal, DcaStatus, DcaTrigger, DcaVenue, MIN_INTERVAL_SECS,
+};
 pub use error::AgentError;
 pub use paths::profile_dir;
 pub use presets::{apply_preset, presets_root, BUNDLED_PRESET_IDS};

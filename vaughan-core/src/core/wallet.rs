@@ -785,8 +785,7 @@ impl WalletState {
             .ok_or_else(|| WalletError::AccountNotFound(format!("account index {index}")))?;
         if !account.is_imported {
             return Err(WalletError::Other(
-                "only imported keys can be removed here — HD seed wallets stay in the vault"
-                    .into(),
+                "only imported keys can be removed here — HD seed wallets stay in the vault".into(),
             ));
         }
         let removed = accounts.remove_account(index)?;
@@ -1110,6 +1109,63 @@ impl WalletState {
         let persisted = self.persisted.as_ref().ok_or(WalletError::NotInitialized)?;
         let mut plaintext = decrypt(&persisted.vault, password)?;
         plaintext.zeroize();
+        Ok(())
+    }
+
+    /// Change the vault password (Settings). Requires an unlocked wallet.
+    ///
+    /// Verifies `current`, enforces the password policy on `new`, re-encrypts
+    /// optional side blobs first (`piteas.key.json`), then the vault, then
+    /// mirrors the new primary onto `wallet.json.bak` so the backup is not
+    /// left decryptable under the old password.
+    pub fn change_password(
+        &mut self,
+        current: &SecretString,
+        new: &SecretString,
+    ) -> Result<(), WalletError> {
+        self.require_unlocked()?;
+        self.verify_password(current)?;
+        if current.expose_secret() == new.expose_secret() {
+            return Err(WalletError::PasswordPolicy(
+                "New password must differ from the current password.".into(),
+            ));
+        }
+        crate::security::encryption::validate_password_policy(new)?;
+
+        // Decrypt optional side blobs under the old password before rotating.
+        let data_dir = self.path().parent().map(|p| p.to_path_buf());
+        let piteas_key = match data_dir.as_deref() {
+            Some(dir) => crate::core::piteas::load_api_key(dir, current)?,
+            None => None,
+        };
+
+        // Re-encrypt side blobs under the new password *before* the vault so a
+        // mid-flight failure never leaves Piteas stuck on the old password while
+        // the vault already requires the new one.
+        if let (Some(dir), Some(key)) = (data_dir.as_deref(), piteas_key.as_ref()) {
+            crate::core::piteas::save_api_key(dir, new, key)?;
+        }
+
+        if let Err(e) = self.persist_unlocked_secrets(new) {
+            // Vault still under `current` — put the side blob back to match.
+            if let (Some(dir), Some(key)) = (data_dir.as_deref(), piteas_key.as_ref()) {
+                if let Err(rb) = crate::core::piteas::save_api_key(dir, current, key) {
+                    tracing::warn!("piteas key rollback after failed vault rotate: {rb}");
+                }
+            }
+            return Err(e);
+        }
+
+        // The vault is committed under `new` from here on; never report failure
+        // (the UI would retry with a `current` that no longer verifies). If the
+        // backup cannot be mirrored, delete it rather than leave it decryptable
+        // under the old password.
+        if let Err(e) = self.state.mirror_primary_to_backup() {
+            tracing::warn!("could not mirror vault backup after password change: {e}");
+            if let Err(e) = self.state.remove_backup() {
+                tracing::warn!("could not remove stale vault backup: {e}");
+            }
+        }
         Ok(())
     }
 
@@ -2194,6 +2250,70 @@ mod tests {
         w.unlock(&password()).unwrap();
         assert!(w.is_unlocked());
         assert_eq!(w.active_address().unwrap().to_lowercase(), TEST_ADDRESS_0);
+    }
+
+    #[test]
+    fn change_password_rotates_vault() {
+        let path = tmp_path();
+        let old = password();
+        let new = SecretString::from("NewCorrectHorse9!Staple".to_string());
+        {
+            let mut w = WalletState::load(path.clone()).unwrap();
+            w.create(&old, mnemonic()).unwrap();
+            w.change_password(&old, &new).unwrap();
+            assert!(w.change_password(&old, &new).is_err());
+            w.lock();
+            assert!(w.unlock(&old).is_err());
+            w.unlock(&new).unwrap();
+            assert_eq!(w.active_address().unwrap().to_lowercase(), TEST_ADDRESS_0);
+        }
+        let bak = std::path::PathBuf::from(format!("{}.bak", path.display()));
+        assert!(bak.exists(), "rotation save must leave a refreshed .bak");
+        let bak_state: crate::core::persistence::PersistedState =
+            serde_json::from_str(&std::fs::read_to_string(&bak).unwrap()).unwrap();
+        assert!(
+            crate::security::encryption::decrypt(&bak_state.vault, &old).is_err(),
+            "backup must not remain decryptable under the old password"
+        );
+        let mut plain = crate::security::encryption::decrypt(&bak_state.vault, &new).unwrap();
+        use zeroize::Zeroize;
+        plain.zeroize();
+        let mut w = WalletState::load(path).unwrap();
+        assert!(w.unlock(&old).is_err());
+        w.unlock(&new).unwrap();
+        assert_eq!(w.active_address().unwrap().to_lowercase(), TEST_ADDRESS_0);
+    }
+
+    #[test]
+    fn change_password_rejects_same_and_weak() {
+        let mut w = WalletState::load(tmp_path()).unwrap();
+        w.create(&password(), mnemonic()).unwrap();
+        assert!(w.change_password(&password(), &password()).is_err());
+        let weak = SecretString::from("short".to_string());
+        assert!(w.change_password(&password(), &weak).is_err());
+        let wrong = SecretString::from("WrongPassword9!BatteryStaple".to_string());
+        let new = SecretString::from("NewCorrectHorse9!Staple".to_string());
+        assert!(w.change_password(&wrong, &new).is_err());
+    }
+
+    #[test]
+    fn change_password_reencrypts_piteas_key() {
+        let path = tmp_path();
+        let dir = path.parent().unwrap().to_path_buf();
+        let old = password();
+        let new = SecretString::from("NewCorrectHorse9!Staple".to_string());
+        let partner = SecretString::from("piteas-partner-key-xyz".to_string());
+        {
+            let mut w = WalletState::load(path).unwrap();
+            w.create(&old, mnemonic()).unwrap();
+            crate::core::piteas::save_api_key(&dir, &old, &partner).unwrap();
+            w.change_password(&old, &new).unwrap();
+        }
+        assert!(crate::core::piteas::load_api_key(&dir, &old).is_err());
+        let loaded = crate::core::piteas::load_api_key(&dir, &new)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.expose_secret(), partner.expose_secret());
     }
 
     #[test]

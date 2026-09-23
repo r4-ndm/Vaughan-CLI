@@ -66,6 +66,7 @@ pub fn rpc_endpoint_label(url: &str) -> String {
         "https://arb1.arbitrum.io/rpc" => "Arbitrum official".into(),
         "https://arbitrum-one-rpc.publicnode.com" => "PublicNode".into(),
         "https://rpc.ankr.com/arbitrum" => "Ankr".into(),
+        "https://mainnet.ethereumpow.org" => "Official".into(),
         other => url::Url::parse(other)
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
@@ -176,6 +177,7 @@ pub fn eip3770_short_name(chain_id: u64) -> &'static str {
         369 => "pls",
         8453 => "base",
         42161 => "arb1",
+        10_001 => "ethw",
         943 => "tpls",
         11155111 => "sep",
         _ => "eth",
@@ -195,6 +197,7 @@ pub fn dapp_chain_picker_labels(chain_id: u64) -> Vec<String> {
         56 => &["BNB Chain", "BSC", "Binance"],
         137 => &["Polygon", "MATIC"],
         42161 => &["Arbitrum", "Arbitrum One", "Arb"],
+        10_001 => &["EthereumPoW", "ETHW"],
         11155111 => &["Sepolia"],
         _ => &[],
     };
@@ -285,6 +288,25 @@ pub fn ethereum_sepolia() -> EvmNetworkConfig {
     .with_explorer("https://sepolia.etherscan.io")
 }
 
+/// EthereumPoW mainnet (chain id 10001) — the ETH PoW fork after the Merge.
+///
+/// `baseFee` is ~7 wei; miners still require ~`eth_gasPrice` (~100 gwei) as the
+/// tip. 1.5 gwei (Ethereum PoS default) would stall. The adapter also floors
+/// EIP-1559 estimates to live `eth_gasPrice`.
+pub fn ethereumpow_mainnet() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "ethereumpow",
+        "EthereumPoW",
+        10_001,
+        "https://mainnet.ethereumpow.org",
+        "ETHW",
+        "EthereumPoW",
+        false,
+    )
+    .with_priority_fee_wei(100_000_000_000) // 100 gwei
+    .with_explorer("https://www.oklink.com/ethereum-pow")
+}
+
 /// Polygon mainnet.
 pub fn polygon_mainnet() -> EvmNetworkConfig {
     EvmNetworkConfig::new(
@@ -369,6 +391,7 @@ pub fn builtin_networks() -> Vec<EvmNetworkConfig> {
         pulsechain_testnet_v4(),
         ethereum_mainnet(),
         ethereum_sepolia(),
+        ethereumpow_mainnet(),
         polygon_mainnet(),
         bsc_mainnet(),
         base_mainnet(),
@@ -444,11 +467,23 @@ mod tests {
     #[test]
     fn builtin_networks_has_pulsechain_first() {
         let nets = builtin_networks();
-        assert_eq!(nets.len(), 8);
+        assert_eq!(nets.len(), 9);
         assert_eq!(nets[0].id, "pulsechain");
         assert_eq!(get_network_by_chain_id(42_161).unwrap().id, "arbitrum");
         assert_eq!(eip3770_short_name(42_161), "arb1");
         assert!(dapp_chain_picker_labels(42_161).contains(&"Arbitrum".to_string()));
+        let ethw = get_network_by_chain_id(10_001).unwrap();
+        assert_eq!(ethw.id, "ethereumpow");
+        assert_eq!(ethw.native_symbol, "ETHW");
+        assert_eq!(ethw.rpc_url, "https://mainnet.ethereumpow.org");
+        assert_eq!(
+            ethw.explorer_url.as_deref(),
+            Some("https://www.oklink.com/ethereum-pow")
+        );
+        assert_eq!(eip3770_short_name(10_001), "ethw");
+        assert!(dapp_chain_picker_labels(10_001).contains(&"EthereumPoW".to_string()));
+        // Miners take ~eth_gasPrice (~100 gwei); 1.5 gwei would stall.
+        assert_eq!(ethw.default_priority_fee_wei, Some(100_000_000_000));
     }
 
     #[test]
@@ -482,6 +517,33 @@ mod tests {
     }
 
     #[test]
+    fn explorer_urls_ethereumpow_oklink() {
+        use alloy::primitives::Address;
+        use std::str::FromStr;
+        let addr = Address::from_str("0x249e763770a8fa4535d54cc271594f9e0a4b8def").unwrap();
+        let url = explorer_address_url(10_001, addr).expect("10001 has OKLink");
+        assert_eq!(
+            url,
+            format!(
+                "https://www.oklink.com/ethereum-pow/address/{}",
+                addr.to_checksum(None)
+            )
+        );
+        assert_eq!(
+            explorer_tx_url(
+                10_001,
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+            .unwrap(),
+            "https://www.oklink.com/ethereum-pow/tx/0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            rpc_endpoint_label("https://mainnet.ethereumpow.org"),
+            "Official"
+        );
+    }
+
+    #[test]
     fn lookup_by_chain_id_and_id() {
         assert_eq!(
             get_network_by_chain_id(369).unwrap().name,
@@ -489,6 +551,7 @@ mod tests {
         );
         assert!(get_network_by_chain_id(943).unwrap().is_testnet);
         assert_eq!(get_network_by_id("ETHEREUM").unwrap().chain_id, 1);
+        assert_eq!(get_network_by_id("ethereumpow").unwrap().chain_id, 10_001);
         assert!(get_network_by_id("does-not-exist").is_none());
     }
 

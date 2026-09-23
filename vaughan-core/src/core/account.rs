@@ -359,15 +359,10 @@ impl AccountManager {
                 }
             }
         }
-        self.label_overrides
-            .remove(&account.address.to_lowercase());
+        self.label_overrides.remove(&account.address.to_lowercase());
         self.rebuild_account_list()?;
         if !self.accounts.iter().any(|a| a.index == self.active_index) {
-            self.active_index = self
-                .accounts
-                .first()
-                .map(|a| a.index)
-                .unwrap_or(0);
+            self.active_index = self.accounts.first().map(|a| a.index).unwrap_or(0);
         }
         Ok(account)
     }

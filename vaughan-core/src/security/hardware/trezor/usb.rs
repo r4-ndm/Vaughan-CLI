@@ -23,7 +23,12 @@ use super::ui_bridge::TrezorUiBridge;
 pub(crate) fn map_trezor(err: impl std::fmt::Display) -> WalletError {
     let msg = err.to_string();
     let lower = msg.to_lowercase();
-    if lower.contains("no device") || lower.contains("not found") || lower.contains("usb") {
+    if lower.contains("no device")
+        || lower.contains("not found")
+        || lower.contains("usb")
+        || lower.contains("connection refused")
+        || lower.contains("disconnected")
+    {
         WalletError::HardwareUnsupported(format!(
             "Trezor not ready — unlock, check USB. On Linux: Settings → h or trezor.io/guides/trezorctl/udev-rules: {msg}"
         ))
@@ -84,17 +89,23 @@ pub(crate) fn open_initialized(
     // Clear passphrase cache from a previous Vaughan connect on this plug.
     let _ = device.call_raw(protos::EndSession::new());
     let init = device.initialize(None).map_err(map_trezor)?;
-    let features = handle_host_ui(init, passphrase, ui)?;
+    let features = handle_host_ui(init, passphrase, ui, false)?;
     // Cache features for later inspection (model is already set from USB).
     let _ = features;
     Ok(device)
 }
 
 /// Button auto-ack; Trezor One PIN via bridge; passphrase on-device or session secret.
+///
+/// `track_button`: when true, set [`TrezorUiBridge::set_awaiting_button`] around
+/// ButtonRequest (tx / message confirm). When false (Initialize / GetAddress),
+/// skip that flag so the TUI does not flash "confirm on Trezor" before host
+/// passphrase entry.
 pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
     resp: TrezorResponse<'_, T, R>,
     passphrase: Option<&SecretString>,
     ui: Option<&Arc<TrezorUiBridge>>,
+    track_button: bool,
 ) -> Result<T, WalletError> {
     match resp {
         TrezorResponse::Ok(res) => Ok(res),
@@ -105,17 +116,21 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
             if ui.is_some_and(|b| b.take_abort()) {
                 send_cancel(req.client);
                 return Err(WalletError::SigningFailed(
-                    "cancelled on host — confirm aborted".into(),
+                    "Trezor: cancelled on host — confirm aborted".into(),
                 ));
             }
-            if let Some(bridge) = ui {
-                bridge.set_awaiting_button(true);
+            if track_button {
+                if let Some(bridge) = ui {
+                    bridge.set_awaiting_button(true);
+                }
             }
             let next = req.ack().map_err(map_trezor);
-            if let Some(bridge) = ui {
-                bridge.set_awaiting_button(false);
+            if track_button {
+                if let Some(bridge) = ui {
+                    bridge.set_awaiting_button(false);
+                }
             }
-            handle_host_ui(next?, passphrase, ui)
+            handle_host_ui(next?, passphrase, ui, track_button)
         }
         TrezorResponse::PinMatrixRequest(req) => {
             let Some(bridge) = ui else {
@@ -124,9 +139,12 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
                 ));
             };
             match bridge.request_pin() {
-                Ok(pin) if !pin.is_empty() => {
-                    handle_host_ui(req.ack_pin(pin).map_err(map_trezor)?, passphrase, ui)
-                }
+                Ok(pin) if !pin.is_empty() => handle_host_ui(
+                    req.ack_pin(pin).map_err(map_trezor)?,
+                    passphrase,
+                    ui,
+                    track_button,
+                ),
                 Ok(_) => {
                     // Empty submit — treat as host cancel; tell the device to leave PIN.
                     send_cancel(req.client);
@@ -143,13 +161,19 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
         }
         TrezorResponse::PassphraseRequest(req) => {
             if req.on_device() {
-                handle_host_ui(req.ack(true).map_err(map_trezor)?, passphrase, ui)
+                handle_host_ui(
+                    req.ack(true).map_err(map_trezor)?,
+                    passphrase,
+                    ui,
+                    track_button,
+                )
             } else if let Some(secret) = passphrase {
                 let pass = secret.expose_secret().clone();
                 handle_host_ui(
                     req.ack_passphrase(pass).map_err(map_trezor)?,
                     passphrase,
                     ui,
+                    track_button,
                 )
             } else {
                 // Trezor One: passphrase is always entered on the host.
@@ -165,6 +189,7 @@ pub(crate) fn handle_host_ui<T, R: TrezorMessage>(
                             req.ack_passphrase(pass).map_err(map_trezor)?,
                             passphrase,
                             ui,
+                            track_button,
                         )
                     }
                     Err(e) => {
@@ -212,7 +237,7 @@ pub(crate) fn ethereum_address(
             Box::new(|_, m: protos::EthereumAddress| Ok(m.address().to_string())),
         )
         .map_err(map_trezor)?;
-    handle_host_ui(resp, None, ui)
+    handle_host_ui(resp, None, ui, false)
 }
 
 pub(crate) fn ethereum_personal_sign(
@@ -240,7 +265,7 @@ pub(crate) fn ethereum_personal_sign(
             }),
         )
         .map_err(map_trezor)?;
-    let sig = handle_host_ui(resp, None, ui)?;
+    let sig = handle_host_ui(resp, None, ui, true)?;
     Ok(signature_hex_personal(&sig))
 }
 
@@ -413,6 +438,7 @@ fn sign_eip1559(
             .map_err(map_trezor)?,
         None,
         ui,
+        true,
     )?;
 
     while resp.data_length() > 0 {
@@ -424,6 +450,7 @@ fn sign_eip1559(
                 .map_err(map_trezor)?,
             None,
             ui,
+            true,
         )?;
     }
     convert_signature(&resp, None)
@@ -459,6 +486,7 @@ fn sign_legacy(
             .map_err(map_trezor)?,
         None,
         ui,
+        true,
     )?;
 
     while resp.data_length() > 0 {
@@ -470,6 +498,7 @@ fn sign_legacy(
                 .map_err(map_trezor)?,
             None,
             ui,
+            true,
         )?;
     }
     // Legacy firmware may return raw recid (0/1) or full EIP-155 v.
@@ -581,7 +610,7 @@ fn alloy_sig_matching(
     let alloy_sig = alloy_sig(sig, chain_id)?;
     let recovered = alloy_sig
         .recover_address_from_prehash(&sighash)
-        .map_err(|e| WalletError::SigningFailed(e.to_string()))?;
+        .map_err(|e| WalletError::SigningFailed(format!("Trezor recover failed: {e}")))?;
     Err(WalletError::SigningFailed(format!(
         "Trezor signature recovers to {recovered}, expected {expected_from}"
     )))

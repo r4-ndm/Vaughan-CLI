@@ -251,6 +251,20 @@ pub fn power_features_unlocked_blocking(
         .unwrap_or(false)
 }
 
+/// Disk-only check (no RPC): gate off, bypass, or shared `assist-unlock.json` hit.
+///
+/// Used for chrome footnotes / Settings copy so a prior burn stops nagging even
+/// when the burner address was later removed from the vault.
+pub fn assist_unlock_cached(profile_dir: &Path) -> bool {
+    if !assist_burn_gate_enabled() || assist_unlock_bypass() {
+        return true;
+    }
+    let Some(chain_id) = entitlement_chain_id() else {
+        return false;
+    };
+    cache_has_chain_shared(profile_dir, chain_id).unwrap_or(false)
+}
+
 async fn scan_assist_burn(cfg: &EntitlementToken, wallet: Address) -> Result<bool, WalletError> {
     let adapter = EvmAdapter::new(cfg.rpc_url, cfg.chain_id, cfg.network_name, &[]).await?;
     let latest = adapter
@@ -576,6 +590,22 @@ mod tests {
             .await
             .expect("rpc");
         assert!(!ok, "zero address must not be entitled");
+    }
+
+    #[test]
+    fn assist_unlock_cached_reads_shared_file() {
+        let root = tempfile::tempdir().unwrap();
+        let sentient = root.path().join("profiles").join("sentient");
+        std::fs::create_dir_all(&sentient).unwrap();
+        assert!(!assist_unlock_cached(root.path()));
+        cache_put_vault(
+            root.path(),
+            943,
+            address!("0xAe089fF30590206F24E4E6627Ea61E4944cFc895"),
+        )
+        .unwrap();
+        assert!(assist_unlock_cached(root.path()));
+        assert!(assist_unlock_cached(&sentient));
     }
 
     #[test]

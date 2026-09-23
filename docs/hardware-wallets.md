@@ -315,7 +315,7 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 - [x] Trezor One host PIN matrix overlay (numpad positions; non-blocking USB worker)
 - [ ] Optional host passphrase field in Keys (on-device passphrase works via USB ack)
 - [ ] EIP-712 typed-data clear-signing (protos exist; multi-round — follow-up)
-- [ ] 943 live smoke (native send + `personal_sign`) with physical device
+- [ ] 943 live smoke (native send + `personal_sign`) with physical device — helper: `scripts/trezor_personal_sign.py` (edit `ADDR`, unlock Vaughan, run)
 
 **Exit:** F3 can be Ledger *or* Trezor for send/personal-sign; typed-data still Ledger/software.
 

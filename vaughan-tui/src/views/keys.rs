@@ -710,8 +710,7 @@ impl KeysView {
                 KeyCode::Enter => {
                     match self.device_vendor {
                         DeviceVendor::Ledger => {
-                            if let Some((path, _)) =
-                                self.device_paths.get(self.device_sel).cloned()
+                            if let Some((path, _)) = self.device_paths.get(self.device_sel).cloned()
                             {
                                 self.status = "Confirm on Ledger if asked…".into();
                                 match handle.block_on(wallet.add_ledger_account(&path, "")) {

@@ -15,12 +15,12 @@ use vaughan_core::core::wiz4rd::WZRD_SMOKE_943;
 use vaughan_core::core::{
     build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v3_collect_evm,
     build_v3_decrease_evm, build_v3_increase_evm, chain_label, default_full_range_ticks,
-    display_price_range_from_preset, format_display_amount, lp_stack_for_chain, lp_v3_venue_picker,
-    min_out_after_slippage, v3_preview_mint_deposits_from_amount0,
-    v3_preview_mint_deposits_from_amount1, v3_range_ticks_from_human_prices,
-    v3_sqrt_and_tick_for_preview, venue_position_manager, venue_swap_router, wpls_for_chain,
-    DexProtocol, DexVenue, LpStack, V2LpPosition, V3LpDeployWait, V3PoolLifecycle, V3PositionInfo,
-    WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
+    display_price_range_from_preset, format_display_amount, lp_stack_for_chain,
+    lp_stacks_for_chain, lp_v3_venue_picker, min_out_after_slippage,
+    v3_preview_mint_deposits_from_amount0, v3_preview_mint_deposits_from_amount1,
+    v3_range_ticks_from_human_prices, v3_sqrt_and_tick_for_preview, venue_position_manager,
+    venue_swap_router, wpls_for_chain, DexProtocol, DexVenue, LpStack, V2LpPosition,
+    V3LpDeployWait, V3PoolLifecycle, V3PositionInfo, WalletState, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::EventBus;
@@ -279,7 +279,7 @@ impl LpView {
         };
         let keys = match self.tab {
             // ←→ already on the tab strip — don't repeat.
-            Tab::List => "↑↓ · Enter manage · r reload · Esc",
+            Tab::List => "↑↓ · [ ] DEX · Enter manage · r reload · Esc",
             Tab::Increase if matches!(self.focus, Focus::Amount0 | Focus::Amount1) => {
                 "type · Tab · Enter · Esc"
             }
@@ -528,12 +528,15 @@ impl LpView {
         let sym1 = self.token_symbol(&self.token1, assets);
         let price_suffix = format!(" · {sym1}/{sym0}");
 
+        let show_venue_picker = !on_price_deposit
+            && (matches!(self.stack, LpStack::V3 { .. })
+                || lp_stacks_for_chain(self.chain_id).len() > 1);
         let mut constraints = vec![
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ];
-        if matches!(self.stack, LpStack::V3 { .. }) && !on_price_deposit {
+        if show_venue_picker {
             constraints.push(Constraint::Length(1));
         }
         if !on_price_deposit {
@@ -616,7 +619,7 @@ impl LpView {
         );
         i += 1;
 
-        if matches!(self.stack, LpStack::V3 { .. }) && !on_price_deposit {
+        if show_venue_picker {
             let venue_style = if self.focus == Focus::Venue {
                 Style::default()
                     .fg(brand::accent_color())
@@ -624,16 +627,23 @@ impl LpView {
             } else {
                 Style::default().fg(brand::body_color())
             };
-            let picker: Vec<_> = lp_v3_venue_picker(self.chain_id)
+            let picker: Vec<_> = lp_stacks_for_chain(self.chain_id)
                 .iter()
-                .map(|v| {
-                    let on_chain = venue_position_manager(*v, self.chain_id).is_some();
-                    let mark = if *v == self.venue { "[" } else { "" };
-                    let end = if *v == self.venue { "]" } else { "" };
+                .map(|s| {
+                    let on_chain = match s {
+                        LpStack::V3 { venue } => {
+                            venue_position_manager(*venue, self.chain_id).is_some()
+                        }
+                        LpStack::V2 { venue } => {
+                            venue_swap_router(*venue, DexProtocol::V2, self.chain_id).is_some()
+                        }
+                    };
+                    let mark = if *s == self.stack { "[" } else { "" };
+                    let end = if *s == self.stack { "]" } else { "" };
                     if on_chain {
-                        format!("{mark}{}{end}", v.label())
+                        format!("{mark}{} {}{end}", s.venue().label(), s.label())
                     } else {
-                        format!("{mark}{}(943){end}", v.label())
+                        format!("{mark}{} {}(943){end}", s.venue().label(), s.label())
                     }
                 })
                 .collect();

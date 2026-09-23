@@ -106,7 +106,8 @@ fn run_job(view: &mut SendView, job: UiJob, wallet: &WalletState, handle: &Handl
         | UiJob::DeployToken { .. }
         | UiJob::McpQueuedApprove { .. }
         | UiJob::AssistBurnVerify
-        | UiJob::RefreshHexStakes { .. } => return,
+        | UiJob::RefreshHexStakes { .. }
+        | UiJob::DcaSlice { .. } => return,
     };
     view.apply_job_result(result);
 }

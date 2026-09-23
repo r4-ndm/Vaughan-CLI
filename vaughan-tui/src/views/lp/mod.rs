@@ -1,4 +1,5 @@
-//! Browserless LP — wiz4rd V3 on testnet 943, 9inch V3 on Pulse mainnet 369.
+//! Browserless LP — wiz4rd V3 on testnet 943, 9inch V3 on Pulse mainnet 369,
+//! LFGswap / UniWswap / PowSwap / Uniswap (Hedron) on EthereumPoW 10001.
 //!
 //! **List** opens first: ↑↓ select positions with liquidity, Enter focuses that
 //! row and ↑↓ picks Increase / Decrease / Collect / Transfer (or V2 Remove /

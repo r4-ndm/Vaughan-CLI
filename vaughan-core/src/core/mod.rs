@@ -43,14 +43,16 @@ pub use agent_autonomy::{
     operator_connect_allow_suffixes, operator_connect_allowed, AgentAutonomyTier,
 };
 pub use aggregator::{
-    assert_agg_exec_targets, is_allowed_agg_router, quote_aggregator, quote_live_aggregators,
-    rank_agg_quote_outcomes, AggAccess, AggExecTx, AggQuote, AggQuoteOutcome, AggQuoteRequest,
-    AggVenue, SquirrelPreview, SquirrelSwapClient, AGG_VENUES, OFFICIAL_AGG_ROUTERS,
+    agg_routers_supported_on, assert_agg_exec_targets, assert_agg_exec_targets_on_chain,
+    is_allowed_agg_router, is_allowed_agg_router_on_chain, quote_aggregator,
+    quote_live_aggregators, rank_agg_quote_outcomes, AggAccess, AggExecTx, AggQuote,
+    AggQuoteOutcome, AggQuoteRequest, AggVenue, SquirrelPreview, SquirrelSwapClient, AGG_VENUES,
+    OFFICIAL_AGG_ROUTERS,
 };
 pub use assist_entitlement::{
     address_has_assist_burn, address_has_assist_burn_with_retry, assist_burn_amount_u256,
-    assist_burn_gate_enabled, assist_unlock_bypass, build_assist_burn_evm, burn_sink_hex,
-    entitlement_chain_id, entitlement_wzrd, power_features_unlocked_blocking,
+    assist_burn_gate_enabled, assist_unlock_bypass, assist_unlock_cached, build_assist_burn_evm,
+    burn_sink_hex, entitlement_chain_id, entitlement_wzrd, power_features_unlocked_blocking,
     require_assist_entitlement, require_power_features, vault_has_assist_burn,
     vault_has_assist_burn_with_retry, wzrd_token_hex, ASSIST_BURN_AMOUNT_HUMAN,
     ASSIST_BURN_AMOUNT_WEI, ASSIST_BURN_GATE_ENV, BURN_SINK,
@@ -65,11 +67,11 @@ pub use broadcasts::{
     MAX_RECENT_BROADCASTS,
 };
 pub use dex_catalog::{
-    chain_label, cycle_dex_swap_venue, default_lp_v3_venue, default_lp_venue, dex_swap_venues,
-    lp_stack_for_chain, lp_v2_venue, lp_v3_venue_picker, lp_v3_venues, missing_router_hint,
-    parse_dex_venue_label, venue_pool_deployer, venue_position_manager, venue_quoter_v2,
-    venue_slug, venue_swap_router, venue_v2_factory, venue_v3_factory, DexContractRole,
-    DexProtocol, DexVenue, LpStack, DEX_VENUES,
+    chain_label, cycle_dex_swap_venue, cycle_lp_stack, default_lp_v3_venue, default_lp_venue,
+    dex_swap_venues, lp_stack_for_chain, lp_stacks_for_chain, lp_v2_venue, lp_v3_venue_picker,
+    lp_v3_venues, missing_router_hint, parse_dex_venue_label, venue_pool_deployer,
+    venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router, venue_v2_factory,
+    venue_v3_factory, DexContractRole, DexProtocol, DexVenue, LpStack, DEX_VENUES,
 };
 pub use dex_lp::{
     build_v3_collect_evm, build_v3_create_pool_evm, build_v3_decrease_evm, build_v3_increase_evm,
@@ -96,7 +98,8 @@ pub use dex_quote::{
     wait_erc20_allowance, DexQuote, V3DiscoveredRoute, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 pub use dex_routers::{
-    dex_routers_labeled, is_allowed_dex_router, wpls_for_chain, PULSEX_V2_MAINNET,
+    dex_routers_labeled, is_allowed_dex_router, venue_wrapped_native, wpls_for_chain,
+    PULSEX_V2_MAINNET,
 };
 pub use dexscreener::{
     catalog_chain_id_for_dex_slug, resolve_dex_chain, DexScreenerClient, DEFAULT_DEXSCREENER_CHAIN,
@@ -132,10 +135,10 @@ pub use mcp_ipc::{
 };
 pub use network::NetworkService;
 pub use persistence::{
-    default_ipfs_gateway_hosts, default_trusted_dapps, is_sentient_profile,
-    merge_default_trusted_dapps, reject_deferred_sentient_profile, sentient_mode_enabled,
-    trusted_dapp_allow_hosts, CustomNetwork, CustomToken, PersistedState, ProfileMeta,
-    StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
+    core_trusted_dapps, default_ipfs_gateway_hosts, default_trusted_dapps, is_sentient_profile,
+    merge_default_trusted_dapps, reject_deferred_sentient_profile, seed_only_trusted_dapps,
+    sentient_mode_enabled, trusted_dapp_allow_hosts, CustomNetwork, CustomToken, PersistedState,
+    ProfileMeta, StateManager, TrustedDapp, DEFAULT_PROFILE, DEGEN_PROFILE, SENTIENT_PROFILE,
 };
 pub use piteas::{
     AuthStyle, MethodParameters, NativeToken, PiteasClient, PiteasFileConfig, PiteasQuote,

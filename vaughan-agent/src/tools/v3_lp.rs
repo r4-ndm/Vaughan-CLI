@@ -34,7 +34,7 @@ pub fn venue_param_schema() -> Value {
     json!({
         "venue": {
             "type": "string",
-            "description": "DEX venue slug (wiz4rd on 943, 9mm on 369). Defaults to the chain default."
+            "description": "DEX venue slug (wiz4rd on 943, 9mm/9inch on 369, uniswap on 10001). Defaults to the chain default."
         }
     })
 }
@@ -51,7 +51,7 @@ pub fn resolve_lp_venue(args: &Value, chain_id: u64) -> Result<DexVenue, AgentEr
     } else {
         default_lp_v3_venue(chain_id).ok_or_else(|| {
             AgentError::InvalidToolCall(format!(
-                "no V3 LP venue on chain {chain_id} (wiz4rd 943, 9inch 369; use list_v2_positions for 9inch V2)"
+                "no V3 LP venue on chain {chain_id} (wiz4rd 943, 9inch 369, uniswap 10001; use list_v2_positions for V2 AMMs)"
             ))
         })?
     };
@@ -118,8 +118,13 @@ mod tests {
             resolve_lp_venue(&json!({}), 369).unwrap(),
             DexVenue::NineInch
         );
+        assert_eq!(
+            resolve_lp_venue(&json!({}), 10_001).unwrap(),
+            DexVenue::UniHedron
+        );
         assert!(resolve_lp_venue(&json!({"venue": "wiz4rd"}), 943).is_ok());
         assert!(resolve_lp_venue(&json!({"venue": "9inch"}), 369).is_ok());
+        assert!(resolve_lp_venue(&json!({"venue": "uniswap"}), 10_001).is_ok());
     }
 
     #[test]

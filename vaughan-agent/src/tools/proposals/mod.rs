@@ -6,6 +6,7 @@ pub mod propose_agg_swap;
 pub mod propose_approve;
 pub mod propose_batch_7702;
 pub mod propose_contract_call;
+pub mod propose_hex_stake;
 pub mod propose_revoke;
 pub mod propose_stealth_send;
 pub mod propose_swap;
@@ -18,7 +19,6 @@ pub mod propose_v3_lp_lifecycle;
 pub mod propose_v3_mint;
 pub mod propose_v3_swap;
 pub mod propose_wrap;
-pub mod propose_hex_stake;
 
 pub use propose_agg_swap::ProposeAggSwapTool;
 pub use propose_approve::ProposeApproveTool;

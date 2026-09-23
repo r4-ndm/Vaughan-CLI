@@ -28,8 +28,7 @@ fn require_phex_target(args: &Value) -> Result<alloy::primitives::Address, Agent
         .get("contract")
         .and_then(|v| v.as_str())
         .unwrap_or("phex");
-    let resolved =
-        resolve_hex_contract(which).map_err(AgentError::InvalidToolCall)?;
+    let resolved = resolve_hex_contract(which).map_err(AgentError::InvalidToolCall)?;
     // Writes are pHEX-only — refuse eHEX and arbitrary custom addresses.
     if resolved.kind != HexContractKind::Phex || resolved.address != phex_address() {
         return Err(AgentError::InvalidToolCall(

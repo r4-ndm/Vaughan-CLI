@@ -1,4 +1,4 @@
-//! PulseChain DEX venue catalog — single source for routers, NPM, and allowlists.
+//! DEX venue catalog — PulseChain plus EthereumPoW HEX AMMs.
 //!
 //! Dex TUI, MCP propose tools, and Sentient gates import from here so addresses
 //! never drift between UI picker and `is_allowed_dex_router`.
@@ -44,6 +44,9 @@ pub enum DexVenue {
     SparkSwap,
     Dextop,
     UniHedron,
+    LfgSwap,
+    UniWswap,
+    PowSwap,
     PDex,
     Phux,
     Tide,
@@ -63,6 +66,9 @@ pub const DEX_VENUES: &[DexVenue] = &[
     DexVenue::NineInch,
     DexVenue::SparkSwap,
     DexVenue::Dextop,
+    DexVenue::LfgSwap,
+    DexVenue::UniWswap,
+    DexVenue::PowSwap,
     DexVenue::UniHedron,
     DexVenue::PDex,
     DexVenue::Phux,
@@ -85,6 +91,9 @@ impl DexVenue {
             Self::SparkSwap => "SparkSwap",
             Self::Dextop => "Dextop",
             Self::UniHedron => "Uniswap",
+            Self::LfgSwap => "LFGswap",
+            Self::UniWswap => "UniWswap",
+            Self::PowSwap => "PowSwap",
             Self::PDex => "pDex",
             Self::Phux => "PHUX",
             Self::Tide => "0xTide",
@@ -105,7 +114,10 @@ impl DexVenue {
             Self::NineInch => "V2 + V3 DEX (limit orders on site)",
             Self::SparkSwap => "dexSWAP / Spark Swap (V2-style)",
             Self::Dextop => "Uni V3-style · zkzx frontend",
-            Self::UniHedron => "Uniswap V3 periphery on PulseChain",
+            Self::UniHedron => "Uniswap V3 · Hedron frontend (Pulse + ETHW)",
+            Self::LfgSwap => "ETHW V2 AMM · HEX/WETHW",
+            Self::UniWswap => "ETHW V2 AMM · uniwswap.com",
+            Self::PowSwap => "ETHW V2 AMM · sevndex frontend",
             Self::PDex => "pDex V3 router",
             Self::Phux => "Balancer-style weighted pools — not wired",
             Self::Tide => "Balancer-fork dynamic fees — not wired",
@@ -314,13 +326,95 @@ const CATALOG: &[CatalogEntry] = &[
         role: DexContractRole::SwapRouter,
         address: "0x1eC2eaA62117486c9b2a05F098a7bF2568e19204",
     },
-    // Uni V3 Hedron
+    // Uni V3 Hedron (Pulse)
     CatalogEntry {
         venue: DexVenue::UniHedron,
         chain_id: 369,
         protocol: Some(DexProtocol::V3),
         role: DexContractRole::SwapRouter,
         address: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+    // EthereumPoW 10001 — LFGswap V2 (WETHW wrap)
+    CatalogEntry {
+        venue: DexVenue::LfgSwap,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::V2Factory,
+        address: "0xf66cef53c518659bFA0A9a4Aa07445AF08bf9B3a",
+    },
+    CatalogEntry {
+        venue: DexVenue::LfgSwap,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x4f381d5fF61ad1D0eC355fEd2Ac4000eA1e67854",
+    },
+    // EthereumPoW 10001 — UniWswap V2 (canonical WETH; uniwswap.com)
+    CatalogEntry {
+        venue: DexVenue::UniWswap,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::V2Factory,
+        address: "0xaBC4325bAD182076EAa5877c68437833d596D3Ee",
+    },
+    CatalogEntry {
+        venue: DexVenue::UniWswap,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x633e494C22D163F798b25b0264b92Ac612645731",
+    },
+    // EthereumPoW 10001 — PowSwap V2 (canonical WETH; sevndex frontend)
+    CatalogEntry {
+        venue: DexVenue::PowSwap,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::V2Factory,
+        address: "0x62009bD6349A3A1d7f1bcC7C69492Cd26F1FBF75",
+    },
+    CatalogEntry {
+        venue: DexVenue::PowSwap,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x6851e767Aaa9C4674Fe8cAE95AFCc819b7Fb0403",
+    },
+    // EthereumPoW 10001 — Uniswap V2 (pre-merge factory; HEX/WETH)
+    CatalogEntry {
+        venue: DexVenue::UniHedron,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::V2Factory,
+        address: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+    },
+    CatalogEntry {
+        venue: DexVenue::UniHedron,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::SwapRouter,
+        address: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+    },
+    // EthereumPoW 10001 — Uniswap V3 (Hedron frontend)
+    CatalogEntry {
+        venue: DexVenue::UniHedron,
+        chain_id: 10_001,
+        protocol: Some(DexProtocol::V3),
+        role: DexContractRole::SwapRouter,
+        address: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+    CatalogEntry {
+        venue: DexVenue::UniHedron,
+        chain_id: 10_001,
+        protocol: None,
+        role: DexContractRole::PositionManager,
+        address: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+    },
+    CatalogEntry {
+        venue: DexVenue::UniHedron,
+        chain_id: 10_001,
+        protocol: None,
+        role: DexContractRole::V3Factory,
+        address: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     },
 ];
 
@@ -332,6 +426,7 @@ pub fn chain_label(chain_id: u64) -> &'static str {
     match chain_id {
         369 => "PulseChain mainnet",
         943 => "PulseChain testnet",
+        10_001 => "EthereumPoW",
         _ => "this network",
     }
 }
@@ -347,6 +442,9 @@ pub fn venue_slug(venue: DexVenue) -> &'static str {
         DexVenue::SparkSwap => "sparkswap",
         DexVenue::Dextop => "dextop",
         DexVenue::UniHedron => "uniswap",
+        DexVenue::LfgSwap => "lfgswap",
+        DexVenue::UniWswap => "uniwswap",
+        DexVenue::PowSwap => "powswap",
         DexVenue::PDex => "pdex",
         DexVenue::Phux => "phux",
         DexVenue::Tide => "0xtide",
@@ -383,6 +481,10 @@ pub fn parse_dex_venue_label(raw: &str) -> Option<DexVenue> {
         "ninemm" | "nine_mm" => Some(DexVenue::NineMm),
         "nineinch" | "nine_inch" => Some(DexVenue::NineInch),
         "pulsexv1" | "pulsexlegacy" => Some(DexVenue::PulseXV1),
+        "lfg" | "lfgswapfinance" => Some(DexVenue::LfgSwap),
+        "uniw" | "uniwswap" => Some(DexVenue::UniWswap),
+        "pow" | "sevndex" | "sevn" => Some(DexVenue::PowSwap),
+        "hedron" => Some(DexVenue::UniHedron),
         _ => None,
     }
 }
@@ -490,6 +592,23 @@ pub fn dex_swap_venues(chain_id: u64) -> Vec<DexVenue> {
             out.insert(0, w);
         }
     }
+    // HEX AMMs first on EthereumPoW (LFG, UniWswap, PowSwap, Uniswap).
+    if chain_id == 10_001 {
+        for (slot, venue) in [
+            DexVenue::LfgSwap,
+            DexVenue::UniWswap,
+            DexVenue::PowSwap,
+            DexVenue::UniHedron,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(i) = out.iter().position(|v| *v == venue) {
+                let v = out.remove(i);
+                out.insert(slot.min(out.len()), v);
+            }
+        }
+    }
     out.push(DexVenue::Custom);
     out
 }
@@ -542,32 +661,93 @@ pub fn lp_v3_venue_picker(chain_id: u64) -> Vec<DexVenue> {
     }
 }
 
-/// V2 LP venue for `chain_id` (9inch on 369 only today).
+/// V2 LP venue for `chain_id` (first catalogued V2 stack: 9inch on 369, LFG on ETHW).
 pub fn lp_v2_venue(chain_id: u64) -> Option<DexVenue> {
-    if chain_id == 369 && venue_v2_factory(DexVenue::NineInch, chain_id).is_some() {
-        return Some(DexVenue::NineInch);
-    }
-    None
+    lp_stacks_for_chain(chain_id)
+        .into_iter()
+        .find_map(|s| match s {
+            LpStack::V2 { venue } => Some(venue),
+            LpStack::V3 { .. } => None,
+        })
 }
 
-/// Which LP stack the TUI should show: wiz4rd V3 on 943, 9inch V3 on 369.
+/// LP stacks the TUI can cycle: wiz4rd V3 on 943, 9inch/9mm on 369, HEX AMMs on ETHW.
+pub fn lp_stacks_for_chain(chain_id: u64) -> Vec<LpStack> {
+    match chain_id {
+        943 if venue_position_manager(DexVenue::Wiz4rd, 943).is_some() => {
+            vec![LpStack::V3 {
+                venue: DexVenue::Wiz4rd,
+            }]
+        }
+        369 => {
+            let mut stacks = vec![
+                LpStack::V3 {
+                    venue: DexVenue::NineInch,
+                },
+                LpStack::V3 {
+                    venue: DexVenue::NineMm,
+                },
+                LpStack::V3 {
+                    venue: DexVenue::Wiz4rd,
+                },
+            ];
+            if venue_v2_factory(DexVenue::NineInch, 369).is_some() {
+                stacks.push(LpStack::V2 {
+                    venue: DexVenue::NineInch,
+                });
+            }
+            stacks
+        }
+        10_001 => {
+            let mut stacks = Vec::new();
+            for venue in [
+                DexVenue::LfgSwap,
+                DexVenue::UniWswap,
+                DexVenue::PowSwap,
+                DexVenue::UniHedron,
+            ] {
+                if venue_v2_factory(venue, chain_id).is_some() {
+                    stacks.push(LpStack::V2 { venue });
+                }
+            }
+            if venue_position_manager(DexVenue::UniHedron, chain_id).is_some() {
+                stacks.push(LpStack::V3 {
+                    venue: DexVenue::UniHedron,
+                });
+            }
+            stacks
+        }
+        _ => {
+            let mut stacks: Vec<_> = lp_v3_venues(chain_id)
+                .map(|venue| LpStack::V3 { venue })
+                .collect();
+            for venue in DEX_VENUES.iter().copied() {
+                if venue_v2_factory(venue, chain_id).is_some() {
+                    stacks.push(LpStack::V2 { venue });
+                }
+            }
+            stacks
+        }
+    }
+}
+
+/// Which LP stack the TUI should show first on `chain_id`.
 pub fn lp_stack_for_chain(chain_id: u64) -> Option<LpStack> {
-    if chain_id == 943 && venue_position_manager(DexVenue::Wiz4rd, chain_id).is_some() {
-        return Some(LpStack::V3 {
-            venue: DexVenue::Wiz4rd,
-        });
+    lp_stacks_for_chain(chain_id).into_iter().next()
+}
+
+/// Cycle LP venue/protocol stacks on the active chain (`[` / `]` in List).
+pub fn cycle_lp_stack(current: LpStack, chain_id: u64, forward: bool) -> LpStack {
+    let stacks = lp_stacks_for_chain(chain_id);
+    if stacks.is_empty() {
+        return current;
     }
-    if chain_id == 369 && venue_position_manager(DexVenue::NineInch, chain_id).is_some() {
-        return Some(LpStack::V3 {
-            venue: DexVenue::NineInch,
-        });
+    let idx = stacks.iter().position(|s| *s == current).unwrap_or(0);
+    if forward {
+        stacks[(idx + 1) % stacks.len()]
+    } else {
+        stacks[(idx + stacks.len() - 1) % stacks.len()]
     }
-    if let Some(venue) = lp_v2_venue(chain_id) {
-        return Some(LpStack::V2 { venue });
-    }
-    lp_v3_venues(chain_id)
-        .next()
-        .map(|venue| LpStack::V3 { venue })
 }
 
 /// Browserless LP mode for the active chain.
@@ -592,11 +772,14 @@ impl LpStack {
     }
 }
 
-/// Default V3 LP venue (wiz4rd 943, 9inch 369).
+/// Default V3 LP venue (wiz4rd 943, 9inch 369, Uniswap/Hedron on ETHW).
 pub fn default_lp_v3_venue(chain_id: u64) -> Option<DexVenue> {
     match chain_id {
         943 => venue_position_manager(DexVenue::Wiz4rd, chain_id).map(|_| DexVenue::Wiz4rd),
         369 => venue_position_manager(DexVenue::NineInch, chain_id).map(|_| DexVenue::NineInch),
+        10_001 => {
+            venue_position_manager(DexVenue::UniHedron, chain_id).map(|_| DexVenue::UniHedron)
+        }
         _ => lp_v3_venues(chain_id).next(),
     }
 }
@@ -639,7 +822,7 @@ mod tests {
     fn venue_cycle_order() {
         assert_eq!(DexVenue::Wiz4rd.next(), DexVenue::PulseX);
         assert_eq!(DexVenue::Custom.next(), DexVenue::Wiz4rd);
-        assert_eq!(DEX_VENUES.len(), 16);
+        assert_eq!(DEX_VENUES.len(), 19);
     }
 
     #[test]
@@ -719,6 +902,77 @@ mod tests {
             Some(LpStack::V3 {
                 venue: DexVenue::NineInch
             })
+        ));
+    }
+
+    #[test]
+    fn ethw_hex_venues_and_lp_stacks() {
+        assert_eq!(
+            venue_v2_factory(DexVenue::LfgSwap, 10_001),
+            Some(address!("0xf66cef53c518659bFA0A9a4Aa07445AF08bf9B3a"))
+        );
+        assert_eq!(
+            venue_swap_router(DexVenue::LfgSwap, DexProtocol::V2, 10_001),
+            Some(address!("0x4f381d5fF61ad1D0eC355fEd2Ac4000eA1e67854"))
+        );
+        assert_eq!(
+            venue_v2_factory(DexVenue::UniWswap, 10_001),
+            Some(address!("0xaBC4325bAD182076EAa5877c68437833d596D3Ee"))
+        );
+        assert_eq!(
+            venue_swap_router(DexVenue::UniWswap, DexProtocol::V2, 10_001),
+            Some(address!("0x633e494C22D163F798b25b0264b92Ac612645731"))
+        );
+        assert_eq!(
+            venue_v2_factory(DexVenue::PowSwap, 10_001),
+            Some(address!("0x62009bD6349A3A1d7f1bcC7C69492Cd26F1FBF75"))
+        );
+        assert_eq!(
+            venue_position_manager(DexVenue::UniHedron, 10_001),
+            Some(address!("0xC36442b4a4522E871399CD717aBDD847Ab11FE88"))
+        );
+        assert_eq!(
+            venue_v3_factory(DexVenue::UniHedron, 10_001),
+            Some(address!("0x1F98431c8aD98523631AE4a59f267346ea31F984"))
+        );
+        assert_eq!(lp_v2_venue(10_001), Some(DexVenue::LfgSwap));
+        assert!(matches!(
+            lp_stack_for_chain(10_001),
+            Some(LpStack::V2 {
+                venue: DexVenue::LfgSwap
+            })
+        ));
+        let stacks = lp_stacks_for_chain(10_001);
+        assert_eq!(
+            stacks,
+            vec![
+                LpStack::V2 {
+                    venue: DexVenue::LfgSwap
+                },
+                LpStack::V2 {
+                    venue: DexVenue::UniWswap
+                },
+                LpStack::V2 {
+                    venue: DexVenue::PowSwap
+                },
+                LpStack::V2 {
+                    venue: DexVenue::UniHedron
+                },
+                LpStack::V3 {
+                    venue: DexVenue::UniHedron
+                },
+            ]
+        );
+        assert_eq!(cycle_lp_stack(stacks[0], 10_001, true), stacks[1]);
+        assert_eq!(dex_swap_venues(10_001).first(), Some(&DexVenue::LfgSwap));
+        assert_eq!(parse_dex_venue_label("lfg"), Some(DexVenue::LfgSwap));
+        assert_eq!(parse_dex_venue_label("uniw"), Some(DexVenue::UniWswap));
+        assert_eq!(parse_dex_venue_label("uniwswap"), Some(DexVenue::UniWswap));
+        assert_eq!(parse_dex_venue_label("sevndex"), Some(DexVenue::PowSwap));
+        assert_eq!(parse_dex_venue_label("hedron"), Some(DexVenue::UniHedron));
+        assert!(is_v3_position_manager(
+            10_001,
+            address!("0xC36442b4a4522E871399CD717aBDD847Ab11FE88")
         ));
     }
 

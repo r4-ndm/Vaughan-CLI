@@ -1352,12 +1352,7 @@ fn stealth_power_ok(wallet: &WalletState, handle: &Handle) -> bool {
     let Some(chain_id) = entitlement_chain_id() else {
         return false;
     };
-    let Ok(addrs) = wallet.account_addresses() else {
-        return false;
-    };
-    if addrs.is_empty() {
-        return false;
-    }
+    let addrs = wallet.account_addresses().unwrap_or_default();
     let dir = vaughan_agent::paths::profile_dir(wallet.path());
     power_features_unlocked_blocking(handle, Some(&dir), chain_id, &addrs)
 }

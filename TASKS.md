@@ -12,6 +12,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] `core/persistence.rs` — `PersistedState` + `StateManager` (save/load vault, active network) (FR-1.3, FR-1.11)
 - [x] `core/account.rs` — `Account`/`AccountManager` (derive, list, active account, unlock) (FR-1.6)
 - [x] `core/network.rs` — `NetworkService` (built-in networks, active selection) (FR-1.7)
+- [x] Built-in EthereumPoW (10001) — official RPC + OKLink explorer (FR-1.7)
 - [x] `core/wallet.rs` — `WalletState` (lock/unlock, active account/network, balance, send) (FR-1.5, FR-1.8, FR-1.9)
 - [x] `core/transaction.rs` — `TransactionService` (build native tx, estimate, sign, broadcast) (FR-1.9)
 - [x] Unit tests: encryption roundtrip, HD derivation, password policy, networks, persistence, accounts, transactions, wallet lifecycle
@@ -371,6 +372,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Local EIP-712: paste/load typed-data JSON → Approve view — `vaughan sign-typed-data`, browser `sign-typed`
 - [x] Watch mode (MCP): `watch_balance` + `watch_quote` threshold snapshots; agent owns poll loop
 - [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/sentient-ops.md`](docs/sentient-ops.md))
+- [x] TUI-hosted DCA (FR-5.9): `vaughan-agent::dca` store/engine + DcaView (`o`) + MCP propose/list/cancel; route **agg ↔ DEX** + named venue pickers; Sentient tick fires slices; indicator Phase 2 documented in [`docs/dca.md`](docs/dca.md)
 - [x] Batch7702 fee-spike: stamp via `estimate_self_pay_fee`, check at approve (same as other MCP writes)
 
 #### LP manual 943 walkthrough (operator runbook)

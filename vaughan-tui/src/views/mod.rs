@@ -17,6 +17,7 @@ pub mod bridge;
 pub mod browser;
 pub mod dapps;
 pub mod dashboard;
+pub mod dca;
 pub mod dex;
 pub mod dex_calldata;
 pub mod hex;
@@ -42,6 +43,7 @@ pub use bridge::BridgeView;
 pub use browser::BrowserView;
 pub use dapps::DappsView;
 pub use dashboard::DashboardView;
+pub use dca::DcaView;
 pub use dex::DexView;
 pub use hex::HexView;
 pub use history::HistoryView;
@@ -319,6 +321,17 @@ pub(crate) fn token_symbol_hint(addr: &str, chain_id: u64) -> Option<&'static st
             return Some("PLSX");
         }
     }
+    if chain_id == 10_001 {
+        if addr.eq_ignore_ascii_case("0x7Bf88d2c0e32dE92Cdaf2D43CcDC23e8EdfD5990") {
+            return Some("WETHW");
+        }
+        if addr.eq_ignore_ascii_case("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2") {
+            return Some("WETH");
+        }
+    }
+    if addr.eq_ignore_ascii_case("0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39") {
+        return Some("HEX");
+    }
     None
 }
 
@@ -402,10 +415,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 
     // Status boxes + blank gap + four rows of footer key chips when unlocked.
-    // Optional faint tools-burn footnote under the chips (gate on only).
+    // Optional faint tools-burn footnote under the chips (gate on + still locked).
     let status_h = 3u16;
     let footer_h = 12u16;
-    let burn_hint = vaughan_core::core::assist_burn_gate_enabled();
+    let burn_hint = vaughan_core::core::assist_burn_gate_enabled() && !app.tools_unlock_cached();
     let hint_h = u16::from(burn_hint);
 
     let flash_h = app.chrome_flash_height(area.width);
@@ -668,7 +681,7 @@ fn render_stat_box_line(
     );
 }
 
-/// Faint permanent footnote: WZRD burn unlocks power features (gate default on).
+/// Faint footnote while tools are still locked (hidden once assist-unlock hits).
 fn render_tools_burn_hint(frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -704,7 +717,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
         ("n", "Net"),
         ("i", "Settings"),
         ("k", "Keys"),
-        ("o", "NFT"),
+        ("o", "DCA"),
         ("z", "Launch"),
         ("w", "Burn"),
         ("r", "Refresh"),
@@ -1146,6 +1159,7 @@ pub(crate) fn native_pls_label(chain_id: u64) -> &'static str {
     match chain_id {
         943 => "tPLS",
         369 => "PLS",
+        10_001 => "ETHW",
         _ => "PLS",
     }
 }

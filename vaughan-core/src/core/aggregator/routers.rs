@@ -34,13 +34,46 @@ fn router_set() -> &'static HashSet<[u8; 20]> {
     })
 }
 
-/// True when `addr` is a known aggregator router / spender.
+/// Chains where [`OFFICIAL_AGG_ROUTERS`] are deployed (PulseChain mainnet).
+///
+/// Anvil (`31337`) is included so local papers can reuse the same hex; live
+/// aggregator APIs still target Pulse mainnet contracts.
+pub fn agg_routers_supported_on(chain_id: u64) -> bool {
+    matches!(chain_id, 369 | 31337)
+}
+
+/// True when `addr` is a known aggregator router / spender (any chain).
+///
+/// Prefer [`is_allowed_agg_router_on_chain`] at execution time so a Pulse
+/// router address cannot be targeted on EthereumPoW / other nets.
 pub fn is_allowed_agg_router(addr: Address) -> bool {
     router_set().contains(&addr.into_array())
 }
 
-/// Refuse quotes whose execution `to` or ERC-20 `spender` is not allowlisted.
+/// True when `addr` is an allowlisted aggregator router **and** `chain_id`
+/// is a PulseChain (or Anvil) network where those contracts live.
+pub fn is_allowed_agg_router_on_chain(chain_id: u64, addr: Address) -> bool {
+    agg_routers_supported_on(chain_id) && is_allowed_agg_router(addr)
+}
+
+/// Refuse quotes whose execution `to` or ERC-20 `spender` is not allowlisted
+/// (Pulse catalog — callers that already scoped the venue to Pulse).
 pub fn assert_agg_exec_targets(to: Address, spender: Address) -> Result<(), WalletError> {
+    assert_agg_exec_targets_on_chain(369, to, spender)
+}
+
+/// Like [`assert_agg_exec_targets`], but refuses when `chain_id` is not a
+/// Pulse / Anvil network that hosts the catalogued routers.
+pub fn assert_agg_exec_targets_on_chain(
+    chain_id: u64,
+    to: Address,
+    spender: Address,
+) -> Result<(), WalletError> {
+    if !agg_routers_supported_on(chain_id) {
+        return Err(WalletError::InvalidTransaction(format!(
+            "aggregator: routers are PulseChain mainnet only — refusing on chain {chain_id}"
+        )));
+    }
     if !is_allowed_agg_router(to) {
         return Err(WalletError::InvalidTransaction(format!(
             "aggregator: router {:#x} not on allowlist — refusing to quote",
@@ -87,5 +120,15 @@ mod tests {
         assert!(assert_agg_exec_targets(evil, evil).is_err());
         assert!(assert_agg_exec_targets(ok, evil).is_err());
         assert!(assert_agg_exec_targets(ok, ok).is_ok());
+    }
+
+    #[test]
+    fn agg_routers_refused_off_pulse() {
+        let ok = address!("0xDa8953Fc615d6E816b9647Afd5536123dcE70B78");
+        assert!(is_allowed_agg_router_on_chain(369, ok));
+        assert!(!is_allowed_agg_router_on_chain(10_001, ok));
+        assert!(!is_allowed_agg_router_on_chain(943, ok));
+        assert!(assert_agg_exec_targets_on_chain(10_001, ok, ok).is_err());
+        assert!(assert_agg_exec_targets_on_chain(369, ok, ok).is_ok());
     }
 }

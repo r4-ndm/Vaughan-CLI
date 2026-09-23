@@ -1,10 +1,12 @@
 //! Settings / Net: switch networks; add, edit, or remove custom EVM networks;
-//! Agent CDP / autonomy toggles; manage F3 wallets (remove hardware / imports).
+//! Agent CDP / autonomy toggles; manage F3 wallets (remove hardware / imports);
+//! change vault password.
 //!
 //! Footer `n` / `i` both land here. Built-ins are fixed; customs persist in the vault.
 //! Built-in RPC: **`r`**. Custom chains: **`a`** add · **`e`** edit · **`d`** delete.
 //! Agent box (below networks): Enter toggles CDP / autonomy.
 //! Wallets: **`u`** list · **`d`** delete (confirm; imports need vault password).
+//! Password: **`p`** change vault password (current → new → confirm).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -14,8 +16,10 @@ use ratatui::{
     widgets::{List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
 use vaughan_core::core::{AgentAutonomyTier, OperatingMode, WalletState};
+use vaughan_core::security::encryption::validate_password_policy;
 use vaughan_core::security::AccountKind;
 use vaughan_provider::{EventBus, ProviderEvent};
 
@@ -40,6 +44,12 @@ enum Stage {
     AccountConfirm,
     /// Vault password before removing an imported key.
     AccountPassword,
+    /// Change vault password — current password.
+    ChangePasswordCurrent,
+    /// Change vault password — new password.
+    ChangePasswordNew,
+    /// Change vault password — confirm new password.
+    ChangePasswordConfirm,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -77,6 +87,9 @@ pub struct SettingsView {
     pending_remove_address: String,
     pending_remove_imported: bool,
     account_password: Input,
+    /// Held while collecting the new password (cleared on cancel / success).
+    pending_current_password: Option<SecretString>,
+    pending_new_password: Option<SecretString>,
     status: String,
 }
 
@@ -104,6 +117,8 @@ impl SettingsView {
             pending_remove_address: String::new(),
             pending_remove_imported: false,
             account_password: Input::new(true, "vault password"),
+            pending_current_password: None,
+            pending_new_password: None,
             status: String::new(),
         }
     }
@@ -187,6 +202,12 @@ impl SettingsView {
                     ),
                 };
                 let burn_on = vaughan_core::core::assist_burn_gate_enabled();
+                let tools_unlocked = if burn_on {
+                    let dir = vaughan_agent::paths::profile_dir(wallet.path());
+                    vaughan_core::core::assist_unlock_cached(&dir)
+                } else {
+                    true
+                };
                 let agent_h = if burn_on { 7 } else { 6 };
                 let [net_area, agent_area, footer_area] = Layout::vertical([
                     Constraint::Min(4),
@@ -207,10 +228,18 @@ impl SettingsView {
                 frame.render_widget(List::new(agent_items), agent_list_a);
                 let mut agent_notes = vec![Line::from(Span::styled(mode_label, mode_style))];
                 if burn_on {
-                    agent_notes.push(Line::from(Span::styled(
-                        "   Tools: burn ≥13 WZRD (w) — Dex/Ag/LP free",
-                        Style::default().fg(Color::Yellow),
-                    )));
+                    let (tools_line, tools_style) = if tools_unlocked {
+                        (
+                            "   Tools: unlocked (burn recorded) — Dex/Ag/LP free",
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    } else {
+                        (
+                            "   Tools: burn ≥13 WZRD (w) — Dex/Ag/LP free",
+                            Style::default().fg(Color::Yellow),
+                        )
+                    };
+                    agent_notes.push(Line::from(Span::styled(tools_line, tools_style)));
                 }
                 frame.render_widget(Paragraph::new(agent_notes), agent_note_a);
 
@@ -221,7 +250,7 @@ impl SettingsView {
                 );
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        "↑↓ move · Enter select · a add · e edit · r RPC · d delete · u wallets · h udev · k Keys · Esc",
+                        "↑↓ move · Enter select · a add · e edit · r RPC · d delete · u wallets · p password · h udev · k Keys · Esc",
                         Style::default().fg(Color::DarkGray),
                     ))),
                     footer_inner,
@@ -484,6 +513,40 @@ impl SettingsView {
                 );
                 render_labeled_input(frame, pw, "Password", &self.account_password, true);
             }
+            Stage::ChangePasswordCurrent
+            | Stage::ChangePasswordNew
+            | Stage::ChangePasswordConfirm => {
+                let (title, hint, label) = match self.stage {
+                    Stage::ChangePasswordCurrent => (
+                        " Change vault password ",
+                        "Enter current password · Esc cancel",
+                        "Current password",
+                    ),
+                    Stage::ChangePasswordNew => (
+                        " Choose new password ",
+                        "≥12 chars with upper, lower, digit, symbol · Esc cancel",
+                        "New password",
+                    ),
+                    _ => (
+                        " Confirm new password ",
+                        "Re-enter new password · Esc cancel",
+                        "Confirm password",
+                    ),
+                };
+                let [msg, pw] =
+                    Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(content);
+                let msg_inner = brand::render_faded_box(frame, msg, Some(brand::fade_line(title)));
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(
+                            "Rotates the vault encryption password (and Piteas key if saved).",
+                        ),
+                        Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
+                    ]),
+                    msg_inner,
+                );
+                render_labeled_input(frame, pw, label, &self.account_password, true);
+            }
         }
 
         frame.render_widget(status_paragraph(&self.status), status_area);
@@ -514,6 +577,9 @@ impl SettingsView {
             Stage::Accounts => self.handle_accounts_key(key, wallet),
             Stage::AccountConfirm => self.handle_account_confirm_key(key, wallet, events),
             Stage::AccountPassword => self.handle_account_password_key(key, wallet, events),
+            Stage::ChangePasswordCurrent
+            | Stage::ChangePasswordNew
+            | Stage::ChangePasswordConfirm => self.handle_change_password_key(key, wallet),
         }
     }
 
@@ -636,6 +702,10 @@ impl SettingsView {
                 self.account_sel = 0;
                 self.stage = Stage::Accounts;
                 self.status = "Select a wallet · d removes hardware watches / imports".into();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                self.begin_change_password();
                 KeyOutcome::Consumed
             }
             KeyCode::Char('w') | KeyCode::Char('W') => {
@@ -1023,6 +1093,122 @@ impl SettingsView {
             events.publish(ProviderEvent::AccountsChanged(vec![addr.to_string()]));
         }
         KeyOutcome::AccountListChanged
+    }
+
+    fn begin_change_password(&mut self) {
+        self.clear_change_password();
+        self.account_password = Input::new(true, "current password");
+        self.stage = Stage::ChangePasswordCurrent;
+        self.status.clear();
+    }
+
+    fn clear_change_password(&mut self) {
+        let _ = self.account_password.take_secret();
+        self.pending_current_password = None;
+        self.pending_new_password = None;
+    }
+
+    fn handle_change_password_key(
+        &mut self,
+        key: KeyEvent,
+        wallet: &mut WalletState,
+    ) -> KeyOutcome {
+        if key.code == KeyCode::Esc {
+            self.clear_change_password();
+            self.stage = Stage::List;
+            self.status = "Password change cancelled.".into();
+            return KeyOutcome::Consumed;
+        }
+        match self.account_password.handle_key(key) {
+            InputAction::Ignored => KeyOutcome::NotHandled,
+            InputAction::Consumed => KeyOutcome::Consumed,
+            InputAction::Submitted => match self.stage {
+                Stage::ChangePasswordCurrent => {
+                    let current = self.account_password.take_secret();
+                    match wallet.verify_password(&current) {
+                        Ok(()) => {
+                            self.pending_current_password = Some(current);
+                            self.account_password = Input::new(true, "new password");
+                            self.stage = Stage::ChangePasswordNew;
+                            self.status.clear();
+                        }
+                        Err(e) => {
+                            self.status = e.user_message();
+                            self.account_password = Input::new(true, "current password");
+                        }
+                    }
+                    KeyOutcome::Consumed
+                }
+                Stage::ChangePasswordNew => {
+                    let new_pw = self.account_password.take_secret();
+                    match validate_password_policy(&new_pw) {
+                        Ok(()) => {
+                            if self
+                                .pending_current_password
+                                .as_ref()
+                                .is_some_and(|c| c.expose_secret() == new_pw.expose_secret())
+                            {
+                                self.status =
+                                    "New password must differ from the current password.".into();
+                                self.account_password = Input::new(true, "new password");
+                            } else {
+                                self.pending_new_password = Some(new_pw);
+                                self.account_password = Input::new(true, "confirm password");
+                                self.stage = Stage::ChangePasswordConfirm;
+                                self.status.clear();
+                            }
+                        }
+                        Err(e) => {
+                            self.status = e.user_message();
+                            self.account_password = Input::new(true, "new password");
+                        }
+                    }
+                    KeyOutcome::Consumed
+                }
+                Stage::ChangePasswordConfirm => {
+                    let confirm = self.account_password.take_secret();
+                    let matches = self
+                        .pending_new_password
+                        .as_ref()
+                        .is_some_and(|p| p.expose_secret() == confirm.expose_secret());
+                    if !matches {
+                        self.pending_new_password = None;
+                        self.account_password = Input::new(true, "new password");
+                        self.stage = Stage::ChangePasswordNew;
+                        self.status = "Passwords do not match.".into();
+                        return KeyOutcome::Consumed;
+                    }
+                    let Some(current) = self.pending_current_password.take() else {
+                        self.clear_change_password();
+                        self.stage = Stage::List;
+                        self.status = "Password change cancelled.".into();
+                        return KeyOutcome::Consumed;
+                    };
+                    let Some(new_pw) = self.pending_new_password.take() else {
+                        self.clear_change_password();
+                        self.stage = Stage::List;
+                        self.status = "Password change cancelled.".into();
+                        return KeyOutcome::Consumed;
+                    };
+                    match wallet.change_password(&current, &new_pw) {
+                        Ok(()) => {
+                            self.clear_change_password();
+                            self.stage = Stage::List;
+                            self.status = "Vault password updated.".into();
+                        }
+                        Err(e) => {
+                            self.pending_current_password = Some(current);
+                            self.pending_new_password = None;
+                            self.account_password = Input::new(true, "new password");
+                            self.stage = Stage::ChangePasswordNew;
+                            self.status = e.user_message();
+                        }
+                    }
+                    KeyOutcome::Consumed
+                }
+                _ => KeyOutcome::Consumed,
+            },
+        }
     }
 
     fn clear_form(&mut self) {

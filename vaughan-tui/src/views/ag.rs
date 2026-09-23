@@ -309,10 +309,7 @@ impl AgView {
             }
             UiJobResult::Fee(Ok(fee)) => {
                 self.busy = Busy::Idle;
-                let step = self
-                    .pending_step
-                    .unwrap_or(ConfirmStep::Swap)
-                    .label();
+                let step = self.pending_step.unwrap_or(ConfirmStep::Swap).label();
                 self.status = format!("Fee {} {} · Enter to {step}", fee.total, fee.currency);
                 self.base_fee = Some(fee);
             }

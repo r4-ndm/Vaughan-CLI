@@ -78,6 +78,54 @@ fn padded_gas_limit(estimated: u64, input: Option<&Bytes>) -> u64 {
     padded.max(21_000).min(gas_limit_cap_for_calldata(input))
 }
 
+/// EthereumPoW chain id. Base fee is ~7 wei but miners take ~`eth_gasPrice` as the tip.
+const ETHEREUMPOW_CHAIN_ID: u64 = 10_001;
+
+/// Floor EIP-1559 max/tip to live `gas_price` (ETHW posts a tiny baseFee).
+fn floor_ethw_eip1559_fees(max_fee: U256, tip: U256, gas_price: U256) -> (U256, U256) {
+    let max_fee = max_fee.max(gas_price);
+    let tip = tip.max(gas_price).min(max_fee);
+    (max_fee, tip)
+}
+
+/// Pulse testnet feeHistory often suggests 10k+ gwei; clamp to live gas price (capped).
+/// ETHW (10001) is the opposite: feeHistory/baseFee under-tips vs `eth_gasPrice`.
+async fn sanitize_eip1559_fees(
+    provider: &AlloyProvider,
+    chain_id: u64,
+    max_fee_per_gas: Option<String>,
+    max_priority_fee_per_gas: Option<String>,
+    priority_default_wei: u64,
+) -> Result<(Option<String>, Option<String>), WalletError> {
+    let (max_fee_per_gas, max_priority_fee_per_gas) = sanitize_testnet_eip1559_fees(
+        provider,
+        chain_id,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        priority_default_wei,
+    )
+    .await?;
+    if chain_id != ETHEREUMPOW_CHAIN_ID {
+        return Ok((max_fee_per_gas, max_priority_fee_per_gas));
+    }
+    let gas_price = U256::from(
+        provider
+            .get_gas_price()
+            .await
+            .map_err(|e| WalletError::RpcError(e.to_string()))?,
+    );
+    let max_v = max_fee_per_gas
+        .as_deref()
+        .and_then(|s| U256::from_str(s).ok())
+        .unwrap_or_default();
+    let tip_v = max_priority_fee_per_gas
+        .as_deref()
+        .and_then(|s| U256::from_str(s).ok())
+        .unwrap_or(U256::from(priority_default_wei));
+    let (max_v, tip_v) = floor_ethw_eip1559_fees(max_v, tip_v, gas_price);
+    Ok((Some(max_v.to_string()), Some(tip_v.to_string())))
+}
+
 /// Pulse testnet feeHistory often suggests 10k+ gwei; clamp to live gas price (capped).
 async fn sanitize_testnet_eip1559_fees(
     provider: &AlloyProvider,
@@ -1240,8 +1288,7 @@ impl ChainAdapter for EvmAdapter {
                         }
                     }
                 };
-                sanitize_testnet_eip1559_fees(&provider, chain_id, max_fee, max_tip, priority_wei)
-                    .await
+                sanitize_eip1559_fees(&provider, chain_id, max_fee, max_tip, priority_wei).await
             })
             .await?;
 
@@ -1355,6 +1402,50 @@ mod tests {
         ] {
             assert!(!EvmAdapter::is_transport_failure(&e), "{e:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn sign_prepared_eip1559_ethw_chain_id() {
+        use crate::chains::types::EvmTransaction;
+        use crate::security::hardware::profiles::evm::sign_prepared_evm_tx;
+        use crate::security::hd_wallet::{derive_account, validate_mnemonic};
+
+        let mnemonic = validate_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let signer = derive_account(&mnemonic, 0).unwrap();
+        let from = format!("{}", signer.address());
+        let tx = EvmTransaction {
+            from,
+            to: "0xAe089fF30590206F24E4E6627Ea61E4944cFc895".into(),
+            value: (U256::from(20u64) * U256::from(10).pow(U256::from(18))).to_string(),
+            data: None,
+            chain_id: 10_001,
+            nonce: Some(0),
+            gas_limit: Some(21_000),
+            gas_price: None,
+            max_fee_per_gas: Some("100000000000".into()),
+            max_priority_fee_per_gas: Some("100000000000".into()),
+        };
+        let raw = sign_prepared_evm_tx(&signer, &tx)
+            .await
+            .expect("ETHW EIP-1559 sign must succeed");
+        assert!(raw.len() > 50);
+    }
+
+    #[test]
+    fn floor_ethw_fees_raises_tiny_eip1559_to_gas_price() {
+        let gas_price = U256::from(99_000_000_000u64); // 99 gwei
+        let tiny_tip = U256::from(1_500_000_000u64); // 1.5 gwei
+        let tiny_max = U256::from(1_500_000_014u64); // 2*baseFee + tip
+        let (max, tip) = floor_ethw_eip1559_fees(tiny_max, tiny_tip, gas_price);
+        assert_eq!(max, gas_price);
+        assert_eq!(tip, gas_price);
+        let high_tip = U256::from(180_000_000_000u64);
+        let (max, tip) = floor_ethw_eip1559_fees(high_tip, high_tip, gas_price);
+        assert_eq!(max, high_tip);
+        assert_eq!(tip, high_tip);
     }
 
     #[test]

@@ -93,12 +93,37 @@ pub fn pulsechain_testnet_tokens() -> Vec<TokenEntry> {
     ]
 }
 
+/// EthereumPoW mainnet (10001) — HEX plus both wraps (LFG uses WETHW; UniW/PowSwap/Uni use WETH).
+pub fn ethereumpow_mainnet_tokens() -> Vec<TokenEntry> {
+    vec![
+        TokenEntry {
+            symbol: "WETHW",
+            name: "Wrapped ETHW",
+            address: "0x7Bf88d2c0e32dE92Cdaf2D43CcDC23e8EdfD5990",
+            decimals: 18,
+        },
+        TokenEntry {
+            symbol: "WETH",
+            name: "Wrapped Ether",
+            address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            decimals: 18,
+        },
+        TokenEntry {
+            symbol: "HEX",
+            name: "HEX",
+            address: "0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39",
+            decimals: 8,
+        },
+    ]
+}
+
 /// The curated token list for a chain id (empty for chains with no registry —
 /// native balance still works).
 pub fn tokens_for_chain(chain_id: u64) -> Vec<TokenEntry> {
     match chain_id {
         369 => pulsechain_mainnet_tokens(),
         943 => pulsechain_testnet_tokens(),
+        10_001 => ethereumpow_mainnet_tokens(),
         _ => Vec::new(),
     }
 }
@@ -167,5 +192,18 @@ mod tests {
     fn find_token_is_case_insensitive() {
         let t = find_token(369, "0xA1077A294DDE1B09BB078844DF40758A5D0F9A27").unwrap();
         assert_eq!(t.symbol, "WPLS");
+    }
+
+    #[test]
+    fn ethw_list_has_hex_and_both_wraps() {
+        let tokens = tokens_for_chain(10_001);
+        assert_eq!(tokens.len(), 3);
+        let hex = tokens.iter().find(|t| t.symbol == "HEX").unwrap();
+        assert_eq!(
+            hex.address.to_lowercase(),
+            "0x2b591e99afe9f32eaa6214f7b7629768c40eeb39"
+        );
+        assert!(tokens.iter().any(|t| t.symbol == "WETHW"));
+        assert!(tokens.iter().any(|t| t.symbol == "WETH"));
     }
 }

@@ -7,6 +7,7 @@
 use alloy::primitives::{Address, U160, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
+use alloy::sol;
 use alloy::sol_types::SolCall;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -29,6 +30,13 @@ use wiz4rd_sdk::tx::liquidity::{
     build_collect_tx, build_decrease_liquidity_tx, build_increase_liquidity_tx, build_mint_tx,
 };
 use wiz4rd_sdk::tx::pool::{build_create_pool_tx, build_initialize_pool_tx};
+
+sol! {
+    interface IERC721EnumerableLp {
+        function balanceOf(address owner) external view returns (uint256);
+        function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256);
+    }
+}
 
 /// Re-export for TUI / CLI display.
 pub use wiz4rd_sdk::positions::PositionInfo as V3PositionInfo;
@@ -281,7 +289,7 @@ pub struct V3LpPoolQuote {
 }
 
 /// Standard V3 fee tiers on Pulse / 9mm catalog venues.
-pub const V3_LP_FEE_TIERS: [u32; 5] = [100, 500, 2500, 10_000, 20_000];
+pub const V3_LP_FEE_TIERS: [u32; 6] = [100, 500, 2500, 3000, 10_000, 20_000];
 
 /// V3 pool deployment stage for a token pair + fee tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1374,11 +1382,13 @@ fn lp_positions_scan_from_block(chain_id: u64, latest: u64) -> u64 {
         943 if latest < NPM_LOG_SCAN_FROM_BLOCK_943 => 0,
         943 => NPM_LOG_SCAN_FROM_BLOCK_943,
         369 => latest.saturating_sub(500_000),
+        // Uni V3 HEX NFTs on ETHW can be old; V2 watch pairs remain the reliable HEX view.
+        10_001 => latest.saturating_sub(2_000_000),
         _ => latest.saturating_sub(50_000),
     }
 }
 
-/// List V3 LP NFT positions for `owner` (Transfer-log scan + `positions()`).
+/// List V3 LP NFT positions for `owner` (Transfer-log scan + enumerable fallback).
 pub async fn list_v3_lp_positions(
     rpc_url: &str,
     venue: DexVenue,
@@ -1399,9 +1409,77 @@ pub async fn list_v3_lp_positions(
             lp_positions_scan_from_block(chain_id, latest)
         }
     };
-    list_positions_from(&provider, &cfg, owner, Some(scan_from), to_block)
+    let mut positions = list_positions_from(&provider, &cfg, owner, Some(scan_from), to_block)
         .await
-        .map_err(|e| WalletError::NetworkError(format!("list positions: {e}")))
+        .map_err(|e| WalletError::NetworkError(format!("list positions: {e}")))?;
+    if let Ok(extra) = list_v3_via_enumerable(&provider, &cfg, owner).await {
+        let mut seen: std::collections::HashSet<_> = positions.iter().map(|p| p.token_id).collect();
+        for pos in extra {
+            if seen.insert(pos.token_id) {
+                positions.push(pos);
+            }
+        }
+        positions.sort_by_key(|p| p.token_id);
+    }
+    Ok(positions)
+}
+
+/// Uniswap V3 NPM is ERC-721 Enumerable; log windows miss pre-merge ETHW NFTs.
+async fn list_v3_via_enumerable(
+    provider: &impl Provider,
+    cfg: &Config,
+    owner: Address,
+) -> Result<Vec<PositionInfo>, WalletError> {
+    let npm = cfg
+        .position_manager
+        .ok_or_else(|| WalletError::Other("position manager missing".into()))?;
+    let bal_raw = provider
+        .call(
+            TransactionRequest::default().to(npm).input(
+                IERC721EnumerableLp::balanceOfCall { owner }
+                    .abi_encode()
+                    .into(),
+            ),
+        )
+        .await
+        .map_err(|e| WalletError::NetworkError(format!("npm balanceOf: {e}")))?;
+    let n = IERC721EnumerableLp::balanceOfCall::abi_decode_returns(&bal_raw)
+        .map_err(|e| WalletError::NetworkError(format!("decode npm balanceOf: {e}")))?;
+    let n = u64::try_from(n).unwrap_or(0);
+    if n == 0 || n > 256 {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for i in 0..n {
+        let raw = provider
+            .call(
+                TransactionRequest::default().to(npm).input(
+                    IERC721EnumerableLp::tokenOfOwnerByIndexCall {
+                        owner,
+                        index: U256::from(i),
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+            )
+            .await
+            .map_err(|e| WalletError::NetworkError(format!("tokenOfOwnerByIndex: {e}")))?;
+        let token_id = IERC721EnumerableLp::tokenOfOwnerByIndexCall::abi_decode_returns(&raw)
+            .map_err(|e| WalletError::NetworkError(format!("decode tokenOfOwnerByIndex: {e}")))?;
+        if position_owner(provider, cfg, token_id)
+            .await
+            .map_err(|e| WalletError::NetworkError(e.to_string()))?
+            != owner
+        {
+            continue;
+        }
+        out.push(
+            get_position(provider, cfg, token_id)
+                .await
+                .map_err(|e| WalletError::NetworkError(e.to_string()))?,
+        );
+    }
+    Ok(out)
 }
 
 /// Enrich NPM positions with live pool slot0 + principal token amounts.

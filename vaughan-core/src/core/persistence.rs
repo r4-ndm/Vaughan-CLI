@@ -242,8 +242,11 @@ pub fn trusted_dapp_allow_hosts(dapps: &[TrustedDapp]) -> Vec<String> {
     out
 }
 
-/// Built-in trusted dApps seeded into every vault (provider origins + launcher).
-pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
+/// Core trusted dApps force-merged into existing vaults on load.
+///
+/// Keep this list stable: new third-party origins belong in
+/// [`seed_only_trusted_dapps`] so Operator auto-connect does not expand silently.
+pub fn core_trusted_dapps() -> Vec<TrustedDapp> {
     vec![
         TrustedDapp {
             name: "PulseChain V4 faucet".into(),
@@ -319,6 +322,48 @@ pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
     ]
 }
 
+/// Optional seed-only dApps (EthereumPoW HEX AMMs).
+///
+/// Included when creating a **new** vault via [`default_trusted_dapps`], but
+/// **not** force-merged into existing vaults — Operator auto-connect must not
+/// silently expand the origin allowlist on upgrade.
+pub fn seed_only_trusted_dapps() -> Vec<TrustedDapp> {
+    vec![
+        TrustedDapp {
+            name: "LFGswap".into(),
+            url: "https://app.lfgswap.finance/swap?chainId=10001".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "PowSwap".into(),
+            url: "https://app.powswap.io/".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "SevnDEX".into(),
+            url: "https://sevndex.com/#/swap?chain=ethereum_pow".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "Hedron Uniswap".into(),
+            url: "https://swap.hedron.pro/".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
+            name: "UniWswap".into(),
+            url: "https://uniwswap.com/".into(),
+            extra_hosts: vec![],
+        },
+    ]
+}
+
+/// Built-in trusted dApps seeded into every **new** vault (provider origins + launcher).
+pub fn default_trusted_dapps() -> Vec<TrustedDapp> {
+    let mut list = core_trusted_dapps();
+    list.extend(seed_only_trusted_dapps());
+    list
+}
+
 fn dapp_origin(url: &str) -> Option<String> {
     let u = url::Url::parse(url).ok()?;
     let origin = u.origin().ascii_serialization();
@@ -329,14 +374,16 @@ fn dapp_origin(url: &str) -> Option<String> {
     }
 }
 
-/// Append any missing [`default_trusted_dapps`] entries.
+/// Append any missing [`core_trusted_dapps`] entries.
 ///
-/// Match order: exact URL, then name, then same origin **only when** that origin
-/// appears once in the defaults (so hash-route siblings like SquirrelSwap + Bot
-/// are not collapsed). Also backfills `extra_hosts` (e.g. PulseX IPFS gateways).
+/// Seed-only dApps ([`seed_only_trusted_dapps`]) are **not** force-merged — they
+/// appear on new vaults only. Match order: exact URL, then name, then same
+/// origin **only when** that origin appears once in the core defaults (so
+/// hash-route siblings like SquirrelSwap + Bot are not collapsed). Also
+/// backfills `extra_hosts` (e.g. PulseX IPFS gateways).
 /// Returns `true` when the list changed.
 pub fn merge_default_trusted_dapps(list: &mut Vec<TrustedDapp>) -> bool {
-    let defaults = default_trusted_dapps();
+    let defaults = core_trusted_dapps();
     let mut changed = false;
     for dapp in defaults.iter().cloned() {
         let Some(want) = dapp_origin(&dapp.url) else {
@@ -714,6 +761,33 @@ impl StateManager {
         Ok(())
     }
 
+    /// Copy the primary vault onto `*.bak` (same contents, 0600 on Unix).
+    ///
+    /// Used after password rotation so the backup is not left decryptable under
+    /// the previous password.
+    pub fn mirror_primary_to_backup(&self) -> Result<(), WalletError> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+        let bak = backup_path(&self.path);
+        fs::copy(&self.path, &bak)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&bak, fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+
+    /// Delete `*.bak` if present (fallback when it cannot be refreshed).
+    pub fn remove_backup(&self) -> Result<(), WalletError> {
+        let bak = backup_path(&self.path);
+        if bak.exists() {
+            fs::remove_file(&bak)?;
+        }
+        Ok(())
+    }
+
     /// Load the persisted state, or `WalletError::NotInitialized` when absent.
     ///
     /// If the primary file is corrupt JSON, attempts `*.bak` once and returns a
@@ -845,16 +919,29 @@ mod tests {
     #[test]
     fn merge_default_dapps_is_idempotent() {
         let mut list = default_trusted_dapps();
-        let defaults = list.len();
+        let full = list.len();
         assert!(!merge_default_trusted_dapps(&mut list));
-        assert_eq!(list.len(), defaults);
+        assert_eq!(list.len(), full);
         list.clear();
         assert!(merge_default_trusted_dapps(&mut list));
-        assert_eq!(list.len(), defaults);
+        // Force-merge only core; seed-only ETHW dApps stay off existing vaults.
+        assert_eq!(list.len(), core_trusted_dapps().len());
         assert!(list.iter().any(|d| d.url.contains("squirrelswap")));
         assert!(list.iter().any(|d| d.url.contains("libertyswap")));
         assert!(list.iter().any(|d| d.url.contains("pulsex")));
         assert!(list.iter().any(|d| d.url.contains("9inch")));
+        assert!(!list.iter().any(|d| d.url.contains("lfgswap")));
+    }
+
+    #[test]
+    fn seed_only_dapps_on_new_vault_not_force_merged() {
+        let full = default_trusted_dapps();
+        assert!(full.iter().any(|d| d.url.contains("lfgswap")));
+        let mut existing = core_trusted_dapps();
+        let before = existing.len();
+        assert!(!merge_default_trusted_dapps(&mut existing));
+        assert_eq!(existing.len(), before);
+        assert!(!existing.iter().any(|d| d.url.contains("lfgswap")));
     }
 
     #[test]

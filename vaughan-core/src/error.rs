@@ -141,13 +141,14 @@ impl WalletError {
                 "Could not estimate the fee — check balance, token contract, and network."
                     .to_string()
             }
-            Self::SigningFailed(msg)
-                if msg.contains("Trezor")
-                    || msg.contains("Ledger")
-                    || msg.contains("hardware")
-                    || msg.contains("rejected") =>
-            {
-                msg.clone()
+            Self::SigningFailed(msg) if !msg.trim().is_empty() => {
+                // Keep device-specific wording; otherwise prefix so Home Send
+                // is not a dead-end "Could not sign".
+                if msg.contains("Trezor") || msg.contains("Ledger") || msg.contains("hardware") {
+                    msg.clone()
+                } else {
+                    format!("Could not sign the transaction: {msg}")
+                }
             }
             Self::SigningFailed(_) => "Could not sign the transaction.".to_string(),
             Self::TransactionFailed(_) => {
@@ -216,6 +217,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_message_surfaces_signing_detail() {
+        let e = WalletError::SigningFailed("transaction from does not match signer".into());
+        assert!(e.user_message().contains("does not match signer"));
+        let trezor = WalletError::SigningFailed("Trezor: Connection refused".into());
+        assert!(trezor.user_message().contains("Trezor"));
+    }
 
     #[test]
     fn user_message_is_not_empty() {

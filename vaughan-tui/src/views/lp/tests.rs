@@ -128,6 +128,40 @@ mod tests {
     }
 
     #[test]
+    fn ethw_defaults_to_lfgswap_v2_hex_wethw() {
+        let mut v = LpView::for_chain(10_001);
+        assert_eq!(v.tab, Tab::List);
+        assert_eq!(
+            v.stack,
+            LpStack::V2 {
+                venue: DexVenue::LfgSwap
+            }
+        );
+        assert_eq!(v.venue, DexVenue::LfgSwap);
+        assert_eq!(v.token0.value(), HEX_MAINNET);
+        assert_eq!(v.token1.value(), WETHW_ETHW);
+        v.tab = Tab::AddLp;
+        assert!(v.cycle_venue_selector(true));
+        assert_eq!(v.venue, DexVenue::UniWswap);
+        assert_eq!(
+            v.stack,
+            LpStack::V2 {
+                venue: DexVenue::UniWswap
+            }
+        );
+        assert_eq!(v.token1.value(), WETH_ETHW);
+        assert!(v.cycle_venue_selector(true));
+        assert_eq!(v.venue, DexVenue::PowSwap);
+        assert_eq!(
+            v.stack,
+            LpStack::V2 {
+                venue: DexVenue::PowSwap
+            }
+        );
+        assert_eq!(v.token1.value(), WETH_ETHW);
+    }
+
+    #[test]
     fn nine_mm_default_range_matches_50_percent_url() {
         let v = LpView::for_chain(369);
         assert_eq!(v.venue, DexVenue::NineInch);
