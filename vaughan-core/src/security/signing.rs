@@ -207,4 +207,44 @@ mod tests {
         // Missing `types`/`primaryType` cannot be resolved.
         assert!(sign_typed_data(&signer, &serde_json::json!({"message": {}})).is_err());
     }
+
+    /// Hyperliquid "Enable Trading": `Namespace:Type` primary type names and
+    /// extra message keys (`type`, `signatureChainId`) not declared in `types`.
+    #[test]
+    fn eip712_hashes_accept_hyperliquid_approve_agent() {
+        let payload = serde_json::json!({
+            "domain": {
+                "name": "HyperliquidSignTransaction",
+                "version": "1",
+                "chainId": 42161,
+                "verifyingContract": "0x0000000000000000000000000000000000000000"
+            },
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"}
+                ],
+                "HyperliquidTransaction:ApproveAgent": [
+                    {"name": "hyperliquidChain", "type": "string"},
+                    {"name": "agentAddress", "type": "address"},
+                    {"name": "agentName", "type": "string"},
+                    {"name": "nonce", "type": "uint64"}
+                ]
+            },
+            "primaryType": "HyperliquidTransaction:ApproveAgent",
+            "message": {
+                "type": "approveAgent",
+                "signatureChainId": "0xa4b1",
+                "hyperliquidChain": "Mainnet",
+                "agentAddress": "0x1111111111111111111111111111111111111111",
+                "agentName": "",
+                "nonce": 1790630000000u64
+            }
+        });
+        let h = eip712_hashes(&payload).unwrap();
+        assert!(h.message.is_some());
+        sign_typed_data(&signer(), &payload).unwrap();
+    }
 }

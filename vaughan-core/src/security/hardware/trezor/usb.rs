@@ -88,7 +88,7 @@ pub(crate) fn open_initialized(
     passphrase: Option<&SecretString>,
     ui: Option<&Arc<TrezorUiBridge>>,
 ) -> Result<Trezor, WalletError> {
-    open_session(passphrase, ui, None)
+    open_session(passphrase, ui, None).map(|(device, _)| device)
 }
 
 /// Like [`open_initialized`], but resumes the device session from the last
@@ -96,11 +96,14 @@ pub(crate) fn open_initialized(
 ///
 /// Caller must still verify the device address matches `address`; on mismatch
 /// call [`TrezorUiBridge::clear_session`].
+///
+/// Also returns the `Features` from Initialize: `Trezor::initialize` does not
+/// cache them on the client, so `Trezor::features()` stays `None`.
 pub(crate) fn open_for_account(
     passphrase: Option<&SecretString>,
     ui: Option<&Arc<TrezorUiBridge>>,
     address: &str,
-) -> Result<Trezor, WalletError> {
+) -> Result<(Trezor, protos::Features), WalletError> {
     open_session(passphrase, ui, Some(address))
 }
 
@@ -108,7 +111,7 @@ fn open_session(
     passphrase: Option<&SecretString>,
     ui: Option<&Arc<TrezorUiBridge>>,
     address: Option<&str>,
-) -> Result<Trezor, WalletError> {
+) -> Result<(Trezor, protos::Features), WalletError> {
     wait_for_usb_device(ui)?;
     let mut device = trezor_client::unique(false).map_err(map_trezor)?;
     let resume = match (ui, address) {
@@ -127,7 +130,7 @@ fn open_session(
             bridge.store_session(addr, id.to_vec());
         }
     }
-    Ok(device)
+    Ok((device, features))
 }
 
 /// How long a sign waits for the Trezor to be plugged in (under the 120 s dApp timeout).
@@ -388,12 +391,33 @@ pub(crate) fn ethereum_sign_typed_hash(
     Ok((signature_hex_personal(&sig), address))
 }
 
-/// Trezor One (legacy firmware): host PIN matrix, no EIP-712 field streaming.
-pub(crate) fn is_trezor_one(device: &Trezor) -> bool {
-    matches!(
+/// Trezor One: host PIN matrix, no EIP-712 field streaming.
+pub(crate) fn is_trezor_one(device: &Trezor, features: &protos::Features) -> bool {
+    reports_trezor_one(
         device.model(),
-        trezor_client::Model::TrezorLegacy | trezor_client::Model::TrezorBootloader
+        Some(features.model()),
+        Some(features.internal_model()),
     )
+}
+
+/// Trezor One firmware >= 1.8 enumerates on the same WebUSB id as Model T,
+/// so `trezor_client::Model` alone reads it as `Trezor`. Prefer the model the
+/// device reports in `Features` (`"1"` / `T1B1`); fall back to the USB id.
+fn reports_trezor_one(
+    usb_model: trezor_client::Model,
+    model: Option<&str>,
+    internal_model: Option<&str>,
+) -> bool {
+    match (
+        model.filter(|m| !m.is_empty()),
+        internal_model.filter(|m| !m.is_empty()),
+    ) {
+        (None, None) => matches!(
+            usb_model,
+            trezor_client::Model::TrezorLegacy | trezor_client::Model::TrezorBootloader
+        ),
+        (model, internal) => model == Some("1") || internal == Some("T1B1"),
+    }
 }
 
 /// EIP-712 via `EthereumSignTypedData` streaming (Model T / Safe): the device
@@ -476,7 +500,9 @@ pub(crate) fn ethereum_sign_typed_data(
                     .map_err(|e| bad_reply(&e))?;
                 if f.code() == protos::failure::FailureType::Failure_UnexpectedMessage {
                     return Err(WalletError::HardwareUnsupported(
-                        "Trezor firmware too old for EIP-712 — update in Trezor Suite".into(),
+                        "Trezor refused full EIP-712 (Trezor One signs hashes only; \
+                         Model T / Safe: update firmware in Trezor Suite)"
+                            .into(),
                     ));
                 }
                 return Err(map_trezor(format!("{:?}: {}", f.code(), f.message())));
@@ -940,5 +966,22 @@ mod tests {
         let sig = convert_signature(&resp, Some(943)).unwrap();
         assert_eq!(sig.v, 2 * 943 + 35);
         assert!(!y_parity(&sig, 943).unwrap());
+    }
+
+    #[test]
+    fn trezor_one_on_webusb_detected_from_features() {
+        use trezor_client::Model;
+        // Modern Trezor One: WebUSB id reads as `Trezor`, features say "1".
+        assert!(reports_trezor_one(Model::Trezor, Some("1"), Some("")));
+        assert!(reports_trezor_one(Model::Trezor, None, Some("T1B1")));
+        assert!(!reports_trezor_one(Model::Trezor, Some("T"), Some("T2T1")));
+        assert!(!reports_trezor_one(
+            Model::Trezor,
+            Some("Safe 3"),
+            Some("T2B1")
+        ));
+        // No features: fall back to the USB id.
+        assert!(reports_trezor_one(Model::TrezorLegacy, None, None));
+        assert!(!reports_trezor_one(Model::Trezor, Some(""), None));
     }
 }

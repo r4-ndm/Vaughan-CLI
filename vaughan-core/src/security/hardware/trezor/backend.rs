@@ -84,7 +84,7 @@ impl SignerBackend for TrezorSignerBackend {
         match req {
             SignRequest::EvmPersonal { message } => {
                 let hex = tokio::task::spawn_blocking(move || {
-                    let mut device =
+                    let (mut device, _) =
                         open_verified(passphrase.as_ref(), ui.as_ref(), &path, &expected)?;
                     usb::ethereum_personal_sign(&mut device, &path, message, ui.as_ref())
                 })
@@ -95,11 +95,11 @@ impl SignerBackend for TrezorSignerBackend {
             SignRequest::EvmTypedData { payload } => {
                 let hashes = eip712_hashes(&payload)?;
                 let hex = tokio::task::spawn_blocking(move || {
-                    let mut device =
+                    let (mut device, trezor_one) =
                         open_verified(passphrase.as_ref(), ui.as_ref(), &path, &expected)?;
                     // Trezor One can only show the two hashes; newer models
                     // stream and display every field.
-                    let (sig, signer) = if usb::is_trezor_one(&device) {
+                    let (sig, signer) = if trezor_one {
                         usb::ethereum_sign_typed_hash(&mut device, &path, &hashes, ui.as_ref())?
                     } else {
                         usb::ethereum_sign_typed_data(&mut device, &path, &payload, ui.as_ref())?
@@ -120,7 +120,7 @@ impl SignerBackend for TrezorSignerBackend {
             )),
             SignRequest::EvmTransaction { tx } => {
                 let raw = tokio::task::spawn_blocking(move || {
-                    let mut device =
+                    let (mut device, _) =
                         open_verified(passphrase.as_ref(), ui.as_ref(), &path, &expected)?;
                     usb::ethereum_sign_prepared_tx(&mut device, &path, &tx, ui.as_ref())
                 })
@@ -139,8 +139,9 @@ fn open_verified(
     ui: Option<&Arc<TrezorUiBridge>>,
     path: &str,
     expected: &str,
-) -> Result<trezor_client::client::Trezor, WalletError> {
-    let mut device = usb::open_for_account(passphrase, ui, expected)?;
+) -> Result<(trezor_client::client::Trezor, bool), WalletError> {
+    let (mut device, features) = usb::open_for_account(passphrase, ui, expected)?;
+    let trezor_one = usb::is_trezor_one(&device, &features);
     let got = usb::ethereum_address(&mut device, path, ui)?;
     if !got.eq_ignore_ascii_case(expected) {
         if let Some(bridge) = ui {
@@ -150,7 +151,7 @@ fn open_verified(
             "Trezor address {got} does not match watch record {expected}"
         )));
     }
-    Ok(device)
+    Ok((device, trezor_one))
 }
 
 /// Preview Live-style paths `0..count` (device unlocked; PIN via `ui` on Trezor One).

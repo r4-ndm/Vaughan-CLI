@@ -33,6 +33,9 @@
 | Host not in VB allowlist | Old vault missing merge | Restart / unlock so `merge_default_trusted_dapps` runs; or re-add bookmark |
 | Deposit / switch chain fails | Not on Arbitrum | Settings → **Arbitrum One** (42161) |
 | “Confirm in wallet” hang | Waiting on extension UI | Approve in Vaughan TUI |
+| Red “Vaughan denied/error” right after approving Connect | Site fired a second `eth_requestAccounts` while the card was open; old TUI refused it (“another approval is pending”) | Fixed: duplicates from the same site now share the card's answer. Check `vaughan.log` for `provider request refused` |
+| Trezor One: “firmware too old for EIP-712” on Enable Trading | Modern Trezor One uses the Model T USB id, so the full-streaming path was chosen | Fixed: model read from device `Features`; T1 signs domain/message hashes (match them on device) |
+| Connect click does nothing, no TUI prompt; log shows `missing/invalid session token` | Saved profile (`s`) ran Chromium's cached `background.js` with an old token | Fixed: VB clears `Default/Service Worker` in saved profiles each launch. Rebuild, close VB, reopen |
 | Wrong USDC | Bridged USDC.e vs native | Use Circle native USDC on Arbitrum |
 
 ## Provider quirks

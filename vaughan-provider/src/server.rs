@@ -612,9 +612,18 @@ async fn dispatch(
         let _ = handler.handle(req_ctx, request).await;
         return None;
     }
+    let method = request.method.clone();
+    let site = req_ctx
+        .page_origin
+        .clone()
+        .or_else(|| req_ctx.origin.clone());
     match handler.handle(req_ctx, request).await {
         Ok(result) => Some(RpcResponse::success(id, result).to_json()),
         Err(provider_error) => {
+            // Read-proxy failures (reverting eth_call, …) are routine noise.
+            if !crate::rpc_proxy::is_read_proxy_method(&method) {
+                tracing::warn!(%method, ?site, error = %provider_error, "provider request refused");
+            }
             Some(RpcResponse::failure(id, provider_error_to_rpc(provider_error)).to_json())
         }
     }

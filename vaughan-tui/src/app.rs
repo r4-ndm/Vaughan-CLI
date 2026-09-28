@@ -362,6 +362,10 @@ pub struct App {
     tick: u64,
     /// The approval currently on screen, if any.
     pending_approval: Option<PendingApproval>,
+    /// Duplicate `eth_requestAccounts` from the site whose Connect card is on
+    /// screen. dApp connectors often fire it twice; refusing the extra call
+    /// reads as "connection denied", so they share the card's answer instead.
+    connect_waiters: Vec<oneshot::Sender<Result<Vec<String>, ProviderError>>>,
     /// When set, the next [`UiJobResult::DeployToken`] finalizes MCP queue / IPC reply.
     pending_mcp_token_launch: Option<PendingMcpTokenLaunch>,
     /// Screen to return to after the pending approval resolves.
@@ -548,6 +552,7 @@ impl App {
             job_rx,
             tick: 0,
             pending_approval: None,
+            connect_waiters: Vec::new(),
             pending_mcp_token_launch: None,
             approve_return: Screen::Dashboard,
             mcp_approve_inflight: false,
@@ -1270,10 +1275,14 @@ impl App {
                             continue;
                         }
                     }
-                    if self.pending_approval.is_some() {
-                        let _ = reply.send(Err(ProviderError::Unauthorized(
-                            "another approval is pending".into(),
-                        )));
+                    if let Some(pending) = self.pending_approval.as_ref() {
+                        if joins_pending_connect(&pending.kind, &site) {
+                            self.connect_waiters.push(reply);
+                        } else {
+                            let _ = reply.send(Err(ProviderError::Unauthorized(
+                                "another approval is pending".into(),
+                            )));
+                        }
                         continue;
                     }
                     let kind = ApprovalKind::Connect { site: site.clone() };
@@ -1586,6 +1595,7 @@ impl App {
             }
             PendingReply::Accounts(reply) => {
                 let _ = reply.send(Err(ProviderError::UserRejected));
+                self.settle_connect_waiters(Err(ProviderError::UserRejected));
             }
             PendingReply::Switch(reply) => {
                 let _ = reply.send(Err(ProviderError::UserRejected));
@@ -1881,6 +1891,13 @@ impl App {
                     break;
                 }
             }
+        }
+    }
+
+    /// Answer every duplicate connect request with the Connect card's result.
+    fn settle_connect_waiters(&mut self, result: Result<Vec<String>, ProviderError>) {
+        for waiter in self.connect_waiters.drain(..) {
+            let _ = waiter.send(result.clone());
         }
     }
 
@@ -2185,6 +2202,7 @@ impl App {
                 PendingReply::LocalSign | PendingReply::Queued => {}
                 PendingReply::Accounts(reply) => {
                     let _ = reply.send(Err(ProviderError::UserRejected));
+                    self.settle_connect_waiters(Err(ProviderError::UserRejected));
                 }
                 PendingReply::Switch(reply) => {
                     let _ = reply.send(Err(ProviderError::UserRejected));
@@ -2201,7 +2219,9 @@ impl App {
                     self.connected_sites.write().unwrap().insert(site.clone());
                     self.persist_connected_sites();
                 }
-                let _ = reply.send(Ok(self.visible_accounts()));
+                let accounts = self.visible_accounts();
+                let _ = reply.send(Ok(accounts.clone()));
+                self.settle_connect_waiters(Ok(accounts));
             }
             PendingReply::Switch(reply) => {
                 let result = if let ApprovalKind::SwitchChain { chain_id, .. } = &pending.kind {
@@ -4938,6 +4958,12 @@ fn same_f2_asset(a: &vaughan_core::chains::Balance, b: &vaughan_core::chains::Ba
     }
 }
 
+/// A repeat `eth_requestAccounts` waits on the Connect card already open for
+/// the same site (MetaMask-style) instead of being refused.
+fn joins_pending_connect(pending: &ApprovalKind, site: &str) -> bool {
+    matches!(pending, ApprovalKind::Connect { site: open } if open == site)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4956,6 +4982,23 @@ mod tests {
 
     fn tab() -> KeyEvent {
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn duplicate_connect_joins_open_card_for_same_site_only() {
+        let open = ApprovalKind::Connect {
+            site: "https://app.hyperliquid.xyz".into(),
+        };
+        assert!(joins_pending_connect(&open, "https://app.hyperliquid.xyz"));
+        assert!(!joins_pending_connect(&open, "https://evil.example"));
+        let switch = ApprovalKind::SwitchChain {
+            chain_id: "0xa4b1".into(),
+            label: "Arbitrum One".into(),
+        };
+        assert!(!joins_pending_connect(
+            &switch,
+            "https://app.hyperliquid.xyz"
+        ));
     }
 
     #[test]

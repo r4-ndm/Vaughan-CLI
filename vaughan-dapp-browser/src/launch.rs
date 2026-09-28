@@ -249,7 +249,23 @@ fn prepare_saved_profile(dir: &Path) -> Result<(), String> {
     if profile_in_use(dir) {
         return Err("this site is already open in VB — use that window".into());
     }
-    Ok(())
+    clear_service_worker_cache(dir)
+}
+
+/// Drop Chromium's cached service-worker scripts from a reused profile.
+///
+/// The inject extension's `background.js` is rewritten every launch with that
+/// launch's provider token and seal key, but Chromium keeps running the copy
+/// it cached in the profile. A saved profile would then present a dead token
+/// and every connect is rejected before it reaches the TUI. Site localStorage
+/// (e.g. a dApp's trading key) lives elsewhere and is kept.
+fn clear_service_worker_cache(profile: &Path) -> Result<(), String> {
+    let sw = profile.join("Default").join("Service Worker");
+    match std::fs::remove_dir_all(&sw) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("clear saved profile service-worker cache: {e}")),
+    }
 }
 
 /// Chromium's `SingletonLock` is a symlink to `<hostname>-<pid>`.
@@ -598,6 +614,23 @@ mod tests {
         std::fs::remove_file(dir.path().join("SingletonLock")).unwrap();
         std::os::unix::fs::symlink("host-4294967294", dir.path().join("SingletonLock")).unwrap();
         assert!(!profile_in_use(dir.path()));
+    }
+
+    #[test]
+    fn saved_profile_drops_stale_service_worker_but_keeps_site_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("Default");
+        let script_cache = default.join("Service Worker").join("ScriptCache");
+        std::fs::create_dir_all(&script_cache).unwrap();
+        std::fs::write(script_cache.join("stale_0"), "old background.js").unwrap();
+        std::fs::create_dir_all(default.join("Local Storage")).unwrap();
+
+        prepare_saved_profile(dir.path()).unwrap();
+
+        assert!(!default.join("Service Worker").exists());
+        assert!(default.join("Local Storage").exists());
+        // Fresh profile with nothing cached is fine too.
+        prepare_saved_profile(dir.path()).unwrap();
     }
 
     #[test]
