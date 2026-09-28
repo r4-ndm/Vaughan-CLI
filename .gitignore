@@ -19,6 +19,18 @@ Thumbs.db
 vaughan-backup-*.json
 *backup*
 
+# Live wallet data (normally under ~/.local/share/vaughan-cli/) — never commit
+# a copy that lands in the repo.
+wallet.json
+wallet.json.*
+agent.key.json
+assist-unlock.json
+site-grants.json
+*.session
+vb.target
+vault-safety-*/
+vb-profiles/
+
 # Private strategy / planning (local only — never commit)
 /private/
 
