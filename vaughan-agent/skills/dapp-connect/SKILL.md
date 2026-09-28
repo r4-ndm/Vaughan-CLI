@@ -18,7 +18,7 @@ browser popup. dApps often label the provider **“Injected”** or **MetaMask**
 
 1. Unlock Vaughan (provider `ws://127.0.0.1:8745`).
 2. Web list → select dApp → **Enter** (opens VB; Freedom only as dev fallback — parked until PR #195).
-3. Look for green banner: **Vaughan injected**.
+3. Look for the green bottom-right toast: **VB injected** (fades after ~4 s; errors and "confirm in TUI" stay until clicked).
 4. In the dApp: Connect → Injected / Vaughan / MetaMask.
 5. If the dApp says “confirm in wallet”, switch to the **TUI** (connect is often
    auto-answered; **sign/send** always needs `y` / Enter).
@@ -36,6 +36,8 @@ without inject).
 | 9inch | `https://app.9inch.io/swap?chain=pulse` | [`sites/9inch.md`](sites/9inch.md) |
 | Hyperliquid | `https://app.hyperliquid.xyz/trade` | [`sites/hyperliquid.md`](sites/hyperliquid.md) |
 | Asterdex | `https://www.asterdex.com/en/trade/pro/futures/CLUSD1` | [`sites/asterdex.md`](sites/asterdex.md) |
+| RocketX | `https://www.rocketx.exchange/` | [`sites/rocketx.md`](sites/rocketx.md) |
+| CoW Swap | `https://swap.cow.fi/` | [`sites/cowswap.md`](sites/cowswap.md) |
 
 New dApp → copy [`sites/_template.md`](sites/_template.md), fill it, add a row
 above, and seed the URL in `vaughan-core` `default_trusted_dapps()`.

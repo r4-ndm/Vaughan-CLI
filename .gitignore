@@ -29,6 +29,9 @@ vaughan-backup-*.json
 # Logs
 *.log
 
+# Python byte-code from helper scripts
+__pycache__/
+
 # Temporary files
 *.tmp
 *.temp

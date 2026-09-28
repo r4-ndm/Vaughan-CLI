@@ -15,7 +15,7 @@
 ## How humans connect
 
 1. Unlock Vaughan → Web → Asterdex → Enter (or MCP `browser_open` with the futures URL).
-2. Green **Vaughan injected** banner.
+2. Green **VB injected** toast (bottom-right).
 3. Connect → Injected / MetaMask / Vaughan.
 4. Approve connect / enable-trading style signatures in the **TUI**.
 5. Fund per the site’s deposit flow; switch Vaughan network if the dApp requests it.

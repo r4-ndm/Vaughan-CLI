@@ -13,7 +13,7 @@
 ## How humans connect
 
 1. Unlock Vaughan → Web → LibertySwap → Enter.
-2. Green **Vaughan injected** banner.
+2. Green **VB injected** toast (bottom-right).
 3. Connect in-app (Injected). Often connects with little friction (same class as
    SquirrelSwap).
 

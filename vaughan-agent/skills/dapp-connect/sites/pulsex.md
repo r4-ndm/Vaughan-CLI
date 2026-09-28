@@ -4,8 +4,10 @@
 
 - **Name:** PulseX (directory)
 - **Canonical URL:** `https://app.pulsex.com/`
-- **Other hosts:** IPFS gateways listed on that page (Pinata, Cloudflare, ipfs.io, …);
-  `https://pulsex.com/` is a related landing page, not a single fixed DEX origin
+- **Other hosts:** IPFS gateways listed on that page. The list is loaded at runtime
+  from `https://app.pulsex.com/version.json` (`ipfs_gateways`); as of v1.1.5 the
+  official mirror is `pulsex.mypinata.cloud`. `https://pulsex.com/` is a related
+  landing page, not a single fixed DEX origin
 - **Chain(s):** PulseChain 369
 
 ## Tags
@@ -27,7 +29,7 @@ you pick a mirror.
 ## What “success” looks like
 
 - Swap UI loaded from an IPFS gateway (URL host ≠ `app.pulsex.com`).
-- Green Vaughan banner on that mirror page.
+- Green **VB injected** toast (bottom-right) on that mirror page.
 - Wallet connected; trades approve in TUI.
 
 ## Failure modes
@@ -37,6 +39,7 @@ you pick a mirror.
 | Stuck on link list | Expected — not the DEX | Open an IPFS mirror link |
 | “Confirm in Injected” forever | Old page-level `ws://` inject / wrong browser | Use current `vaughan-dapp-browser` (extension relay); restart Vaughan |
 | Opened via terminal link click | System browser, no inject | Use Enter in Web list only |
+| Mirror shows `ERR_BLOCKED_BY_CLIENT` | Gateway host not in `default_ipfs_gateway_hosts()` | Check `version.json` `ipfs_gateways`, add the host, restart Vaughan + VB |
 
 ## Provider quirks
 

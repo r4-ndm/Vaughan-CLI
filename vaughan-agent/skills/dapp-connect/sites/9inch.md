@@ -13,7 +13,7 @@
 ## How humans connect
 
 1. Unlock Vaughan → Web → 9inch → Enter.
-2. Green **Vaughan injected** banner (required).
+2. Green **VB injected** toast, bottom-right (required).
 3. Connect → Injected / MetaMask / Vaughan.
 4. If the site says “Please confirm in Injected”, check the TUI — do not wait
    for a browser extension popup.

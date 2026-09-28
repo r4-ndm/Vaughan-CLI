@@ -15,7 +15,7 @@
 ## How humans connect
 
 1. Unlock Vaughan → Web → Hyperliquid → Enter (or MCP `browser_open` with the trade URL).
-2. Green **Vaughan injected** banner.
+2. Green **VB injected** toast (bottom-right).
 3. Connect → Injected / MetaMask / Vaughan.
 4. **Enable Trading** — gasless EIP-712 / personal sign; approve in the **TUI** (no browser popup).
 5. Deposit: switch wallet to **Arbitrum One**, use native Circle USDC, confirm deposit tx in TUI.
@@ -38,6 +38,11 @@
 ## Provider quirks
 
 - Connect + Enable Trading are signature-heavy; perps orders are HyperCore actions (not Vaughan `propose_swap`).
+- Chart layout and the Enable Trading agent key live in browser localStorage. VB profiles are
+  throwaway by default, so both reset each launch. Web → select Hyperliquid → **`s`** keeps this
+  site's profile (`· saved`); the agent key then sits unencrypted in
+  `~/.local/share/vaughan-cli/vb-profiles/app.hyperliquid.xyz/` (it can trade, not withdraw).
+  Pressing `s` again deletes that folder. MCP `browser_open` launches stay throwaway.
 - Site often labels the provider MetaMask/Injected; Vaughan MetaMask-family flags apply.
 
 ## Vaughan notes

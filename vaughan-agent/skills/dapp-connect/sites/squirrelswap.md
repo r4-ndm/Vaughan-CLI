@@ -13,7 +13,7 @@
 ## How humans connect
 
 1. Unlock Vaughan → Web → SquirrelSwap → Enter.
-2. Green **Vaughan injected** banner.
+2. Green **VB injected** toast (bottom-right).
 3. Connect wallet in the app (Injected / Vaughan). Often appears connected
    quickly because the site requests accounts without a heavy modal wait.
 

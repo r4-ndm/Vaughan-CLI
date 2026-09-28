@@ -1,6 +1,6 @@
 # Hardware wallets — Ledger & Trezor plan
 
-**Status:** Phase 1 Ledger + Phase 2 Trezor USB landed (`trezor-client`). EIP-712 on Trezor and live 943 device smoke still open.  
+**Status:** Phase 1 Ledger + Phase 2 Trezor USB landed (`trezor-client`), including Trezor EIP-712. **Only Trezor One has been tested on a real device** (2026-09-28, Arbitrum mainnet); Model T / Safe paths are unit-tested only.  
 **Goal:** Optional hardware signer for EOAs on Pulse/EVM, same approval UX as software.
 
 Hardware watch accounts + Ledger/Trezor signing live under `vaughan-core::security::hardware`.
@@ -314,10 +314,18 @@ When Bitcoin or Polkadot land (see `chains/{family}/` + PLAN derivation note):
 - [x] TUI Keys: **5 Add Trezor** (shared device-pick flow with Ledger)
 - [x] Trezor One host PIN matrix overlay (numpad positions; non-blocking USB worker)
 - [ ] Optional host passphrase field in Keys (on-device passphrase works via USB ack)
-- [ ] EIP-712 typed-data clear-signing (protos exist; multi-round — follow-up)
+- [x] EIP-712: Trezor One signs domain + message hashes (`EthereumSignTypedHash`; TUI shows the same hashes to match); Model T / Safe stream fields (`EthereumSignTypedData`, `trezor/eip712.rs`)
+- [x] Passphrase asked once per wallet per session (device session resumed; cleared on lock / wallet switch / unplug) — not yet re-verified on device
 - [ ] 943 live smoke (native send + `personal_sign`) with physical device — helper: `scripts/trezor_personal_sign.py` (edit `ADDR`, unlock Vaughan, run)
 
-**Exit:** F3 can be Ledger *or* Trezor for send/personal-sign; typed-data still Ledger/software.
+**Device testing (2026-09-28):**
+
+| Device | Real-hardware tested? | What was exercised |
+|---|---|---|
+| Trezor One | **Yes** | VB dApp txs (RocketX / CoW on Arbitrum), CoW EIP-712 permit + order (hash mode), WETH unwrap, host PIN matrix + passphrase, device-connect prompt |
+| Model T / Safe 3 / Safe 5 | **No** | Unit tests only: EIP-712 field streaming, EIP-1559 tx path, on-device PIN / passphrase handling |
+
+**Exit:** F3 can be Ledger *or* Trezor for send / personal-sign / typed-data. Model T / Safe need a live smoke before being called supported.
 
 ### Phase 3 — Hardening (optional follow-ons)
 
