@@ -2,3 +2,5 @@
 # workspace is built and tested against.
 [toolchain]
 channel = "1.97.1"
+# CI's setup action installs components for `stable`, not this pin.
+components = ["rustfmt", "clippy"]
