@@ -27,6 +27,11 @@ const SCRIPT: &str = r##"(function() {
     (listeners[event] || []).forEach(fn => { try { fn(data); } catch (_) {} });
   }
 
+  // Small bottom-right toast so it never covers dApp headers / Connect buttons.
+  // "ok" notices fade on their own; "wait" and "err" stay until the next
+  // notice or a click, because the user has to act on them.
+  const TOAST_OK_MS = 4000;
+  let toastTimer = null;
   function showBanner(text, kind) {
     try {
       const id = "__vaughan_inject_banner";
@@ -36,10 +41,11 @@ const SCRIPT: &str = r##"(function() {
         el.id = id;
         el.setAttribute("data-vaughan", "inject-ok");
         Object.assign(el.style, {
-          position: "fixed", top: "0", left: "0", right: "0", zIndex: "2147483647",
-          padding: "10px 14px", fontFamily: "system-ui,sans-serif", fontSize: "13px",
-          fontWeight: "600", textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,.25)",
-          cursor: "pointer",
+          position: "fixed", bottom: "16px", right: "16px", zIndex: "2147483647",
+          maxWidth: "340px", padding: "8px 12px", borderRadius: "8px",
+          fontFamily: "system-ui,sans-serif", fontSize: "12px", fontWeight: "600",
+          lineHeight: "1.35", boxShadow: "0 4px 14px rgba(0,0,0,.3)",
+          cursor: "pointer", transition: "opacity .3s", opacity: "1",
         });
         el.title = "Click to dismiss";
         el.addEventListener("click", () => el.remove());
@@ -51,7 +57,16 @@ const SCRIPT: &str = r##"(function() {
       }
       el.style.background = kind === "wait" ? "#1d4ed8" : kind === "err" ? "#b91c1c" : "#065f46";
       el.style.color = "#fff";
+      el.style.opacity = "1";
       el.textContent = text;
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = null;
+      if (kind === "ok") {
+        toastTimer = setTimeout(() => {
+          el.style.opacity = "0";
+          setTimeout(() => { if (el.style.opacity === "0") el.remove(); }, 400);
+        }, TOAST_OK_MS);
+      }
     } catch (_) {}
   }
 

@@ -25,6 +25,8 @@ pub struct LaunchOpts {
     pub allow: Allowlist,
     pub cdp_port: u16,
     pub chrome: Option<String>,
+    /// Use the saved per-host profile ([`saved_profile_dir`]) instead of a throwaway one.
+    pub keep_profile: bool,
 }
 
 /// Reject non-loopback provider WebSocket URLs (extension must not phone home).
@@ -195,6 +197,75 @@ fn is_executable_file(path: &Path) -> bool {
     {
         true
     }
+}
+
+/// Saved profile folder for `url`'s host: `<data>/vaughan-cli/vb-profiles/<host>`.
+///
+/// Same layout as `vaughan_core::core::vb_browser::vb_saved_profile_dir`, which
+/// the TUI uses to delete it. `None` unless the host is a plain DNS name.
+pub fn saved_profile_dir(url: &str) -> Option<PathBuf> {
+    let host = profile_host(url)?;
+    Some(
+        dirs::data_dir()?
+            .join("vaughan-cli")
+            .join("vb-profiles")
+            .join(host),
+    )
+}
+
+fn profile_host(url: &str) -> Option<String> {
+    let host = url::Url::parse(url.trim())
+        .ok()?
+        .host_str()?
+        .to_ascii_lowercase();
+    let plain = !host.is_empty()
+        && !host.starts_with('.')
+        && !host.contains("..")
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    plain.then_some(host)
+}
+
+/// Create the saved profile (owner-only), refuse links, and refuse a profile
+/// another VB window already holds — Chromium would hand the URL to that
+/// window and this launch would overwrite its `vb.session` seal key.
+fn prepare_saved_profile(dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|e| format!("saved profile: {e}"))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir).map_err(|e| format!("saved profile: {e}"))?;
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("saved profile stat: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err("saved profile is not a real directory".into());
+    }
+    if profile_in_use(dir) {
+        return Err("this site is already open in VB — use that window".into());
+    }
+    Ok(())
+}
+
+/// Chromium's `SingletonLock` is a symlink to `<hostname>-<pid>`.
+fn profile_in_use(dir: &Path) -> bool {
+    let Ok(target) = std::fs::read_link(dir.join("SingletonLock")) else {
+        return false;
+    };
+    let target = target.to_string_lossy();
+    let Some(pid) = target
+        .rsplit('-')
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+    else {
+        return false;
+    };
+    Path::new("/proc").join(pid.to_string()).exists()
 }
 
 /// Owner-only session root under `$XDG_RUNTIME_DIR` (preferred) or temp.
@@ -372,8 +443,17 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
     let export_cdp = opts.cdp_port != 0;
     let cdp_port = if export_cdp { opts.cdp_port } else { 0 };
 
+    let saved_profile = if opts.keep_profile {
+        let dir = saved_profile_dir(&opts.url)
+            .ok_or("cannot derive a saved profile folder for this URL")?;
+        prepare_saved_profile(&dir)?;
+        Some(dir)
+    } else {
+        None
+    };
+
     let base = create_session_base_dir()?;
-    let profile = base.join("profile");
+    let profile = saved_profile.unwrap_or_else(|| base.join("profile"));
     let ext = base.join("ext");
     // Defense in depth: never write the token-bearing bundle through a link.
     let meta = std::fs::symlink_metadata(&base).map_err(|e| format!("session dir stat: {e}"))?;
@@ -435,7 +515,7 @@ pub fn run_browser(opts: LaunchOpts) -> Result<(), String> {
         write_vb_session(0, "", &opts.allow, &extension_secret, &provider_token)?;
         eprintln!("vaughan-dapp-browser: agent CDP off (pass --cdp-port N to enable)");
     }
-    eprintln!("Look for a green top banner: “VB injected …”");
+    eprintln!("Look for a small green toast (bottom-right): “VB injected …”");
     eprintln!("dApps may say “Injected” — approve sign/send in the Vaughan TUI.");
     eprintln!("Close the Chromium window when finished.");
 
@@ -486,12 +566,39 @@ pub fn run_self_check(provider_ws: &str, chrome: Option<String>) -> Result<(), S
         allow,
         cdp_port: 0,
         chrome,
+        keep_profile: false,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_profile_keyed_by_plain_host() {
+        assert_eq!(
+            profile_host("https://App.Hyperliquid.xyz/trade"),
+            Some("app.hyperliquid.xyz".into())
+        );
+        assert!(saved_profile_dir("https://app.hyperliquid.xyz/")
+            .unwrap()
+            .ends_with("vaughan-cli/vb-profiles/app.hyperliquid.xyz"));
+        assert_eq!(profile_host("https://[::1]/"), None);
+        assert_eq!(profile_host("not a url"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn profile_in_use_reads_chromium_singleton_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!profile_in_use(dir.path()));
+        let live = format!("host-{}", std::process::id());
+        std::os::unix::fs::symlink(&live, dir.path().join("SingletonLock")).unwrap();
+        assert!(profile_in_use(dir.path()));
+        std::fs::remove_file(dir.path().join("SingletonLock")).unwrap();
+        std::os::unix::fs::symlink("host-4294967294", dir.path().join("SingletonLock")).unwrap();
+        assert!(!profile_in_use(dir.path()));
+    }
 
     #[test]
     fn chrome_candidates_include_brave_and_edge() {

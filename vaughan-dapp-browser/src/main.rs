@@ -46,6 +46,11 @@ struct Cli {
     /// Chromium-class binary (Chromium, Chrome, Brave, Edge, …).
     #[arg(long)]
     chrome: Option<String>,
+
+    /// Keep this site's browser profile (cookies / localStorage) on disk
+    /// between launches instead of a throwaway one. Keyed by the `--url` host.
+    #[arg(long, default_value_t = false)]
+    keep_profile: bool,
 }
 
 fn main() -> ExitCode {
@@ -76,5 +81,6 @@ fn run() -> Result<(), String> {
         allow,
         cdp_port: cli.cdp_port,
         chrome: cli.chrome,
+        keep_profile: cli.keep_profile,
     })
 }
