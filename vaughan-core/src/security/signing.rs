@@ -65,6 +65,35 @@ pub fn sign_typed_data(
     Ok(encode_signature(signature.as_bytes()))
 }
 
+/// The two EIP-712 component hashes a blind-signing device (Trezor One) shows.
+///
+/// The device signs `keccak256(0x1901 ‖ domain ‖ message)` but can only display
+/// these two values, so the host must show the same pair next to the decoded
+/// fields for the user to match. `message` is `None` when the primary type is
+/// `EIP712Domain` (MetaMask `eth-sig-util` compatibility).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Eip712Hashes {
+    pub domain: B256,
+    pub message: Option<B256>,
+}
+
+/// Compute [`Eip712Hashes`] from `eth_signTypedData_v4` JSON.
+pub fn eip712_hashes(typed_data: &serde_json::Value) -> Result<Eip712Hashes, WalletError> {
+    let typed_data: TypedData = serde_json::from_value(typed_data.clone())
+        .map_err(|e| WalletError::InvalidTransaction(format!("invalid EIP-712 typed data: {e}")))?;
+    let domain = typed_data.domain.separator();
+    let message = if typed_data.primary_type == "EIP712Domain" {
+        None
+    } else {
+        Some(
+            typed_data
+                .hash_struct()
+                .map_err(|e| WalletError::SigningFailed(format!("EIP-712 hash failed: {e}")))?,
+        )
+    };
+    Ok(Eip712Hashes { domain, message })
+}
+
 /// Hex-encode a 65-byte signature as `0x` + `r || s || v`.
 fn encode_signature(bytes: [u8; 65]) -> String {
     format!("0x{}", hex::encode(bytes))
@@ -126,6 +155,50 @@ mod tests {
         let sig_hex = sign_typed_data(&signer, &payload).unwrap();
         assert!(sig_hex.starts_with("0x"));
         assert_eq!(hex::decode(&sig_hex[2..]).unwrap().len(), 65);
+    }
+
+    #[test]
+    fn eip712_hashes_match_spec_mail_vector() {
+        let payload = serde_json::json!({
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"}
+                ],
+                "Person": [
+                    {"name": "name", "type": "string"},
+                    {"name": "wallet", "type": "address"}
+                ],
+                "Mail": [
+                    {"name": "from", "type": "Person"},
+                    {"name": "to", "type": "Person"},
+                    {"name": "contents", "type": "string"}
+                ]
+            },
+            "primaryType": "Mail",
+            "domain": {
+                "name": "Ether Mail",
+                "version": "1",
+                "chainId": 1,
+                "verifyingContract": "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
+            },
+            "message": {
+                "from": {"name": "Cow", "wallet": "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826"},
+                "to": {"name": "Bob", "wallet": "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"},
+                "contents": "Hello, Bob!"
+            }
+        });
+        let h = eip712_hashes(&payload).unwrap();
+        assert_eq!(
+            format!("{:#x}", h.domain),
+            "0xf2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f"
+        );
+        assert_eq!(
+            format!("{:#x}", h.message.unwrap()),
+            "0xc52c0ee5d84264471806290a3f2c4cecfc5490626bf912d01f240d7a274b371e"
+        );
     }
 
     #[test]

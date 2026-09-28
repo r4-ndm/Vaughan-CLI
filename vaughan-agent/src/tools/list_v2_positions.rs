@@ -8,8 +8,8 @@ use std::str::FromStr;
 use crate::error::AgentError;
 use crate::tools::{Tool, ToolContext};
 use vaughan_core::core::{
-    default_v2_watch_pairs, list_v2_lp_positions, lp_v2_venue, parse_dex_venue_label, venue_slug,
-    venue_v2_factory,
+    default_v2_watch_pairs, list_all_v2_lp_positions, list_v2_lp_positions, lp_v2_venue,
+    parse_dex_venue_label, venue_slug, venue_v2_factory,
 };
 
 #[derive(Default)]
@@ -29,8 +29,8 @@ impl Tool for ListV2PositionsTool {
 
     fn description(&self) -> &str {
         "List Uniswap V2–style LP positions (pair LP token balances). 9inch on Pulse (369); \
-         LFGswap / UniWswap / PowSwap / Uniswap on EthereumPoW (10001). Probes default HEX pairs plus \
-         optional token0/token1. Optional venue slug."
+         LFGswap / UniWswap / PowSwap / Uniswap on EthereumPoW (10001). Defaults to every V2 \
+         DEX on the active chain (each row includes venue). Optional venue slug filters to one."
     }
 
     fn parameters(&self) -> Value {
@@ -43,7 +43,7 @@ impl Tool for ListV2PositionsTool {
                 },
                 "venue": {
                     "type": "string",
-                    "description": "DEX venue slug (lfgswap, powswap, uniswap, 9inch). Defaults to the chain's first V2 AMM."
+                    "description": "Optional DEX venue slug (lfgswap, powswap, uniwswap, uniswap, 9inch). Omit to list all V2 DEXes on the chain."
                 },
                 "token0": { "type": "string", "description": "Optional extra pair leg" },
                 "token1": { "type": "string", "description": "Optional extra pair leg" }
@@ -52,23 +52,6 @@ impl Tool for ListV2PositionsTool {
     }
 
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value, AgentError> {
-        let venue = if let Some(raw) = args.get("venue").and_then(|v| v.as_str()) {
-            parse_dex_venue_label(raw)
-                .ok_or_else(|| AgentError::InvalidToolCall(format!("unknown venue {raw:?}")))?
-        } else {
-            lp_v2_venue(context.chain_id).ok_or_else(|| {
-                AgentError::InvalidToolCall(
-                    "no V2 LP venue on this chain — use Pulse 369 or EthereumPoW 10001".into(),
-                )
-            })?
-        };
-        if venue_v2_factory(venue, context.chain_id).is_none() {
-            return Err(AgentError::InvalidToolCall(format!(
-                "{} has no V2 factory on chain {}",
-                venue.label(),
-                context.chain_id
-            )));
-        }
         let owner = if let Some(s) = args.get("account_address").and_then(|v| v.as_str()) {
             Address::from_str(s)
                 .map_err(|e| AgentError::InvalidToolCall(format!("Invalid account_address: {e}")))?
@@ -79,26 +62,47 @@ impl Tool for ListV2PositionsTool {
                 )
             })?
         };
-        let mut watch = default_v2_watch_pairs(context.chain_id, venue);
-        if let (Some(a), Some(b)) = (
-            args.get("token0").and_then(|v| v.as_str()),
-            args.get("token1").and_then(|v| v.as_str()),
-        ) {
-            let ta = Address::from_str(a)
-                .map_err(|e| AgentError::InvalidToolCall(format!("token0: {e}")))?;
-            let tb = Address::from_str(b)
-                .map_err(|e| AgentError::InvalidToolCall(format!("token1: {e}")))?;
-            watch.push(if ta < tb { (ta, tb) } else { (tb, ta) });
-        }
-        let positions =
+
+        let positions = if let Some(raw) = args.get("venue").and_then(|v| v.as_str()) {
+            let venue = parse_dex_venue_label(raw)
+                .ok_or_else(|| AgentError::InvalidToolCall(format!("unknown venue {raw:?}")))?;
+            if venue_v2_factory(venue, context.chain_id).is_none() {
+                return Err(AgentError::InvalidToolCall(format!(
+                    "{} has no V2 factory on chain {}",
+                    venue.label(),
+                    context.chain_id
+                )));
+            }
+            let mut watch = default_v2_watch_pairs(context.chain_id, venue);
+            if let (Some(a), Some(b)) = (
+                args.get("token0").and_then(|v| v.as_str()),
+                args.get("token1").and_then(|v| v.as_str()),
+            ) {
+                let ta = Address::from_str(a)
+                    .map_err(|e| AgentError::InvalidToolCall(format!("token0: {e}")))?;
+                let tb = Address::from_str(b)
+                    .map_err(|e| AgentError::InvalidToolCall(format!("token1: {e}")))?;
+                watch.push(if ta < tb { (ta, tb) } else { (tb, ta) });
+            }
             list_v2_lp_positions(&context.rpc_url, venue, context.chain_id, owner, &watch)
                 .await
-                .map_err(|e| AgentError::ProviderError(e.user_message()))?;
+                .map_err(|e| AgentError::ProviderError(e.user_message()))?
+        } else {
+            if lp_v2_venue(context.chain_id).is_none() {
+                return Err(AgentError::InvalidToolCall(
+                    "no V2 LP venue on this chain — use Pulse 369 or EthereumPoW 10001".into(),
+                ));
+            }
+            list_all_v2_lp_positions(&context.rpc_url, context.chain_id, owner)
+                .await
+                .map_err(|e| AgentError::ProviderError(e.user_message()))?
+        };
+
         let rows: Vec<_> = positions
             .iter()
             .map(|p| {
                 json!({
-                    "venue": venue_slug(venue),
+                    "venue": venue_slug(p.venue),
                     "pair": format!("{:#x}", p.pair),
                     "token0": format!("{:#x}", p.token0),
                     "token1": format!("{:#x}", p.token1),

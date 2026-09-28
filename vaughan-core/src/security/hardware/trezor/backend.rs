@@ -11,6 +11,7 @@ use crate::security::hardware::paths::evm_live_preview_paths;
 use crate::security::hardware::types::{
     HardwareAccountRecord, HardwareVendor, HwChainFamily, SignRequest, SignResult,
 };
+use crate::security::signing::eip712_hashes;
 
 use super::ui_bridge::TrezorUiBridge;
 use super::usb;
@@ -83,34 +84,44 @@ impl SignerBackend for TrezorSignerBackend {
         match req {
             SignRequest::EvmPersonal { message } => {
                 let hex = tokio::task::spawn_blocking(move || {
-                    let mut device = usb::open_initialized(passphrase.as_ref(), ui.as_ref())?;
-                    let got = usb::ethereum_address(&mut device, &path, ui.as_ref())?;
-                    if !got.eq_ignore_ascii_case(&expected) {
-                        return Err(WalletError::HardwareUnsupported(format!(
-                            "Trezor address {got} does not match watch record {expected}"
-                        )));
-                    }
+                    let mut device =
+                        open_verified(passphrase.as_ref(), ui.as_ref(), &path, &expected)?;
                     usb::ethereum_personal_sign(&mut device, &path, message, ui.as_ref())
                 })
                 .await
                 .map_err(|e| WalletError::SigningFailed(format!("Trezor task: {e}")))??;
                 Ok(SignResult::SignatureHex(hex))
             }
-            SignRequest::EvmTypedData { .. } | SignRequest::EvmTypedDataHash { .. } => {
-                Err(WalletError::HardwareUnsupported(
-                    "Trezor EIP-712 clear-signing is not wired yet — use Ledger or a software account"
-                        .into(),
-                ))
-            }
-            SignRequest::EvmTransaction { tx } => {
-                let raw = tokio::task::spawn_blocking(move || {
-                    let mut device = usb::open_initialized(passphrase.as_ref(), ui.as_ref())?;
-                    let got = usb::ethereum_address(&mut device, &path, ui.as_ref())?;
-                    if !got.eq_ignore_ascii_case(&expected) {
-                        return Err(WalletError::HardwareUnsupported(format!(
-                            "Trezor address {got} does not match watch record {expected}"
+            SignRequest::EvmTypedData { payload } => {
+                let hashes = eip712_hashes(&payload)?;
+                let hex = tokio::task::spawn_blocking(move || {
+                    let mut device =
+                        open_verified(passphrase.as_ref(), ui.as_ref(), &path, &expected)?;
+                    // Trezor One can only show the two hashes; newer models
+                    // stream and display every field.
+                    let (sig, signer) = if usb::is_trezor_one(&device) {
+                        usb::ethereum_sign_typed_hash(&mut device, &path, &hashes, ui.as_ref())?
+                    } else {
+                        usb::ethereum_sign_typed_data(&mut device, &path, &payload, ui.as_ref())?
+                    };
+                    if !signer.is_empty() && !signer.eq_ignore_ascii_case(&expected) {
+                        return Err(WalletError::SigningFailed(format!(
+                            "Trezor signed with {signer}, expected {expected}"
                         )));
                     }
+                    Ok(sig)
+                })
+                .await
+                .map_err(|e| WalletError::SigningFailed(format!("Trezor task: {e}")))??;
+                Ok(SignResult::SignatureHex(hex))
+            }
+            SignRequest::EvmTypedDataHash { .. } => Err(WalletError::HardwareUnsupported(
+                "Trezor needs full EIP-712 JSON so the host can show what is signed".into(),
+            )),
+            SignRequest::EvmTransaction { tx } => {
+                let raw = tokio::task::spawn_blocking(move || {
+                    let mut device =
+                        open_verified(passphrase.as_ref(), ui.as_ref(), &path, &expected)?;
                     usb::ethereum_sign_prepared_tx(&mut device, &path, &tx, ui.as_ref())
                 })
                 .await
@@ -119,6 +130,27 @@ impl SignerBackend for TrezorSignerBackend {
             }
         }
     }
+}
+
+/// Open (resuming this wallet's session) and confirm the device derives the
+/// watch-record address; a mismatch drops the cached session.
+fn open_verified(
+    passphrase: Option<&SecretString>,
+    ui: Option<&Arc<TrezorUiBridge>>,
+    path: &str,
+    expected: &str,
+) -> Result<trezor_client::client::Trezor, WalletError> {
+    let mut device = usb::open_for_account(passphrase, ui, expected)?;
+    let got = usb::ethereum_address(&mut device, path, ui)?;
+    if !got.eq_ignore_ascii_case(expected) {
+        if let Some(bridge) = ui {
+            bridge.clear_session();
+        }
+        return Err(WalletError::HardwareUnsupported(format!(
+            "Trezor address {got} does not match watch record {expected}"
+        )));
+    }
+    Ok(device)
 }
 
 /// Preview Live-style paths `0..count` (device unlocked; PIN via `ui` on Trezor One).

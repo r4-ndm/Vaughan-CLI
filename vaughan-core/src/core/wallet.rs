@@ -240,10 +240,32 @@ impl DetachedSignContext {
     /// Fill nonce/fees if needed, sign, and broadcast. Does not touch [`WalletState`].
     pub async fn broadcast(
         self,
-        mut tx: EvmTransaction,
+        tx: EvmTransaction,
         label: &str,
     ) -> Result<crate::core::broadcasts::BroadcastReceipt, WalletError> {
         use crate::core::broadcasts::{BroadcastEntry, BroadcastReceipt};
+
+        let (adapter, tx, raw) = self.prepare_and_sign(tx).await?;
+        let hash = adapter.broadcast_raw(raw).await?;
+        adapter.invalidate_balance_cache().await;
+        let entry = BroadcastEntry::from_prepared(&tx, hash.0.clone(), label);
+        Ok(BroadcastReceipt {
+            hash: hash.0,
+            entry,
+        })
+    }
+
+    /// Fill nonce/fees if needed and sign without broadcasting (`eth_signTransaction`).
+    /// Returns the `0x`-prefixed raw envelope.
+    pub async fn sign_raw(self, tx: EvmTransaction) -> Result<String, WalletError> {
+        let (_adapter, _tx, raw) = self.prepare_and_sign(tx).await?;
+        Ok(format!("0x{}", hex::encode(raw)))
+    }
+
+    async fn prepare_and_sign(
+        self,
+        mut tx: EvmTransaction,
+    ) -> Result<(EvmAdapter, EvmTransaction, Vec<u8>), WalletError> {
         use crate::security::{SignRequest, SignResult};
 
         if tx.from.is_empty() {
@@ -277,13 +299,7 @@ impl DetachedSignContext {
                 ));
             }
         };
-        let hash = adapter.broadcast_raw(raw).await?;
-        adapter.invalidate_balance_cache().await;
-        let entry = BroadcastEntry::from_prepared(&tx, hash.0.clone(), label);
-        Ok(BroadcastReceipt {
-            hash: hash.0,
-            entry,
-        })
+        Ok((adapter, tx, raw))
     }
 }
 
@@ -1227,6 +1243,7 @@ impl WalletState {
     /// Lock: drop the in-memory mnemonic (zeroized on drop).
     pub fn lock(&mut self) {
         self.accounts = None;
+        self.trezor_ui.clear_session();
     }
 
     // ---- settings ----
@@ -1679,6 +1696,33 @@ impl WalletState {
             .retain(|d| !d.url.eq_ignore_ascii_case(url.trim()));
         if persisted.trusted_dapps.len() == before {
             return Err(WalletError::Other("dApp is not in the whitelist".into()));
+        }
+        persisted
+            .vb_saved_profiles
+            .retain(|u| !u.eq_ignore_ascii_case(url.trim()));
+        self.state.save(persisted)?;
+        Ok(())
+    }
+
+    /// Whether VB keeps this dApp's browser profile between launches.
+    pub fn vb_keeps_profile(&self, url: &str) -> bool {
+        self.persisted.as_ref().is_some_and(|p| {
+            p.vb_saved_profiles
+                .iter()
+                .any(|u| u.eq_ignore_ascii_case(url.trim()))
+        })
+    }
+
+    /// Opt a trusted dApp in/out of a saved VB profile; persists immediately.
+    /// Turning it off does not delete data — see `vb_browser::delete_vb_saved_profile`.
+    pub fn set_vb_keeps_profile(&mut self, url: &str, keep: bool) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let url = url.trim();
+        persisted
+            .vb_saved_profiles
+            .retain(|u| !u.eq_ignore_ascii_case(url));
+        if keep {
+            persisted.vb_saved_profiles.push(url.to_string());
         }
         self.state.save(persisted)?;
         Ok(())
@@ -2443,6 +2487,23 @@ mod tests {
         let raw = w.sign_transaction(tx).await.unwrap();
         assert!(raw.starts_with("0x"));
         assert!(raw.len() > 4, "signed tx must carry an RLP body");
+    }
+
+    #[test]
+    fn vb_saved_profile_opt_in_persists_and_clears_on_remove() {
+        let path = tmp_path();
+        let mut w = WalletState::load(path.clone()).unwrap();
+        w.create(&password(), mnemonic()).unwrap();
+        let url = "https://app.hyperliquid.xyz/";
+        w.add_trusted_dapp("Hyperliquid", url).unwrap();
+        assert!(!w.vb_keeps_profile(url));
+        w.set_vb_keeps_profile(url, true).unwrap();
+        w.set_vb_keeps_profile(url, true).unwrap();
+        assert!(WalletState::load(path.clone())
+            .unwrap()
+            .vb_keeps_profile("HTTPS://APP.HYPERLIQUID.XYZ/"));
+        w.remove_trusted_dapp(url).unwrap();
+        assert!(!w.vb_keeps_profile(url));
     }
 
     #[test]

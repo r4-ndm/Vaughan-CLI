@@ -173,8 +173,8 @@ pub use transaction::{
 };
 pub use v2_lp::{
     build_v2_add_liquidity_evm, build_v2_remove_liquidity_evm, build_v2_transfer_lp_evm,
-    default_v2_watch_pairs, get_v2_pair_address, list_v2_lp_positions, v2_pool_share_bps,
-    v2_spot_token1_per_token0, v2_underlying_amounts, V2LpPosition,
+    default_v2_watch_pairs, get_v2_pair_address, list_all_v2_lp_positions, list_v2_lp_positions,
+    v2_pool_share_bps, v2_spot_token1_per_token0, v2_underlying_amounts, V2LpPosition,
 };
 pub use wallet::{
     ChromeRpcSnapshot, DetachedMessageSigner, DetachedSignContext, NetworkRpcSnapshot,

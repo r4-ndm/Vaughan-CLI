@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, SyncSender};
 use std::sync::Mutex;
 
 use secrecy::SecretString;
+use zeroize::Zeroizing;
 
 use crate::error::WalletError;
 
@@ -22,6 +23,8 @@ pub struct TrezorUiBridge {
     need_passphrase: AtomicBool,
     /// True while USB is in / about to enter a ButtonRequest confirm.
     awaiting_button: AtomicBool,
+    /// True while a sign waits for the user to plug the Trezor in.
+    awaiting_device: AtomicBool,
     /// Host Esc requested abort (PIN / passphrase / confirm-on-device).
     abort: AtomicBool,
     /// Rendezvous sender waiting for the user's matrix digits.
@@ -30,6 +33,10 @@ pub struct TrezorUiBridge {
     early_pin: Mutex<Option<PinReply>>,
     passphrase_slot: Mutex<Option<SyncSender<PassphraseReply>>>,
     early_passphrase: Mutex<Option<PassphraseReply>>,
+    /// Device session (holds the entered passphrase on-device) for one wallet
+    /// address, so back-to-back signs do not re-ask. Keyed by address so a
+    /// standard and a hidden wallet never share a session. Never logged.
+    session: Mutex<Option<(String, Zeroizing<Vec<u8>>)>>,
 }
 
 impl TrezorUiBridge {
@@ -110,6 +117,16 @@ impl TrezorUiBridge {
         self.awaiting_button.load(Ordering::SeqCst)
     }
 
+    /// USB: mark that no Trezor is plugged in yet and the worker is polling.
+    pub fn set_awaiting_device(&self, pending: bool) {
+        self.awaiting_device.store(pending, Ordering::SeqCst);
+    }
+
+    /// TUI: true while the worker waits for the Trezor to be plugged in.
+    pub fn device_pending(&self) -> bool {
+        self.awaiting_device.load(Ordering::SeqCst)
+    }
+
     /// TUI: deliver matrix digits (`"1"`–`"9"` positions) or cancel.
     ///
     /// If the USB worker has not called [`Self::request_pin`] yet, the value is
@@ -176,5 +193,59 @@ impl TrezorUiBridge {
     /// USB worker: consume host abort (Esc). Returns true once per abort.
     pub fn take_abort(&self) -> bool {
         self.abort.swap(false, Ordering::SeqCst)
+    }
+
+    /// USB: session id to resume for `address`, if the last sign used it.
+    pub(crate) fn cached_session(&self, address: &str) -> Option<Vec<u8>> {
+        let slot = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_ref() {
+            Some((addr, id)) if addr.eq_ignore_ascii_case(address) => Some(id.to_vec()),
+            _ => None,
+        }
+    }
+
+    /// USB: remember the device session after a successful open for `address`.
+    pub(crate) fn store_session(&self, address: &str, id: Vec<u8>) {
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((address.to_ascii_lowercase(), Zeroizing::new(id)));
+    }
+
+    /// Forget the device session (wallet lock, address mismatch).
+    pub fn clear_session(&self) {
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_wait_flag_and_abort() {
+        let bridge = TrezorUiBridge::new();
+        assert!(!bridge.device_pending());
+        bridge.set_awaiting_device(true);
+        assert!(bridge.device_pending());
+        bridge.request_abort();
+        assert!(bridge.take_abort());
+        assert!(!bridge.take_abort());
+        bridge.set_awaiting_device(false);
+        assert!(!bridge.device_pending());
+    }
+
+    #[test]
+    fn session_is_scoped_to_one_address() {
+        let bridge = TrezorUiBridge::new();
+        let a = "0xAAaa000000000000000000000000000000000001";
+        let b = "0xbbbb000000000000000000000000000000000002";
+        assert!(bridge.cached_session(a).is_none());
+        bridge.store_session(a, vec![1, 2, 3]);
+        assert_eq!(
+            bridge.cached_session(&a.to_lowercase()),
+            Some(vec![1, 2, 3])
+        );
+        assert!(bridge.cached_session(b).is_none());
+        bridge.clear_session();
+        assert!(bridge.cached_session(a).is_none());
     }
 }

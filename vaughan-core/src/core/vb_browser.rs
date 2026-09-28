@@ -79,6 +79,50 @@ fn vb_state_dir() -> Option<PathBuf> {
     Some(dirs::data_dir()?.join("vaughan-cli"))
 }
 
+/// Saved VB profile folder for `url`'s host: `<data>/vaughan-cli/vb-profiles/<host>`.
+///
+/// Must match `vaughan-dapp-browser`'s `saved_profile_dir` (its `--keep-profile`
+/// launch path). `None` unless the host is a plain DNS name.
+pub fn vb_saved_profile_dir(url: &str) -> Option<PathBuf> {
+    let host = Url::parse(url.trim())
+        .ok()?
+        .host_str()?
+        .to_ascii_lowercase();
+    let plain = !host.is_empty()
+        && !host.starts_with('.')
+        && !host.contains("..")
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    if !plain {
+        return None;
+    }
+    Some(
+        dirs::data_dir()?
+            .join("vaughan-cli")
+            .join("vb-profiles")
+            .join(host),
+    )
+}
+
+/// Delete a site's saved VB profile (cookies, localStorage, dApp session keys).
+/// Returns `false` when there was nothing to delete. Refuses symlinks.
+pub fn delete_vb_saved_profile(url: &str) -> Result<bool, WalletError> {
+    let Some(dir) = vb_saved_profile_dir(url) else {
+        return Ok(false);
+    };
+    match std::fs::symlink_metadata(&dir) {
+        Err(_) => Ok(false),
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => Err(WalletError::Other(
+            "saved browser profile is not a real folder — not deleting".into(),
+        )),
+        Ok(_) => {
+            std::fs::remove_dir_all(&dir)?;
+            Ok(true)
+        }
+    }
+}
+
 /// Path to `vb.session` under the Vaughan data dir.
 pub fn vb_session_path() -> Option<PathBuf> {
     Some(vb_state_dir()?.join("vb.session"))

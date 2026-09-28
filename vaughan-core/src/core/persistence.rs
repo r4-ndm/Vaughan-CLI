@@ -117,6 +117,10 @@ pub struct PersistedState {
     /// When true, VB may expose loopback CDP for MCP agent navigation (FR-7.5).
     #[serde(default)]
     pub agent_browser_control: bool,
+    /// Trusted dApp URLs whose VB profile (cookies / localStorage) is kept on
+    /// disk between launches; all other sites get a throwaway profile.
+    #[serde(default)]
+    pub vb_saved_profiles: Vec<String>,
     /// MCP/VB connect autonomy: advisor = manual Connect card; operator = auto on allowlist.
     #[serde(default)]
     pub agent_autonomy_tier: AgentAutonomyTier,
@@ -195,6 +199,8 @@ pub fn default_ipfs_gateway_hosts() -> Vec<&'static str> {
         "dweb.link",
         "gateway.pinata.cloud",
         "cf-ipfs.com",
+        // Official PulseX mirror listed in app.pulsex.com/version.json.
+        "pulsex.mypinata.cloud",
     ]
 }
 
@@ -315,6 +321,16 @@ pub fn core_trusted_dapps() -> Vec<TrustedDapp> {
             extra_hosts: vec!["asterdex.com".into()],
         },
         TrustedDapp {
+            name: "RocketX".into(),
+            url: "https://www.rocketx.exchange/".into(),
+            extra_hosts: vec!["rocketx.exchange".into()],
+        },
+        TrustedDapp {
+            name: "CoW Swap".into(),
+            url: "https://swap.cow.fi/".into(),
+            extra_hosts: vec![],
+        },
+        TrustedDapp {
             name: "SquirrelSwap Bot".into(),
             url: "https://app.squirrelswap.pro/#/bot".into(),
             extra_hosts: vec!["squirrelswap.pro".into()],
@@ -410,9 +426,11 @@ pub fn merge_default_trusted_dapps(list: &mut Vec<TrustedDapp>) -> bool {
 
         if let Some(idx) = existing_idx {
             let existing = &mut list[idx];
-            if existing.extra_hosts.is_empty() && !dapp.extra_hosts.is_empty() {
-                existing.extra_hosts = dapp.extra_hosts.clone();
-                changed = true;
+            for host in &dapp.extra_hosts {
+                if !existing.extra_hosts.contains(host) {
+                    existing.extra_hosts.push(host.clone());
+                    changed = true;
+                }
             }
             continue;
         }
@@ -441,6 +459,7 @@ impl PersistedState {
             hardware: Vec::new(),
             account_labels: HashMap::new(),
             agent_browser_control: false,
+            vb_saved_profiles: Vec::new(),
             agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
         }
@@ -465,6 +484,7 @@ impl PersistedState {
             hardware: Vec::new(),
             account_labels: HashMap::new(),
             agent_browser_control: false,
+            vb_saved_profiles: Vec::new(),
             agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
         }
@@ -957,6 +977,31 @@ mod tests {
     }
 
     #[test]
+    fn merge_adds_new_gateway_to_existing_pulsex_hosts() {
+        let mut list = vec![TrustedDapp {
+            name: "PulseX (pick IPFS mirror)".into(),
+            url: "https://app.pulsex.com/".into(),
+            extra_hosts: vec!["ipfs.io".into(), "gateway.pinata.cloud".into()],
+        }];
+        assert!(merge_default_trusted_dapps(&mut list));
+        let pulsex = list.iter().find(|d| d.url.contains("pulsex")).unwrap();
+        assert!(pulsex
+            .extra_hosts
+            .iter()
+            .any(|h| h == "pulsex.mypinata.cloud"));
+        assert_eq!(
+            pulsex
+                .extra_hosts
+                .iter()
+                .filter(|h| *h == "ipfs.io")
+                .count(),
+            1
+        );
+        let hosts = trusted_dapp_allow_hosts(&list);
+        assert!(hosts.iter().any(|h| h == "pulsex.mypinata.cloud"));
+    }
+
+    #[test]
     fn trusted_dapp_allow_hosts_includes_ipfs_for_pulsex() {
         let dapps = default_trusted_dapps();
         let hosts = trusted_dapp_allow_hosts(&dapps);
@@ -968,6 +1013,11 @@ mod tests {
             hosts.iter().any(|h| h == "www.asterdex.com")
                 || hosts.iter().any(|h| h == "asterdex.com")
         );
+        assert!(
+            hosts.iter().any(|h| h == "www.rocketx.exchange")
+                || hosts.iter().any(|h| h == "rocketx.exchange")
+        );
+        assert!(hosts.iter().any(|h| h == "swap.cow.fi"));
     }
 
     #[test]

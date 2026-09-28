@@ -23,6 +23,8 @@ use crate::error::WalletError;
 /// A V2 LP stake: LP balance plus pool reserves / supply for share + underlying amounts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V2LpPosition {
+    /// DEX whose factory owns this pair (LFGswap / UniWswap / …).
+    pub venue: DexVenue,
     pub pair: Address,
     pub token0: Address,
     pub token1: Address,
@@ -283,7 +285,8 @@ const V2_FACTORY_SCAN_CONCURRENCY: usize = 24;
 /// List V2 LP positions for `owner` across `watch_pairs` (skips zero balances).
 ///
 /// On factories with `allPairsLength <= 2500`, also scans every pair so LP
-/// outside the default HEX watch list still appears.
+/// outside the default HEX watch list still appears. Individual pair read
+/// failures are skipped (a flaky RPC must not blank the whole list).
 pub async fn list_v2_lp_positions(
     rpc_url: &str,
     venue: DexVenue,
@@ -303,7 +306,7 @@ pub async fn list_v2_lp_positions(
         if !seen.insert(pair) {
             continue;
         }
-        if let Some(pos) = read_v2_position_if_held(&provider, pair, owner).await? {
+        if let Ok(Some(pos)) = read_v2_position_if_held(&provider, venue, pair, owner).await {
             out.push(pos);
         }
     }
@@ -316,15 +319,51 @@ pub async fn list_v2_lp_positions(
     let extras: Vec<Result<Option<V2LpPosition>, WalletError>> = stream::iter(to_scan)
         .map(|pair| {
             let provider = provider.clone();
-            async move { read_v2_position_if_held(&provider, pair, owner).await }
+            async move { read_v2_position_if_held(&provider, venue, pair, owner).await }
         })
         .buffer_unordered(V2_FACTORY_SCAN_CONCURRENCY)
         .collect()
         .await;
+    // Soft-fail: one bad pair eth_call must not wipe the whole LP list.
     for item in extras {
-        if let Some(pos) = item? {
+        if let Ok(Some(pos)) = item {
             out.push(pos);
         }
+    }
+    Ok(out)
+}
+
+/// List V2 LP across every catalogued V2 stack on `chain_id` (ETHW: LFG + UniW + Pow + Uni).
+///
+/// Each row carries [`V2LpPosition::venue`] so the TUI can show which DEX owns the pair.
+pub async fn list_all_v2_lp_positions(
+    rpc_url: &str,
+    chain_id: u64,
+    owner: Address,
+) -> Result<Vec<V2LpPosition>, WalletError> {
+    use crate::core::dex_catalog::lp_stacks_for_chain;
+    use crate::core::dex_catalog::LpStack;
+
+    let mut out = Vec::new();
+    let mut any_ok = false;
+    let mut last_err: Option<WalletError> = None;
+    for stack in lp_stacks_for_chain(chain_id) {
+        let LpStack::V2 { venue } = stack else {
+            continue;
+        };
+        let watch = default_v2_watch_pairs(chain_id, venue);
+        match list_v2_lp_positions(rpc_url, venue, chain_id, owner, &watch).await {
+            Ok(rows) => {
+                any_ok = true;
+                out.extend(rows);
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if out.is_empty() && !any_ok {
+        return Err(last_err.unwrap_or_else(|| {
+            WalletError::Other(format!("no V2 LP venues on chain {chain_id}"))
+        }));
     }
     Ok(out)
 }
@@ -387,6 +426,7 @@ async fn factory_pairs_to_scan<P: Provider + Clone>(
 
 async fn read_v2_position_if_held(
     provider: &impl Provider,
+    venue: DexVenue,
     pair: Address,
     owner: Address,
 ) -> Result<Option<V2LpPosition>, WalletError> {
@@ -438,6 +478,7 @@ async fn read_v2_position_if_held(
         .map_err(|e| WalletError::NetworkError(format!("decode getReserves: {e}")))?;
 
     Ok(Some(V2LpPosition {
+        venue,
         pair,
         token0,
         token1,

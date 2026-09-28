@@ -5,7 +5,9 @@
 //! - [`ui_bridge`] — Trezor One host PIN matrix ↔ TUI
 //! - [`usb`] — blocking `trezor-client` helpers (path parse, connect, sign)
 //! - [`session`] — [`DeviceSession`] (USB discover / path → address)
-//! - [`backend`] — EVM [`SignerBackend`] (personal / prepared tx; EIP-712 TBD)
+//! - [`eip712`] — typed-data streaming answers for Model T / Safe
+//! - [`backend`] — EVM [`SignerBackend`] (personal / prepared tx / EIP-712:
+//!   field streaming on Model T / Safe, domain + message hashes on Trezor One)
 //!
 //! Rules (same as Ledger):
 //! - No fee / RPC / chain registry in this module
@@ -13,6 +15,7 @@
 //! - Confirm-on-device is *in addition to* TUI approve
 
 pub mod backend;
+mod eip712;
 pub mod passphrase;
 pub mod session;
 pub mod ui_bridge;

@@ -169,6 +169,38 @@ async fn mock_trezor_account_can_send_on_anvil() {
     assert!(hw.wallet.export_active_private_key(&pw).is_err());
 }
 
+/// dApp `eth_sendTransaction` / `eth_signTransaction` path: the context is taken
+/// from the wallet, then signs + broadcasts without touching `WalletState`.
+#[tokio::test]
+async fn mock_trezor_detached_context_signs_and_sends_on_anvil() {
+    let anvil = Anvil::start();
+    let hw = wallet_with_mock_hw(Some(&anvil.url), HardwareVendor::Trezor, "Trezor 1");
+
+    let mut swap_like = sample_tx();
+    swap_like.from = String::new();
+    swap_like.data = Some(format!("0x{}", "ab".repeat(2_500)));
+    swap_like.value = "0".into();
+    swap_like.gas_limit = Some(200_000);
+
+    let raw = hw
+        .wallet
+        .detached_sign_context()
+        .expect("ctx")
+        .sign_raw(swap_like.clone())
+        .await
+        .expect("sign_raw");
+    assert!(raw.starts_with("0x") && raw.len() > 5_000);
+
+    let receipt = hw
+        .wallet
+        .detached_sign_context()
+        .expect("ctx")
+        .broadcast(swap_like, "dApp")
+        .await
+        .expect("broadcast");
+    assert!(receipt.hash.starts_with("0x"));
+}
+
 #[tokio::test]
 async fn mock_trezor_account_can_personal_sign() {
     let anvil = Anvil::start();

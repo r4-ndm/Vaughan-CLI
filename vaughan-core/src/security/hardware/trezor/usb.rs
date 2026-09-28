@@ -5,6 +5,7 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy::eips::eip2718::Encodable2718;
@@ -16,7 +17,9 @@ use trezor_client::{TrezorMessage, TrezorResponse};
 
 use crate::chains::EvmTransaction;
 use crate::error::WalletError;
+use crate::security::signing::Eip712Hashes;
 
+use super::eip712::TypedDataStream;
 use super::ui_bridge::TrezorUiBridge;
 
 /// Map Trezor/USB errors into wallet-facing messages (no secrets).
@@ -85,14 +88,93 @@ pub(crate) fn open_initialized(
     passphrase: Option<&SecretString>,
     ui: Option<&Arc<TrezorUiBridge>>,
 ) -> Result<Trezor, WalletError> {
+    open_session(passphrase, ui, None)
+}
+
+/// Like [`open_initialized`], but resumes the device session from the last
+/// sign for `address` so the passphrase is asked once per wallet, not per sign.
+///
+/// Caller must still verify the device address matches `address`; on mismatch
+/// call [`TrezorUiBridge::clear_session`].
+pub(crate) fn open_for_account(
+    passphrase: Option<&SecretString>,
+    ui: Option<&Arc<TrezorUiBridge>>,
+    address: &str,
+) -> Result<Trezor, WalletError> {
+    open_session(passphrase, ui, Some(address))
+}
+
+fn open_session(
+    passphrase: Option<&SecretString>,
+    ui: Option<&Arc<TrezorUiBridge>>,
+    address: Option<&str>,
+) -> Result<Trezor, WalletError> {
+    wait_for_usb_device(ui)?;
     let mut device = trezor_client::unique(false).map_err(map_trezor)?;
-    // Clear passphrase cache from a previous Vaughan connect on this plug.
-    let _ = device.call_raw(protos::EndSession::new());
-    let init = device.initialize(None).map_err(map_trezor)?;
+    let resume = match (ui, address) {
+        (Some(bridge), Some(addr)) => bridge.cached_session(addr),
+        _ => None,
+    };
+    if resume.is_none() {
+        // Clear passphrase cache from a previous Vaughan connect on this plug.
+        let _ = device.call_raw(protos::EndSession::new());
+    }
+    let init = device.initialize(resume).map_err(map_trezor)?;
     let features = handle_host_ui(init, passphrase, ui, false)?;
-    // Cache features for later inspection (model is already set from USB).
-    let _ = features;
+    if let (Some(bridge), Some(addr)) = (ui, address) {
+        let id = features.session_id();
+        if !id.is_empty() {
+            bridge.store_session(addr, id.to_vec());
+        }
+    }
     Ok(device)
+}
+
+/// How long a sign waits for the Trezor to be plugged in (under the 120 s dApp timeout).
+const DEVICE_WAIT: Duration = Duration::from_secs(90);
+const DEVICE_POLL: Duration = Duration::from_millis(500);
+
+/// With a host UI, wait (showing "connect your Trezor") until one is on USB.
+///
+/// Polls WebUSB only: [`trezor_client::unique`] also pings the UDP emulator and
+/// logs a warning each call. Without a UI, returns at once and lets `unique`
+/// report the usual not-found error.
+fn wait_for_usb_device(ui: Option<&Arc<TrezorUiBridge>>) -> Result<(), WalletError> {
+    use trezor_client::transport::webusb::WebUsbTransport;
+
+    let present = || {
+        WebUsbTransport::find_devices(false)
+            .map(|d| !d.is_empty())
+            .unwrap_or(false)
+    };
+    let Some(bridge) = ui else {
+        return Ok(());
+    };
+    if present() {
+        return Ok(());
+    }
+    // Drop a stale Esc from an earlier session so the wait is not cancelled at once.
+    let _ = bridge.take_abort();
+    bridge.set_awaiting_device(true);
+    let start = Instant::now();
+    let result = loop {
+        if bridge.take_abort() {
+            break Err(WalletError::SigningFailed(
+                "Trezor: cancelled on host — device not connected".into(),
+            ));
+        }
+        if present() {
+            break Ok(());
+        }
+        if start.elapsed() >= DEVICE_WAIT {
+            break Err(WalletError::HardwareUnsupported(
+                "Trezor not connected — plug it in and try again".into(),
+            ));
+        }
+        std::thread::sleep(DEVICE_POLL);
+    };
+    bridge.set_awaiting_device(false);
+    result
 }
 
 /// Button auto-ack; Trezor One PIN via bridge; passphrase on-device or session secret.
@@ -267,6 +349,146 @@ pub(crate) fn ethereum_personal_sign(
         .map_err(map_trezor)?;
     let sig = handle_host_ui(resp, None, ui, true)?;
     Ok(signature_hex_personal(&sig))
+}
+
+/// EIP-712 via `EthereumSignTypedHash` — the only typed-data mode on Trezor One.
+///
+/// The device shows the domain and message hashes (not decoded fields); the
+/// host approve card must show the same pair. Returns the signature hex and the
+/// address the device reports having signed with.
+pub(crate) fn ethereum_sign_typed_hash(
+    device: &mut Trezor,
+    path: &str,
+    hashes: &Eip712Hashes,
+    ui: Option<&Arc<TrezorUiBridge>>,
+) -> Result<(String, String), WalletError> {
+    let address_n = path_to_address_n(path)?;
+    let mut req = protos::EthereumSignTypedHash::new();
+    req.address_n = address_n;
+    req.set_domain_separator_hash(hashes.domain.to_vec());
+    if let Some(message) = hashes.message {
+        req.set_message_hash(message.to_vec());
+    }
+    let resp = device
+        .call(
+            req,
+            Box::new(|_, m: protos::EthereumTypedDataSignature| {
+                let signature = m.signature();
+                if signature.len() != 65 {
+                    return Err(trezor_client::Error::MalformedSignature);
+                }
+                let r = signature[0..32].try_into().unwrap();
+                let s = signature[32..64].try_into().unwrap();
+                let v = signature[64] as u64;
+                Ok((TrezorSignature { r, s, v }, m.address().to_string()))
+            }),
+        )
+        .map_err(map_trezor)?;
+    let (sig, address) = handle_host_ui(resp, None, ui, true)?;
+    Ok((signature_hex_personal(&sig), address))
+}
+
+/// Trezor One (legacy firmware): host PIN matrix, no EIP-712 field streaming.
+pub(crate) fn is_trezor_one(device: &Trezor) -> bool {
+    matches!(
+        device.model(),
+        trezor_client::Model::TrezorLegacy | trezor_client::Model::TrezorBootloader
+    )
+}
+
+/// EIP-712 via `EthereumSignTypedData` streaming (Model T / Safe): the device
+/// pulls struct layouts and field values and shows them before signing.
+/// Returns the signature hex and the address the device reports.
+pub(crate) fn ethereum_sign_typed_data(
+    device: &mut Trezor,
+    path: &str,
+    payload: &serde_json::Value,
+    ui: Option<&Arc<TrezorUiBridge>>,
+) -> Result<(String, String), WalletError> {
+    use protos::MessageType as Mt;
+
+    let stream = TypedDataStream::new(payload)?;
+    let mut req = protos::EthereumSignTypedData::new();
+    req.address_n = path_to_address_n(path)?;
+    req.set_primary_type(stream.primary_type().to_string());
+    req.set_metamask_v4_compat(true);
+    let bad_reply = |e: &dyn std::fmt::Display| map_trezor(format!("malformed reply: {e}"));
+
+    let mut resp = device.call_raw(req).map_err(map_trezor)?;
+    loop {
+        resp = match resp.message_type() {
+            Mt::MessageType_EthereumTypedDataStructRequest => {
+                let r = resp
+                    .into_message::<protos::EthereumTypedDataStructRequest>()
+                    .map_err(|e| bad_reply(&e))?;
+                let members = stream
+                    .struct_members(r.name())
+                    .inspect_err(|_| send_cancel(device))?;
+                let mut ack = protos::EthereumTypedDataStructAck::new();
+                ack.members = members;
+                device.call_raw(ack).map_err(map_trezor)?
+            }
+            Mt::MessageType_EthereumTypedDataValueRequest => {
+                let r = resp
+                    .into_message::<protos::EthereumTypedDataValueRequest>()
+                    .map_err(|e| bad_reply(&e))?;
+                let value = stream
+                    .value_at(&r.member_path)
+                    .inspect_err(|_| send_cancel(device))?;
+                let mut ack = protos::EthereumTypedDataValueAck::new();
+                ack.set_value(value);
+                device.call_raw(ack).map_err(map_trezor)?
+            }
+            Mt::MessageType_ButtonRequest => {
+                if ui.is_some_and(|b| b.take_abort()) {
+                    send_cancel(device);
+                    return Err(WalletError::SigningFailed(
+                        "Trezor: cancelled on host — confirm aborted".into(),
+                    ));
+                }
+                if let Some(bridge) = ui {
+                    bridge.set_awaiting_button(true);
+                }
+                let next = device.call_raw(protos::ButtonAck::new());
+                if let Some(bridge) = ui {
+                    bridge.set_awaiting_button(false);
+                }
+                next.map_err(map_trezor)?
+            }
+            Mt::MessageType_EthereumTypedDataSignature => {
+                let m = resp
+                    .into_message::<protos::EthereumTypedDataSignature>()
+                    .map_err(|e| bad_reply(&e))?;
+                let signature = m.signature();
+                if signature.len() != 65 {
+                    return Err(map_trezor("malformed EIP-712 signature"));
+                }
+                let sig = TrezorSignature {
+                    r: signature[0..32].try_into().unwrap(),
+                    s: signature[32..64].try_into().unwrap(),
+                    v: signature[64] as u64,
+                };
+                return Ok((signature_hex_personal(&sig), m.address().to_string()));
+            }
+            Mt::MessageType_Failure => {
+                let f = resp
+                    .into_message::<protos::Failure>()
+                    .map_err(|e| bad_reply(&e))?;
+                if f.code() == protos::failure::FailureType::Failure_UnexpectedMessage {
+                    return Err(WalletError::HardwareUnsupported(
+                        "Trezor firmware too old for EIP-712 — update in Trezor Suite".into(),
+                    ));
+                }
+                return Err(map_trezor(format!("{:?}: {}", f.code(), f.message())));
+            }
+            other => {
+                send_cancel(device);
+                return Err(WalletError::SigningFailed(format!(
+                    "Trezor: unexpected {other:?} during EIP-712"
+                )));
+            }
+        };
+    }
 }
 
 pub(crate) fn ethereum_sign_prepared_tx(
