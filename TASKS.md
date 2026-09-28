@@ -581,6 +581,8 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 > stealth mainnet. Omnibridge / LP / non-EVM stay deferred.
 
 - [x] CI installs Foundry/Anvil so bomb-proof suites actually run (green ≠ skipped)
+- [x] CI toolchain pin gets rustfmt/clippy (`rust-toolchain.toml` components) — CI had been red since the pin
+- [ ] Anvil tests wait for receipts after sends, then unpin CI Foundry (`version: v1.2.1` in `ci.yml`). Anvil ≥ 1.8 replies to `eth_sendTransaction` before mining; send-then-read tests race (fixed: `test_anvil_scan_pair_created_logs`; still racy on 1.8: `stealth_anvil` alice→bob, `send_view_alice_pays_bob`, `pulse_dapp_inject_connect_and_send_on_anvil`, and siblings that pass by luck)
 - [x] Vault durability: keep `wallet.json.bak` of last good write; load falls back on corrupt primary
 - [x] Post-broadcast: poll receipt after Send Done (Pending / Confirmed / Failed); `r` re-check
 - [x] RPC user messages: distinguish “all endpoints failed” / fallback exhausted

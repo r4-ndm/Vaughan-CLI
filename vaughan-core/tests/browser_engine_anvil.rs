@@ -619,7 +619,7 @@ async fn test_anvil_scan_pair_created_logs() {
     let pair = address!("dddddddddddddddddddddddddddddddddddddddd");
     anvil.set_code(factory, &pair_created_log_runtime(token0, token1, pair));
 
-    anvil
+    let tx_hash = anvil
         .rpc(
             "eth_sendTransaction",
             json!([{
@@ -629,11 +629,32 @@ async fn test_anvil_scan_pair_created_logs() {
                 "gas": "0x7a120"
             }]),
         )
-        .expect("factory call must mine");
+        .expect("factory call must be accepted");
 
-    let latest_hex = anvil.rpc("eth_blockNumber", json!([])).unwrap();
-    let latest =
-        u64::from_str_radix(latest_hex.as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+    // Newer anvil (CI runs 1.8.x) answers eth_sendTransaction before the block
+    // is mined, so eth_blockNumber can still read the previous head.
+    let mut receipt = Value::Null;
+    for _ in 0..50 {
+        receipt = anvil
+            .rpc("eth_getTransactionReceipt", json!([tx_hash]))
+            .unwrap();
+        if !receipt.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        receipt["status"], "0x1",
+        "factory call must mine: {receipt}"
+    );
+    let latest = u64::from_str_radix(
+        receipt["blockNumber"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )
+    .unwrap();
     let pairs = PairDiscovery::scan_pair_created_logs(&provider, factory, 0, latest)
         .await
         .expect("scan_pair_created_logs");
