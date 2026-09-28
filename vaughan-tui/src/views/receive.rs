@@ -159,16 +159,7 @@ impl ReceiveView {
                     self.scan(wallet, handle);
                     KeyOutcome::Consumed
                 }
-                KeyCode::Char('y') | KeyCode::Char('Y') => match wallet.active_address() {
-                    Ok(addr) => match clipboard::copy_text(addr) {
-                        Ok(()) => KeyOutcome::Flash("F3 address copied".into()),
-                        Err(e) => KeyOutcome::Flash(e),
-                    },
-                    Err(e) => {
-                        self.status = e.user_message();
-                        KeyOutcome::Consumed
-                    }
-                },
+                // `y` falls through to the global copy so it gets the address pulse.
                 KeyCode::Char('u') | KeyCode::Char('U') => match wallet.stealth_uri() {
                     Ok(uri) => match clipboard::copy_text(&uri) {
                         Ok(()) => KeyOutcome::Flash("Stealth URI copied".into()),

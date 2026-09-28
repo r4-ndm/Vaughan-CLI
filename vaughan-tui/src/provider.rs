@@ -65,15 +65,11 @@ pub enum BridgeStatus {
 }
 
 impl BridgeStatus {
-    /// One-line status for the Web screen.
+    /// One-line status for the Web screen; empty while the bridge is healthy.
     pub fn summary_line(&self) -> String {
         match self {
             Self::Starting => "Bridge: starting…".into(),
-            Self::Listening { url } => {
-                format!(
-                    "Bridge: {url} (unlock → open dApp; green banner = inject; approve sign/send here)"
-                )
-            }
+            Self::Listening { .. } => String::new(),
             Self::Disabled { reason } => format!("Bridge: disabled — {reason}"),
         }
     }
@@ -630,6 +626,9 @@ pub fn describe_approval_with_fee(
             lines.push(format!("Type:    {primary}"));
             lines.push("Message:".to_string());
             lines.extend(pretty_payload_lines(&typed_data["message"]));
+            if wallet.active_is_hardware().unwrap_or(false) {
+                lines.extend(device_hash_lines(typed_data)?);
+            }
             Ok(ApprovalPreview {
                 title: "Sign typed data (eth_signTypedData_v4)".into(),
                 details: lines,
@@ -1016,9 +1015,22 @@ fn describe_tx(tx: &TxParams, wallet: &WalletState, fee: Fee) -> Vec<String> {
         format!("Fee:     {}", fee.total),
     ];
     if let Some(data) = tx.data.as_deref() {
-        lines.push(format!("Data:    {data}"));
+        lines.push(format!("Data:    {}", short_calldata(data)));
     }
     lines
+}
+
+/// Calldata for the approve card: selector + leading bytes and total size, so
+/// router swaps do not push the approve keys off-screen.
+fn short_calldata(data: &str) -> String {
+    const SHOWN: usize = 74;
+    let hex = data.strip_prefix("0x").unwrap_or(data);
+    let bytes = hex.len() / 2;
+    if data.len() <= SHOWN {
+        data.to_string()
+    } else {
+        format!("{}… ({bytes} bytes)", &data[..SHOWN])
+    }
 }
 
 /// Compute the fee shown in the approval prompt.
@@ -1541,11 +1553,18 @@ pub fn execute_hw_approval_detached(
                 .block_on(signer.sign_typed_data(typed_data.clone()))
                 .map_err(map_wallet_error)
         }
-        // Tx paths still need DetachedSignContext; brief lock is wrong for USB.
-        // Fall back to locked sync (same freeze risk) until those are detached too.
-        ApprovalKind::SignTransaction(_)
-        | ApprovalKind::SendTransaction(_)
-        | ApprovalKind::Connect { .. }
+        ApprovalKind::SendTransaction(tx) => {
+            let (evm, ctx) = detached_tx_context(wallet, tx)?;
+            handle
+                .block_on(ctx.broadcast(evm, "dApp"))
+                .map(|receipt| receipt.hash)
+                .map_err(map_wallet_error)
+        }
+        ApprovalKind::SignTransaction(tx) => {
+            let (evm, ctx) = detached_tx_context(wallet, tx)?;
+            handle.block_on(ctx.sign_raw(evm)).map_err(map_wallet_error)
+        }
+        ApprovalKind::Connect { .. }
         | ApprovalKind::SwitchChain { .. }
         | ApprovalKind::McpProposal { .. }
         | ApprovalKind::StealthSweep { .. } => {
@@ -1553,6 +1572,63 @@ pub fn execute_hw_approval_detached(
             execute_approval_sync(kind, &mut w, handle)
         }
     }
+}
+
+/// Hashes Trezor One shows instead of the fields above; they must match the
+/// device screen before the user confirms there. Model T / Safe stream and
+/// display the fields themselves, so the block is a cross-check only.
+fn device_hash_lines(typed_data: &Value) -> Result<Vec<String>, ProviderError> {
+    let hashes = vaughan_core::security::signing::eip712_hashes(typed_data)
+        .map_err(|e| ProviderError::InvalidParams(e.user_message()))?;
+    let mut lines = vec![
+        String::new(),
+        "Trezor One shows only these hashes — they must match (newer Trezors show the fields):"
+            .to_string(),
+        format!("Domain:  {}", grouped_hash(&hashes.domain)),
+    ];
+    if let Some(message) = hashes.message {
+        lines.push(format!("Message: {}", grouped_hash(&message)));
+    }
+    Ok(lines)
+}
+
+/// `0x` hash as four 16-hex-char groups, how Trezor One lays it out.
+fn grouped_hash(hash: &alloy::primitives::B256) -> String {
+    let hex = hex::encode(hash);
+    hex.as_bytes()
+        .chunks(16)
+        .map(|c| std::str::from_utf8(c).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Chrome flash for a failed hardware sign from a dApp request.
+pub fn hw_sign_failure_message(err: &ProviderError) -> String {
+    match err {
+        ProviderError::UserRejected => "dApp request rejected on the device".into(),
+        ProviderError::Internal(detail) => format!("dApp sign failed: {detail}"),
+        other => format!("dApp sign failed: {other}"),
+    }
+}
+
+/// Build the dApp tx and snapshot signer + RPC under a brief wallet lock, so
+/// USB / PIN / broadcast run with the mutex released.
+fn detached_tx_context(
+    wallet: &std::sync::Arc<std::sync::Mutex<WalletState>>,
+    tx: &TxParams,
+) -> Result<(EvmTransaction, vaughan_core::core::DetachedSignContext), ProviderError> {
+    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+    if !w.is_unlocked() {
+        return Err(ProviderError::Unauthorized(
+            "wallet is locked; unlock it first".to_string(),
+        ));
+    }
+    if let Some(from) = tx.from.as_deref() {
+        verify_address(from, &w)?;
+    }
+    let evm = to_evm_transaction(tx, &w)?;
+    let ctx = w.detached_sign_context().map_err(map_wallet_error)?;
+    Ok((evm, ctx))
 }
 
 /// The request must target the active account; signing with a different
@@ -1568,14 +1644,26 @@ fn verify_address(address: &str, wallet: &WalletState) -> Result<(), ProviderErr
     }
 }
 
+/// Only a signer-side cancel (device button, host Esc, PIN abort) is a 4001.
+/// Broadcast failures also say "rejected" ("rejected by the network") and
+/// must not tell the dApp the user declined after they approved on device.
 fn map_wallet_error(e: WalletError) -> ProviderError {
-    let msg = e.user_message();
-    let lower = msg.to_lowercase();
-    if lower.contains("cancel") || lower.contains("reject") || lower.contains("denied") {
-        ProviderError::UserRejected
-    } else {
-        ProviderError::Internal(msg)
+    match &e {
+        WalletError::SigningFailed(m) | WalletError::HardwareUnsupported(m)
+            if is_signer_cancel(m) =>
+        {
+            ProviderError::UserRejected
+        }
+        WalletError::TransactionFailed(reason) => {
+            ProviderError::Internal(format!("network rejected the signed tx: {reason}"))
+        }
+        _ => ProviderError::Internal(e.user_message()),
     }
+}
+
+fn is_signer_cancel(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("cancel") || lower.contains("reject") || lower.contains("denied")
 }
 
 /// Spawn an async read-RPC forward (does not block the UI thread).
@@ -1609,6 +1697,92 @@ mod tests {
     use tokio_tungstenite::tungstenite::protocol::Message;
     use vaughan_core::chains::evm::networks::get_network_by_chain_id;
     use vaughan_provider::RequestHandler;
+
+    #[test]
+    fn hw_sign_failure_message_keeps_reason() {
+        let msg = hw_sign_failure_message(&ProviderError::Internal(
+            "Trezor not ready — unlock, check USB".into(),
+        ));
+        assert!(msg.contains("Trezor not ready"));
+        assert!(hw_sign_failure_message(&ProviderError::UserRejected).contains("rejected"));
+    }
+
+    #[test]
+    fn device_hash_lines_group_spec_hashes() {
+        let typed = json!({
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"}
+                ],
+                "Person": [
+                    {"name": "name", "type": "string"},
+                    {"name": "wallet", "type": "address"}
+                ],
+                "Mail": [
+                    {"name": "from", "type": "Person"},
+                    {"name": "to", "type": "Person"},
+                    {"name": "contents", "type": "string"}
+                ]
+            },
+            "primaryType": "Mail",
+            "domain": {
+                "name": "Ether Mail", "version": "1", "chainId": 1,
+                "verifyingContract": "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
+            },
+            "message": {
+                "from": {"name": "Cow", "wallet": "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826"},
+                "to": {"name": "Bob", "wallet": "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"},
+                "contents": "Hello, Bob!"
+            }
+        });
+        let lines = device_hash_lines(&typed).unwrap();
+        assert!(lines
+            .iter()
+            .any(|l| l
+                == "Domain:  f2cee375fa42b421 43804025fc449dea fd50cc031ca257e0 b194a650a912090f"));
+        assert!(lines
+            .iter()
+            .any(|l| l
+                == "Message: c52c0ee5d8426447 1806290a3f2c4cec fc5490626bf912d0 1f240d7a274b371e"));
+    }
+
+    #[test]
+    fn network_rejection_is_not_user_rejection() {
+        let err = map_wallet_error(WalletError::TransactionFailed(
+            "insufficient funds for gas * price + value".into(),
+        ));
+        match err {
+            ProviderError::Internal(detail) => assert!(detail.contains("insufficient funds")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        assert!(matches!(
+            map_wallet_error(WalletError::SigningFailed("rejected on Trezor".into())),
+            ProviderError::UserRejected
+        ));
+        assert!(matches!(
+            map_wallet_error(WalletError::HardwareUnsupported(
+                "Trezor PIN entry cancelled".into()
+            )),
+            ProviderError::UserRejected
+        ));
+        assert!(matches!(
+            map_wallet_error(WalletError::RpcError("request denied by rpc".into())),
+            ProviderError::Internal(_)
+        ));
+    }
+
+    #[test]
+    fn short_calldata_keeps_short_and_trims_long() {
+        assert_eq!(short_calldata("0x095ea7b3"), "0x095ea7b3");
+        let long = format!("0x7ff36ab5{}", "ab".repeat(1_000));
+        let shown = short_calldata(&long);
+        assert!(shown.starts_with("0x7ff36ab5"));
+        assert!(shown.ends_with("… (1004 bytes)"));
+        assert!(shown.chars().count() < 100);
+    }
 
     #[test]
     fn decode_message_handles_hex_and_utf8() {

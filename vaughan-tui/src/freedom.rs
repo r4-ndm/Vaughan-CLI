@@ -47,15 +47,19 @@ pub fn display_host(url: &str) -> String {
 }
 
 /// Open `url` in Vaughan dApp browser if present, else Freedom (never `xdg-open`).
+///
+/// `keep_profile` (VB only) reuses the site's saved browser profile.
 pub fn open_dapp_url(
     url: &str,
     allow_hosts: &[String],
     agent_browser_control: bool,
+    keep_profile: bool,
 ) -> Result<String, String> {
     open_dapp_url_with_cmds(
         url,
         allow_hosts,
         agent_browser_control,
+        keep_profile,
         env::var(dapp_browser::DAPP_BROWSER_CMD_ENV).ok().as_deref(),
         env::var("VAUGHAN_FREEDOM_CMD").ok().as_deref(),
     )
@@ -66,6 +70,7 @@ fn open_dapp_url_with_cmds(
     url: &str,
     allow_hosts: &[String],
     agent_browser_control: bool,
+    keep_profile: bool,
     dapp_browser_cmd: Option<&str>,
     freedom_cmd: Option<&str>,
 ) -> Result<String, String> {
@@ -78,9 +83,16 @@ fn open_dapp_url_with_cmds(
         return Err("URL must be http or https".into());
     }
 
-    match dapp_browser::try_open_with_cmd(url, allow_hosts, dapp_browser_cmd, agent_browser_control)
-    {
+    match dapp_browser::try_open_with_cmd(
+        url,
+        allow_hosts,
+        dapp_browser_cmd,
+        agent_browser_control,
+        keep_profile,
+    ) {
         Ok(msg) => return Ok(msg),
+        // VB is installed but refused this launch — Freedom would hide why.
+        Err(e) if e.starts_with("VB exited") => return Err(e),
         Err(e) => {
             tracing::debug!(error = %e, "vaughan-dapp-browser unavailable; trying Freedom");
         }
@@ -156,7 +168,7 @@ mod tests {
 
     #[test]
     fn rejects_non_http() {
-        let err = open_dapp_url("file:///tmp/x", &[], false).unwrap_err();
+        let err = open_dapp_url("file:///tmp/x", &[], false, false).unwrap_err();
         assert!(err.contains("http"));
     }
 
@@ -183,6 +195,7 @@ mod tests {
         let err = open_dapp_url_with_cmds(
             "https://app.pulsex.com/",
             &[],
+            false,
             false,
             Some("vaughan-dapp-browser-not-installed-for-tests"),
             Some("vaughan-freedom-not-installed-for-tests"),

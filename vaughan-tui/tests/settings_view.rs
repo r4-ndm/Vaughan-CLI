@@ -323,7 +323,15 @@ fn settings_view_p_changes_vault_password() {
     );
 
     type_text(&mut view, NEW, &mut wallet, &handle, &events);
-    view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    let outcome = view.handle_key(key(KeyCode::Enter), &mut wallet, &handle, &events);
+    assert!(
+        matches!(
+            &outcome,
+            vaughan_tui::app::KeyOutcome::Flash(msg)
+                if msg.to_lowercase().contains("password changed successfully")
+        ),
+        "success must chrome-flash, got {outcome:?}"
+    );
     let text = render(&view, &wallet);
     assert!(
         text.contains("Vault password updated"),

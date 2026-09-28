@@ -529,7 +529,7 @@ impl SettingsView {
                     ),
                     _ => (
                         " Confirm new password ",
-                        "Re-enter new password · Esc cancel",
+                        "Re-enter to confirm · Enter saves (a few seconds) · Esc cancel",
                         "Confirm password",
                     ),
                 };
@@ -1194,7 +1194,14 @@ impl SettingsView {
                         Ok(()) => {
                             self.clear_change_password();
                             self.stage = Stage::List;
-                            self.status = "Vault password updated.".into();
+                            self.status =
+                                "Vault password updated — use the new password next unlock.".into();
+                            // Chrome toast: the list status line alone was easy to miss
+                            // (and used to render in error-red).
+                            return KeyOutcome::Flash(
+                                "Password changed successfully. Unlock with the new password next time."
+                                    .into(),
+                            );
                         }
                         Err(e) => {
                             self.pending_current_password = Some(current);

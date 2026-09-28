@@ -13,7 +13,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
@@ -340,28 +340,32 @@ impl ApproveView {
                 )));
             }
         }
-        text.push(Line::from(""));
+        let mut keys = vec![Line::from("")];
         if signing {
-            text.push(Line::from(Span::styled(
+            keys.push(Line::from(Span::styled(
                 format!(
                     "{} Signing and broadcasting — please wait…",
                     crate::jobs::spinner_frame(tick)
                 ),
                 Style::default().fg(Color::Yellow),
             )));
-            text.push(Line::from(""));
         } else {
-            text.push(Line::from(
+            keys.push(Line::from(
                 "y / Enter — approve (after brief pause)     n / Esc — deny",
             ));
         }
-        text.push(Line::from(
+        keys.push(Line::from(
             "Stale prompts auto-deny after 60s (dApp timeout safety).",
         ));
 
         let inner =
             brand::render_faded_box(frame, area, Some(brand::fade_line(" Approve request ")));
-        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+        // Keys are pinned to the bottom so long details can never hide them.
+        let [body, footer] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(keys.len() as u16)])
+                .areas(inner);
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
+        frame.render_widget(Paragraph::new(keys).wrap(Wrap { trim: false }), footer);
     }
 
     pub fn allows_footer_shortcuts(&self) -> bool {

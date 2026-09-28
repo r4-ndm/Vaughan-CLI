@@ -715,6 +715,11 @@ impl App {
             && self.trezor_passphrase.is_none()
     }
 
+    /// A sign is waiting for the Trezor to be plugged in.
+    pub fn trezor_device_wait_active(&self) -> bool {
+        self.trezor_ui.device_pending()
+    }
+
     /// Number of PIN matrix positions entered (shown as dots).
     pub fn trezor_pin_len(&self) -> usize {
         self.trezor_pin
@@ -772,6 +777,7 @@ impl App {
                     self.clear_chrome_flash();
                 }
             }
+            self.chrome.copy_pulse_ticks = self.chrome.copy_pulse_ticks.saturating_sub(1);
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
@@ -880,6 +886,14 @@ impl App {
             return;
         }
 
+        // Waiting for the Trezor to be plugged in: Esc cancels, other keys wait.
+        if self.trezor_device_wait_active() {
+            if matches!(key.code, KeyCode::Esc) {
+                self.trezor_sign = None;
+                self.trezor_ui.request_abort();
+            }
+            return;
+        }
         // After PIN / passphrase: on-device confirm (Esc cancels).
         if self.trezor_confirm_device_active() {
             self.handle_trezor_confirm_device_key(key);
@@ -2930,11 +2944,8 @@ impl App {
         };
         match crate::clipboard::copy_text(&addr) {
             Ok(()) => {
-                let short = if addr.len() > 12 {
-                    format!("{}…{}", &addr[..6], &addr[addr.len() - 4..])
-                } else {
-                    addr.clone()
-                };
+                // ~1.2 s at the 80 ms UI tick.
+                self.chrome.copy_pulse_ticks = 15;
                 let preview = self.chrome.focus == ChromeFocus::Account
                     && self.chrome.pending_account_index.is_some_and(|idx| {
                         self.wallet()
@@ -2943,9 +2954,12 @@ impl App {
                             .is_some_and(|active| active != idx)
                     });
                 if preview {
+                    let short = if addr.len() > 12 {
+                        format!("{}…{}", &addr[..6], &addr[addr.len() - 4..])
+                    } else {
+                        addr.clone()
+                    };
                     self.set_flash(format!("Copied preview {short}"));
-                } else {
-                    self.set_flash(format!("F3 address copied · {short}"));
                 }
             }
             Err(e) => self.set_flash(e),
@@ -3344,8 +3358,11 @@ impl App {
             let result = provider::execute_hw_approval_detached(&wallet, &handle, &kind);
             match reply {
                 PendingReply::Sign(reply) => {
+                    // The dApp only gets a sanitized "internal error"; the reason
+                    // (e.g. device not found) belongs in the TUI.
+                    let flash = result.as_ref().err().map(provider::hw_sign_failure_message);
                     let _ = reply.send(result);
-                    let _ = tx.blocking_send(UiJobResult::ProviderHwSignDone { flash: None });
+                    let _ = tx.blocking_send(UiJobResult::ProviderHwSignDone { flash });
                 }
                 PendingReply::LocalSign => {
                     let flash = Some(match result {
@@ -4036,7 +4053,7 @@ impl App {
                     }
                 }
                 UiJob::LpListV2Positions {
-                    venue,
+                    venue: _,
                     chain_id,
                     rpc_url,
                     owner,
@@ -4044,21 +4061,28 @@ impl App {
                 } => {
                     use alloy::primitives::Address;
                     use std::str::FromStr;
-                    use vaughan_core::core::{default_v2_watch_pairs, list_v2_lp_positions};
+                    use vaughan_core::core::{list_all_v2_lp_positions, with_lp_rpc_urls};
                     let owner_for_result = owner.clone();
-                    let parsed = (|| -> Result<_, WalletError> {
-                        let addr = Address::from_str(&owner).map_err(|_| {
-                            WalletError::InvalidTransaction("invalid owner address".into())
-                        })?;
-                        let watch = default_v2_watch_pairs(chain_id, venue);
-                        handle.block_on(list_v2_lp_positions(
-                            &rpc_url, venue, chain_id, addr, &watch,
-                        ))
-                    })();
+                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
+                        WalletError::InvalidTransaction("invalid owner address".into())
+                    });
+                    let rpc_urls = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                    };
+                    // Listing always walks every V2 factory on the chain so ETHW
+                    // LPs aren't hidden behind the current [ ] DEX focus.
                     UiJobResult::LpV2Positions {
                         list_gen,
                         owner: owner_for_result,
-                        result: parsed,
+                        result: match parsed_owner {
+                            Err(e) => Err(e),
+                            Ok(addr) => {
+                                handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
+                                    list_all_v2_lp_positions(&url, chain_id, addr).await
+                                }))
+                            }
+                        },
                     }
                 }
                 UiJob::LpV3PoolDeployStep {

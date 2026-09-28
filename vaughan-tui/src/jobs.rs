@@ -297,7 +297,7 @@ pub struct ChromeSnapshot {
     pub gas_gwei: Option<String>,
     pub loading: bool,
     pub error: Option<String>,
-    /// Brief chrome toast (e.g. "F3 address copied") — shown under the address.
+    /// Brief chrome toast (e.g. "Stealth URI copied") — shown under the address.
     pub flash: Option<String>,
     /// Optional title above [`Self::flash_table`] (LP Brew success summary).
     pub flash_title: Option<String>,
@@ -307,6 +307,8 @@ pub struct ChromeSnapshot {
     pub flash_dismiss_on_enter: bool,
     /// Ticks remaining before flash content clears (decremented each UI tick).
     pub flash_ticks_left: u8,
+    /// Ticks remaining on the address-row "copied" spinner after `y`.
+    pub copy_pulse_ticks: u8,
     /// Which status box is hotkeyed (F1 / F2 / F3).
     pub focus: ChromeFocus,
     /// F2 ↑/↓ asset cycle. Filled by [`UiJob::RefreshAssets`] — same set as

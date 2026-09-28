@@ -454,7 +454,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 /// PIN matrix / host passphrase / confirm-on-device (locked + unlocked screens).
 fn render_trezor_host_overlays(frame: &mut Frame, area: Rect, app: &App) {
-    if app.trezor_pin_active() {
+    if app.trezor_device_wait_active() {
+        render_trezor_connect(frame, area, app.tick());
+    } else if app.trezor_pin_active() {
         render_trezor_pin_matrix(frame, area, app.trezor_pin_len(), app.trezor_pin_cursor());
     } else if app.trezor_passphrase_active() {
         if let Some(line) = app.trezor_passphrase_line() {
@@ -468,10 +470,12 @@ fn render_trezor_host_overlays(frame: &mut Frame, area: Rect, app: &App) {
 /// Colour-coded wallet address with orange mid-segment under `AUGHA` in the wordmark.
 fn render_address_under_augha(frame: &mut Frame, area: Rect, app: &App) {
     let address = chrome_address(app);
-    frame.render_widget(
-        Paragraph::new(brand::colored_address_under_augha(&address, area.width)),
-        area,
-    );
+    let line = if app.chrome().copy_pulse_ticks > 0 {
+        brand::address_copy_pulse(&address, area.width, app.tick())
+    } else {
+        brand::colored_address_under_augha(&address, area.width)
+    };
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Copy / toast line under the address (visible on home and every unlocked screen).
@@ -896,7 +900,7 @@ fn render_trezor_passphrase(frame: &mut Frame, area: Rect, field: Line<'static>)
     );
     let lines = vec![
         Line::from(Span::styled(
-            "Trezor One: enter the hidden-wallet passphrase here.",
+            "Enter the hidden-wallet passphrase here.",
             Style::default().fg(brand::body_color()),
         )),
         Line::from(Span::styled(
@@ -915,6 +919,45 @@ fn render_trezor_passphrase(frame: &mut Frame, area: Rect, field: Line<'static>)
 }
 
 /// After host PIN (or Model T unlock) — wait for tx approval on the device.
+/// Sign approved but no Trezor on USB yet: prompt to plug in (worker keeps polling).
+fn render_trezor_connect(frame: &mut Frame, area: Rect, tick: u64) {
+    let width = 52u16.min(area.width.saturating_sub(4));
+    let height = 10u16.min(area.height.saturating_sub(2));
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let inner = brand::render_faded_box(frame, popup, Some(brand::fade_line(" Trezor · connect ")));
+    let body = Style::default().fg(brand::body_color());
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(
+                "{} Plug in your Trezor to continue.",
+                crate::jobs::spinner_frame(tick)
+            ),
+            Style::default()
+                .fg(brand::accent_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("Use a data cable, not charge-only.", body)),
+        Line::from(Span::styled(
+            "You will unlock it (PIN) and confirm next.",
+            body,
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Esc — cancel   (gives up after 90 s)",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_trezor_confirm_device(frame: &mut Frame, area: Rect) {
     let width = 52u16.min(area.width.saturating_sub(4));
     let height = 11u16.min(area.height.saturating_sub(2));
@@ -1165,13 +1208,40 @@ pub(crate) fn native_pls_label(chain_id: u64) -> &'static str {
 }
 
 /// A status/error line rendered at the bottom of a view's body.
+///
+/// Success copy is green; cancellations are muted; failures stay red. (Previously
+/// every non-empty status was red, so "Vault password updated." looked like an error.)
 pub(crate) fn status_paragraph(status: &str) -> Paragraph<'static> {
-    let style = if status.is_empty() {
-        Style::default()
-    } else {
+    Paragraph::new(Span::styled(status.to_string(), status_line_style(status)))
+}
+
+fn status_line_style(status: &str) -> Style {
+    if status.is_empty() {
+        return Style::default();
+    }
+    let s = status.to_ascii_lowercase();
+    const ERR: &[&str] = &[
+        "fail",
+        "error",
+        "wrong",
+        "invalid",
+        "cannot",
+        "must ",
+        "refuse",
+        "do not match",
+        "differ",
+        "locked",
+        "missing",
+        "denied",
+        "disabled",
+    ];
+    if ERR.iter().any(|e| s.contains(e)) {
         Style::default().fg(Color::Red)
-    };
-    Paragraph::new(Span::styled(status.to_string(), style))
+    } else if s.contains("cancel") {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Green)
+    }
 }
 
 /// Split a view body into content + a status line.

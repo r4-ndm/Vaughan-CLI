@@ -349,8 +349,9 @@ pub(crate) fn short_units(n: alloy::primitives::U256) -> String {
     }
 }
 
-/// V3 column widths (Pair · NFT · Fee · [Amt0 · Amt1] · Liquidity · Range · Unclaimed).
+/// V3 column widths (DEX · Pair · NFT · Fee · [Amt0 · Amt1] · Liquidity · Range · Unclaimed).
 pub(crate) struct V3TableCols {
+    pub dex: usize,
     pub pair: usize,
     pub nft: usize,
     pub fee: usize,
@@ -361,17 +362,20 @@ pub(crate) struct V3TableCols {
     pub unclaimed: usize,
 }
 
-/// Even split; drop Amt0/Amt1 under ~88 usable cells.
+/// Even split; drop Amt0/Amt1 under ~96 usable cells (DEX column needs room).
 pub(crate) fn v3_table_cols(term_width: u16) -> V3TableCols {
     let mark_overhead = 2usize; // ▸ + space
-    let usable = (term_width as usize).saturating_sub(mark_overhead).max(18);
-    let with_amts = usable >= 88;
-    let n = if with_amts { 8usize } else { 6usize };
+    let usable = (term_width as usize).saturating_sub(mark_overhead).max(20);
+    let with_amts = usable >= 96;
+    let n = if with_amts { 9usize } else { 7usize };
     let gaps = n - 1;
     let content = usable.saturating_sub(gaps).max(n);
-    let base = content / n;
-    let rem = content % n;
-    let mut widths = vec![base; n];
+    let dex = 8usize.min(content / 4).max(4);
+    let rest = content.saturating_sub(dex);
+    let rest_n = n - 1;
+    let base = rest / rest_n;
+    let rem = rest % rest_n;
+    let mut widths = vec![base; rest_n];
     for (i, w) in widths.iter_mut().enumerate() {
         if i < rem {
             *w += 1;
@@ -380,6 +384,7 @@ pub(crate) fn v3_table_cols(term_width: u16) -> V3TableCols {
     }
     if with_amts {
         V3TableCols {
+            dex,
             pair: widths[0],
             nft: widths[1],
             fee: widths[2],
@@ -391,6 +396,7 @@ pub(crate) fn v3_table_cols(term_width: u16) -> V3TableCols {
         }
     } else {
         V3TableCols {
+            dex,
             pair: widths[0],
             nft: widths[1],
             fee: widths[2],
@@ -409,7 +415,8 @@ pub(crate) fn v3_table_header_line(term_width: u16) -> ratatui::text::Line<'stat
     use ratatui::text::{Line, Span};
     let c = v3_table_cols(term_width);
     let mut s = format!(
-        "  {} {} {}",
+        "  {} {} {} {}",
+        pad_col("DEX", c.dex),
         pad_col("Pair", c.pair),
         pad_col("NFT", c.nft),
         pad_col("Fee", c.fee),
@@ -432,6 +439,7 @@ pub(crate) fn v3_table_header_line(term_width: u16) -> ratatui::text::Line<'stat
 /// One V3 row; `selected` draws ▸ + accent.
 pub(crate) fn v3_table_row_line(
     chain_id: u64,
+    venue_label: &str,
     p: &V3LpPositionView,
     assets: &[Balance],
     custom: &[CustomToken],
@@ -448,7 +456,8 @@ pub(crate) fn v3_table_row_line(
     let amt0 = compact_token_amount(&p.amount0, d0);
     let amt1 = compact_token_amount(&p.amount1, d1);
     let mut row = format!(
-        "{mark} {} {} {}",
+        "{mark} {} {} {} {}",
+        pad_col(venue_label, c.dex),
         pad_col(&pair, c.pair),
         pad_col(&format!("#{}", p.token_id), c.nft),
         pad_col(&fee_tier_display(p.fee), c.fee),
@@ -596,6 +605,7 @@ pub(crate) fn v3_focused_detail_lines(
 
 /// V2 column widths (Pair · Share · Amt0 · Amt1 · LP · Pair#) — even split; drop trailing on narrow.
 pub(crate) struct V2TableCols {
+    pub dex: usize,
     pub pair: usize,
     pub share: usize,
     pub amt0: usize,
@@ -606,15 +616,19 @@ pub(crate) struct V2TableCols {
 
 pub(crate) fn v2_table_cols(term_width: u16) -> V2TableCols {
     let mark_overhead = 2usize; // ▸ + space
-    let usable = (term_width as usize).saturating_sub(mark_overhead).max(12);
-    // Prefer 6 cols; drop pair-addr under ~72 cells of content.
-    let with_addr = usable >= 72;
-    let n = if with_addr { 6usize } else { 5usize };
+    let usable = (term_width as usize).saturating_sub(mark_overhead).max(16);
+    // Prefer DEX + 5 cols; drop pair-addr under ~80 cells of content.
+    let with_addr = usable >= 80;
+    let n = if with_addr { 7usize } else { 6usize };
     let gaps = n - 1;
     let content = usable.saturating_sub(gaps).max(n);
-    let base = content / n;
-    let rem = content % n;
-    let mut widths = vec![base; n];
+    // Pin DEX to ~8 so venue names stay readable; split the rest evenly.
+    let dex = 8usize.min(content / 3).max(4);
+    let rest = content.saturating_sub(dex);
+    let rest_n = n - 1;
+    let base = rest / rest_n;
+    let rem = rest % rest_n;
+    let mut widths = vec![base; rest_n];
     for (i, w) in widths.iter_mut().enumerate() {
         if i < rem {
             *w += 1;
@@ -622,6 +636,7 @@ pub(crate) fn v2_table_cols(term_width: u16) -> V2TableCols {
         *w = (*w).max(3);
     }
     V2TableCols {
+        dex,
         pair: widths[0],
         share: widths[1],
         amt0: widths[2],
@@ -796,7 +811,8 @@ pub(crate) fn v2_table_header_line(term_width: u16) -> ratatui::text::Line<'stat
     use ratatui::text::{Line, Span};
     let c = v2_table_cols(term_width);
     let mut s = format!(
-        "  {} {} {} {} {}",
+        "  {} {} {} {} {} {}",
+        pad_col("DEX", c.dex),
         pad_col("Pair", c.pair),
         pad_col("Share", c.share),
         pad_col("Token0", c.amt0),
@@ -822,6 +838,7 @@ pub(crate) fn v2_table_row_line(
     use ratatui::text::{Line, Span};
     let c = v2_table_cols(term_width);
     let mark = if selected { "▸" } else { " " };
+    let dex = p.venue.label();
     let pair = v3_position_pair_label(chain_id, p.token0, p.token1, assets, custom);
     let (a0, a1) = p.underlying_amounts();
     let d0 = decimals_for_token(p.token0, assets, custom);
@@ -832,7 +849,8 @@ pub(crate) fn v2_table_row_line(
     // LP tokens are almost always 18 decimals on UniV2 forks.
     let lp = compact_token_amount(&p.lp_balance, 18);
     let mut row = format!(
-        "{mark} {} {} {} {} {}",
+        "{mark} {} {} {} {} {} {}",
+        pad_col(dex, c.dex),
         pad_col(&pair, c.pair),
         pad_col(&share, c.share),
         pad_col(&amt0, c.amt0),

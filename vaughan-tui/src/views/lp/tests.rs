@@ -660,6 +660,7 @@ mod lp_view {
         let t0 = Address::from_str("0x15de8ae884726f37ec90824f825d723ac93c8b77").unwrap();
         let t1 = Address::from_str("0xc6ca0621683db4a03e31ad77e1d63eb3a03acbba").unwrap();
         v.v2_positions.push(V2LpPosition {
+            venue: DexVenue::NineInch,
             pair,
             token0: t0,
             token1: t1,

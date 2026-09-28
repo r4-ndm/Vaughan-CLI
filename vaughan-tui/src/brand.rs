@@ -1169,6 +1169,48 @@ pub fn colored_address_under_augha(address: &str, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Address row during the copy pulse: a braille wave in the address colours with
+/// `copied` centred, keeping the exact padding of [`colored_address_under_augha`].
+pub fn address_copy_pulse(address: &str, width: u16, tick: u64) -> Line<'static> {
+    const WORD: &str = " copied ";
+    let base = colored_address_under_augha(address, width);
+    let cells: Vec<Style> = base
+        .spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |_| s.style))
+        .collect();
+    let text: String = base.spans.iter().map(|s| s.content.as_ref()).collect();
+    let start = text.chars().take_while(|c| *c == ' ').count();
+    let body_len = cells.len() - start;
+    let word_len = WORD.chars().count();
+    if body_len < word_len {
+        return base;
+    }
+    let word_at = start + (body_len - word_len) / 2;
+
+    let mut spans = Vec::with_capacity(body_len + 2);
+    if start > 0 {
+        spans.push(Span::raw(" ".repeat(start)));
+    }
+    let mut i = start;
+    while i < cells.len() {
+        if i == word_at {
+            spans.push(Span::styled(
+                WORD,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            i += word_len;
+            continue;
+        }
+        let glyph = crate::jobs::spinner_frame(tick.wrapping_add(i as u64));
+        spans.push(Span::styled(glyph.to_string(), cells[i]));
+        i += 1;
+    }
+    Line::from(spans)
+}
+
 /// Where a box title sits on the top border.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TitleAlign {
@@ -1801,6 +1843,22 @@ mod tests {
             orange_at, augha_at,
             "orange should start under AUGHA\nbanner: {banner_s}\ncol={orange_at} augha={augha_at}"
         );
+    }
+
+    #[test]
+    fn copy_pulse_keeps_width_and_centres_word() {
+        let width = 80u16;
+        let addr = "0x1234567890abcdef1234567890abcdef12345678";
+        let text = |l: &Line| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
+        let base = text(&colored_address_under_augha(addr, width));
+        let pulse = text(&address_copy_pulse(addr, width, 7));
+        assert_eq!(pulse.chars().count(), base.chars().count());
+        let pad = base.chars().take_while(|c| *c == ' ').count();
+        assert!(pulse.starts_with(&" ".repeat(pad)));
+        let at = pulse.find(" copied ").expect("word");
+        let col = pulse[..at].chars().count();
+        assert_eq!(col, pad + (42 - 8) / 2);
+        assert!(!pulse.contains("0x"));
     }
 
     #[test]

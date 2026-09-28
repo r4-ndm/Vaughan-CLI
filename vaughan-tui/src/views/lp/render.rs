@@ -239,13 +239,24 @@ impl LpView {
         frame.render_widget(status_paragraph(&status), status_area);
     }
 
-    /// Centered chrome title, e.g. `Wiz4rd-Engine V3`.
+    /// Centered chrome title, e.g. `Wiz4rd-Engine V3` or `V2 LP · all DEXes`.
     pub(crate) fn engine_title(&self) -> String {
-        let stack = match self.stack {
-            LpStack::V3 { .. } => "V3",
-            LpStack::V2 { .. } => "V2",
-        };
-        format!("{}-Engine {stack}", self.venue.label())
+        match self.stack {
+            LpStack::V3 { .. } => format!("{}-Engine V3", self.venue.label()),
+            LpStack::V2 { .. } => {
+                let mut venues = std::collections::BTreeSet::new();
+                for p in &self.v2_positions {
+                    venues.insert(p.venue.label());
+                }
+                if venues.len() > 1 {
+                    "V2 LP · all DEXes".into()
+                } else if let Some(one) = venues.iter().next() {
+                    format!("{one}-Engine V2")
+                } else {
+                    format!("{}-Engine V2", self.venue.label())
+                }
+            }
+        }
     }
 
     fn manager_bottom_hints(&self) -> String {
@@ -1112,6 +1123,7 @@ impl LpView {
                     for (i, p) in self.v3_positions.iter().enumerate() {
                         out.push(super::helpers::v3_table_row_line(
                             self.chain_id,
+                            self.venue.label(),
                             p,
                             assets,
                             custom,
@@ -1180,7 +1192,7 @@ impl LpView {
                 };
                 for line in super::helpers::v2_focused_detail_lines(
                     self.chain_id,
-                    self.venue.label(),
+                    p.venue.label(),
                     p,
                     assets,
                     custom,
@@ -1206,6 +1218,7 @@ impl LpView {
         out.push(super::helpers::v3_table_header_line(width));
         out.push(super::helpers::v3_table_row_line(
             self.chain_id,
+            self.venue.label(),
             p,
             assets,
             custom,

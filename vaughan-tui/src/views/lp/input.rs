@@ -99,7 +99,20 @@ impl LpView {
                 if self.tab == Tab::List && self.list_action_idx.is_none() =>
             {
                 let forward = matches!(key.code, KeyCode::Char(']'));
+                let was_v2 = matches!(self.stack, LpStack::V2 { .. });
                 self.apply_cycled_lp_stack(forward);
+                let still_v2 = matches!(self.stack, LpStack::V2 { .. });
+                // V2 List already aggregates every factory on-chain — skip a full
+                // re-scan when only the Add-LP default venue changed.
+                if was_v2 && still_v2 {
+                    self.busy = Busy::Idle;
+                    self.status = format!(
+                        "{} · {} V2 (all DEXes) · [ ] DEX · r reload",
+                        self.venue.label(),
+                        self.v2_positions.len()
+                    );
+                    return KeyOutcome::Consumed;
+                }
                 if let Some(job) = self.list_job(wallet) {
                     self.busy = Busy::Loading;
                     self.status = format!("Loading {} {}…", self.venue.label(), self.stack.label());
@@ -584,11 +597,11 @@ impl LpView {
         let next = cycle_lp_stack(self.stack, self.chain_id, forward);
         self.stack = next;
         self.venue = next.venue();
-        self.v3_positions.clear();
-        self.v2_positions.clear();
         self.sel = 0;
         self.list_action_idx = None;
         self.clear_transfer_lock();
+        // Positions stay until `list_job` clears them (or V2→V2 List keeps the
+        // aggregated rows). Avoid blanking the table before a skip-reload path.
         if matches!(self.stack, LpStack::V3 { .. })
             && venue_position_manager(self.venue, self.chain_id).is_none()
         {

@@ -126,12 +126,27 @@ impl LpView {
                         self.v2_positions = rows;
                         self.list_action_idx = None;
                         self.clamp_list_sel();
-                        self.status = format!(
-                            "{} · {} V2 position(s) · {} · ↑↓ select · Enter open",
-                            self.venue.label(),
-                            self.v2_positions.len(),
-                            short_addr(&owner)
-                        );
+                        let venues: usize = {
+                            let mut seen = std::collections::BTreeSet::new();
+                            for p in &self.v2_positions {
+                                seen.insert(p.venue.label());
+                            }
+                            seen.len()
+                        };
+                        self.status = if venues > 1 {
+                            format!(
+                                "{} V2 position(s) across {venues} DEXes · {} · ↑↓ select · Enter open",
+                                self.v2_positions.len(),
+                                short_addr(&owner)
+                            )
+                        } else {
+                            format!(
+                                "{} · {} V2 position(s) · {} · ↑↓ select · Enter open",
+                                self.venue.label(),
+                                self.v2_positions.len(),
+                                short_addr(&owner)
+                            )
+                        };
                     }
                     Err(e) => {
                         self.status = lp_network_user_message(&e);

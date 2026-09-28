@@ -305,6 +305,11 @@ impl LpView {
             return;
         }
         self.clamp_list_sel();
+        // Adopt the row's DEX so Remove / Transfer target the correct factory/router.
+        if let (LpStack::V2 { .. }, Some(p)) = (self.stack, self.v2_positions.get(self.sel)) {
+            self.venue = p.venue;
+            self.stack = LpStack::V2 { venue: p.venue };
+        }
         self.list_action_idx = Some(0);
         self.status = self.list_action_status_line();
     }
