@@ -4,6 +4,8 @@
 //! RAILGUN logs on a background thread (resuming from the encrypted cache),
 //! and shows per-token balances. No POI calls and no signing. The 0zk receive
 //! address is shown on Sepolia only until Vaughan can spend shielded funds.
+//! On mainnets, `f` runs one quick-sync from the public RAILGUN indexer
+//! (opt-in per run: the indexer sees our IP, not our notes).
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -24,6 +26,7 @@ use vaughan_railgun::balance::{balances, token_metadata, ShieldedBalances};
 use vaughan_railgun::cache::{self, CacheKey};
 use vaughan_railgun::deployment;
 use vaughan_railgun::keys::RailgunAccount;
+use vaughan_railgun::quick::{self, Indexer};
 use vaughan_railgun::scan::{self, ScanOptions, ScanProgress, ScanState};
 
 /// Save the cache at most this often while scanning.
@@ -65,6 +68,19 @@ impl ShieldedPanel {
 
     /// Start (or resume) a scan for the active account and network.
     pub fn start(&mut self, wallet: &WalletState, handle: &Handle) {
+        self.start_scan(wallet, handle, false);
+    }
+
+    /// Catch up from the public RAILGUN indexer, then finish over RPC.
+    pub fn quick_sync(&mut self, wallet: &WalletState, handle: &Handle) {
+        if !quick::is_available(wallet.networks().active().chain_id) {
+            self.status = "No RAILGUN indexer for this network — r scans over RPC.".into();
+            return;
+        }
+        self.start_scan(wallet, handle, true);
+    }
+
+    fn start_scan(&mut self, wallet: &WalletState, handle: &Handle, quick: bool) {
         if self.is_scanning() {
             return;
         }
@@ -112,7 +128,16 @@ impl ShieldedPanel {
         let stop = Arc::clone(&self.stop);
         let handle = handle.clone();
         std::thread::spawn(move || {
-            run_scan(&handle, &dep, &account, &urls, &profile_dir, &stop, &tx);
+            run_scan(
+                &handle,
+                &dep,
+                &account,
+                &urls,
+                &profile_dir,
+                quick,
+                &stop,
+                &tx,
+            );
         });
     }
 
@@ -159,6 +184,8 @@ impl ShieldedPanel {
             "Esc back"
         } else if self.receive_address().is_some() {
             "r rescan · x stop · z copy 0zk · Esc back"
+        } else if quick::is_available(self.chain_id) {
+            "r rescan · f quick-sync · x stop · Esc back"
         } else {
             "r rescan · x stop · Esc back"
         };
@@ -225,21 +252,31 @@ impl ShieldedPanel {
                 Style::default().fg(Color::Yellow),
             )));
         }
+        if quick::is_available(self.chain_id) {
+            lines.push(Line::from(Span::styled(
+                "f quick-sync downloads all RAILGUN history from the public indexer \
+                 (it sees your IP, not your notes).",
+                dim,
+            )));
+        }
         lines.push(Line::from(Span::styled(
-            "Shows what the RPC returned; spendability (POI) isn't checked yet.",
+            "Shows what the RPC/indexer returned; spendability (POI) isn't checked yet.",
             dim,
         )));
         lines
     }
 }
 
-/// Background thread body: load cache, scan across RPCs, save, label tokens.
+/// Background thread body: load cache, optionally quick-sync, scan across
+/// RPCs, save, label tokens.
+#[allow(clippy::too_many_arguments)]
 fn run_scan(
     handle: &Handle,
     dep: &deployment::RailgunDeployment,
     account: &RailgunAccount,
     urls: &[String],
     profile_dir: &std::path::Path,
+    quick: bool,
     stop: &AtomicBool,
     tx: &mpsc::Sender<Msg>,
 ) {
@@ -263,32 +300,57 @@ fn run_scan(
         }
     };
     send(Msg::Balances(balances(&state)));
-    send(Msg::Status("Scanning RAILGUN logs…".into()));
+
+    let mut saved_at = Instant::now();
+    let mut on_progress = |st: &ScanState, p: ScanProgress| {
+        if stop.load(Ordering::Relaxed) || !send(Msg::Progress(p)) {
+            return ControlFlow::Break(());
+        }
+        if saved_at.elapsed() >= CHECKPOINT_EVERY {
+            saved_at = Instant::now();
+            let _ = cache::save(&path, &key, dep, account.hd_index(), st);
+            send(Msg::Balances(balances(st)));
+        }
+        ControlFlow::Continue(())
+    };
+
+    if let Some(indexer) = Indexer::for_chain(dep.chain_id).filter(|_| quick) {
+        send(Msg::Status("Quick-sync from the RAILGUN indexer…".into()));
+        let result = handle.block_on(quick::quick_sync(
+            &indexer,
+            indexer.range(),
+            dep,
+            account,
+            &mut state,
+            &mut on_progress,
+        ));
+        if let Err(e) = result {
+            send(Msg::Status(format!(
+                "Quick-sync failed ({}); scanning over RPC…",
+                e.user_message()
+            )));
+        }
+    }
+    if !stop.load(Ordering::Relaxed) {
+        send(Msg::Status("Scanning RAILGUN logs…".into()));
+    }
 
     let mut last_err = None;
     let mut used = None;
     for url in urls {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         let Ok(provider) = scan::connect(url) else {
             continue;
         };
-        let mut saved_at = Instant::now();
         let result = handle.block_on(scan::scan(
             &provider,
             dep,
             account,
             &mut state,
             ScanOptions::default(),
-            |st, p| {
-                if stop.load(Ordering::Relaxed) || !send(Msg::Progress(p)) {
-                    return ControlFlow::Break(());
-                }
-                if saved_at.elapsed() >= CHECKPOINT_EVERY {
-                    saved_at = Instant::now();
-                    let _ = cache::save(&path, &key, dep, account.hd_index(), st);
-                    send(Msg::Balances(balances(st)));
-                }
-                ControlFlow::Continue(())
-            },
+            &mut on_progress,
         ));
         match result {
             Ok(()) => {
@@ -315,6 +377,9 @@ fn run_scan(
     }
     send(Msg::Balances(totals));
     send(Msg::Done(match last_err {
+        Some(e) if !quick && quick::is_available(dep.chain_id) => {
+            format!("Scan failed: {e} — f quick-syncs from the indexer instead.")
+        }
         Some(e) => format!("Scan failed: {e}"),
         None if stop.load(Ordering::Relaxed) => "Stopped — r resumes.".into(),
         None => "Up to date.".into(),

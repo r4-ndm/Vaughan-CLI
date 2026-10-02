@@ -95,7 +95,8 @@ line on chains without RAILGUN.
 | Real data | 407 live Sepolia events decode; a full scan finds 4 unspent notes for the public test mnemonic's account 0: 0.648375 WETH (`0xfff9976782d46cc05630d1f6ebab18b2324d6b14`) at block 11 830 615. Cross-check target for Railway (public mnemonic, so anyone can spend it) |
 | Cache | `<profile dir>/railgun/<chain>-<index>.cache`, AES-256-GCM, chain/index/contract bound as associated data, `0600` file in a `0700` dir, atomic writes. Key: Argon2id (vault costs) over the account's viewing key, not the seed: the viewing key already decrypts every cached note from chain data, it avoids a second seed access, and the KDF runs off the UI thread |
 | RPC history | Some RPCs answer old `eth_getLogs` with `[]` instead of an error (PublicNode Sepolia), which would read as a zero balance. Every scan first checks the deployment's first 50 blocks hold proxy events and fails loudly otherwise; the panel then tries the network's next RPC. Probe verified on Sepolia, Ethereum, Polygon and Arbitrum (BNB not checked: free RPCs refuse archive queries). Tenderly added as a Sepolia fallback RPC |
-| Mainnet scans | Same scanner; from deployment that's ~10 M blocks on Ethereum (much slower, resumable). Quick-sync (squid) stays opt-in and is not built yet |
+| Mainnet scans | Same scanner; from deployment that's ~10 M blocks on Ethereum (much slower, resumable), and free Ethereum RPCs don't serve old logs at all |
+| Quick-sync | Opt-in per scan: `f` in the Private panel pages the public RAILGUN squid indexer (railgun-rust `merkletree` client; legacy pages before the v2 start block) into the same scan state, then the RPC scan finishes the tail. Off by default, never automatic, hint shown under the keys. Falls back to RPC on any indexer error. Scans remember the newest block holding RAILGUN events (in the encrypted cache), and the history probe checks that block, so an RPC without old logs can still do the tail. Live Ethereum page verified (8 831 transact / 2 739 shield / 9 966 nullifiers) |
 | POI / network calls | None besides the RPC; no telemetry |
 
 ## Threat model
@@ -111,7 +112,7 @@ line on chains without RAILGUN.
 | Lying RPC | Phase 1 balance is display-only; Phase 3 verifies Merkle roots on-chain before any spend |
 | RPC without history returns empty logs | Deployment-block history probe before every scan; next RPC tried |
 | Cache tampering / replay onto another account | AES-GCM with chain id, account index and contract as associated data; unreadable cache → full rescan |
-| Third parties (RPC, squid, POI, IPFS) see metadata | Squid opt-in; endpoints disclosed and configurable; no telemetry |
+| Third parties (RPC, squid, POI, IPFS) see metadata | Squid opt-in per scan. The indexer sees your IP and when you sync, not which notes are yours (pages are public, decrypted locally); the RPC sees the same for the tail. No telemetry |
 | Funds stuck before unshield exists | Mainnet shield and mainnet 0zk receive address hidden until Gate 3; recovery = same mnemonic in Railway wallet |
 | Hidden protocol fee | Contract basis-points fee shown on every shield/unshield card |
 | Licence (Singlepass BUSL) | Release blocked until removed (see Licences) |

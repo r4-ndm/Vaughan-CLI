@@ -95,6 +95,9 @@ pub struct ScanState {
     pub(crate) start_block: u64,
     pub(crate) next_block: u64,
     pub(crate) utxos: Vec<WalletUtxo>,
+    /// Newest block known to hold RAILGUN events (any wallet's). A resumed
+    /// scan checks the RPC serves logs there instead of at deployment.
+    pub(crate) last_log_block: Option<u64>,
 }
 
 impl ScanState {
@@ -106,6 +109,7 @@ impl ScanState {
             start_block: deployment.deployment_block,
             next_block: deployment.deployment_block,
             utxos: Vec::new(),
+            last_log_block: None,
         }
     }
 
@@ -125,6 +129,13 @@ impl ScanState {
     #[must_use]
     pub fn utxos(&self) -> &[WalletUtxo] {
         &self.utxos
+    }
+
+    /// Remember `block` as the newest block known to hold RAILGUN events.
+    pub(crate) fn note_log_block(&mut self, block: Option<u64>) {
+        if let Some(b) = block {
+            self.last_log_block = Some(self.last_log_block.map_or(b, |prev| prev.max(b)));
+        }
     }
 
     /// Merge one decoded log batch: add new notes, then mark spends.
@@ -178,7 +189,7 @@ pub async fn scan<P: Provider>(
         .get_block_number()
         .await
         .map_err(|e| WalletError::RpcError(format!("block number: {e}")))?;
-    check_history(provider, deployment).await?;
+    check_history(provider, deployment, state.last_log_block).await?;
     let target = head.saturating_sub(options.confirmations);
     let topics = event_topics();
     let min_chunk = options.min_chunk.max(1);
@@ -207,6 +218,7 @@ pub async fn scan<P: Provider>(
         if !logs.is_empty() {
             let delta = decode_with_timestamps(provider, &logs, account).await?;
             state.apply(delta, account.viewing().nullifying_key());
+            state.note_log_block(logs.iter().filter_map(|l| l.block_number).max());
         }
         state.next_block = to + 1;
         let progress = ScanProgress {
@@ -224,19 +236,30 @@ pub async fn scan<P: Provider>(
 /// Blocks after deployment that must contain the proxy's setup events.
 const HISTORY_PROBE_BLOCKS: u64 = 50;
 
-/// Fail unless the RPC serves logs from the deployment block.
+/// Fail unless the RPC serves logs as far back as this scan needs.
 ///
-/// Some public RPCs (e.g. PublicNode on Sepolia) answer old `eth_getLogs`
-/// ranges with an empty list instead of an error, which would read as a zero
-/// balance. Every deployment emits proxy setup events in its first blocks.
+/// Some public RPCs (e.g. PublicNode) answer old `eth_getLogs` ranges with an
+/// empty list instead of an error, which would read as a zero balance. Probes
+/// `known_log_block` (a block that held RAILGUN events, at or before where
+/// the scan resumes) or else the deployment's first blocks, which always hold
+/// the proxy's setup events. Pruning RPCs keep a recent window, so serving the
+/// probe block means serving everything after it.
 pub async fn check_history<P: Provider>(
     provider: &P,
     deployment: &RailgunDeployment,
+    known_log_block: Option<u64>,
 ) -> Result<(), WalletError> {
+    let (from, to) = match known_log_block {
+        Some(block) => (block, block),
+        None => (
+            deployment.deployment_block,
+            deployment.deployment_block + HISTORY_PROBE_BLOCKS - 1,
+        ),
+    };
     let filter = Filter::new()
         .address(deployment.contract)
-        .from_block(deployment.deployment_block)
-        .to_block(deployment.deployment_block + HISTORY_PROBE_BLOCKS - 1);
+        .from_block(from)
+        .to_block(to);
     let logs = provider
         .get_logs(&filter)
         .await
@@ -508,6 +531,7 @@ pub(crate) mod tests {
 
         assert_eq!(seen, vec![start + 99, start + 199]);
         assert_eq!(state.next_block(), start + 200);
+        assert_eq!(state.last_log_block, Some(start + 10));
         assert_eq!(balances(&state).tokens[0].amount, U256::from(9));
         assert_eq!(
             state.utxos()[0].utxo.source.block_timestamp,
@@ -711,7 +735,7 @@ pub(crate) mod tests {
             delta.utxos.len(),
             delta.nullifiers.len()
         );
-        check_history(&provider, &deployment).await.unwrap();
+        check_history(&provider, &deployment, None).await.unwrap();
 
         let mut state = ScanState::new(&deployment);
         let head = provider.get_block_number().await.unwrap();

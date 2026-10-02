@@ -79,6 +79,8 @@ struct Envelope {
 struct Plain {
     start_block: u64,
     next_block: u64,
+    #[serde(default)]
+    last_log_block: Option<u64>,
     /// railgun-rust's own note encoding, hex.
     utxos: Vec<String>,
 }
@@ -119,6 +121,7 @@ pub fn save(
         serde_json::to_vec(&Plain {
             start_block: state.start_block,
             next_block: state.next_block,
+            last_log_block: state.last_log_block,
             utxos,
         })
         .map_err(|e| WalletError::Serialization(e.to_string()))?,
@@ -194,6 +197,7 @@ pub fn load(
     let mut state = ScanState::new(deployment);
     state.start_block = plain.start_block;
     state.next_block = plain.next_block.max(plain.start_block);
+    state.last_log_block = plain.last_log_block;
     state.utxos = utxos;
     Ok(Some(state))
 }
@@ -252,6 +256,7 @@ mod tests {
         .unwrap();
         state.apply(delta, me.viewing().nullifying_key());
         state.next_block = 5_800_001;
+        state.last_log_block = Some(5_800_000);
         state
     }
 
@@ -289,10 +294,18 @@ mod tests {
         save(&path, &key(1), &d, 0, &state).unwrap();
         let back = load(&path, &key(1), &d, 0).unwrap().unwrap();
         assert_eq!(back.next_block(), 5_800_001);
+        assert_eq!(back.last_log_block, Some(5_800_000));
         assert_eq!(balances(&back), balances(&state));
 
         let raw = fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("5800001"), "checkpoint must not be plaintext");
+    }
+
+    #[test]
+    fn caches_without_last_log_block_still_load() {
+        let plain: Plain =
+            serde_json::from_str(r#"{"start_block":1,"next_block":2,"utxos":[]}"#).unwrap();
+        assert_eq!(plain.last_log_block, None);
     }
 
     #[test]

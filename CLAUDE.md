@@ -172,7 +172,7 @@ listed here requires approval before it is added.
 | Uniswap V3 tick/swap math (via `wiz4rd-math`) | `uniswap-v3-sdk` (=7.0.0, pinned) |
 | V3 pool address + swap/LP tx builders | `wiz4rd-sdk`, `wiz4rd-math` (workspace path crates) |
 | Privacy / stealth (Phase 3) | `vaughan-core::security::stealth` (not Kohaku) |
-| RAILGUN shielded balances (FR-3.4) | `railgun-wallet`, `broadcaster-core` from `triamazikamno/railgun-rust` (MIT), git dep pinned by exact `rev`. **Only** in `vaughan-railgun` behind its `enabled` feature (frontends: `railgun`). Bump only via the procedure in `docs/railgun-go-no-go.md`. No release build with `railgun` while `wasmer-compiler-singlepass` (BUSL-1.1) is in the graph. |
+| RAILGUN shielded balances (FR-3.4) | `railgun-wallet`, `broadcaster-core`, `merkletree` (opt-in quick-sync client, approved 2026-10-02) from `triamazikamno/railgun-rust` (MIT), git dep pinned by exact `rev`. **Only** in `vaughan-railgun` behind its `enabled` feature (frontends: `railgun`). Bump only via the procedure in `docs/railgun-go-no-go.md`. No release build with `railgun` while `wasmer-compiler-singlepass` (BUSL-1.1) is in the graph. |
 | Test temp dirs (dev only) | `tempfile` |
 
 ## Build, test, lint

@@ -241,6 +241,10 @@ impl ReceiveView {
                     self.shielded.stop();
                     KeyOutcome::Consumed
                 }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.shielded.quick_sync(wallet, handle);
+                    KeyOutcome::Consumed
+                }
                 KeyCode::Char('z') | KeyCode::Char('Z') => match self.shielded.receive_address() {
                     Some(addr) => match clipboard::copy_text(addr) {
                         Ok(()) => KeyOutcome::Flash("0zk address copied".into()),

@@ -8503,6 +8503,7 @@ dependencies = [
  "argon2",
  "broadcaster-core",
  "hex",
+ "merkletree",
  "railgun-wallet",
  "rand 0.8.7",
  "secrecy",
@@ -8510,6 +8511,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "url",
  "vaughan-core",
  "zeroize",
 ]

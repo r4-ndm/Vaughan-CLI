@@ -95,6 +95,7 @@ uniswap-v3-sdk = { version = "=7.0.0", default-features = false }
 # Exact-commit pin: bump only via the procedure in `docs/railgun-go-no-go.md`.
 railgun-wallet = { git = "https://github.com/triamazikamno/railgun-rust", rev = "b61fca7e2476dc3e5f89463fcef97f53661890e6" }
 broadcaster-core = { git = "https://github.com/triamazikamno/railgun-rust", rev = "b61fca7e2476dc3e5f89463fcef97f53661890e6" }
+merkletree = { git = "https://github.com/triamazikamno/railgun-rust", rev = "b61fca7e2476dc3e5f89463fcef97f53661890e6" }
 
 # TUI
 ratatui = "0.30"

@@ -20,6 +20,8 @@ pub mod deployment;
 #[cfg(feature = "enabled")]
 pub mod keys;
 #[cfg(feature = "enabled")]
+pub mod quick;
+#[cfg(feature = "enabled")]
 pub mod scan;
 
 /// Whether this build includes RAILGUN support (the `enabled` feature).

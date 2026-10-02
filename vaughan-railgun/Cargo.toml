@@ -14,6 +14,7 @@ default = []
 enabled = [
     "dep:railgun-wallet",
     "dep:broadcaster-core",
+    "dep:merkletree",
     "dep:alloy",
     "dep:aes-gcm",
     "dep:argon2",
@@ -21,6 +22,7 @@ enabled = [
     "dep:rand",
     "dep:serde",
     "dep:serde_json",
+    "dep:url",
     "dep:zeroize",
 ]
 
@@ -28,6 +30,7 @@ enabled = [
 vaughan-core = { workspace = true }
 railgun-wallet = { workspace = true, optional = true }
 broadcaster-core = { workspace = true, optional = true }
+merkletree = { workspace = true, optional = true }
 alloy = { workspace = true, optional = true }
 aes-gcm = { workspace = true, optional = true }
 argon2 = { workspace = true, optional = true }
@@ -35,6 +38,7 @@ hex = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
