@@ -1,0 +1,171 @@
+From e30d813ba2232bcae5f9d6a99b61a0a3dd977445 Mon Sep 17 00:00:00 2001
+From: Vaughan contributors <noreply@example.invalid>
+Date: Fri, 2 Oct 2026 17:44:36 +0100
+Subject: [PATCH] Declare the MIT licence in every crate manifest
+
+The repository is MIT (LICENSE), but only merkletree set `license`, so
+cargo metadata, cargo-deny and licence scanners report the other crates
+as unlicensed. Set it once in [workspace.package] and inherit it.
+---
+ Cargo.toml                                    | 1 +
+ crates/core/Cargo.toml                        | 1 +
+ crates/indexed-artifacts/Cargo.toml           | 1 +
+ crates/local-db/Cargo.toml                    | 1 +
+ crates/merkletree/Cargo.toml                  | 2 +-
+ crates/poi/Cargo.toml                         | 1 +
+ crates/public-broadcaster-protocol/Cargo.toml | 1 +
+ crates/railgun-wallet/Cargo.toml              | 1 +
+ crates/sync-service/Cargo.toml                | 1 +
+ crates/trustless-artifacts/Cargo.toml         | 1 +
+ crates/waku-relay/Cargo.toml                  | 1 +
+ crates/waku/Cargo.toml                        | 1 +
+ 12 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index cffd715..d4caa81 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -17,6 +17,7 @@ resolver = "2"
+ [workspace.package]
+ edition = "2024"
+ rust-version = "1.91"
++license = "MIT"
+ 
+ [workspace.dependencies]
+ aes = "0.8"
+diff --git a/crates/core/Cargo.toml b/crates/core/Cargo.toml
+index ad883e6..c6917d1 100644
+--- a/crates/core/Cargo.toml
++++ b/crates/core/Cargo.toml
+@@ -3,6 +3,7 @@ name = "broadcaster-core"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true }
+diff --git a/crates/indexed-artifacts/Cargo.toml b/crates/indexed-artifacts/Cargo.toml
+index 407710d..fc0bf14 100644
+--- a/crates/indexed-artifacts/Cargo.toml
++++ b/crates/indexed-artifacts/Cargo.toml
+@@ -3,6 +3,7 @@ name = "railgun-indexed-artifacts"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ alloy-primitives = { workspace = true }
+diff --git a/crates/local-db/Cargo.toml b/crates/local-db/Cargo.toml
+index dae7e6d..ff356c3 100644
+--- a/crates/local-db/Cargo.toml
++++ b/crates/local-db/Cargo.toml
+@@ -3,6 +3,7 @@ name = "local-db"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true }
+diff --git a/crates/merkletree/Cargo.toml b/crates/merkletree/Cargo.toml
+index 2061137..b9edfc9 100644
+--- a/crates/merkletree/Cargo.toml
++++ b/crates/merkletree/Cargo.toml
+@@ -3,7 +3,7 @@ name = "merkletree"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
+-license = "MIT"
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true }
+diff --git a/crates/poi/Cargo.toml b/crates/poi/Cargo.toml
+index 25c1a8c..2dfc58f 100644
+--- a/crates/poi/Cargo.toml
++++ b/crates/poi/Cargo.toml
+@@ -3,6 +3,7 @@ name = "poi"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true }
+diff --git a/crates/public-broadcaster-protocol/Cargo.toml b/crates/public-broadcaster-protocol/Cargo.toml
+index 4aab390..8ceb662 100644
+--- a/crates/public-broadcaster-protocol/Cargo.toml
++++ b/crates/public-broadcaster-protocol/Cargo.toml
+@@ -3,6 +3,7 @@ name = "public-broadcaster-protocol"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true }
+diff --git a/crates/railgun-wallet/Cargo.toml b/crates/railgun-wallet/Cargo.toml
+index fc3e875..f181b61 100644
+--- a/crates/railgun-wallet/Cargo.toml
++++ b/crates/railgun-wallet/Cargo.toml
+@@ -2,6 +2,7 @@
+ name = "railgun-wallet"
+ version = "0.1.0"
+ edition = "2024"
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true, features = ["serde"] }
+diff --git a/crates/sync-service/Cargo.toml b/crates/sync-service/Cargo.toml
+index 86d8cf4..e83b8b1 100644
+--- a/crates/sync-service/Cargo.toml
++++ b/crates/sync-service/Cargo.toml
+@@ -3,6 +3,7 @@ name = "sync-service"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ async-trait = { workspace = true }
+diff --git a/crates/trustless-artifacts/Cargo.toml b/crates/trustless-artifacts/Cargo.toml
+index 803f3bb..067b3ea 100644
+--- a/crates/trustless-artifacts/Cargo.toml
++++ b/crates/trustless-artifacts/Cargo.toml
+@@ -3,6 +3,7 @@ name = "trustless-artifacts"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [features]
+ default = []
+diff --git a/crates/waku-relay/Cargo.toml b/crates/waku-relay/Cargo.toml
+index 260ffe2..f1f13e1 100644
+--- a/crates/waku-relay/Cargo.toml
++++ b/crates/waku-relay/Cargo.toml
+@@ -3,6 +3,7 @@ name = "waku-relay"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ alloy = { workspace = true }
+diff --git a/crates/waku/Cargo.toml b/crates/waku/Cargo.toml
+index 2d6659f..657e16b 100644
+--- a/crates/waku/Cargo.toml
++++ b/crates/waku/Cargo.toml
+@@ -3,6 +3,7 @@ name = "waku"
+ version = "0.1.0"
+ edition.workspace = true
+ rust-version.workspace = true
++license.workspace = true
+ 
+ [dependencies]
+ arti-client = { workspace = true }
+-- 
+2.55.0
+

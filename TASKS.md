@@ -616,8 +616,10 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] Sepolia proxy / implementation / RelayAdapt verified on-chain; scan start block 5784774
 - [x] CI job `railgun` (leak check, clippy, tests, parity)
 - [x] `docs/railgun-go-no-go.md`; `kohaku-go-no-go.md` + FR-3.4 updated
-- [ ] **Gate 0 (user):** approve the CLAUDE.md allowlist rows for `railgun-wallet` / `broadcaster-core`
-- [ ] Send upstream PRs (Singlepass optional [release blocker], `prover` feature, zeroize, Sepolia, licence field; `rs-poseidon` licence files)
+- [x] **Gate 0 (user):** CLAUDE.md allowlist rows for `railgun-wallet` / `broadcaster-core` approved 2026-10-02
+- [x] Upstream contributions drafted and tested: 3 patches + 3 issue texts in `docs/railgun-upstream/`
+- [ ] Send upstream PRs / issues (user posts them; Singlepass is the release blocker)
+- [ ] After the Singlepass PR lands (or via fork): bump the pin and set `default-features = false` on `railgun-wallet`
 
 #### Phase 1 — read-only (after Gate 0)
 
@@ -634,6 +636,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 - [ ] Phase 2: Sepolia-only shield (`RAILGUN_SHIELD` sig on card, protocol fee shown); humanizer `railgun.rs`; POI-on-Sepolia check — Gate 2
 - [ ] Phase 3: Merkle-root verification, prover (private module cache dir), POI, two-step send/unshield, linkage warning — Gate 3 (+ licence blocker cleared) before mainnet
+  - [ ] Measure Cranelift compile time / memory for the 13×13 POI witness (the Singlepass replacement)
 - [ ] Phase 4: Waku broadcasters — separate go/no-go
 
 ## Later — DeFi AI king / Coinbase compete (deferred)

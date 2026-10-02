@@ -122,6 +122,9 @@ card and never auto-signed or cached.
 
 ## Upstream PRs to send (non-blocking except where noted)
 
+Tested patches for 1, 3 and 5 plus issue texts for 2, 4 and 6 are in
+`docs/railgun-upstream/` (not yet sent).
+
 1. **Singlepass behind an off-by-default feature, Cranelift fallback.** Release
    blocker for Vaughan (licence).
 2. Optional `prover` feature so read-only builds skip `wasmer` / `ark-circom`.
@@ -135,8 +138,8 @@ card and never auto-signed or cached.
 
 Plan details: `TASKS.md` → "RAILGUN via railgun-rust".
 
-- **Gate 0:** allowlist approved in CLAUDE.md; audit + licences reviewed;
-  Sepolia verified; default build excludes railgun-rust. (This document.)
+- **Gate 0 (passed 2026-10-02):** allowlist approved in CLAUDE.md; audit +
+  licences reviewed; Sepolia verified; default build excludes railgun-rust.
 - **Phase 1:** read-only 0zk address + shielded balance (Sepolia receive
   address only; mainnet balances display-only). **Gate 1:** parity +
   Railway cross-check.
