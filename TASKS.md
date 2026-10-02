@@ -598,20 +598,43 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [ ] Mock relayer + EIP-712 vectors + Anvil permit acceptance test
 - Note: EIP-712 signing already done (software / Ledger / Trezor) — this is mostly the relayer client
 
-### Parked — RAILGUN shielded balances
+### RAILGUN via railgun-rust (FR-3.4)
 
-> **Parked** 2026-10-02. Multi-month effort, not a phase: ZKX ships ~51 MB of
-> circuit artifacts + a ~6.4 MB prover, and the Rust-only rule means
-> reimplementing the proving stack (no mature Rust RAILGUN SDK). Also
-> **not deployed on PulseChain** (Ethereum / Arbitrum / BNB / Polygon only), so
-> it does not serve the PulseChain-privacy goal. ERC-5564 stealth (already
-> shipped) remains the in-core privacy path. Resume only with an explicit
-> decision + dependency approval. Reference: `docs/zkx-borrowed-ideas-plan.md` §4.
+> Un-parked 2026-10-02: upstream `triamazikamno/railgun-rust` (MIT) matches the
+> official engine's derivation, so no from-scratch rewrite is needed. Pinned
+> git dependency, opt-in `railgun` feature, only in `vaughan-railgun`. Not on
+> PulseChain; Sepolia first. Full record: `docs/railgun-go-no-go.md`.
+> **Release blocker:** `wasmer-compiler-singlepass` is BUSL-1.1 (see doc).
 
-- [ ] (on resume) Crate inventory (babyjubjub / Poseidon / Groth16): audits, licences, maintenance
-- [ ] (on resume) Scratch derivation matching official RAILGUN vectors (`m/44'/1984'`, `m/420'/1984'`, babyjubjub seed)
-- [ ] (on resume) `docs/railgun-go-no-go.md`; update `kohaku-go-no-go.md` + FR-3.4
-- [ ] (on resume, if GO) keys, merkle sync, shield / transfer / unshield, POI, Sepolia first; broadcasters for gas by default
+#### Phase 0 — groundwork (branch `railgun/phase-0`)
+
+- [x] Pin `railgun-wallet` / `broadcaster-core` @ `b61fca7e2476dc3e5f89463fcef97f53661890e6` (workspace deps)
+- [x] `vaughan-railgun` stub crate; railgun-rust optional behind `enabled`; `railgun` feature in `vaughan-tui` / `vaughan-cli`
+- [x] Default `--workspace` build compiles no railgun-rust (`cargo tree` check, also in CI)
+- [x] Upstream parity + suites under Vaughan's lockfile: 148 passed (`scripts/railgun-parity.sh`)
+- [x] `cargo audit` + licence scan + transitive git deps (`rs-poseidon`) recorded
+- [x] Sepolia proxy / implementation / RelayAdapt verified on-chain; scan start block 5784774
+- [x] CI job `railgun` (leak check, clippy, tests, parity)
+- [x] `docs/railgun-go-no-go.md`; `kohaku-go-no-go.md` + FR-3.4 updated
+- [ ] **Gate 0 (user):** approve the CLAUDE.md allowlist rows for `railgun-wallet` / `broadcaster-core`
+- [ ] Send upstream PRs (Singlepass optional [release blocker], `prover` feature, zeroize, Sepolia, licence field; `rs-poseidon` licence files)
+
+#### Phase 1 — read-only (after Gate 0)
+
+- [ ] `AccountManager::with_hd_seed` zeroizing closure (HD-only) + tests
+- [ ] `keys` module: all-chains 0zk address, zeroize newtype; Vaughan parity vector in `test-vectors/`
+- [ ] `deployment` table (Sepolia + mainnets, `is_supported`)
+- [ ] `eth_getLogs` scanner + block timestamps + checkpoint; balances; squid opt-in
+- [ ] Encrypted cache (Argon2id over seed + AES-256-GCM) or memory-only fallback
+- [ ] TUI: read-only Shielded panel (no POI calls); 0zk receive on Sepolia only; hidden on unsupported chains
+- [ ] Tests: offline shield + nullifier round trip; ignored live Sepolia in `live-smoke.yml`; Railway cross-check
+- [ ] **Gate 1** review
+
+#### Later phases (re-plan at each gate)
+
+- [ ] Phase 2: Sepolia-only shield (`RAILGUN_SHIELD` sig on card, protocol fee shown); humanizer `railgun.rs`; POI-on-Sepolia check — Gate 2
+- [ ] Phase 3: Merkle-root verification, prover (private module cache dir), POI, two-step send/unshield, linkage warning — Gate 3 (+ licence blocker cleared) before mainnet
+- [ ] Phase 4: Waku broadcasters — separate go/no-go
 
 ## Later — DeFi AI king / Coinbase compete (deferred)
 

@@ -87,9 +87,11 @@ Requirement IDs are referenced by `TASKS.md`.
   differential (EVM-reference) fixtures and a live 7702 self-pay E2E; TUI batched-send
   view landed (see `docs/ambire-aa.md`). ERC-4337 `UserOperation` stays deferred by
   decision (self-pay 7702 is the testnet-first route).
-- **FR-3.4** Railgun / privacy pools — **deferred by decision** (see
-  `docs/kohaku-go-no-go.md`); revisit only when the derivation incompatibility is
-  resolved upstream or a spec-first implementation is scoped.
+- **FR-3.4** RAILGUN shielded balances — **in progress (Phase 0 done 2026-10-02)**
+  via pinned upstream `railgun-rust` behind the opt-in `railgun` feature
+  (`vaughan-railgun`); derivation matches the official engine. Sepolia first; not
+  on PulseChain. User-facing release blocked on the Wasmer Singlepass licence
+  (BUSL). See `docs/railgun-go-no-go.md`. Privacy pools remain deferred.
 
 ### Phase 4 — Contract Browser & DEX Engine (`wiz4rd-engine`)
 

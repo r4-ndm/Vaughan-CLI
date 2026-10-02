@@ -49,3 +49,37 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace
+
+  # Opt-in RAILGUN stack (docs/railgun-go-no-go.md). Separate job so the default
+  # build above never compiles railgun-rust.
+  railgun:
+    name: railgun feature · upstream parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          key: railgun
+
+      - name: Default workspace must not compile railgun-rust
+        run: |
+          if cargo tree --workspace -e normal | grep -qE 'railgun-wallet|broadcaster-core|wasmer'; then
+            echo "railgun-rust leaked into the default build" >&2
+            exit 1
+          fi
+
+      - name: cargo clippy (railgun)
+        run: cargo clippy -p vaughan-railgun -p vaughan-cli --features vaughan-railgun/enabled,vaughan-cli/railgun --all-targets -- -D warnings
+
+      - name: cargo test (railgun)
+        run: cargo test -p vaughan-railgun --features enabled
+
+      - name: Upstream parity tests under Vaughan's lockfile
+        run: scripts/railgun-parity.sh

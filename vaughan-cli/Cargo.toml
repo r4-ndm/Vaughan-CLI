@@ -10,6 +10,11 @@ repository = "https://github.com/r4-ndm/Vaughan-CLI"
 name = "vaughan"
 path = "src/main.rs"
 
+[features]
+default = []
+# Opt-in RAILGUN shielded balances (see docs/railgun-go-no-go.md).
+railgun = ["vaughan-tui/railgun"]
+
 [dependencies]
 vaughan-core = { path = "../vaughan-core" }
 vaughan-tui = { path = "../vaughan-tui" }

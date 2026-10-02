@@ -1,0 +1,22 @@
+[package]
+name = "vaughan-railgun"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Opt-in RAILGUN shielded balances for Vaughan (wraps pinned railgun-rust)."
+
+[features]
+default = []
+# Pulls in railgun-rust. Without it this crate is an empty stub, so
+# `cargo build --workspace` never compiles the RAILGUN stack.
+enabled = ["dep:railgun-wallet", "dep:broadcaster-core"]
+
+[dependencies]
+vaughan-core = { workspace = true }
+railgun-wallet = { workspace = true, optional = true }
+broadcaster-core = { workspace = true, optional = true }
+
+[lints]
+workspace = true

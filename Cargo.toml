@@ -10,6 +10,7 @@ members = [
     "vaughan-dapp-browser",
     "vaughan-provider",
     "vaughan-mcp",
+    "vaughan-railgun",
     "vaughan-tui",
 ]
 
@@ -90,6 +91,11 @@ tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls", "stream"] }
 uniswap-v3-sdk = { version = "=7.0.0", default-features = false }
 
+# RAILGUN (opt-in `railgun` feature; only `vaughan-railgun` may depend on these).
+# Exact-commit pin: bump only via the procedure in `docs/railgun-go-no-go.md`.
+railgun-wallet = { git = "https://github.com/triamazikamno/railgun-rust", rev = "b61fca7e2476dc3e5f89463fcef97f53661890e6" }
+broadcaster-core = { git = "https://github.com/triamazikamno/railgun-rust", rev = "b61fca7e2476dc3e5f89463fcef97f53661890e6" }
+
 # TUI
 ratatui = "0.30"
 crossterm = "0.28"
@@ -100,6 +106,7 @@ vaughan-aa = { path = "./vaughan-aa" }
 vaughan-agent = { path = "./vaughan-agent" }
 vaughan-provider = { path = "./vaughan-provider" }
 vaughan-mcp = { path = "./vaughan-mcp" }
+vaughan-railgun = { path = "./vaughan-railgun" }
 wiz4rd-math = { path = "./crates/wiz4rd-math" }
 wiz4rd-sdk = { path = "./crates/wiz4rd-sdk" }
 
