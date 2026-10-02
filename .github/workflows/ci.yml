@@ -76,10 +76,12 @@ jobs:
           fi
 
       - name: cargo clippy (railgun)
-        run: cargo clippy -p vaughan-railgun -p vaughan-cli --features vaughan-railgun/enabled,vaughan-cli/railgun --all-targets -- -D warnings
+        run: cargo clippy -p vaughan-railgun -p vaughan-tui -p vaughan-cli --features vaughan-railgun/enabled,vaughan-cli/railgun --all-targets -- -D warnings
 
       - name: cargo test (railgun)
-        run: cargo test -p vaughan-railgun --features enabled
+        run: |
+          cargo test -p vaughan-railgun --features enabled
+          cargo test -p vaughan-tui --features railgun --lib shielded
 
       - name: Upstream parity tests under Vaughan's lockfile
         run: scripts/railgun-parity.sh

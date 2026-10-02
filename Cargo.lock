@@ -8498,9 +8498,20 @@ dependencies = [
 name = "vaughan-railgun"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "alloy",
+ "argon2",
  "broadcaster-core",
+ "hex",
  "railgun-wallet",
+ "rand 0.8.7",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "vaughan-core",
+ "zeroize",
 ]
 
 [[package]]

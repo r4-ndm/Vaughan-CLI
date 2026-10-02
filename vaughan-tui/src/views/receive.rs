@@ -1,7 +1,9 @@
 //! Receive: public address, stealth URI, and scan/sweep of stealth notes.
 //!
 //! `y` copies the public address; `u` copies the stealth URI — both via
-//! clipboard helpers so mouse-select never grabs box borders.
+//! clipboard helpers so mouse-select never grabs box borders. With the
+//! `railgun` feature, `0` opens the read-only RAILGUN private balance (letters
+//! are global shortcuts here).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -23,6 +25,8 @@ use crate::clipboard;
 enum Stage {
     Address,
     Notes,
+    #[cfg(feature = "railgun")]
+    Shielded,
 }
 
 pub struct ReceiveView {
@@ -30,6 +34,8 @@ pub struct ReceiveView {
     notes: Vec<StealthNote>,
     selected: usize,
     status: String,
+    #[cfg(feature = "railgun")]
+    shielded: super::shielded::ShieldedPanel,
 }
 
 impl Default for ReceiveView {
@@ -39,6 +45,8 @@ impl Default for ReceiveView {
             notes: Vec::new(),
             selected: 0,
             status: String::new(),
+            #[cfg(feature = "railgun")]
+            shielded: super::shielded::ShieldedPanel::default(),
         }
     }
 }
@@ -54,7 +62,20 @@ impl ReceiveView {
                     brand::render_faded_box(frame, area, Some(brand::fade_line(" Receive ")));
                 frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
+            #[cfg(feature = "railgun")]
+            Stage::Shielded => {
+                let text = self.shielded.lines(net.name.as_str());
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
         }
+    }
+
+    /// Drain background work (RAILGUN scan progress); call every UI tick.
+    pub fn poll(&mut self) {
+        #[cfg(feature = "railgun")]
+        self.shielded.poll();
     }
 
     /// Address / URI on unbordered rows so copy/select stays clean.
@@ -101,9 +122,12 @@ impl ReceiveView {
         };
         frame.render_widget(Paragraph::new(uri_line).wrap(Wrap { trim: false }), uri_row);
 
-        let mut foot_lines = vec![Line::from(
-            "y address · u stealth URI · s scan notes · Esc dashboard",
-        )];
+        let keys = if cfg!(feature = "railgun") {
+            "y address · u stealth URI · s scan notes · 0 private (RAILGUN) · Esc dashboard"
+        } else {
+            "y address · u stealth URI · s scan notes · Esc dashboard"
+        };
+        let mut foot_lines = vec![Line::from(keys)];
         if !self.status.is_empty() {
             foot_lines.push(Line::from(Span::styled(
                 self.status.clone(),
@@ -142,6 +166,10 @@ impl ReceiveView {
     }
 
     pub fn allows_footer_shortcuts(&self) -> bool {
+        #[cfg(feature = "railgun")]
+        if self.stage == Stage::Shielded {
+            return false;
+        }
         true
     }
 
@@ -157,6 +185,12 @@ impl ReceiveView {
                 KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('s') => {
                     self.scan(wallet, handle);
+                    KeyOutcome::Consumed
+                }
+                #[cfg(feature = "railgun")]
+                KeyCode::Char('0') => {
+                    self.stage = Stage::Shielded;
+                    self.shielded.start(wallet, handle);
                     KeyOutcome::Consumed
                 }
                 // `y` falls through to the global copy so it gets the address pulse.
@@ -191,6 +225,29 @@ impl ReceiveView {
                     self.sweep(wallet, handle);
                     KeyOutcome::Consumed
                 }
+                _ => KeyOutcome::NotHandled,
+            },
+            #[cfg(feature = "railgun")]
+            Stage::Shielded => match key.code {
+                KeyCode::Esc => {
+                    self.stage = Stage::Address;
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    self.shielded.start(wallet, handle);
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    self.shielded.stop();
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('z') | KeyCode::Char('Z') => match self.shielded.receive_address() {
+                    Some(addr) => match clipboard::copy_text(addr) {
+                        Ok(()) => KeyOutcome::Flash("0zk address copied".into()),
+                        Err(e) => KeyOutcome::Flash(e),
+                    },
+                    None => KeyOutcome::Flash("0zk receive address is testnet-only for now".into()),
+                },
                 _ => KeyOutcome::NotHandled,
             },
         }

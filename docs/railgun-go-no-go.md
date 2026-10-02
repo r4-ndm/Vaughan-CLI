@@ -1,6 +1,6 @@
 # RAILGUN — go/no-go
 
-> Recorded 2026-10-02 (Phase 0). **Status: GO for Phases 0–2 on Sepolia,
+> Recorded 2026-10-02 (Phases 0–1). **Status: GO for Phases 0–2 on Sepolia,
 > behind the opt-in `railgun` feature. User-facing release with `railgun` is
 > BLOCKED** until the Wasmer Singlepass licence issue below is resolved.
 > Supersedes the RAILGUN half of `docs/kohaku-go-no-go.md` (FR-3.4).
@@ -78,6 +78,26 @@ The published `deploymentBlock` (5784866) is about 90 blocks after creation;
 Vaughan scans from the creation block. Sepolia has no legacy history, so
 `v2_start_block` = `legacy_shield_block` = scan start.
 
+## Phase 1: read-only (2026-10-02)
+
+Receive screen (`v`) → `0` opens "Private (RAILGUN)" in builds with
+`--features railgun`. Shows per-token shielded balances with scan progress;
+the 0zk receive address (copy with `z`) on Sepolia only. Hidden behind one
+line on chains without RAILGUN.
+
+| Item | Result |
+|---|---|
+| Key parity with the official engine | `test-vectors/railgun/vectors.json` from `@railgun-community/engine` 9.8.0 (dev-only generator): HD accounts 0, 1 and 7 of the test mnemonic give identical 0zk addresses, master and viewing public keys |
+| Seed access | `AccountManager::with_hd_seed` / `WalletState::with_hd_seed`: active HD account only (hardware and imported refused), seed zeroized after the closure |
+| Keys kept | Viewing keys only (wiped on drop, no `Debug`); the spending key is zeroed right after derivation |
+| Scanner | `eth_getLogs` over the 7 RAILGUN events, 5 000-block chunks (halved on errors), 6 confirmations, checkpoint every 20 chunks; timestamps fetched only for blocks holding our notes; alloy retry/backoff on rate limits |
+| Full Sepolia scan (deployment → head, Tenderly) | ~4 min 46 s for ~6 M blocks; later runs resume from the cache |
+| Real data | 407 live Sepolia events decode; a full scan finds 4 unspent notes for the public test mnemonic's account 0: 0.648375 WETH (`0xfff9976782d46cc05630d1f6ebab18b2324d6b14`) at block 11 830 615. Cross-check target for Railway (public mnemonic, so anyone can spend it) |
+| Cache | `<profile dir>/railgun/<chain>-<index>.cache`, AES-256-GCM, chain/index/contract bound as associated data, `0600` file in a `0700` dir, atomic writes. Key: Argon2id (vault costs) over the account's viewing key, not the seed: the viewing key already decrypts every cached note from chain data, it avoids a second seed access, and the KDF runs off the UI thread |
+| RPC history | Some RPCs answer old `eth_getLogs` with `[]` instead of an error (PublicNode Sepolia), which would read as a zero balance. Every scan first checks the deployment's first 50 blocks hold proxy events and fails loudly otherwise; the panel then tries the network's next RPC. Probe verified on Sepolia, Ethereum, Polygon and Arbitrum (BNB not checked: free RPCs refuse archive queries). Tenderly added as a Sepolia fallback RPC |
+| Mainnet scans | Same scanner; from deployment that's ~10 M blocks on Ethereum (much slower, resumable). Quick-sync (squid) stays opt-in and is not built yet |
+| POI / network calls | None besides the RPC; no telemetry |
+
 ## Threat model
 
 | Risk | Mitigation |
@@ -89,6 +109,8 @@ Vaughan scans from the creation block. Sepolia has no legacy history, so
 | Cached native code (`wasm_module_cache.rs` `unsafe` `Module::deserialize`) | Phase 3: cache only under Vaughan's private data dir with owner-only permissions, or disable the cache. Never a shared/temp dir |
 | Tampered proving artifacts | railgun-rust `trustless-artifacts` hash verification; pin hashes in Vaughan |
 | Lying RPC | Phase 1 balance is display-only; Phase 3 verifies Merkle roots on-chain before any spend |
+| RPC without history returns empty logs | Deployment-block history probe before every scan; next RPC tried |
+| Cache tampering / replay onto another account | AES-GCM with chain id, account index and contract as associated data; unreadable cache → full rescan |
 | Third parties (RPC, squid, POI, IPFS) see metadata | Squid opt-in; endpoints disclosed and configurable; no telemetry |
 | Funds stuck before unshield exists | Mainnet shield and mainnet 0zk receive address hidden until Gate 3; recovery = same mnemonic in Railway wallet |
 | Hidden protocol fee | Contract basis-points fee shown on every shield/unshield card |

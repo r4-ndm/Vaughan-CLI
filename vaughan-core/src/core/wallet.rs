@@ -2286,6 +2286,12 @@ impl WalletState {
     pub(crate) fn unlocked_accounts(&self) -> Result<&AccountManager, WalletError> {
         self.require_unlocked()
     }
+
+    /// [`AccountManager::with_hd_seed`] on the unlocked vault (HD accounts only;
+    /// the seed is zeroized after `f`).
+    pub fn with_hd_seed<R>(&self, f: impl FnOnce(&[u8; 64], u32) -> R) -> Result<R, WalletError> {
+        self.require_unlocked()?.with_hd_seed(f)
+    }
 }
 
 #[cfg(test)]

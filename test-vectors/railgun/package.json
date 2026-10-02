@@ -1,0 +1,13 @@
+{
+  "name": "vaughan-railgun-test-vectors",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Generates RAILGUN key-derivation parity vectors for vaughan-railgun from @railgun-community/engine",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "@railgun-community/engine": "9.8.0"
+  }
+}

@@ -623,14 +623,15 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 #### Phase 1 — read-only (after Gate 0)
 
-- [ ] `AccountManager::with_hd_seed` zeroizing closure (HD-only) + tests
-- [ ] `keys` module: all-chains 0zk address, zeroize newtype; Vaughan parity vector in `test-vectors/`
-- [ ] `deployment` table (Sepolia + mainnets, `is_supported`)
-- [ ] `eth_getLogs` scanner + block timestamps + checkpoint; balances; squid opt-in
-- [ ] Encrypted cache (Argon2id over seed + AES-256-GCM) or memory-only fallback
-- [ ] TUI: read-only Shielded panel (no POI calls); 0zk receive on Sepolia only; hidden on unsupported chains
-- [ ] Tests: offline shield + nullifier round trip; ignored live Sepolia in `live-smoke.yml`; Railway cross-check
-- [ ] **Gate 1** review
+- [x] `AccountManager::with_hd_seed` zeroizing closure (HD-only) + tests
+- [x] `keys` module: all-chains 0zk address, zeroize newtype; official-engine parity vectors in `test-vectors/railgun/`
+- [x] `deployment` table (Sepolia + mainnets, `is_supported`, `receive_enabled`)
+- [x] `eth_getLogs` scanner + timestamps + checkpoint; balances; RPC history probe + fallback
+- [x] Encrypted cache (Argon2id over the viewing key + AES-256-GCM, see go/no-go doc)
+- [x] TUI: Receive → `0` read-only Private panel (no POI calls); 0zk receive on Sepolia only; hidden on unsupported chains
+- [x] Tests: offline shield + nullifier round trip; mock-RPC scanner tests; ignored live Sepolia in `live-smoke.yml`
+- [ ] Quick-sync (squid) opt-in for mainnet-sized scans
+- [ ] **Gate 1 (user):** run `cargo run -p vaughan-cli --features railgun`, Sepolia, Receive → `0`; Railway cross-check (same mnemonic → same 0zk + Sepolia balance)
 
 #### Later phases (re-plan at each gate)
 

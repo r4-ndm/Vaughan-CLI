@@ -55,6 +55,7 @@ pub fn rpc_endpoint_label(url: &str) -> String {
         "https://ethereum-sepolia-rpc.publicnode.com" => "PublicNode".into(),
         "https://rpc.sepolia.org" => "Sepolia.org".into(),
         "https://sepolia.drpc.org" => "dRPC".into(),
+        "https://sepolia.gateway.tenderly.co" => "Tenderly".into(),
         "https://polygon-bor-rpc.publicnode.com" => "PublicNode".into(),
         "https://polygon-rpc.com" => "Polygon".into(),
         "https://bsc-dataseed.binance.org" => "Binance 1".into(),
@@ -283,7 +284,11 @@ pub fn ethereum_sepolia() -> EvmNetworkConfig {
         "Sepolia Ether",
         true,
     )
-    .with_fallback_rpcs(&["https://rpc.sepolia.org", "https://sepolia.drpc.org"])
+    .with_fallback_rpcs(&[
+        "https://rpc.sepolia.org",
+        "https://sepolia.drpc.org",
+        "https://sepolia.gateway.tenderly.co",
+    ])
     .with_priority_fee_wei(1_500_000_000) // 1.5 gwei
     .with_explorer("https://sepolia.etherscan.io")
 }

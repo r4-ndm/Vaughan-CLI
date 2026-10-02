@@ -29,6 +29,8 @@ pub mod placeholder;
 pub mod receive;
 pub mod send;
 pub mod settings;
+#[cfg(feature = "railgun")]
+pub mod shielded;
 pub mod swap_form;
 pub mod token_launch;
 pub mod unlock;

@@ -790,6 +790,9 @@ impl App {
             if let View::Keys(v) = &mut self.view {
                 v.poll(self.tick);
             }
+            if let View::Receive(v) = &mut self.view {
+                v.poll();
+            }
             if self.screen() == Screen::Approve
                 && self.pending_approval.is_none()
                 && !self.mcp_approve_inflight

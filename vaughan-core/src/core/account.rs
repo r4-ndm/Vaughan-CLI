@@ -560,6 +560,24 @@ impl AccountManager {
         self.require_software_active()?;
         crate::security::stealth::StealthMetaKeys::from_mnemonic(&self.mnemonic)
     }
+
+    /// Run `f` with the vault's BIP-39 seed (empty passphrase) and the active
+    /// HD account index, for protocols that derive their own key trees
+    /// (RAILGUN).
+    ///
+    /// HD accounts only: hardware and imported accounts have no seed-backed
+    /// index and are refused. The seed is zeroized when `f` returns and is
+    /// never handed out by value; `f` must not copy it.
+    pub fn with_hd_seed<R>(&self, f: impl FnOnce(&[u8; 64], u32) -> R) -> Result<R, WalletError> {
+        self.require_software_active()?;
+        if self.active_account().kind != AccountKind::Hd {
+            return Err(WalletError::Other(
+                "this needs a seed (HD) account — switch to a `wallet N` account".into(),
+            ));
+        }
+        let seed = zeroize::Zeroizing::new(self.mnemonic.to_seed(""));
+        Ok(f(&seed, self.active_index))
+    }
 }
 
 impl Drop for AccountManager {
@@ -701,6 +719,29 @@ mod tests {
             am.stealth_keys(),
             Err(WalletError::HardwareUnsupported(_))
         ));
+        assert!(matches!(
+            am.with_hd_seed(|_, _| ()),
+            Err(WalletError::HardwareUnsupported(_))
+        ));
+    }
+
+    #[test]
+    fn hd_seed_matches_bip39_and_active_index() {
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 3).unwrap();
+        am.set_active(2).unwrap();
+        let expected = validate_mnemonic(TEST_MNEMONIC).unwrap().to_seed("");
+        let (matches, index) = am.with_hd_seed(|seed, i| (*seed == expected, i)).unwrap();
+        assert!(matches);
+        assert_eq!(index, 2);
+    }
+
+    #[test]
+    fn hd_seed_refuses_imported_account() {
+        let mut am = AccountManager::from_phrase(TEST_MNEMONIC, 1).unwrap();
+        am.import_private_key("anvil", &SecretString::new(ANVIL_KEY0.into()))
+            .unwrap();
+        assert!(am.active_account().is_imported);
+        assert!(am.with_hd_seed(|_, _| ()).is_err());
     }
 
     #[test]
