@@ -218,9 +218,16 @@ impl ReceiveView {
             self.status = "No note selected.".into();
             return;
         };
+        // Capture the privacy link note: the sweep destination is the active
+        // public account, which ties the stealth address to it on-chain. Shown
+        // alongside the result so it is not missed.
+        let linkage = wallet.stealth_sweep_linkage_warning();
         match handle.block_on(wallet.sweep_stealth_note(&note)) {
             Ok(hash) => {
-                self.status = format!("Swept to public address: {hash}");
+                self.status = match linkage {
+                    Some(w) => format!("Swept: {hash}. Note: {w}"),
+                    None => format!("Swept to public address: {hash}"),
+                };
                 self.scan(wallet, handle);
             }
             Err(e) => self.status = e.user_message(),

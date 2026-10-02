@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use vaughan_core::chains::{EvmTransaction, Fee};
 use vaughan_core::core::proposal::{apply_proposal, ProposalQueue, ProposalType, TxProposal};
-use vaughan_core::core::{format_base_units, WalletState};
+use vaughan_core::core::{format_base_units, humanize, HumanizeContext, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_provider::server::DEFAULT_PORT;
 use vaughan_provider::{
@@ -622,6 +622,14 @@ pub fn describe_approval_with_fee(
             }
             if let Some(contract) = domain["verifyingContract"].as_str() {
                 lines.push(format!("Contract:{contract}"));
+                // Phishing check: a denied verifyingContract is a drainer signature.
+                if let Ok(addr) = contract.parse::<Address>() {
+                    if wallet.is_denied_address(addr) {
+                        lines.push(format!(
+                            "⚠ DENIED: {contract} is on the phishing deny-list — do NOT sign"
+                        ));
+                    }
+                }
             }
             lines.push(format!("Type:    {primary}"));
             lines.push("Message:".to_string());
@@ -748,14 +756,18 @@ pub fn describe_approval_with_fee(
         } => {
             let net = wallet.networks().active();
             let testnet = if net.is_testnet { " (testnet)" } else { "" };
+            let mut details = vec![
+                format!("From:    {stealth_address}"),
+                format!("Amount:  {balance_display}"),
+                format!("Network: {}{testnet}", net.name),
+                "Moves funds to your active public wallet.".into(),
+            ];
+            if let Some(warning) = wallet.stealth_sweep_linkage_warning() {
+                details.push(format!("Privacy: {warning}"));
+            }
             Ok(ApprovalPreview {
                 title: "Sweep stealth note".into(),
-                details: vec![
-                    format!("From:    {stealth_address}"),
-                    format!("Amount:  {balance_display}"),
-                    format!("Network: {}{testnet}", net.name),
-                    "Moves funds to your active public wallet.".into(),
-                ],
+                details,
                 verify_table: vec![
                     ("Action".into(), "Sweep stealth note".into()),
                     ("From".into(), stealth_address.clone()),
@@ -791,10 +803,7 @@ fn mcp_proposal_verify_table(
         }
     }
 
-    let net = wallet.networks().active();
-    let review =
-        vaughan_core::core::review_mcp_proposal(proposal, &net.native_symbol, net.decimals);
-    review
+    mcp_proposal_review(wallet, proposal)
         .rows
         .into_iter()
         .map(|r| (r.label, r.value))
@@ -802,8 +811,24 @@ fn mcp_proposal_verify_table(
 }
 
 fn mcp_proposal_safety_hints(wallet: &WalletState, proposal: &TxProposal) -> Vec<String> {
+    mcp_proposal_review(wallet, proposal).safety_hints
+}
+
+/// Ground-truth review of an MCP proposal with everything the TUI knows: the
+/// signer (for recipient checks) and the user's own deny-list entries.
+fn mcp_proposal_review(
+    wallet: &WalletState,
+    proposal: &TxProposal,
+) -> vaughan_core::core::ProposalReview {
     let net = wallet.networks().active();
-    vaughan_core::core::review_mcp_proposal(proposal, &net.native_symbol, net.decimals).safety_hints
+    let from = wallet.active_address().ok().and_then(|a| a.parse().ok());
+    vaughan_core::core::review_mcp_proposal_with(
+        proposal,
+        &net.native_symbol,
+        net.decimals,
+        from,
+        &wallet.denylist_entries(),
+    )
 }
 
 async fn lp_brew_token_labels(
@@ -1016,6 +1041,65 @@ fn describe_tx(tx: &TxParams, wallet: &WalletState, fee: Fee) -> Vec<String> {
     ];
     if let Some(data) = tx.data.as_deref() {
         lines.push(format!("Data:    {}", short_calldata(data)));
+    }
+
+    // Ground-truth humanizer + deny-list pass. The dApp's own label is
+    // untrusted; this decodes calldata and checks the target independently.
+    lines.extend(tx_safety_lines(tx, wallet));
+
+    lines
+}
+
+/// Humanizer summary + deny-list / warning lines for a dApp transaction.
+///
+/// Returns ground-truth lines derived from `to` / `value` / `data`, never from
+/// dApp-supplied text. Empty for a plain native send to a clean address.
+fn tx_safety_lines(tx: &TxParams, wallet: &WalletState) -> Vec<String> {
+    let mut lines = Vec::new();
+    let net = wallet.networks().active();
+
+    let to: Option<Address> = tx.to.as_deref().and_then(|s| s.parse().ok());
+    let value = U256::from_str_radix(tx.value.as_deref().unwrap_or("0"), 10)
+        .or_else(|_| {
+            U256::from_str_radix(
+                tx.value
+                    .as_deref()
+                    .unwrap_or("0x0")
+                    .trim_start_matches("0x"),
+                16,
+            )
+        })
+        .unwrap_or(U256::ZERO);
+    let data: Vec<u8> = tx
+        .data
+        .as_deref()
+        .and_then(|d| hex::decode(d.trim_start_matches("0x")).ok())
+        .unwrap_or_default();
+
+    if let Some(to) = to {
+        // Deny-list (bundled ∪ user entries) — highest priority.
+        if wallet.is_denied_address(to) {
+            lines.push(format!(
+                "⚠ DENIED: {to:#x} is on the phishing deny-list — do NOT sign"
+            ));
+        }
+
+        // Humanizer summary + warnings for contract calls.
+        if !data.is_empty() {
+            let from = wallet.active_address().ok().and_then(|a| a.parse().ok());
+            let ctx = HumanizeContext {
+                chain_id: net.chain_id,
+                from,
+                native_symbol: &net.native_symbol,
+                native_decimals: net.decimals,
+            };
+            let h = humanize(&ctx, to, value, &data);
+            lines.push(format!("Action:  {}", h.summary));
+            for w in h.warnings {
+                let marker = if w.is_critical() { "⚠ " } else { "" };
+                lines.push(format!("{marker}Safety:  {}", w.message()));
+            }
+        }
     }
     lines
 }

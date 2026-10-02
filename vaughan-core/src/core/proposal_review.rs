@@ -3,29 +3,13 @@
 //! Builds [`VerifyRow`] tables for Advisor approval cards from typed proposal
 //! fields and known calldata selectors — never trusts agent `explanation`.
 
-use alloy::primitives::{Address, U256};
-use alloy::sol;
-use alloy::sol_types::SolCall;
+use alloy::primitives::Address;
 
-use crate::core::hex_stake::{ehex_address, phex_address, MAX_STAKE_DAYS, MIN_STAKE_DAYS};
+use crate::core::denylist::{self, DenyEntry};
+use crate::core::humanizer::{humanize, HumanizeContext, Warning};
 use crate::core::proposal::{ProposalType, TxProposal};
 use crate::core::proposal_verify::VerifyRow;
 use crate::core::transaction::format_display_amount;
-
-sol! {
-    interface IReviewErc20 {
-        function transfer(address to, uint256 amount) external returns (bool);
-        function approve(address spender, uint256 amount) external returns (bool);
-    }
-    interface IReviewWeth {
-        function deposit() external payable;
-        function withdraw(uint256 wad) external;
-    }
-    interface IReviewHex {
-        function stakeStart(uint256 newStakedHearts, uint256 newStakedDays) external returns (uint40);
-        function stakeEnd(uint256 stakeIndex, uint40 stakeId) external;
-    }
-}
 
 /// Decoded review for an MCP proposal (table + safety hints).
 #[derive(Debug, Clone, Default)]
@@ -36,14 +20,36 @@ pub struct ProposalReview {
 
 /// Build a human verification table + safety hints from a proposal.
 ///
-/// LP Brew steps should still use [`crate::core::lp_deploy_step_verify_rows`];
-/// this covers the general typed / calldata cases.
+/// Convenience wrapper over [`review_mcp_proposal_with`] for callers that do
+/// not know the signer or the user's deny-list (bundled list still applies).
 pub fn review_mcp_proposal(
     proposal: &TxProposal,
     native_symbol: &str,
     native_decimals: u8,
 ) -> ProposalReview {
+    review_mcp_proposal_with(proposal, native_symbol, native_decimals, None, &[])
+}
+
+/// Build a human verification table + safety hints from a proposal.
+///
+/// Typed proposal fields produce the first rows; a calldata humanizer pass
+/// (`core::humanizer`) adds decoded rows for generic contract calls and typed
+/// warnings for every kind. `from` enables recipient-not-sender checks;
+/// `user_denylist` is the profile's own deny-list (merged with the bundled one).
+///
+/// LP Brew steps should still use [`crate::core::lp_deploy_step_verify_rows`];
+/// this covers the general typed / calldata cases.
+pub fn review_mcp_proposal_with(
+    proposal: &TxProposal,
+    native_symbol: &str,
+    native_decimals: u8,
+    from: Option<Address>,
+    user_denylist: &[DenyEntry],
+) -> ProposalReview {
     let mut review = ProposalReview::default();
+    // Generic contract calls get their decoded rows from the humanizer; typed
+    // proposals already describe themselves and only take its warnings.
+    let mut humanized_rows = false;
     match &proposal.proposal_type {
         ProposalType::NativeTransfer { to, amount_wei } => {
             review.rows.push(VerifyRow {
@@ -199,190 +205,76 @@ pub fn review_mcp_proposal(
                 label: "Target".into(),
                 value: format!("{target:#x}"),
             });
-            enrich_from_calldata(
-                proposal,
-                *target,
-                &mut review,
-                native_symbol,
-                native_decimals,
-            );
+            // Decoded rows for generic calls come from the humanizer pass below.
+            humanized_rows = true;
         }
     }
 
-    if proposal.chain_id == 369 || proposal.chain_id == 1 {
-        // no-op placeholder for future mainnet-specific hints
-    }
     if !proposal.simulation_success {
         review
             .safety_hints
             .push("Agent reported simulation failure — broadcast may revert".into());
     }
 
-    review
-}
-
-fn enrich_from_calldata(
-    proposal: &TxProposal,
-    target: Address,
-    review: &mut ProposalReview,
-    native_symbol: &str,
-    native_decimals: u8,
-) {
-    let data = proposal.calldata.as_ref();
-    if data.is_empty() {
-        if !proposal.value_wei.is_zero() {
-            review.rows.push(VerifyRow {
-                label: "Value".into(),
-                value: format!(
-                    "{} {native_symbol}",
-                    format_display_amount(&proposal.value_wei.to_string(), native_decimals, 8)
-                ),
-            });
-        }
-        return;
+    // Ground-truth pass, independent of the typed fields above: deny-list on
+    // the target, then the calldata humanizer. Runs last so critical warnings
+    // are always present, and dedupes against hints the typed arms already added.
+    if denylist::is_denied(proposal.to, user_denylist) {
+        review.safety_hints.push(format!(
+            "TARGET {:#x} is DENIED — {} — do NOT sign",
+            proposal.to,
+            denylist::deny_reason(proposal.to, user_denylist)
+        ));
     }
-
-    if let Ok(c) = IReviewErc20::transferCall::abi_decode(data) {
-        review.rows.push(VerifyRow {
-            label: "Decoded".into(),
-            value: "transfer(to, amount)".into(),
-        });
-        review.rows.push(VerifyRow {
-            label: "To".into(),
-            value: format!("{:#x}", c.to),
-        });
-        review.rows.push(VerifyRow {
-            label: "Amount (raw)".into(),
-            value: c.amount.to_string(),
-        });
-        return;
-    }
-    if let Ok(c) = IReviewErc20::approveCall::abi_decode(data) {
-        review.rows.push(VerifyRow {
-            label: "Decoded".into(),
-            value: "approve(spender, amount)".into(),
-        });
-        review.rows.push(VerifyRow {
-            label: "Spender".into(),
-            value: format!("{:#x}", c.spender),
-        });
-        review.rows.push(VerifyRow {
-            label: "Amount (raw)".into(),
-            value: if c.amount == U256::MAX {
-                "UNLIMITED (max uint256)".into()
-            } else {
-                c.amount.to_string()
-            },
-        });
-        if c.amount == U256::MAX {
-            review
-                .safety_hints
-                .push("Unlimited approve — spender can drain this token until revoked".into());
-        } else if c.amount.is_zero() {
-            review
-                .safety_hints
-                .push("Approve 0 = revoke allowance".into());
-        }
-        return;
-    }
-    if IReviewWeth::depositCall::abi_decode(data).is_ok() {
-        review.rows.push(VerifyRow {
-            label: "Decoded".into(),
-            value: "WETH9 deposit()".into(),
-        });
-        return;
-    }
-    if let Ok(c) = IReviewWeth::withdrawCall::abi_decode(data) {
-        review.rows.push(VerifyRow {
-            label: "Decoded".into(),
-            value: "WETH9 withdraw(wad)".into(),
-        });
-        review.rows.push(VerifyRow {
-            label: "Wad".into(),
-            value: c.wad.to_string(),
-        });
-        return;
-    }
-    if let Ok(c) = IReviewHex::stakeStartCall::abi_decode(data) {
-        review.rows.push(VerifyRow {
-            label: "Decoded".into(),
-            value: "HEX stakeStart".into(),
-        });
-        review.rows.push(VerifyRow {
-            label: "Hearts".into(),
-            value: format!(
-                "{} (8 decimals)",
-                format_display_amount(&c.newStakedHearts.to_string(), 8, 8)
-            ),
-        });
-        let days = c.newStakedDays.to::<u64>();
-        review.rows.push(VerifyRow {
-            label: "Days".into(),
-            value: days.to_string(),
-        });
-        if !(MIN_STAKE_DAYS..=MAX_STAKE_DAYS).contains(&days) {
-            review.safety_hints.push(format!(
-                "Stake days {days} outside protocol range {MIN_STAKE_DAYS}–{MAX_STAKE_DAYS}"
-            ));
-        }
-        if target == ehex_address() {
-            review
-                .safety_hints
-                .push("Target is eHEX (bridged) — staking lives on pHEX, not eHEX".into());
-        } else if target != phex_address() {
-            review
-                .safety_hints
-                .push("Target is not the catalogued pHEX address — verify carefully".into());
-        }
-        review.safety_hints.push(
-            "HEX stakes lock hearts for the full term; early endStake incurs a penalty".into(),
-        );
-        return;
-    }
-    if let Ok(c) = IReviewHex::stakeEndCall::abi_decode(data) {
-        review.rows.push(VerifyRow {
-            label: "Decoded".into(),
-            value: "HEX stakeEnd".into(),
-        });
-        review.rows.push(VerifyRow {
-            label: "Index".into(),
-            value: c.stakeIndex.to_string(),
-        });
-        review.rows.push(VerifyRow {
-            label: "Stake id".into(),
-            value: c.stakeId.to_string(),
-        });
-        review.safety_hints.push(
-            "Ending before maturity applies an early-end penalty — confirm unlockedDay / days served"
-                .into(),
-        );
-        if target == ehex_address() {
-            review
-                .safety_hints
-                .push("Target is eHEX — stakeEnd belongs on pHEX".into());
-        } else if target != phex_address() {
-            review
-                .safety_hints
-                .push("Target is not the catalogued pHEX address — verify carefully".into());
-        }
-        return;
-    }
-
-    review.rows.push(VerifyRow {
-        label: "Decoded".into(),
-        value: "unknown selector — inspect calldata".into(),
-    });
-    review.safety_hints.push(
-        "Calldata selector not recognised — verify target and data carefully before signing".into(),
+    let ctx = HumanizeContext {
+        chain_id: proposal.chain_id,
+        from,
+        native_symbol,
+        native_decimals,
+    };
+    let h = humanize(
+        &ctx,
+        proposal.to,
+        proposal.value_wei,
+        proposal.calldata.as_ref(),
     );
+    if humanized_rows {
+        review.rows.push(VerifyRow {
+            label: "Decoded".into(),
+            value: h.summary,
+        });
+        review.rows.extend(h.rows);
+    }
+    for w in h.warnings {
+        // Plain native sends have nothing to warn about; skip the generic
+        // "unrecognised calldata" for typed proposals whose calldata the
+        // builder produced (they are reviewed by their typed arm instead).
+        if matches!(w, Warning::UnrecognizedCalldata) && !humanized_rows {
+            continue;
+        }
+        let msg = w.message();
+        if !review.safety_hints.contains(&msg) {
+            review.safety_hints.push(msg);
+        }
+    }
+
+    review
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::hex_stake::encode_stake_start;
+    use crate::core::hex_stake::{ehex_address, encode_stake_start, phex_address};
     use crate::core::proposal::ProposalType;
     use alloy::primitives::{address, Bytes, U256};
+    use alloy::sol;
+    use alloy::sol_types::SolCall;
+
+    sol! {
+        interface IReviewErc20 {
+            function approve(address spender, uint256 amount) external returns (bool);
+        }
+    }
 
     #[test]
     fn reviews_unlimited_approve() {
@@ -477,5 +369,55 @@ mod tests {
         );
         let r = review_mcp_proposal(&p, "PLS", 18);
         assert!(r.safety_hints.iter().any(|h| h.contains("eHEX")));
+    }
+
+    #[test]
+    fn user_denylist_flags_target_with_reason() {
+        let bad = address!("0x00000000000000000000000000000000deadbeef");
+        let p = TxProposal::new(
+            "t",
+            ProposalType::NativeTransfer {
+                to: bad,
+                amount_wei: U256::from(1u64),
+            },
+            bad,
+            U256::from(1u64),
+            Bytes::new(),
+            21_000,
+            true,
+            "pay",
+        );
+        let clean = review_mcp_proposal(&p, "PLS", 18);
+        assert!(!clean.safety_hints.iter().any(|h| h.contains("DENIED")));
+
+        let entries = vec![DenyEntry {
+            address: format!("{bad:#x}"),
+            reason: "reported drainer".into(),
+        }];
+        let r = review_mcp_proposal_with(&p, "PLS", 18, None, &entries);
+        assert!(r
+            .safety_hints
+            .iter()
+            .any(|h| h.contains("DENIED") && h.contains("reported drainer")));
+    }
+
+    #[test]
+    fn plain_native_transfer_has_no_calldata_warning() {
+        let to = address!("0x1111111111111111111111111111111111111111");
+        let p = TxProposal::new(
+            "t",
+            ProposalType::NativeTransfer {
+                to,
+                amount_wei: U256::from(1u64),
+            },
+            to,
+            U256::from(1u64),
+            Bytes::new(),
+            21_000,
+            true,
+            "pay",
+        );
+        let r = review_mcp_proposal(&p, "PLS", 18);
+        assert!(r.safety_hints.is_empty(), "{:?}", r.safety_hints);
     }
 }

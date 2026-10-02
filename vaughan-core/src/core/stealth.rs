@@ -186,6 +186,20 @@ impl WalletState {
         adapter.send_transaction(tx).await
     }
 
+    /// Privacy warning shown before any stealth sweep.
+    ///
+    /// A sweep pays gas from the stealth note's own balance, so it does not
+    /// reveal an external funder — but it sends the remainder to the active
+    /// public account, creating an on-chain link between the stealth address
+    /// and that public address. `None` when the wallet is locked.
+    pub fn stealth_sweep_linkage_warning(&self) -> Option<String> {
+        let dest = self.unlocked_accounts().ok()?.active_address().to_string();
+        Some(format!(
+            "Sweeping links this stealth address to your public wallet {dest} on-chain. \
+             Anyone watching the stealth address can see the funds move there."
+        ))
+    }
+
     async fn read_adapter(&self) -> Result<EvmAdapter, WalletError> {
         let net = self.networks().active();
         let (primary, fallbacks) = self.rpc_endpoints_for(net);

@@ -7,12 +7,14 @@ pub mod aggregator;
 pub mod assist_entitlement;
 pub mod bridge;
 pub mod broadcasts;
+pub mod denylist;
 pub mod dex_catalog;
 pub mod dex_lp;
 pub mod dex_quote;
 pub mod dex_routers;
 pub mod dexscreener;
 pub mod hex_stake;
+pub mod humanizer;
 pub mod lp_brew;
 pub mod lp_deploy;
 pub mod lp_smoke;
@@ -66,6 +68,7 @@ pub use broadcasts::{
     mark_replaced, push_recent, BroadcastEntry, BroadcastReceipt, ReplaceKind,
     MAX_RECENT_BROADCASTS,
 };
+pub use denylist::{deny_reason, is_bundled, is_denied, DenyEntry};
 pub use dex_catalog::{
     chain_label, cycle_dex_swap_venue, cycle_lp_stack, default_lp_v3_venue, default_lp_venue,
     dex_swap_venues, lp_stack_for_chain, lp_stacks_for_chain, lp_v2_venue, lp_v3_venue_picker,
@@ -111,6 +114,7 @@ pub use hex_stake::{
     HexContractRef, HexGlobalState, HexSoftFail, HexStakeResult, HexStakeRow, HexStakesForAddress,
     HEX_STAKE_SOURCE, MAX_STAKE_DAYS, MIN_STAKE_DAYS, PHEX_HEARTS_DECIMALS,
 };
+pub use humanizer::{humanize, HumanizeContext, Humanized, HumanizerModule, Warning};
 pub use lp_brew::{
     load_brew_file, lp_human_inputs_to_deploy_params, pool_price_to_user_price,
     resolve_lp_brew_fee, resolve_lp_brew_token, sort_lp_token_pair, trim_float_string,
@@ -152,7 +156,7 @@ pub use proposal::{
     MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT, MCP_ENQUEUE_RATE_WINDOW_SECS,
     MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
 };
-pub use proposal_review::{review_mcp_proposal, ProposalReview};
+pub use proposal_review::{review_mcp_proposal, review_mcp_proposal_with, ProposalReview};
 pub use proposal_verify::{
     lp_deploy_mint_success_rows, lp_deploy_step_verify_rows, lp_deploy_step_verify_title,
     npm_mint_token_id_for_tx, npm_mint_token_id_from_logs, short_address, short_tx_hash, VerifyRow,

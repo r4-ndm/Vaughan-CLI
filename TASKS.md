@@ -541,6 +541,78 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [ ] Pay-with-any-token (DEX swap before pay)
 - [ ] ASCII QR terminal (`qrcode` crate — not on allowlist yet)
 
+### Ideas borrowed from ZKX Wallet — approval-gate hardening (in progress)
+
+> Full plan: [`docs/zkx-borrowed-ideas-plan.md`](docs/zkx-borrowed-ideas-plan.md).
+> ZKX / Ambire are idea references only — written fresh (CLAUDE.md rule 5).
+> Scope for this round: the realistic near-term wins that harden the existing
+> approval gate. RAILGUN is **parked** (see below).
+
+#### 1 — Transaction humanizer (core shipped 2026-10-02)
+
+- [x] `core/humanizer/` with `HumanizerModule` trait + `labels.rs` from existing catalogs (token_origin + dex_routers)
+- [x] Modules: erc20 (+ setApprovalForAll), weth, permit (2612 + Permit2), uniswap_v2 router, hex_stake
+- [x] Typed `Warning` enum (unlimited approval, unknown spender, recipient ≠ sender, setApprovalForAll, far-future permit deadline, denied address, unrecognized calldata, `Advisory` notes) with `is_critical()`
+- [x] Wired into `proposal_review.rs` (MCP card) and provider `describe_tx` (dApp send/sign) — ground-truth summary + warnings
+- [x] `proposal_review.rs` ported onto the humanizer (single decode pass; old ad-hoc `sol!` decoders removed); `review_mcp_proposal_with` takes signer + user deny-list
+- [x] Unit tests per module (humanizer + proposal_review green)
+- [ ] Modules: v3 router, piteas, erc721 transfer, ambire_batch recursion
+- [ ] `errors.rs` — revert + common RPC error humanizing; wire into `WalletError::user_message`
+- [ ] Surfaces: Send / Ag / Dex / Wrap confirm, Approvals view (currently MCP + provider only)
+- [ ] MCP read tool `humanize_tx`
+- [x] Anvil e2e for approval cards (`vaughan-tui/tests/approval_hardening_anvil.rs`): dApp unlimited approve, swap recipient ≠ / = sender, MCP proposal warnings
+- [ ] `TestBackend` rendered-card snapshots
+
+#### 6 — Phishing / malicious-address deny-list (core shipped 2026-10-02)
+
+- [x] `core/denylist.rs` — `is_denied` / `deny_reason` over bundled ∪ user entries (no network fetch)
+- [x] Bundled list is **intentionally empty** until entries can be sourced from a verified primary source (bar documented in the module)
+- [x] User-added entries persisted (`PersistedState::denylist`)
+- [x] Checks wired: provider tx `to`, typed-data `verifyingContract`, MCP proposal target — all consult user entries
+- [x] Unit tests (5 green)
+- [ ] Curate bundled entries (PulseChain / ETH drainer contracts with public evidence)
+- [x] `WalletState::add_denied_address` / `remove_denied_address` (persisted, idempotent)
+- [x] Anvil tests: user entry flags a send, survives reload, clears on remove; denied typed-data `verifyingContract`
+- [ ] Settings UI to add/remove user entries (core methods ready)
+- [ ] Extra explicit confirm step on critical (denied) warnings in the approve view
+
+#### 5 — Stealth sweep linkage warning (shipped 2026-10-02)
+
+- [x] `stealth_sweep_linkage_warning` + Receive-view note when sweeping to the active public wallet
+- [x] Same warning on the MCP `StealthSweep` approval card
+- [x] Anvil test: fund note → scan → card names active wallet → sweep credits that exact wallet
+- [ ] Evaluate relayer-paid stealth sweep (7702 batch or permit) to break the link
+
+#### 2 — Balance-change preview (next)
+
+- [ ] Spike (gate): which PulseChain / ETH RPCs support `eth_simulateV1`; record in plan doc
+- [ ] `core/simulate_diff.rs` — `eth_simulateV1` diff → labelled quote fallback (revert already covered by FR-6.4 re-sim)
+- [ ] Quote-vs-simulation mismatch warning; re-run at approve time
+
+#### 3 — Gasless swaps (blocked on Phase 0)
+
+- [ ] Phase 0: official relayer API docs, 943 support, data-handling disclosure
+- [ ] `core/gasless/` client, typed data (2612 / DAI / 3009 / SwapParams), opt-in config
+- [ ] Guards: no unlimited permit, deadline ≤ 1h, verifyingContract allowlist, amounts = quote
+- [ ] Ag toggle, `vaughan swap --gasless`, MCP `propose_gasless_swap`
+- [ ] Mock relayer + EIP-712 vectors + Anvil permit acceptance test
+- Note: EIP-712 signing already done (software / Ledger / Trezor) — this is mostly the relayer client
+
+### Parked — RAILGUN shielded balances
+
+> **Parked** 2026-10-02. Multi-month effort, not a phase: ZKX ships ~51 MB of
+> circuit artifacts + a ~6.4 MB prover, and the Rust-only rule means
+> reimplementing the proving stack (no mature Rust RAILGUN SDK). Also
+> **not deployed on PulseChain** (Ethereum / Arbitrum / BNB / Polygon only), so
+> it does not serve the PulseChain-privacy goal. ERC-5564 stealth (already
+> shipped) remains the in-core privacy path. Resume only with an explicit
+> decision + dependency approval. Reference: `docs/zkx-borrowed-ideas-plan.md` §4.
+
+- [ ] (on resume) Crate inventory (babyjubjub / Poseidon / Groth16): audits, licences, maintenance
+- [ ] (on resume) Scratch derivation matching official RAILGUN vectors (`m/44'/1984'`, `m/420'/1984'`, babyjubjub seed)
+- [ ] (on resume) `docs/railgun-go-no-go.md`; update `kohaku-go-no-go.md` + FR-3.4
+- [ ] (on resume, if GO) keys, merkle sync, shield / transfer / unshield, POI, Sepolia first; broadcasters for gas by default
+
 ## Later — DeFi AI king / Coinbase compete (deferred)
 
 > Narrative + phased roadmap: local notes under `private/` (gitignored).

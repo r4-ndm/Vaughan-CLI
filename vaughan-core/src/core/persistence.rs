@@ -127,6 +127,10 @@ pub struct PersistedState {
     /// Per-network primary RPC override (network id → URL). Fallbacks stay built-in.
     #[serde(default)]
     pub network_rpc_primary: HashMap<String, String>,
+    /// User-added phishing / malicious-address deny-list (merged with the
+    /// bundled list in `core::denylist`).
+    #[serde(default)]
+    pub denylist: Vec<crate::core::denylist::DenyEntry>,
 }
 
 /// A user-imported ERC-20 (shown in Assets even at zero balance).
@@ -462,6 +466,7 @@ impl PersistedState {
             vb_saved_profiles: Vec::new(),
             agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
+            denylist: Vec::new(),
         }
     }
 
@@ -487,6 +492,7 @@ impl PersistedState {
             vb_saved_profiles: Vec::new(),
             agent_autonomy_tier: AgentAutonomyTier::default(),
             network_rpc_primary: HashMap::new(),
+            denylist: Vec::new(),
         }
     }
 }

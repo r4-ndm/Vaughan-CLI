@@ -863,6 +863,59 @@ impl WalletState {
         Ok(self.require_unlocked()?.accounts())
     }
 
+    /// User-added phishing deny-list entries from persisted state (empty when locked).
+    pub fn denylist_entries(&self) -> Vec<crate::core::denylist::DenyEntry> {
+        self.persisted
+            .as_ref()
+            .map(|p| p.denylist.clone())
+            .unwrap_or_default()
+    }
+
+    /// True when `address` is denied (bundled list ∪ user entries).
+    pub fn is_denied_address(&self, address: alloy::primitives::Address) -> bool {
+        crate::core::denylist::is_denied(address, &self.denylist_entries())
+    }
+
+    /// Add `address` to the user deny-list and persist. No-op if already listed.
+    pub fn add_denied_address(
+        &mut self,
+        address: alloy::primitives::Address,
+        reason: impl Into<String>,
+    ) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let entry = format!("{address:#x}");
+        if !persisted
+            .denylist
+            .iter()
+            .any(|e| e.address.eq_ignore_ascii_case(&entry))
+        {
+            persisted.denylist.push(crate::core::denylist::DenyEntry {
+                address: entry,
+                reason: reason.into(),
+            });
+            self.state.save(persisted)?;
+        }
+        Ok(())
+    }
+
+    /// Remove `address` from the user deny-list and persist. Bundled entries
+    /// cannot be removed.
+    pub fn remove_denied_address(
+        &mut self,
+        address: alloy::primitives::Address,
+    ) -> Result<(), WalletError> {
+        let persisted = self.persisted.as_mut().ok_or(WalletError::NotInitialized)?;
+        let entry = format!("{address:#x}");
+        let before = persisted.denylist.len();
+        persisted
+            .denylist
+            .retain(|e| !e.address.eq_ignore_ascii_case(&entry));
+        if persisted.denylist.len() != before {
+            self.state.save(persisted)?;
+        }
+        Ok(())
+    }
+
     /// All accounts as `(index, label)` for F3 cycling.
     pub fn account_choices(&self) -> Result<Vec<(u32, String)>, WalletError> {
         Ok(self
