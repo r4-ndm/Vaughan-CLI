@@ -515,6 +515,83 @@ pub(crate) mod tests {
         );
     }
 
+    /// vaughan-core's approval-card ABI decodes railgun-rust's own calldata.
+    #[test]
+    fn humanizer_reads_railgun_rust_calldata() {
+        use alloy::sol_types::SolCall;
+        use broadcaster_core::contracts::railgun::{
+            shieldCall, transactCall, BoundParams, CommitmentPreimage, G1Point, G2Point,
+            SnarkProof, Transaction,
+        };
+        use vaughan_core::core::{humanize, HumanizeContext};
+
+        let me = account(0);
+        let deployment = for_chain(SEPOLIA_CHAIN_ID).unwrap();
+        let ctx = HumanizeContext {
+            chain_id: SEPOLIA_CHAIN_ID,
+            from: Some(Address::repeat_byte(0xaa)),
+            native_symbol: "ETH",
+            native_decimals: 18,
+        };
+        let keys = me.viewing().scan_keys();
+        let request = build_shield_request(
+            keys.master_public_key,
+            &keys.viewing_public_key,
+            TokenData::erc20(TOKEN),
+            U120::from(1_000u64),
+            &[7u8; 32],
+        )
+        .unwrap();
+        let data = shieldCall {
+            _shieldRequests: vec![request],
+        }
+        .abi_encode();
+        let h = humanize(&ctx, deployment.contract, U256::ZERO, &data);
+        assert!(h.summary.starts_with("Shield 1000 "), "{}", h.summary);
+
+        let point = || G1Point {
+            x: U256::ZERO,
+            y: U256::ZERO,
+        };
+        let tx = Transaction {
+            proof: SnarkProof {
+                a: point(),
+                b: G2Point {
+                    x: [U256::ZERO; 2],
+                    y: [U256::ZERO; 2],
+                },
+                c: point(),
+            },
+            merkleRoot: FixedBytes::ZERO,
+            nullifiers: vec![FixedBytes::ZERO],
+            commitments: vec![FixedBytes::ZERO],
+            boundParams: BoundParams {
+                treeNumber: 0,
+                minGasPrice: Default::default(),
+                unshield: 1,
+                chainID: SEPOLIA_CHAIN_ID,
+                adaptContract: Address::ZERO,
+                adaptParams: FixedBytes::ZERO,
+                commitmentCiphertext: Vec::new(),
+            },
+            unshieldPreimage: CommitmentPreimage {
+                npk: Address::repeat_byte(0xaa).into_word(),
+                token: TokenData::erc20(TOKEN),
+                value: U120::from(250u64),
+            },
+        };
+        let data = transactCall {
+            _transactions: vec![tx],
+        }
+        .abi_encode();
+        let h = humanize(&ctx, deployment.contract, U256::ZERO, &data);
+        assert!(h.summary.starts_with("Unshield 250 "), "{}", h.summary);
+        assert!(h
+            .rows
+            .iter()
+            .any(|r| r.label == "To" && r.value == format!("{:#x}", Address::repeat_byte(0xaa))));
+    }
+
     #[test]
     fn parallel_decode_matches_a_single_pass() {
         let me = account(0);

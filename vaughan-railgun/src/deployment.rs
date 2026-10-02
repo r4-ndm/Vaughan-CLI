@@ -78,4 +78,17 @@ mod tests {
         assert_eq!(d.deployment_block, 5_784_774);
         assert_eq!(d.v2_start_block, d.deployment_block);
     }
+
+    /// The approval-card humanizer in vaughan-core keeps its own address table.
+    #[test]
+    fn humanizer_contract_table_matches() {
+        for id in [1, 56, 137, 42_161, SEPOLIA_CHAIN_ID] {
+            let d = for_chain(id).unwrap();
+            assert_eq!(
+                vaughan_core::core::humanizer::railgun_contracts(id),
+                Some((d.contract, d.relay_adapt_contract)),
+                "chain {id}"
+            );
+        }
+    }
 }

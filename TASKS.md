@@ -637,7 +637,9 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 #### Later phases (re-plan at each gate)
 
-- [ ] Phase 2: Sepolia-only shield (`RAILGUN_SHIELD` sig on card, protocol fee shown); humanizer `railgun.rs`; POI-on-Sepolia check — Gate 2
+- [ ] Phase 2: Sepolia-only shield (`RAILGUN_SHIELD` sig on card, protocol fee shown); POI-on-Sepolia check — Gate 2
+  - [x] Humanizer `railgun.rs` (2026-10-02): shield (token, amount, encrypted recipient, fee note) and transact (unshield amount + public recipient, wrong-chain proof, self-broadcast linkage note); RAILGUN contracts labelled/known; checked against railgun-rust calldata and deployment table
+  - [ ] Card row "Recipient: your RAILGUN wallet (verified)" by recomputing the npk in `vaughan-railgun`
 - [ ] Phase 3: Merkle-root verification, prover (private module cache dir), POI, two-step send/unshield, linkage warning — Gate 3 (+ licence blocker cleared) before mainnet
   - [ ] Measure Cranelift compile time / memory for the 13×13 POI witness (the Singlepass replacement)
 - [ ] Phase 4: Waku broadcasters — separate go/no-go

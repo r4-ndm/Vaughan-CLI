@@ -1,8 +1,8 @@
 //! Address → human label resolution from Vaughan's existing catalogs.
 //!
 //! No hosted lookup and no new data source: labels come from the on-disk
-//! token-origin catalog (`token_origin`) and the DEX venue catalog
-//! (`dex_catalog` / `dex_routers`). Unknown addresses render as a short hex
+//! token-origin catalog (`token_origin`), the DEX venue catalog
+//! (`dex_catalog` / `dex_routers`) and the RAILGUN contract table. Unknown addresses render as a short hex
 //! form so the card stays readable without inventing a name.
 
 use alloy::primitives::Address;
@@ -12,7 +12,8 @@ use crate::core::token_origin;
 
 /// Resolve `address` on `chain_id` to a friendly label, or short hex.
 ///
-/// Order: token catalog (e.g. `pHEX`, `WPLS`) → DEX venue/router → short hex.
+/// Order: token catalog (e.g. `pHEX`, `WPLS`) → DEX venue/router → RAILGUN →
+/// short hex.
 pub fn label_address(chain_id: u64, address: Address) -> String {
     if let Some(entry) = token_origin::lookup(chain_id, address) {
         return entry.display_symbol.to_string();
@@ -20,13 +21,18 @@ pub fn label_address(chain_id: u64, address: Address) -> String {
     if let Some(label) = dex_label(chain_id, address) {
         return label;
     }
+    if let Some(label) = super::railgun::contract_label(chain_id, address) {
+        return label.to_string();
+    }
     short(address)
 }
 
-/// True when `address` is a catalogued token or a known DEX write target.
+/// True when `address` is a catalogued token, a known DEX write target or a
+/// RAILGUN contract.
 pub fn is_known(chain_id: u64, address: Address) -> bool {
     token_origin::lookup(chain_id, address).is_some()
         || dex_routers::is_allowed_dex_router(chain_id, address)
+        || super::railgun::contract_label(chain_id, address).is_some()
 }
 
 fn dex_label(chain_id: u64, address: Address) -> Option<String> {
@@ -61,6 +67,15 @@ mod tests {
         let router: Address = PULSEX_V2_MAINNET.parse().unwrap();
         assert!(label_address(369, router).contains("DEX router"));
         assert!(is_known(369, router));
+    }
+
+    #[test]
+    fn labels_railgun_contracts() {
+        let (proxy, relay) = super::super::railgun_contracts(11_155_111).unwrap();
+        assert_eq!(label_address(11_155_111, proxy), "RAILGUN");
+        assert_eq!(label_address(11_155_111, relay), "RAILGUN RelayAdapt");
+        assert!(is_known(11_155_111, proxy));
+        assert!(!is_known(369, proxy));
     }
 
     #[test]
