@@ -632,7 +632,8 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] Tests: offline shield + nullifier round trip; mock-RPC scanner tests; ignored live Sepolia in `live-smoke.yml`
 - [ ] Quick-sync (squid) opt-in for mainnet-sized scans
 - [x] Gate 1 manual TUI run (2026-10-02, test mnemonic profile): `0zk1qy4v02p5…6e9mp` + 0.648375 WETH on Sepolia, matching the official-engine vector and the independent scan
-- [ ] **Gate 1 (user):** Railway cross-check (same mnemonic → same 0zk + Sepolia balance), then approve Gate 1
+- [x] Railway cross-check (2026-10-02, Railway 5.24.21, test mnemonic): same `0zk1qy4v02p5…6e9mp` address. Railway derives with the same paths (`m/44'/1984'/0'/0'/N'`, `m/420'/1984'/0'/0'/N'`) and no BIP-39 passphrase. A hand-pasted phrase can silently derive another wallet, so check the public `0x9858EfFD…Eda94` first.
+- [ ] **Gate 1 (user):** approve Gate 1
 
 #### Later phases (re-plan at each gate)
 
