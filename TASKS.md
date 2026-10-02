@@ -631,7 +631,8 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] TUI: Receive → `0` read-only Private panel (no POI calls); 0zk receive on Sepolia only; hidden on unsupported chains
 - [x] Tests: offline shield + nullifier round trip; mock-RPC scanner tests; ignored live Sepolia in `live-smoke.yml`
 - [ ] Quick-sync (squid) opt-in for mainnet-sized scans
-- [ ] **Gate 1 (user):** run `cargo run -p vaughan-cli --features railgun`, Sepolia, Receive → `0`; Railway cross-check (same mnemonic → same 0zk + Sepolia balance)
+- [x] Gate 1 manual TUI run (2026-10-02, test mnemonic profile): `0zk1qy4v02p5…6e9mp` + 0.648375 WETH on Sepolia, matching the official-engine vector and the independent scan
+- [ ] **Gate 1 (user):** Railway cross-check (same mnemonic → same 0zk + Sepolia balance), then approve Gate 1
 
 #### Later phases (re-plan at each gate)
 
