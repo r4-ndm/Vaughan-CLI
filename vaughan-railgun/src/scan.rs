@@ -57,7 +57,9 @@ pub fn connect(rpc_url: &str) -> Result<impl Provider + Clone + use<>, WalletErr
 /// Scanner tuning.
 #[derive(Debug, Clone, Copy)]
 pub struct ScanOptions {
-    /// Blocks per `eth_getLogs` call; halved on RPC errors down to `min_chunk`.
+    /// Blocks per `eth_getLogs` call. An RPC error halves it (down to
+    /// `min_chunk`) for the rest of the scan, so range-capped RPCs settle on
+    /// their limit instead of failing every call.
     pub chunk: u64,
     /// Smallest chunk before an RPC error is reported.
     pub min_chunk: u64,
@@ -68,7 +70,7 @@ pub struct ScanOptions {
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
-            chunk: 5_000,
+            chunk: 250_000,
             min_chunk: 50,
             confirmations: 6,
         }
@@ -207,7 +209,6 @@ pub async fn scan<P: Provider>(
             state.apply(delta, account.viewing().nullifying_key());
         }
         state.next_block = to + 1;
-        chunk = chunk.saturating_mul(2).min(options.chunk.max(min_chunk));
         let progress = ScanProgress {
             start: state.start_block,
             scanned_to: to,
@@ -287,13 +288,54 @@ pub(crate) async fn decode_with_timestamps<P: Provider>(
     Ok(delta)
 }
 
+/// Smallest batch worth a thread of its own (trial decryption is the cost).
+const MIN_LOGS_PER_THREAD: usize = 256;
+
+/// Decode `logs` across all cores. Each log decodes independently, and the
+/// parts are merged in log order, so the result matches a single pass.
 fn decode(
     logs: &[Log],
     timestamps: &HashMap<u64, u64>,
     account: &RailgunAccount,
 ) -> Result<WalletLogDelta, WalletError> {
-    parse_wallet_delta_from_logs(logs, timestamps, account.viewing().scan_keys())
-        .map_err(|e| WalletError::Other(format!("RAILGUN log decode: {e}")))
+    let keys = account.viewing().scan_keys();
+    let parse = |part: &[Log]| {
+        parse_wallet_delta_from_logs(part, timestamps, keys)
+            .map_err(|e| WalletError::Other(format!("RAILGUN log decode: {e}")))
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let per_thread = logs.len().div_ceil(threads).max(MIN_LOGS_PER_THREAD);
+    if logs.len() <= per_thread {
+        return parse(logs);
+    }
+    let parts = std::thread::scope(|s| {
+        let handles: Vec<_> = logs
+            .chunks(per_thread)
+            .map(|part| s.spawn(move || parse(part)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    Err(WalletError::Other(
+                        "RAILGUN log decode thread panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut parts = parts.into_iter();
+    let mut merged = parts.next().expect("at least two parts")?;
+    for part in parts {
+        let part = part?;
+        merged.utxos.extend(part.utxos);
+        merged.nullifiers.extend(part.nullifiers);
+        merged
+            .commitment_observations
+            .extend(part.commitment_observations);
+        merged.sender_scan_outputs.extend(part.sender_scan_outputs);
+    }
+    Ok(merged)
 }
 
 #[cfg(test)]
@@ -473,6 +515,69 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn parallel_decode_matches_a_single_pass() {
+        let me = account(0);
+        let other = account(1);
+        let logs: Vec<Log> = (0..(MIN_LOGS_PER_THREAD as u64 * 2 + 1))
+            .map(|i| match i % 97 {
+                0 => shield_log(&me, i + 1, i, 5_800_000 + i),
+                1 => nullified_log(U256::from(i), 5_800_000 + i),
+                _ => shield_log(&other, 1, i, 5_800_000 + i),
+            })
+            .collect();
+        let timestamps: HashMap<u64, u64> =
+            logs.iter().map(|l| (l.block_number.unwrap(), 1)).collect();
+
+        let parallel = decode(&logs, &timestamps, &me).unwrap();
+        let single =
+            parse_wallet_delta_from_logs(&logs, &timestamps, me.viewing().scan_keys()).unwrap();
+        let key = |d: &WalletLogDelta| {
+            (
+                d.utxos
+                    .iter()
+                    .map(|u| (u.tree, u.position))
+                    .collect::<Vec<_>>(),
+                d.nullifiers
+                    .iter()
+                    .map(|n| n.nullifier)
+                    .collect::<BTreeSet<_>>(),
+            )
+        };
+        assert_eq!(key(&parallel), key(&single));
+        assert_eq!(parallel.utxos.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn chunk_stays_halved_after_an_rpc_error() {
+        let me = account(0);
+        let deployment = for_chain(SEPOLIA_CHAIN_ID).unwrap();
+        let start = deployment.deployment_block;
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter.clone());
+        asserter.push_success(&format!("{:#x}", start + 299));
+        asserter.push_success(&vec![nullified_log(U256::from(1), start)]);
+        asserter.push_failure_msg("range too large");
+        for _ in 0..3 {
+            asserter.push_success(&Vec::<Log>::new());
+        }
+
+        let mut state = ScanState::new(&deployment);
+        let mut seen = Vec::new();
+        let options = ScanOptions {
+            chunk: 200,
+            min_chunk: 50,
+            confirmations: 0,
+        };
+        scan(&provider, &deployment, &me, &mut state, options, |_, p| {
+            seen.push(p.scanned_to);
+            ControlFlow::Continue(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(seen, vec![start + 99, start + 199, start + 299]);
+    }
+
     #[tokio::test]
     async fn scan_reports_error_at_min_chunk() {
         let me = account(0);
@@ -564,14 +669,12 @@ pub(crate) mod tests {
             &mut state,
             ScanOptions::default(),
             |_, p| {
-                if p.scanned_to % 500_000 < 5_000 {
-                    println!(
-                        "{} / {} after {:?}",
-                        p.scanned_to,
-                        p.target,
-                        started.elapsed()
-                    );
-                }
+                println!(
+                    "{} / {} after {:?}",
+                    p.scanned_to,
+                    p.target,
+                    started.elapsed()
+                );
                 ControlFlow::Continue(())
             },
         )

@@ -10,6 +10,7 @@ use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use alloy::primitives::utils::format_units;
 use alloy::primitives::Address;
@@ -25,8 +26,8 @@ use vaughan_railgun::deployment;
 use vaughan_railgun::keys::RailgunAccount;
 use vaughan_railgun::scan::{self, ScanOptions, ScanProgress, ScanState};
 
-/// Save the cache every this many scanned chunks.
-const CHECKPOINT_EVERY: u32 = 20;
+/// Save the cache at most this often while scanning.
+const CHECKPOINT_EVERY: Duration = Duration::from_secs(15);
 
 enum Msg {
     Progress(ScanProgress),
@@ -270,7 +271,7 @@ fn run_scan(
         let Ok(provider) = scan::connect(url) else {
             continue;
         };
-        let mut chunks = 0u32;
+        let mut saved_at = Instant::now();
         let result = handle.block_on(scan::scan(
             &provider,
             dep,
@@ -281,8 +282,8 @@ fn run_scan(
                 if stop.load(Ordering::Relaxed) || !send(Msg::Progress(p)) {
                     return ControlFlow::Break(());
                 }
-                chunks += 1;
-                if chunks.is_multiple_of(CHECKPOINT_EVERY) {
+                if saved_at.elapsed() >= CHECKPOINT_EVERY {
+                    saved_at = Instant::now();
                     let _ = cache::save(&path, &key, dep, account.hd_index(), st);
                     send(Msg::Balances(balances(st)));
                 }
