@@ -295,7 +295,7 @@ impl TokenLaunchView {
                             Err(e) => KeyOutcome::Flash(e),
                         }
                     } else {
-                        KeyOutcome::Consumed
+                        KeyOutcome::Handled
                     }
                 }
                 KeyCode::Esc => KeyOutcome::Back,

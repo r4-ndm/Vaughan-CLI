@@ -715,7 +715,7 @@ impl SettingsView {
                     self.status =
                         "Tools burn gate disabled — unset VAUGHAN_ASSIST_BURN_GATE or remove =0."
                             .into();
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
             }
             KeyCode::Char('a') => {
@@ -733,10 +733,10 @@ impl SettingsView {
             KeyCode::Char('e') => {
                 if self.selected >= net_len {
                     self.status = "Select a network row to edit RPC/name settings.".into();
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 }
                 let Some(net) = wallet.networks().networks().get(self.selected) else {
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 };
                 if wallet.networks().is_custom(&net.id) {
                     self.open_edit_form(wallet, net);
@@ -749,7 +749,7 @@ impl SettingsView {
             KeyCode::Char('r') => {
                 if self.selected >= net_len {
                     self.status = "Select a network row first.".into();
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 }
                 self.open_rpc_pick(wallet);
                 KeyOutcome::Consumed
@@ -812,14 +812,14 @@ impl SettingsView {
             KeyCode::Char('d') => {
                 if self.selected >= net_len {
                     self.status = "Only custom network rows can be deleted.".into();
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 }
                 let Some(net) = wallet.networks().networks().get(self.selected).cloned() else {
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 };
                 if !wallet.networks().is_custom(&net.id) {
                     self.status = "Built-in networks cannot be removed.".into();
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 }
                 let chain_id = net.chain_id;
                 match wallet.remove_custom_network(&net.id) {
@@ -835,7 +835,7 @@ impl SettingsView {
                     }
                     Err(e) => self.status = e.user_message(),
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             _ => KeyOutcome::NotHandled,
         }

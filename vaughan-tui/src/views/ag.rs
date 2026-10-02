@@ -680,7 +680,7 @@ impl AgView {
                     self.clear_quotes();
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet),
+                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet).acted(),
                 _ => KeyOutcome::Consumed,
             },
             Stage::ComparePick => match key.code {

@@ -185,7 +185,7 @@ impl ReceiveView {
                 KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('s') => {
                     self.scan(wallet, handle);
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
                 #[cfg(feature = "railgun")]
                 KeyCode::Char('0') => {
@@ -201,7 +201,7 @@ impl ReceiveView {
                     },
                     Err(e) => {
                         self.status = e.user_message();
-                        KeyOutcome::Consumed
+                        KeyOutcome::Handled
                     }
                 },
                 _ => KeyOutcome::NotHandled,

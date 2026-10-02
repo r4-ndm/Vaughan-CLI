@@ -444,13 +444,13 @@ impl DcaView {
                 if !self.plans.is_empty() {
                     self.selected = self.selected.saturating_sub(1);
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if !self.plans.is_empty() {
                     self.selected = (self.selected + 1).min(self.plans.len().saturating_sub(1));
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.stage = Stage::Create;
@@ -467,7 +467,7 @@ impl DcaView {
                         Err(e) => self.status = e.to_string(),
                     }
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 if let Some(p) = self.plans.get(self.selected) {
@@ -476,11 +476,11 @@ impl DcaView {
                         Err(e) => self.status = e.to_string(),
                     }
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.reload();
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             _ => KeyOutcome::NotHandled,
         }
@@ -778,5 +778,21 @@ fn truncate(s: &str, max: usize) -> String {
             "{}…",
             s.chars().take(max.saturating_sub(1)).collect::<String>()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn list_letter_actions_are_not_retried_as_footer_shortcuts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut view = DcaView::new(dir.path().to_path_buf(), false);
+        for c in ['k', 'j', 'p', 'c', 'r'] {
+            let outcome = view.handle_list(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            assert!(matches!(outcome, KeyOutcome::Handled), "{c}: {outcome:?}");
+        }
     }
 }

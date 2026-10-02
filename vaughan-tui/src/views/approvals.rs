@@ -213,13 +213,13 @@ impl ApprovalsView {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.selected = self.selected.saturating_sub(1);
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if !self.rows.is_empty() {
                         self.selected = (self.selected + 1).min(self.rows.len() - 1);
                     }
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
                 KeyCode::Enter => {
                     if let Some(row) = self.rows.get(self.selected) {

@@ -216,7 +216,7 @@ impl DappsView {
                             Err(e) => e.user_message(),
                         };
                     }
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
                 KeyCode::Char('d') => {
                     let dapps = wallet.trusted_dapps();
@@ -230,7 +230,7 @@ impl DappsView {
                             Err(e) => self.status = e.user_message(),
                         }
                     }
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
                 _ => KeyOutcome::NotHandled,
             },

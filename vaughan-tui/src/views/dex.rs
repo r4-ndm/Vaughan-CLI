@@ -1655,11 +1655,11 @@ impl DexView {
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
                 if self.confirm_focus == ConfirmFocus::CustomGas {
                     self.confirm_focus = ConfirmFocus::Speed;
-                    return KeyOutcome::Consumed;
+                    return KeyOutcome::Handled;
                 }
                 self.stage = Stage::Input;
                 self.confirm_focus = ConfirmFocus::Speed;
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Up => {
                 self.select_speed(self.speed.prev());
@@ -1690,18 +1690,18 @@ impl DexView {
                         .as_ref()
                         .map(|f| f.with_custom_max_fee_gwei(self.custom_gas.value()))
                     {
-                        Some(Ok(_)) => self.begin_broadcast(step),
+                        Some(Ok(_)) => self.begin_broadcast(step).acted(),
                         Some(Err(e)) => {
                             self.status = e;
-                            KeyOutcome::Consumed
+                            KeyOutcome::Handled
                         }
                         None => {
                             self.status = "fee estimate missing — Esc back and retry".into();
-                            KeyOutcome::Consumed
+                            KeyOutcome::Handled
                         }
                     }
                 } else {
-                    self.begin_broadcast(step)
+                    self.begin_broadcast(step).acted()
                 }
             }
             _ if self.confirm_focus == ConfirmFocus::CustomGas => {

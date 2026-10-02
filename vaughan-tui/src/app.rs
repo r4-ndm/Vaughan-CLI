@@ -99,6 +99,9 @@ impl Screen {
 pub enum KeyOutcome {
     /// The view consumed the key; the app must not apply global shortcuts.
     Consumed,
+    /// The view acted on the key, so it is never retried as a footer shortcut
+    /// (unlike `Consumed`, which may be a footer chip key the view ignored).
+    Handled,
     /// The view did not use the key; the app may apply global shortcuts.
     NotHandled,
     /// The view wants to navigate to a new screen.
@@ -128,6 +131,7 @@ impl std::fmt::Debug for KeyOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Consumed => write!(f, "Consumed"),
+            Self::Handled => write!(f, "Handled"),
             Self::NotHandled => write!(f, "NotHandled"),
             Self::Navigate(s) => f.debug_tuple("Navigate").field(s).finish(),
             Self::Back => write!(f, "Back"),
@@ -139,6 +143,16 @@ impl std::fmt::Debug for KeyOutcome {
             Self::AssistBurn => write!(f, "AssistBurn"),
             Self::AccountListChanged => write!(f, "AccountListChanged"),
             Self::SwitchProfile(p, m) => f.debug_tuple("SwitchProfile").field(p).field(m).finish(),
+        }
+    }
+}
+
+impl KeyOutcome {
+    /// Mark a `Consumed` result as `Handled` (the view acted on the key).
+    pub(crate) fn acted(self) -> Self {
+        match self {
+            Self::Consumed => Self::Handled,
+            other => other,
         }
     }
 }
@@ -1116,7 +1130,7 @@ impl App {
                 self.spawn_refresh_assets();
             }
             KeyOutcome::SwitchProfile(profile, mode) => self.switch_profile(&profile, mode),
-            KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
+            KeyOutcome::Consumed | KeyOutcome::Handled | KeyOutcome::NotHandled => {}
         }
     }
 
@@ -5095,6 +5109,14 @@ mod tests {
             defer_footer_shortcut(KeyOutcome::Navigate(Screen::Dex), press('d'), true),
             KeyOutcome::Navigate(Screen::Dex)
         ));
+    }
+
+    #[test]
+    fn handled_keys_are_never_retried_as_footer_shortcuts() {
+        let outcome = defer_footer_shortcut(KeyOutcome::Consumed.acted(), press('s'), true);
+        assert!(matches!(outcome, KeyOutcome::Handled));
+        assert_eq!(global_action(press('s'), &outcome), GlobalAction::None);
+        assert!(matches!(KeyOutcome::Back.acted(), KeyOutcome::Back));
     }
 
     #[test]

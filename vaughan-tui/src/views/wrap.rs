@@ -189,7 +189,7 @@ impl WrapView {
                     self.pending_wei = None;
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter | KeyCode::Char('y') => self.confirm_send(wallet),
+                KeyCode::Enter | KeyCode::Char('y') => self.confirm_send(wallet).acted(),
                 _ => KeyOutcome::Consumed,
             },
             Stage::Input => match key.code {

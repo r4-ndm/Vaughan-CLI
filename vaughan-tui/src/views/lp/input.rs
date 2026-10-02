@@ -59,7 +59,11 @@ impl LpView {
             return KeyOutcome::Consumed;
         }
         if self.stage == Stage::Confirm {
-            return self.handle_confirm(key, wallet);
+            let outcome = self.handle_confirm(key, wallet);
+            return match key.code {
+                KeyCode::Char('y' | 'Y' | 'n' | 'N') => outcome.acted(),
+                _ => outcome,
+            };
         }
         if self.busy == Busy::Loading && !(self.on_v3_price_deposit() || tab_focus) {
             return KeyOutcome::Consumed;
@@ -204,7 +208,7 @@ impl LpView {
                 } else {
                     self.status = "No LP position to transfer".into();
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Char('o') | KeyCode::Char('O')
                 if self.focus == Focus::None
@@ -218,7 +222,7 @@ impl LpView {
                                 | Tab::Transfer
                         )) =>
             {
-                self.open_selected_pool_scanner()
+                self.open_selected_pool_scanner().acted()
             }
             KeyCode::Char('y') | KeyCode::Char('Y')
                 if self.focus == Focus::None
@@ -232,7 +236,7 @@ impl LpView {
                                 | Tab::Transfer
                         )) =>
             {
-                self.copy_selected_pool_address()
+                self.copy_selected_pool_address().acted()
             }
             KeyCode::Char('r') | KeyCode::Char('R')
                 if !(self.tab == Tab::List
@@ -245,7 +249,7 @@ impl LpView {
                     KeyOutcome::StartJob(job)
                 } else {
                     self.status = self.default_status_hint();
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
             }
             KeyCode::Enter if self.tab == Tab::List && self.list_action_idx.is_some() => {
@@ -412,7 +416,7 @@ impl LpView {
                     self.status = "Loading positions…".into();
                     KeyOutcome::StartJob(job)
                 } else {
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
                 }
             }
             KeyCode::Enter if self.focus == Focus::RangePresets => {

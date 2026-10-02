@@ -368,7 +368,7 @@ impl BridgeView {
                     self.quote = None;
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet),
+                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet).acted(),
                 _ => KeyOutcome::Consumed,
             },
             Stage::Input => self.handle_input_key(key, wallet),
