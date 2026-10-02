@@ -1,6 +1,6 @@
 # RAILGUN — go/no-go
 
-> Recorded 2026-10-02 (Phases 0–1). **Status: GO for Phases 0–2 on Sepolia,
+> Recorded 2026-10-02 (Phases 0–1; Gates 0–1 passed). **Status: GO for Phases 0–2 on Sepolia,
 > behind the opt-in `railgun` feature. User-facing release with `railgun` is
 > BLOCKED** until the Wasmer Singlepass licence issue below is resolved.
 > Supersedes the RAILGUN half of `docs/kohaku-go-no-go.md` (FR-3.4).
@@ -163,8 +163,10 @@ Plan details: `TASKS.md` → "RAILGUN via railgun-rust".
 - **Gate 0 (passed 2026-10-02):** allowlist approved in CLAUDE.md; audit +
   licences reviewed; Sepolia verified; default build excludes railgun-rust.
 - **Phase 1:** read-only 0zk address + shielded balance (Sepolia receive
-  address only; mainnet balances display-only). **Gate 1:** parity +
-  Railway cross-check.
+  address only; mainnet balances display-only). **Gate 1 (passed
+  2026-10-02):** official-engine parity vector; Railway 5.24.21 shows the same
+  0zk address for the test mnemonic; the Vaughan TUI scan shows the expected
+  Sepolia balance.
 - **Phase 2:** Sepolia-only shield. **Gate 2:** Sepolia shield → scan → balance;
   POI aggregator confirmed on Sepolia.
 - **Phase 3:** Merkle verification, prover + POI, two-step send/unshield.
