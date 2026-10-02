@@ -124,7 +124,7 @@ pub enum UiJob {
         quoter: Option<String>,
         amount_in: String,
         fee: u32,
-        /// V2 hop addresses (from [`hop_tokens`]).
+        /// V2 hop addresses (from [`hop_tokens`](crate::views::dex_calldata::hop_tokens)).
         path: Vec<String>,
         /// Exact tokens for V3 path resolution (direct pool preferred over WPLS hop).
         token_in: String,
@@ -312,7 +312,7 @@ pub struct ChromeSnapshot {
     /// Which status box is hotkeyed (F1 / F2 / F3).
     pub focus: ChromeFocus,
     /// F2 ↑/↓ asset cycle. Filled by [`UiJob::RefreshAssets`] — same set as
-    /// [`WalletState::assets`] (includes user-imported tokens at zero balance).
+    /// [`WalletState::assets`](vaughan_core::core::wallet::WalletState::assets) (includes user-imported tokens at zero balance).
     pub assets: Vec<Balance>,
     pub asset_idx: usize,
     pub assets_loading: bool,
@@ -322,7 +322,7 @@ pub struct ChromeSnapshot {
     pub pending_asset_idx: Option<usize>,
     /// When F2 is focused, ←/→ toggles balance vs contract address in the strip.
     pub f2_show_contract: bool,
-    /// After a swap/send, select this ERC-20 in F2 once [`RefreshAssets`] completes.
+    /// After a swap/send, select this ERC-20 in F2 once [`UiJob::RefreshAssets`] completes.
     pub pending_asset_address: Option<String>,
     /// Pending F3 account index (`Account::index`).
     pub pending_account_index: Option<u32>,
@@ -351,7 +351,7 @@ pub enum ChromeFocus {
     Account,
 }
 
-/// Build the F2 asset cycle from a [`WalletState::assets`] fetch.
+/// Build the F2 asset cycle from a [`WalletState::assets`](vaughan_core::core::wallet::WalletState::assets) fetch.
 ///
 /// Core already drops zero-balance curated/discovered tokens but keeps
 /// user-imported customs even at zero — do not re-filter here.

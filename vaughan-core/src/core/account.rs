@@ -134,7 +134,7 @@ impl AccountManager {
         Ok(am)
     }
 
-    /// Replace hardware watch list (e.g. after unlock from [`PersistedState`]).
+    /// Replace hardware watch list (e.g. after unlock from [`PersistedState`](crate::core::persistence::PersistedState)).
     pub fn set_hardware(
         &mut self,
         hardware: Vec<HardwareAccountRecord>,

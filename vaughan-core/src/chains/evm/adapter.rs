@@ -175,7 +175,7 @@ fn format_fee_total(total_wei: U256, symbol: &str, decimals: u8) -> String {
     format!("{trimmed} {symbol}")
 }
 
-/// Canonical Multicall3 address (https://github.com/mds1/multicall). Present
+/// Canonical Multicall3 address (<https://github.com/mds1/multicall>). Present
 /// on both PulseChain mainnet and testnet — verified via `cast codesize`
 /// (3808 bytes on both, 2026-08-18; see `docs/optimizations.md`).
 pub const MULTICALL3: Address =

@@ -165,7 +165,7 @@ impl CircuitBreaker {
 
     /// Pre-broadcast gas budget check: would spending `gas_wei` cross the
     /// session ceiling? Rejects without tripping (the session stays open for
-    /// cheaper transactions); pair with [`record_success`] after broadcast.
+    /// cheaper transactions); pair with [`Self::record_success`] after broadcast.
     pub fn check_gas_budget(&self, gas_wei: U256) -> Result<(), AgentError> {
         if self.is_tripped() {
             let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());

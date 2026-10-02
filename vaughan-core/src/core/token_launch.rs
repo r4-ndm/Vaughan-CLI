@@ -1,7 +1,7 @@
 //! Fixed-supply ERC-20 deploy for testnet meme-coin launches.
 //!
-//! Uses pinned creation bytecode from [`scripts/token-launch/FixedSupplyToken.sol`]
-//! (compile via [`scripts/compile-token-launch.sh`]). Runtime path is pure Rust +
+//! Uses pinned creation bytecode from `scripts/token-launch/FixedSupplyToken.sol`
+//! (compile via `scripts/compile-token-launch.sh`). Runtime path is pure Rust +
 //! Alloy — no `forge` subprocess.
 
 use alloy::primitives::{Address, U256};

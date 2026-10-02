@@ -1,7 +1,7 @@
 //! Host UI bridge for Trezor One PIN matrix and host passphrase entry.
 //!
-//! USB runs on a worker thread and blocks in [`Self::request_pin`] /
-//! [`Self::request_passphrase`] until the TUI submits. Never log PIN or
+//! USB runs on a worker thread and blocks in [`TrezorUiBridge::request_pin`] /
+//! [`TrezorUiBridge::request_passphrase`] until the TUI submits. Never log PIN or
 //! passphrase values.
 
 use std::sync::atomic::{AtomicBool, Ordering};

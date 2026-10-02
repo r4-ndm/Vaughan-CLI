@@ -4,9 +4,9 @@
 //! - [`passphrase`] — optional BIP-39 passphrase (`SecretString`, never logged)
 //! - [`ui_bridge`] — Trezor One host PIN matrix ↔ TUI
 //! - [`usb`] — blocking `trezor-client` helpers (path parse, connect, sign)
-//! - [`session`] — [`DeviceSession`] (USB discover / path → address)
-//! - [`eip712`] — typed-data streaming answers for Model T / Safe
-//! - [`backend`] — EVM [`SignerBackend`] (personal / prepared tx / EIP-712:
+//! - [`session`] — [`DeviceSession`](crate::security::hardware::session::DeviceSession) (USB discover / path → address)
+//! - `eip712` — typed-data streaming answers for Model T / Safe
+//! - [`backend`] — EVM [`SignerBackend`](crate::security::hardware::backend::SignerBackend) (personal / prepared tx / EIP-712:
 //!   field streaming on Model T / Safe, domain + message hashes on Trezor One)
 //!
 //! Rules (same as Ledger):

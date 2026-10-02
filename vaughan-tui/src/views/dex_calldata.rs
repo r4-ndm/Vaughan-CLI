@@ -88,7 +88,7 @@ pub struct DexSwapRequest {
     pub native_in: bool,
     pub amount_in: U256,
     pub min_out: U256,
-    /// V3 fee tier (ignored for V2); first hop when [`hop_fees`] is set.
+    /// V3 fee tier (ignored for V2); first hop when [`Self::hop_fees`] is set.
     pub fee: u32,
     /// Per-hop V3 fee tiers from quote discovery (`path.len() - 1`).
     pub hop_fees: Option<Vec<u32>>,

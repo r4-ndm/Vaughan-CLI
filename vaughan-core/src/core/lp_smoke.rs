@@ -19,7 +19,7 @@ pub struct LpSmoke943Pair {
     pub token1: &'static str,
     /// Fee tier (bps) where [`super::v3_pool_lifecycle`] is `Ready`.
     pub fee: u32,
-    /// Default fee the TUI sets via [`apply_initial_fee_defaults`] (943 wiz4rd = 500).
+    /// Default fee the TUI sets via `apply_initial_fee_defaults` (943 wiz4rd = 500).
     pub tui_default_fee: u32,
 }
 

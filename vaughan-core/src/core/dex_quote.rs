@@ -1,6 +1,6 @@
 //! Direct DEX swap quotes for the TUI (read-only, no signing).
 //!
-//! - **V3 (943):** local exact-in math via [`wiz4rd-sdk`] on the wiz4rd deploy.
+//! - **V3 (943):** local exact-in math via `wiz4rd-sdk` on the wiz4rd deploy.
 //! - **V3 (369+):** venue `QuoterV2` via `eth_call` when catalogued (9mm today).
 //!   Multi-hop paths use Uniswap V3 packed `token | fee | token | …` bytes.
 //! - **V2:** `router.getAmountsOut` via `eth_call` (Uni V2–compatible routers).
@@ -8,7 +8,7 @@
 //! **Route discovery (943 auto-fee)** follows the Uniswap / MetaMask-family pattern:
 //! simulate exact-in quotes across catalog fee tiers (and WPLS hops), pick the
 //! path with the best `amountOut` for the user's size. Swap math comes from the
-//! pinned `uniswap-v3-sdk` crate via [`wiz4rd-math`]; router ABI matches the
+//! pinned `uniswap-v3-sdk` crate via `wiz4rd-math`; router ABI matches the
 //! Pancake / wiz4rd SwapRouter (`exactInput` / `exactInputSingle`).
 
 use alloy::primitives::aliases::{U160, U24};

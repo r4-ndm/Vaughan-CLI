@@ -554,7 +554,7 @@ impl SendView {
     /// After a successful broadcast, return a job to poll inclusion (first hash
     /// only for stealth pay+announce pairs). Marks the view busy while polling.
     ///
-    /// Re-polls while status is still unknown or [`TxStatus::Pending`]. The first
+    /// Re-polls while status is still unknown or [`TxStatus::Pending`](vaughan_core::chains::TxStatus::Pending). The first
     /// call after broadcast (from `apply_job_result` followup) runs immediately;
     /// later calls from the UI tick loop are throttled (~3s at 80ms ticks).
     pub fn followup_poll_status(&mut self) -> Option<UiJob> {

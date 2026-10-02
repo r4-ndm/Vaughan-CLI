@@ -283,7 +283,7 @@ pub fn encode_announce_calldata(announcement: &StealthAnnouncement, metadata: &[
     )
 }
 
-/// Decode a stealth announcement from an announcer log (view tag = metadata[0]).
+/// Decode a stealth announcement from an announcer log (view tag = `metadata[0]`).
 pub fn stealth_announcement_from_log(
     log: &alloy::rpc::types::Log,
 ) -> Result<StealthAnnouncement, WalletError> {

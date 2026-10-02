@@ -7,7 +7,7 @@
 //! (transport, JSON-RPC framing, method handlers) speaks the same wire
 //! language. Sensitive material must never end up in these messages.
 
-/// EIP-1193 error codes (https://eips.ethereum.org/EIPS/eip-1193#provider-errors).
+/// EIP-1193 error codes (<https://eips.ethereum.org/EIPS/eip-1193#provider-errors>).
 pub mod codes {
     /// The user rejected the request (e.g. denied a sign prompt).
     pub const USER_REJECTED: i64 = 4001;

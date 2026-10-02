@@ -1,6 +1,6 @@
 //! Concentrated-liquidity math for wiz4rd-swap.
 //!
-//! This crate wraps [`uniswap-v3-sdk`]'s battle-tested V3 math. PancakeSwap
+//! This crate wraps `uniswap-v3-sdk`'s battle-tested V3 math. PancakeSwap
 //! forked Uniswap V3's math unchanged, so the modules here are exact matches
 //! for the on-chain PancakeSwap V3 contracts (TickMath, SqrtPriceMath,
 //! FullMath, LiquidityMath, SwapMath, fee growth / tokens owed).

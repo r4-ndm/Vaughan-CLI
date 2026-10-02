@@ -935,7 +935,7 @@ impl WalletState {
         self.require_unlocked()?.active_signer()
     }
 
-    /// Local [`LocalSignerBackend`] for the active software account.
+    /// Local [`LocalSignerBackend`](crate::security::hardware::backend::LocalSignerBackend) for the active software account.
     pub fn active_local_backend(&self) -> Result<crate::security::LocalSignerBackend, WalletError> {
         self.require_unlocked()?.active_local_backend()
     }
@@ -1924,7 +1924,7 @@ impl WalletState {
         Ok(TxHash(receipt.hash))
     }
 
-    /// Like [`Self::send_transaction`], but returns a [`BroadcastReceipt`] for
+    /// Like [`Self::send_transaction`], but returns a [`BroadcastReceipt`](crate::core::broadcasts::BroadcastReceipt) for
     /// History cancel / speed-up (nonce + fees captured).
     pub async fn broadcast(
         &self,
@@ -2041,7 +2041,7 @@ impl WalletState {
         })
     }
 
-    /// Cancel or speed-up a pending [`BroadcastEntry`] (same nonce, bumped fees).
+    /// Cancel or speed-up a pending [`BroadcastEntry`](crate::core::broadcasts::BroadcastEntry) (same nonce, bumped fees).
     pub async fn replace_broadcast(
         &self,
         entry: &crate::core::broadcasts::BroadcastEntry,

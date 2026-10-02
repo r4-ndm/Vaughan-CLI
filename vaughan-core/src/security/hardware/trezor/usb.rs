@@ -296,7 +296,7 @@ fn send_cancel(client: &mut Trezor) {
 /// Best-effort Cancel on a fresh USB handle (confirm-on-device Esc).
 ///
 /// Often no-ops while the signing thread holds the device; PIN Esc still clears
-/// via [`send_cancel`] on that same session.
+/// via `send_cancel` on that same session.
 pub fn best_effort_host_cancel() {
     std::thread::spawn(|| {
         let Ok(mut device) = trezor_client::unique(false) else {

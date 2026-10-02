@@ -1,10 +1,10 @@
 //! Public DexScreener market-data client (no API key).
 //!
 //! Modular layout:
-//! - [`chain`] — Vaughan chain id ↔ DexScreener slug
-//! - [`types`] — pair summaries + soft-fail envelopes
-//! - [`search`] — spoof-aware rank / catalog coverage (pure)
-//! - [`client`] — HTTP + rate spacing
+//! - `chain` — Vaughan chain id ↔ DexScreener slug
+//! - `types` — pair summaries + soft-fail envelopes
+//! - `search` — spoof-aware rank / catalog coverage (pure)
+//! - `client` — HTTP + rate spacing
 //!
 //! Docs: `docs/dexscreener.md`. Patterns inspired by pulsechain-mcp research
 //! tools; reimplemented in Rust (no TypeScript vendoring).

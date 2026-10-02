@@ -39,7 +39,7 @@ pub fn venue_param_schema() -> Value {
     })
 }
 
-/// Resolve LP venue from tool args, falling back to [`default_lp_venue`].
+/// Resolve LP venue from tool args, falling back to [`vaughan_core::core::dex_catalog::default_lp_venue`].
 pub fn resolve_lp_venue(args: &Value, chain_id: u64) -> Result<DexVenue, AgentError> {
     let venue = if let Some(raw) = args.get("venue").and_then(|v| v.as_str()) {
         parse_dex_venue_label(raw).ok_or_else(|| {

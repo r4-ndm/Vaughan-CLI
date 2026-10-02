@@ -567,7 +567,7 @@ impl StateManager {
         Self::list_profiles_at(&default_path)
     }
 
-    /// [`list_profiles`] against an explicit default-vault path (tests).
+    /// [`Self::list_profiles`] against an explicit default-vault path (tests).
     pub fn list_profiles_at(default_path: &std::path::Path) -> Vec<ProfileMeta> {
         let mut out = vec![ProfileMeta {
             name: DEFAULT_PROFILE.to_string(),

@@ -4,12 +4,12 @@
 //! `docs/spikes/cef-tauri` `cdp_ax_smoke`, without chromiumoxide.
 //!
 //! Split by concern:
-//! - [`client`] — page WebSocket session (`CdpPage`) and cross-frame helpers
-//! - [`js`] — embedded JS snippets (`include_str!`) + placeholder builders
-//! - [`snapshot`] — interactive-element snapshot + visible text lines
-//! - [`quote`] — swap quote parsing from visible lines
-//! - [`swap`] — token pickers, sell amount, quote CTA, one-shot setup
-//! - [`interact`] — click/type/press/wait, modal dismissal, wallet connect
+//! - `client` — page WebSocket session (`CdpPage`) and cross-frame helpers
+//! - `js` — embedded JS snippets (`include_str!`) + placeholder builders
+//! - `snapshot` — interactive-element snapshot + visible text lines
+//! - `quote` — swap quote parsing from visible lines
+//! - `swap` — token pickers, sell amount, quote CTA, one-shot setup
+//! - `interact` — click/type/press/wait, modal dismissal, wallet connect
 
 mod client;
 mod interact;

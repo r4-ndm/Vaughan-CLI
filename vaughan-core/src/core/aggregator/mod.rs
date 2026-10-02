@@ -1,7 +1,7 @@
 //! PulseChain swap aggregators — catalog + no-key quote clients.
 //!
-//! Primary focus: [`squirrelswap`] (Brain at `api.squirrelswap.pro`, no key).
-//! Also live: [`pulseswap`], [`crate::core::piteas`], [`empx`]. Others listed for UX.
+//! Primary focus: `squirrelswap` (Brain at `api.squirrelswap.pro`, no key).
+//! Also live: `pulseswap`, [`crate::core::piteas`], `empx`. Others listed for UX.
 
 mod catalog;
 mod empx;

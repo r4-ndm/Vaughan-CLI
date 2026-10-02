@@ -150,7 +150,7 @@ const LP_BATCH_EST_GAS_PER_CALL: u64 = 180_000;
 pub struct LpDeployBatchPlan {
     pub steps: Vec<String>,
     pub calls: Vec<EvmTransaction>,
-    /// Set when estimated gas exceeds [`LP_BATCH_GAS_BUDGET`].
+    /// Set when estimated gas exceeds `LP_BATCH_GAS_BUDGET`.
     pub gas_warning: Option<String>,
 }
 

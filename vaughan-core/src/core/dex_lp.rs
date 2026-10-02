@@ -1,6 +1,6 @@
 //! V3 concentrated liquidity (NPM) — browserless position reads + tx build.
 //!
-//! Wraps [`wiz4rd-sdk`] liquidity builders for the TUI (same contracts as MCP
+//! Wraps `wiz4rd-sdk` liquidity builders for the TUI (same contracts as MCP
 //! `propose_v3_*`). Venues resolve NPM + factory from [`super::dex_catalog`]
 //! (wiz4rd 943, 9mm 369 today).
 

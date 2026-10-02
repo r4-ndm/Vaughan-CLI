@@ -12,7 +12,7 @@ use zeroize::Zeroize;
 
 use crate::error::WalletError;
 
-/// Versioned secrets payload stored inside [`EncryptedVault`] ciphertext.
+/// Versioned secrets payload stored inside [`EncryptedVault`](crate::security::encryption::EncryptedVault) ciphertext.
 ///
 /// Deliberately **not** `Debug` (would print the mnemonic) or `Clone`
 /// (untracked copies of secret material) — see the security guardrails.

@@ -1,7 +1,7 @@
 //! DEX swap view: any Uniswap V2– or V3–compatible router on PulseChain.
 //!
 //! When the DEX row is focused: **↑/↓** pick venue, **←/→** pick V2 or V3.
-//! Calldata lives in [`dex_calldata`]. OTC / Balancer venues are listed but
+//! Calldata lives in [`dex_calldata`](crate::views::dex_calldata). OTC / Balancer venues are listed but
 //! not swap-wired yet (different ABIs).
 
 use alloy::primitives::{Address, U256};
@@ -220,7 +220,7 @@ impl DexView {
 
     /// Advance quote debounce without touching the wallet lock (UI tick).
     ///
-    /// Returns `true` when debounce elapsed and [`Self::start_quote_job`] should run.
+    /// Returns `true` when debounce elapsed and `Self::start_quote_job` should run.
     pub fn tick_quote_debounce(&mut self) -> bool {
         if !matches!(self.stage, Stage::Input) || self.busy != Busy::Idle {
             return false;
