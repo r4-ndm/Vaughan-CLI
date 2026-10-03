@@ -81,7 +81,8 @@ jobs:
       - name: cargo test (railgun)
         run: |
           cargo test -p vaughan-railgun --features enabled
-          cargo test -p vaughan-tui --features railgun --lib shielded
+          cargo test -p vaughan-tui --features railgun --lib views::shield
+          cargo test -p vaughan-tui --features railgun --lib provider
 
       - name: Upstream parity tests under Vaughan's lockfile
         run: scripts/railgun-parity.sh

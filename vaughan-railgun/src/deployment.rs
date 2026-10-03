@@ -52,6 +52,13 @@ pub const fn receive_enabled(chain_id: u64) -> bool {
     chain_id == SEPOLIA_CHAIN_ID
 }
 
+/// True when Vaughan offers shielding on `chain_id` (Sepolia only until
+/// Gate 3, for the same reason as [`receive_enabled`]).
+#[must_use]
+pub const fn shield_enabled(chain_id: u64) -> bool {
+    chain_id == SEPOLIA_CHAIN_ID
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,9 +74,13 @@ mod tests {
     }
 
     #[test]
-    fn receive_is_sepolia_only() {
+    fn receive_and_shield_are_sepolia_only() {
         assert!(receive_enabled(SEPOLIA_CHAIN_ID));
         assert!(!receive_enabled(1));
+        assert!(shield_enabled(SEPOLIA_CHAIN_ID));
+        for id in [1, 56, 137, 42_161, 369] {
+            assert!(!shield_enabled(id), "chain {id}");
+        }
     }
 
     #[test]

@@ -27,6 +27,8 @@ enum Stage {
     Notes,
     #[cfg(feature = "railgun")]
     Shielded,
+    #[cfg(feature = "railgun")]
+    Shield,
 }
 
 pub struct ReceiveView {
@@ -36,6 +38,8 @@ pub struct ReceiveView {
     status: String,
     #[cfg(feature = "railgun")]
     shielded: super::shielded::ShieldedPanel,
+    #[cfg(feature = "railgun")]
+    shield: Option<super::shield_flow::ShieldFlow>,
 }
 
 impl Default for ReceiveView {
@@ -47,6 +51,8 @@ impl Default for ReceiveView {
             status: String::new(),
             #[cfg(feature = "railgun")]
             shielded: super::shielded::ShieldedPanel::default(),
+            #[cfg(feature = "railgun")]
+            shield: None,
         }
     }
 }
@@ -69,6 +75,17 @@ impl ReceiveView {
                     brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
                 frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
+            #[cfg(feature = "railgun")]
+            Stage::Shield => {
+                let text = self
+                    .shield
+                    .as_ref()
+                    .map(|s| s.lines(wallet))
+                    .unwrap_or_default();
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
         }
     }
 
@@ -76,6 +93,23 @@ impl ReceiveView {
     pub fn poll(&mut self) {
         #[cfg(feature = "railgun")]
         self.shielded.poll();
+    }
+
+    /// Feed a background job result to the shield flow (if open).
+    pub fn apply_job_result(&mut self, _result: crate::jobs::UiJobResult) {
+        #[cfg(feature = "railgun")]
+        if let Some(flow) = self.shield.as_mut() {
+            flow.apply_job_result(_result);
+        }
+    }
+
+    /// Next job the shield flow wants spawned (allowance → estimate → …).
+    pub fn take_followup(&mut self) -> Option<crate::jobs::UiJob> {
+        #[cfg(feature = "railgun")]
+        if let Some(flow) = self.shield.as_mut() {
+            return flow.take_followup();
+        }
+        None
     }
 
     /// Address / URI on unbordered rows so copy/select stays clean.
@@ -167,7 +201,7 @@ impl ReceiveView {
 
     pub fn allows_footer_shortcuts(&self) -> bool {
         #[cfg(feature = "railgun")]
-        if self.stage == Stage::Shielded {
+        if matches!(self.stage, Stage::Shielded | Stage::Shield) {
             return false;
         }
         true
@@ -252,8 +286,33 @@ impl ReceiveView {
                     },
                     None => KeyOutcome::Flash("0zk receive address is testnet-only for now".into()),
                 },
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    let chain_id = wallet.networks().active().chain_id;
+                    if vaughan_railgun::deployment::shield_enabled(chain_id) {
+                        self.shield = Some(super::shield_flow::ShieldFlow::new());
+                        self.stage = Stage::Shield;
+                        KeyOutcome::Consumed
+                    } else {
+                        KeyOutcome::Flash("Shielding is Sepolia-only for now".into())
+                    }
+                }
                 _ => KeyOutcome::NotHandled,
             },
+            #[cfg(feature = "railgun")]
+            Stage::Shield => {
+                let Some(flow) = self.shield.as_mut() else {
+                    self.stage = Stage::Shielded;
+                    return KeyOutcome::Consumed;
+                };
+                match flow.handle_key(key, wallet, handle) {
+                    KeyOutcome::Back => {
+                        self.shield = None;
+                        self.stage = Stage::Shielded;
+                        KeyOutcome::Consumed
+                    }
+                    other => other,
+                }
+            }
         }
     }
 

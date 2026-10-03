@@ -30,6 +30,8 @@ pub mod receive;
 pub mod send;
 pub mod settings;
 #[cfg(feature = "railgun")]
+pub mod shield_flow;
+#[cfg(feature = "railgun")]
 pub mod shielded;
 pub mod swap_form;
 pub mod token_launch;

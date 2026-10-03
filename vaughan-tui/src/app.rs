@@ -4794,6 +4794,10 @@ impl App {
                             v.apply_job_result(other);
                             None
                         }
+                        View::Receive(v) => {
+                            v.apply_job_result(other);
+                            v.take_followup()
+                        }
                         _ => None,
                     };
                     let dex_followup = {

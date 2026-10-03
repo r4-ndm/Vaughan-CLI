@@ -47,7 +47,7 @@ jobs:
           cargo test -p vaughan-agent wiz4rd_get_pool_and_quote_on_943
           -- --ignored --nocapture
 
-      - name: RAILGUN Sepolia logs decode (read-only, no keys at risk)
+      - name: RAILGUN Sepolia logs decode + shield fee (read-only, no keys at risk)
         run: >
-          cargo test -p vaughan-railgun --features enabled live_sepolia_logs_decode
+          cargo test -p vaughan-railgun --features enabled live_sepolia
           -- --ignored --nocapture

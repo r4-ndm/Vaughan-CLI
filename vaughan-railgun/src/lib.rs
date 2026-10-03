@@ -8,7 +8,8 @@
 //! Phase 1 is read-only: the 0zk address (`keys`), which chains have
 //! RAILGUN (`deployment`), a log scanner (`scan`), balances (`balance`)
 //! and an encrypted scan cache (`cache`). No POI calls, no signing.
-//! Phase 2 adds `verify`: the approval card checks a shield pays this wallet.
+//! Phase 2 adds `shield` (Sepolia-only ERC-20 shields) and `verify`: the
+//! approval card checks a shield pays this wallet.
 //!
 //! Plan, threat model and pin-bump procedure: `docs/railgun-go-no-go.md`.
 
@@ -24,6 +25,8 @@ pub mod keys;
 pub mod quick;
 #[cfg(feature = "enabled")]
 pub mod scan;
+#[cfg(feature = "enabled")]
+pub mod shield;
 #[cfg(feature = "enabled")]
 pub mod verify;
 

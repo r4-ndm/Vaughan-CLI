@@ -99,6 +99,21 @@ line on chains without RAILGUN.
 | Quick-sync | Opt-in per scan: `f` in the Private panel pages the public RAILGUN squid indexer (railgun-rust `merkletree` client; legacy pages before the v2 start block) into the same scan state, then the RPC scan finishes the tail. Off by default, never automatic, hint shown under the keys. Falls back to RPC on any indexer error. Scans remember the newest block holding RAILGUN events (in the encrypted cache), and the history probe checks that block, so an RPC without old logs can still do the tail. Live Ethereum page verified (8 831 transact / 2 739 shield / 9 966 nullifiers) |
 | POI / network calls | None besides the RPC; no telemetry |
 
+## Phase 2: Sepolia shield (in progress, 2026-10-03)
+
+Private panel → `s` (Sepolia only, `deployment::shield_enabled`). ERC-20
+only for now; native ETH (wrap-and-shield via RelayAdapt) comes later.
+
+| Item | Result |
+|---|---|
+| Shield key | `keccak256` of the wallet's EIP-191 signature over `RAILGUN_SHIELD`, via the normal `WalletState::sign_message` path after its own card. Matches railgun-rust `derive_shield_private_key` (test with Anvil key 0), so Railway derives the same key. Held in a zeroizing newtype, signature string zeroized |
+| Calldata | railgun-rust `build_shield_calldata`; `approve` for the exact amount (never unlimited), only when the allowance is short |
+| Fee | `shieldFee()` read from the proxy each time: 25 bp on Sepolia and Ethereum (2026-10-03). Card shows fee, percentage and what the private balance receives (`RailgunLogic.getFee` rounding) |
+| Recipient | Plan is rejected unless `verify::shield_recipients` recomputes every note's `npk` from this wallet's keys; card row "your RAILGUN wallet (verified)" |
+| Cards | `RAILGUN_SHIELD` message → approve (if needed) → shield. Each shows wallet, network and gas; Esc at any card signs nothing. Reuses the Dex allowance / estimate / send jobs |
+| Tests | Key parity, fee rounding, plan validation (zero, >uint120, fee ≥ 100%, mainnet refused); offline TUI walk through all three cards with a real signature; live `shieldFee()` read in `live-smoke.yml` |
+| Gate 2 still needs | Manual Sepolia shield → confirm → rescan shows the note; POI aggregator check on Sepolia |
+
 ## Threat model
 
 | Risk | Mitigation |
@@ -132,8 +147,9 @@ So Phase 3 uses two steps:
    existing approval gate (humanizer card, gas, linkage warning) and only then
    is the EVM transaction signed and broadcast.
 
-The Phase 2 `RAILGUN_SHIELD` message signature is shown on the shield approval
-card and never auto-signed or cached.
+The Phase 2 `RAILGUN_SHIELD` message signature gets its own card before the
+approve and shield cards, and is never auto-signed or cached (signed again for
+every shield).
 
 ## Pin-bump procedure
 
