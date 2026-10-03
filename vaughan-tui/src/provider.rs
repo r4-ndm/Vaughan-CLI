@@ -822,13 +822,58 @@ fn mcp_proposal_review(
 ) -> vaughan_core::core::ProposalReview {
     let net = wallet.networks().active();
     let from = wallet.active_address().ok().and_then(|a| a.parse().ok());
-    vaughan_core::core::review_mcp_proposal_with(
+    let mut review = vaughan_core::core::review_mcp_proposal_with(
         proposal,
         &net.native_symbol,
         net.decimals,
         from,
         &wallet.denylist_entries(),
-    )
+    );
+    if let Some((recipient, warning)) = railgun_shield_recipient(wallet, &proposal.calldata) {
+        match review.rows.iter_mut().find(|r| r.label == "Recipient") {
+            Some(row) => row.value = recipient,
+            None => review.rows.push(vaughan_core::core::VerifyRow {
+                label: "Recipient".into(),
+                value: recipient,
+            }),
+        }
+        review.safety_hints.extend(warning);
+    }
+    review
+}
+
+/// RAILGUN shield recipient for approval cards: `(row value, warning)`.
+///
+/// `None` unless the calldata is a `shield` call and this build has RAILGUN.
+/// The humanizer can only say the note is encrypted; this decrypts it with
+/// the active wallet's viewing key and recomputes the note key.
+#[cfg(feature = "railgun")]
+fn railgun_shield_recipient(wallet: &WalletState, data: &[u8]) -> Option<(String, Option<String>)> {
+    use vaughan_railgun::keys::RailgunAccount;
+    use vaughan_railgun::verify::{is_shield_call, shield_recipients};
+
+    if !is_shield_call(data) {
+        return None;
+    }
+    let account = match wallet
+        .with_hd_seed(RailgunAccount::from_seed)
+        .and_then(|r| r)
+    {
+        Ok(a) => a,
+        Err(e) => return Some((format!("not verified — {}", e.user_message()), None)),
+    };
+    match shield_recipients(&account, data) {
+        Some(r) => Some((r.card_value(), r.warning())),
+        None => Some(("not verified — malformed shield calldata".into(), None)),
+    }
+}
+
+#[cfg(not(feature = "railgun"))]
+fn railgun_shield_recipient(
+    _wallet: &WalletState,
+    _data: &[u8],
+) -> Option<(String, Option<String>)> {
+    None
 }
 
 async fn lp_brew_token_labels(
@@ -1095,6 +1140,10 @@ fn tx_safety_lines(tx: &TxParams, wallet: &WalletState) -> Vec<String> {
             };
             let h = humanize(&ctx, to, value, &data);
             lines.push(format!("Action:  {}", h.summary));
+            if let Some((recipient, warning)) = railgun_shield_recipient(wallet, &data) {
+                lines.push(format!("Recipient: {recipient}"));
+                lines.extend(warning.map(|w| format!("Safety:  {w}")));
+            }
             for w in h.warnings {
                 let marker = if w.is_critical() { "⚠ " } else { "" };
                 lines.push(format!("{marker}Safety:  {}", w.message()));
