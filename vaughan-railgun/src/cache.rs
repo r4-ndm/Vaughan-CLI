@@ -29,7 +29,9 @@ use crate::keys::RailgunAccount;
 use crate::scan::ScanState;
 
 const DOMAIN: &str = "vaughan-railgun-cache-v1";
-const FORMAT_VERSION: u32 = 1;
+/// v2: notes are `npk`-checked before caching (`ScanState::apply`); v1 files
+/// may hold unchecked notes, so they read as unreadable and trigger a rescan.
+const FORMAT_VERSION: u32 = 2;
 const NONCE_LEN: usize = 12;
 
 /// AES-256 key for the scan cache. No `Debug`; wiped on drop.
@@ -254,7 +256,7 @@ mod tests {
             me.viewing().scan_keys(),
         )
         .unwrap();
-        state.apply(delta, me.viewing().nullifying_key());
+        state.apply(delta, me.viewing());
         state.next_block = 5_800_001;
         state.last_log_block = Some(5_800_000);
         state

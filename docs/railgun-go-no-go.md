@@ -114,6 +114,8 @@ line on chains without RAILGUN.
 | Cache tampering / replay onto another account | AES-GCM with chain id, account index and contract as associated data; unreadable cache → full rescan |
 | Third parties (RPC, squid, POI, IPFS) see metadata | Squid opt-in per scan. The indexer sees your IP and when you sync, not which notes are yours (pages are public, decrypted locally); the RPC sees the same for the tail. No telemetry |
 | Funds stuck before unshield exists | Mainnet shield and mainnet 0zk receive address hidden until Gate 3; recovery = same mnemonic in Railway wallet |
+| Shield calldata (dApp / agent) pays someone else's 0zk wallet | Approval card decrypts each note with the active wallet's viewing key and recomputes `npk = poseidon(mpk, random)` (`vaughan-railgun::verify`); "your RAILGUN wallet (verified)" only on a match, warning otherwise |
+| Phantom shield note: random encrypted to us, `npk` from another key | Card check above rejects it; `ScanState::apply` drops any note whose `npk` doesn't recompute (upstream `scan_shield_commitment` keeps them; fix in `docs/railgun-upstream/07-shield-npk-check.patch`). Cache format v2 forces a rescan of pre-fix caches |
 | Hidden protocol fee | Contract basis-points fee shown on every shield/unshield card |
 | Licence (Singlepass BUSL) | Release blocked until removed (see Licences) |
 
@@ -156,6 +158,7 @@ Tested patches for 1, 3 and 5 plus issue texts for 2, 4 and 6 are in
 5. `license = "MIT"` in workspace crate manifests.
 6. (to `codex-storage/rs-poseidon`) add the `LICENSE-MIT` / `LICENSE-APACHEv2`
    files its README references.
+7. Check `npk` on current shield notes after decrypting (tested patch 07).
 
 ## Phases and gates
 

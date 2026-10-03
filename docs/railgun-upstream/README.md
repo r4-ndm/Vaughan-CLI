@@ -4,7 +4,7 @@ Patches and issue drafts for [`triamazikamno/railgun-rust`](https://github.com/t
 and one dependency, prepared during RAILGUN Phase 0 (see `docs/railgun-go-no-go.md`).
 These are contributions **to** upstream; nothing here is compiled into Vaughan.
 
-All three patches are based on the pinned commit
+All patches are based on the pinned commit
 `b61fca7e2476dc3e5f89463fcef97f53661890e6`, apply independently, and were
 checked with `cargo check --workspace --all-targets`, `cargo test -p railgun-wallet`
 (107 passed), `cargo clippy -p railgun-wallet --all-targets -D warnings` and
@@ -22,6 +22,7 @@ title/body below.
 | 04 | Optional prover feature | Issue | Lighter read-only builds |
 | 05 | Sepolia deployment | Issue | Nice-to-have (Vaughan can pass its own) |
 | 06 | `rs-poseidon` licence files | Issue (other repo) | Housekeeping |
+| 07 | Shield notes: check `npk` after decrypting | Patch | Vaughan filters locally already (`ScanState::apply`); fixes it for everyone |
 
 ---
 
@@ -116,3 +117,23 @@ File: `03-license-metadata.patch`
 > `Cargo.toml` has no `license` field. Downstream licence scanners (e.g. via
 > railgun-rust) flag it as unlicensed. Could you add the files and
 > `license = "MIT OR Apache-2.0"`?
+
+## 07 — railgun-wallet: only accept shield notes whose npk matches our master public key
+
+File: `07-shield-npk-check.patch` (added 2026-10-03; same pin and checks as
+above, `cargo test -p railgun-wallet` 96 + 12 passed)
+
+> **Title:** railgun-wallet: only accept shield notes whose npk matches our master public key
+>
+> `scan_shield_commitment` treats a shield note as ours once its random
+> decrypts with our viewing key, then takes `npk` from the on-chain preimage
+> without checking it. Decrypting only proves the random was encrypted to us.
+> A shield can encrypt a random to wallet A while setting `npk` from wallet B's
+> master public key: A's scan then reports a balance A can never spend (the
+> commitment belongs to B).
+>
+> The legacy path (`IndexedLegacyGeneratedCommitmentInput::scan`) already
+> recomputes `npk` and compares; this applies the same check to current shield
+> events. Transact notes are unaffected (their commitment is already verified).
+>
+> Includes a regression test with a forged shield request.

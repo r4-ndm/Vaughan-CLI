@@ -276,7 +276,7 @@ pub async fn quick_sync<S: PageSource>(
             &page.nullifiers,
             account.viewing().scan_keys(),
         );
-        state.apply(delta, account.viewing().nullifying_key());
+        state.apply(delta, account.viewing());
         state.note_log_block(page.last_row_block());
         state.next_block = page.checkpoint + 1;
         let progress = ScanProgress {

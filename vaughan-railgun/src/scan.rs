@@ -23,11 +23,12 @@ use broadcaster_core::contracts::railgun::{
     Shield, Transact,
 };
 use broadcaster_core::deployment::RailgunDeployment;
+use broadcaster_core::notes::Note;
 use broadcaster_core::utxo::WalletUtxo;
 use railgun_wallet::scan::{parse_wallet_delta_from_logs, WalletLogDelta};
 use vaughan_core::error::WalletError;
 
-use crate::keys::RailgunAccount;
+use crate::keys::{RailgunAccount, ViewingKeys};
 
 /// Every event railgun-rust's log parser understands.
 fn event_topics() -> Vec<B256> {
@@ -139,8 +140,18 @@ impl ScanState {
     }
 
     /// Merge one decoded log batch: add new notes, then mark spends.
-    pub(crate) fn apply(&mut self, delta: WalletLogDelta, nullifying_key: U256) {
+    ///
+    /// Drops notes whose `npk` isn't `poseidon(our mpk, random)`. Upstream
+    /// keeps any shield note whose random decrypts, so a shield can encrypt a
+    /// random to us with someone else's `npk` and show up as a balance we
+    /// can't spend. Transact notes already carry our `npk`, so they pass.
+    pub(crate) fn apply(&mut self, delta: WalletLogDelta, viewing: &ViewingKeys) {
+        let master_public_key = viewing.scan_keys().master_public_key;
+        let nullifying_key = viewing.nullifying_key();
         for utxo in delta.utxos {
+            if Note::npk_for(master_public_key, utxo.note.random) != utxo.note.npk {
+                continue;
+            }
             let known = self
                 .utxos
                 .iter()
@@ -217,7 +228,7 @@ pub async fn scan<P: Provider>(
         };
         if !logs.is_empty() {
             let delta = decode_with_timestamps(provider, &logs, account).await?;
-            state.apply(delta, account.viewing().nullifying_key());
+            state.apply(delta, account.viewing());
             state.note_log_block(logs.iter().filter_map(|l| l.block_number).max());
         }
         state.next_block = to + 1;
@@ -442,7 +453,7 @@ pub(crate) mod tests {
             &me,
         )
         .unwrap();
-        state.apply(delta, me.viewing().nullifying_key());
+        state.apply(delta, me.viewing());
 
         let b = balances(&state);
         assert_eq!(b.tokens.len(), 1);
@@ -451,7 +462,7 @@ pub(crate) mod tests {
 
         // Replaying the same log doesn't double count.
         let again = decode(&[shield], &HashMap::from([(5_800_000, 1)]), &me).unwrap();
-        state.apply(again, me.viewing().nullifying_key());
+        state.apply(again, me.viewing());
         assert_eq!(balances(&state).tokens[0].amount, U256::from(1_000));
 
         let nullifier = state.utxos()[0]
@@ -463,7 +474,7 @@ pub(crate) mod tests {
             &me,
         )
         .unwrap();
-        state.apply(spend, me.viewing().nullifying_key());
+        state.apply(spend, me.viewing());
         assert!(state.utxos()[0].is_spent());
         assert!(balances(&state).tokens.is_empty());
     }
@@ -479,8 +490,55 @@ pub(crate) mod tests {
             &me,
         )
         .unwrap();
-        state.apply(delta, me.viewing().nullifying_key());
+        state.apply(delta, me.viewing());
         assert!(state.utxos().is_empty());
+    }
+
+    /// Random encrypted to us, `npk` from another wallet: upstream decodes
+    /// it as ours, `apply` must not count it.
+    #[test]
+    fn drops_shield_note_with_foreign_npk() {
+        let me = account(0);
+        let other = account(1);
+        let mine = |value| {
+            let keys = me.viewing().scan_keys();
+            build_shield_request(
+                keys.master_public_key,
+                &keys.viewing_public_key,
+                TokenData::erc20(TOKEN),
+                U120::from(value),
+                &[7u8; 32],
+            )
+            .unwrap()
+        };
+        let mut forged = mine(900);
+        let foreign = other.viewing().scan_keys();
+        forged.preimage.npk = build_shield_request(
+            foreign.master_public_key,
+            &foreign.viewing_public_key,
+            TokenData::erc20(TOKEN),
+            U120::from(900u64),
+            &[7u8; 32],
+        )
+        .unwrap()
+        .preimage
+        .npk;
+        let real = mine(10);
+        let event = Shield {
+            treeNumber: U256::ZERO,
+            startPosition: U256::ZERO,
+            commitments: vec![forged.preimage, real.preimage],
+            shieldCiphertext: vec![forged.ciphertext, real.ciphertext],
+            fees: vec![U256::ZERO; 2],
+        };
+        let log = rpc_log(event.encode_log_data(), 5_800_000);
+        let delta = decode(&[log], &HashMap::from([(5_800_000, 1)]), &me).unwrap();
+        assert_eq!(delta.utxos.len(), 2, "upstream accepts the forged note");
+
+        let mut state = sepolia_state();
+        state.apply(delta, me.viewing());
+        assert_eq!(state.utxos().len(), 1);
+        assert_eq!(balances(&state).tokens[0].amount, U256::from(10));
     }
 
     #[test]
@@ -496,7 +554,7 @@ pub(crate) mod tests {
             &me,
         )
         .unwrap();
-        state.apply(delta, me.viewing().nullifying_key());
+        state.apply(delta, me.viewing());
         assert_eq!(balances(&state).tokens[0].amount, U256::from(42));
     }
 
