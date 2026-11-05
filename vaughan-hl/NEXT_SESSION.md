@@ -1,72 +1,68 @@
-# Vaughan-HL — Session Notes & Tomorrow's Execution Plan
+# Vaughan & Vaughan-HL — Session Notes & Tomorrow's Execution Plan
 
-**Date:** 2026-10-31 (Session Wrap-up)  
+**Date:** 2026-11-05 (Session Wrap-up)  
+**Branch:** `railgun/phase-0` in `Vaughan-CLI` (working tree clean, ready to push)  
 **Active Account:** `0xfe4770adcedcbfe2b73bdb69f83321f1f79bfd63` (`...fd63`)  
 **Network:** Hyperliquid Mainnet (Arbitrum One Settled)  
-**Active Keystore:** `vaughan-hl/data/hl_agent_keystore.json` (Agent `0x5b98...24b2`)  
+**Active Keystore:** `vaughan-hl/data/hl_agent_keystore.json` (Agent `0x5b98...24b2`, valid on HL until 2027)  
 **Binaries Installed:** `~/.cargo/bin/vaughan` and `~/.cargo/bin/vaughan-hl`
 
 ---
 
 ## 1. Quick Summary of What Was Done Today
 
-1. **Hyperliquid 3-Order Atomic Bracket Fix**:
-   - `vaughan-hl/src/engine.rs`: Enforced strict 3-order cap (`[entry, sl, tp]`) for Hyperliquid exchange atomic grouping `normalTpsl`. T1 partial exit price is calculated for telemetry, while the protective OCO stop-loss and take-profit maintain 100% protocol compliance.
-   - Added unit test `engine::tests::normal_tpsl_bracket_has_exactly_three_orders_even_with_t1`. All 45 tests pass.
-
-2. **Async Non-Blocking Agent Registration**:
-   - `vaughan-tui/src/app.rs`: Eliminated `handle.block_on(...)` UI thread freeze during agent registration. Now runs inside an asynchronous background Tokio task with progress status reporting.
-
-3. **Unified Keystore Password Policy**:
-   - `vaughan-cli/src/main.rs`: Aligned `run_hl_connect` with Vaughan wallet password policy and prompt.
-
-4. **Dual Balance Detection (Perps Margin + Spot Balance)**:
-   - Hyperliquid separates funds into **Perpetuals Margin** (for futures trading) and **Spot Balances**.
-   - Added `fetch_spot_balance` querying `spotClearinghouseState` alongside `clearinghouseState`.
-   - Updated `HlTuiApp` to track both `live_equity_usd` and `live_spot_balance_usd`.
-   - TUI header and strategy card now explicitly display:
-     `● Hyper Balance: $0.00 Perps ($25.00 in Spot) [MAINNET (Arbitrum Settled)]`
-   - Added an automatic guidance notice and arm safety lock preventing live orders when perps margin is $0.
-
-5. **Release Binaries Compiled & Installed**:
-   - Optimized release binaries compiled and installed to `~/.cargo/bin/vaughan` and `~/.cargo/bin/vaughan-hl`.
+1. **Architecture Consolidation (Monorepo)**:
+   - Added `vaughan-hl` as a member crate of `Vaughan-CLI` Cargo workspace.
+   - Removed nested `[workspace]` in `vaughan-hl/Cargo.toml`.
+   - Single-command builds (`cargo build --release`) now compile all tools together into `target/release/`.
+2. **Machine Path Sanitization**:
+   - Cleaned all hardcoded `/home/r4/Desktop/...` and machine paths across `vaughan-tui/src/app.rs`, `vaughan-core/tests/lp_requeue_manual.rs`, `vaughan-hl/src/main.rs`, and `vaughan-hl/src/tui.rs`.
+   - Replaced with dynamic discovery (`dirs::data_local_dir()`, `dirs::home_dir()`, compile-time manifest, and relative resolution).
+3. **RAILGUN Phase 2 & Phase 3 Foundations Committed**:
+   - Committed native ETH wrap-and-shield via RelayAdapt multicall (`vaughan-railgun/src/shield.rs`, `verify.rs`, `deployment.rs`, `vaughan-tui/src/views/shield_flow.rs`, `vaughan-core/src/core/humanizer/railgun.rs`).
+   - Committed Phase 3 unshield foundations (`transact.rs` and `unshield_flow.rs`).
+   - Commit: `ea65b0e`.
+4. **`vaughan-hl` Workspace Integration Committed**:
+   - Committed `vaughan-hl` crate integration, trader shortcut `1` in `vaughan-tui`, and clean process launcher.
+   - Commit: `6ac61c1`.
+5. **Full Quality Verification Passed**:
+   - `cargo test --workspace`: **100% passing**.
+   - `cargo clippy --workspace --all-targets -- -D warnings`: **0 warnings**.
+   - `cargo fmt --check`: **100% clean**.
+6. **Standalone Companion Repo Updated**:
+   - Synced all strategies, telemetry recorders, and loss cool-offs to `/home/r4/Desktop/vaughan-hl`.
+   - Tests and format verified, committed as `97b688f`.
 
 ---
 
-## 2. Tomorrow's 3-Minute Action Plan
+## 2. Tomorrow's Execution Plan
 
-When you sit down tomorrow, here is the exact 3-step sequence:
+When you sit down tomorrow, here is the exact recommended checklist:
 
-### Step 1: Move $25 from Spot $\rightarrow$ Perps on Hyperliquid (1 minute)
-Because Hyperliquid security rules prevent agent keys from transferring funds, this 1-click move is done via the web UI:
-1. Open [app.hyperliquid.xyz](https://app.hyperliquid.xyz) with your wallet (`0xfe47...fd63`).
-2. Go to **Portfolio** $\rightarrow$ **Spot** tab (or click **Transfer** near your account balance).
-3. Select **Spot $\rightarrow$ Perps**, enter **$25.00**, and click **Transfer**.
-   *(Instant and 100% gas-free).*
-
-### Step 2: Open Vaughan (30 seconds)
-Launch Vaughan in your terminal:
+### Step 1: Push Repositories to GitHub (2 minutes)
+Both repositories are fully committed and tested with 0 uncommitted changes:
 ```bash
-vaughan
-```
-- Unlock your wallet with your Vaughan password.
-- Press **`1`** from any screen to navigate directly to the **Hyperliquid Auto-Trader**.
-*(Alternatively, run `vaughan hl` directly).*
+# Push Vaughan-CLI feature branch
+cd /home/r4/Desktop/Vaughan-CLI
+git push -u origin railgun/phase-0
 
-### Step 3: Verify & Arm Live Trading (30 seconds)
-1. Check the header balance:
-   ```text
-   ● Hyper Balance: $25.00 Perps [MAINNET (Arbitrum Settled)]
-   ```
-2. Select your desired strategy using the `Up` / `Down` arrows (e.g., `oil_15m_kst_adx_4r` or `hype_15m_kst_trend_4r`).
-3. Press **`[Spacebar]`** to arm live trading:
-   - A masked password prompt will ask for your Vaughan password.
-   - Enter your password to unlock the agent key into memory.
-   - The status bar will turn GREEN:
-     ```text
-     ● LIVE ARMED 'oil_15m_kst_adx_4r.toml' · allocation $25 · Space again to stop
-     ```
-4. Vaughan will now automatically monitor closed candles, calculate indicators (KST, RSI, ADX, ATR), and submit exchange-bracketed orders.
+# Push standalone companion repo (optional)
+cd /home/r4/Desktop/vaughan-hl
+git push origin main
+```
+
+### Step 2: Open PR or Merge `railgun/phase-0` into `main`
+- Review the 15 commits on `railgun/phase-0` ahead of `origin/main`.
+- Merge or open a PR as desired.
+
+### Step 3: Hyperliquid Live Trading Check (Optional)
+- Launch Vaughan: `vaughan`
+- Unlock wallet and press `1` to open the Auto-Trader dashboard.
+- The $25 account balance and authorized agent (`0x5b98...24b2`) are live.
+- Highlight `test fast` or `t10 combo` and press `Space` to arm live trading if desired.
+
+### Step 4: Sepolia RAILGUN Shield Gate 2 Evidence (Optional)
+- From Vaughan Private panel (`s`), execute test shield of Sepolia ETH/WETH to verify live on-chain note appearance.
 
 ---
 
@@ -79,12 +75,13 @@ vaughan
 | `Esc` | Returns from Hyperliquid to Vaughan Dashboard |
 | `Space` | Toggle Arm / Disarm live trading loop |
 | `w` | Open Hyperliquid web platform in default browser |
-| `Up` / `Down` | Browse through profitable verified strategies |
+| `c` / `y` | Copy agent trading key to clipboard |
+| `Up` / `Down` | Browse through verified strategies |
 | `q` | Quit application safely |
 
 ```bash
-# Verify test suite:
-cargo test -p vaughan-hl
+# Run full workspace test suite:
+cargo test --workspace
 
 # Run standalone Hyperliquid auto-trader:
 vaughan-hl

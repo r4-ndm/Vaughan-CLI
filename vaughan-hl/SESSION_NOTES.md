@@ -1,3 +1,30 @@
+# Session Notes — 2026-11-05
+
+## Where things stand
+
+- **Git Status**: 
+  - `Vaughan-CLI`: Clean working tree on `railgun/phase-0`. All commits staged and committed (`ea65b0e` for RAILGUN RelayAdapt + unshield, `6ac61c1` for `vaughan-hl` monorepo integration).
+  - `vaughan-hl` (standalone at `~/Desktop/vaughan-hl`): Clean working tree on `main`, ahead of `origin/main` by 1 commit (`97b688f`).
+- **Workspace Architecture**: `vaughan-hl` is now an official workspace member crate of `Vaughan-CLI`. `cargo build --release` compiles all tools in one unified target directory.
+- **Test Suite**: 100% tests passing across all crates (`cargo test --workspace` and `cargo test -p vaughan-hl` 60/60).
+- **Linter & Formatting**: Zero Clippy warnings (`cargo clippy --workspace --all-targets -- -D warnings`), 100% rustfmt clean.
+- **Account & Agent**: Mainnet unified account (~$25.46 USDC) with valid authorized agent `0x5b98...24b2`.
+
+## Changes this session (Monorepo Integration & Repo Hygiene)
+1. **Workspace Integration**:
+   - Added `vaughan-hl` to `workspace.members` and `[workspace.dependencies]` in `Vaughan-CLI/Cargo.toml`.
+   - Removed nested `[workspace]` in `vaughan-hl/Cargo.toml`.
+   - Unified build pipeline so `vaughan-tui` seamlessly launches `vaughan-hl` via the `1` (Trader) shortcut.
+2. **Machine Path Sanitization**:
+   - Removed all hardcoded `/home/r4/Desktop/...` strings across `vaughan-tui/src/app.rs`, `vaughan-core/tests/lp_requeue_manual.rs`, `vaughan-hl/src/main.rs`, and `vaughan-hl/src/tui.rs`.
+   - Replaced with portable `dirs::data_local_dir()`, `dirs::home_dir()`, `env!("CARGO_MANIFEST_DIR")`, and sibling binary discovery.
+3. **RAILGUN Phase 2 & Phase 3 Foundations**:
+   - Committed native ETH wrap-and-shield via RelayAdapt multicall and Phase 3 unshield foundations (`ea65b0e`).
+4. **Standalone Sync**:
+   - Mirrored all strategies, telemetry loggers, and loss cool-offs to `/home/r4/Desktop/vaughan-hl` and committed (`97b688f`).
+
+---
+
 # Session Notes — 2026-11-04
 
 ## Where things stand
