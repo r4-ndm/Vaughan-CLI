@@ -423,6 +423,8 @@ pub struct App {
     trezor_sign: Option<TrezorSignSession>,
     /// F3 rename buffer (`→` while Account focused); Enter commits.
     f3_rename: Option<crate::input::Input>,
+    /// Launch the Hyperliquid Auto-Trader dashboard (suspends TUI).
+    pub needs_launch_auto_trader: bool,
 }
 
 /// Host-side phases while a Trezor signs (Send / Keys share the PIN bridge).
@@ -589,6 +591,7 @@ impl App {
             trezor_passphrase: None,
             trezor_sign: None,
             f3_rename: None,
+            needs_launch_auto_trader: false,
         };
         app.navigate(screen);
         Ok(app)
@@ -868,6 +871,33 @@ impl App {
             if let View::Unlock(v) = &mut self.view {
                 v.set_tick(self.tick);
             }
+            if self.needs_launch_auto_trader {
+                self.needs_launch_auto_trader = false;
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = crossterm::execute!(
+                    terminal.backend_mut(),
+                    crossterm::terminal::LeaveAlternateScreen
+                );
+                let _ = terminal.show_cursor();
+
+                let mut cmd = std::process::Command::new(find_vaughan_hl_bin());
+                cmd.env("VAUGHAN_PARENT_TUI", "1");
+                for candidate in ["vaughan-hl", "."] {
+                    let p = std::path::Path::new(candidate);
+                    if p.join("strategies").is_dir() {
+                        cmd.current_dir(p);
+                        break;
+                    }
+                }
+                let _ = cmd.status();
+
+                let _ = crossterm::terminal::enable_raw_mode();
+                let _ = crossterm::execute!(
+                    terminal.backend_mut(),
+                    crossterm::terminal::EnterAlternateScreen
+                );
+                let _ = terminal.clear();
+            }
             terminal.draw(|frame| crate::views::render(frame, self))?;
             if event::poll(Duration::from_millis(80))? {
                 if let Event::Key(key) = event::read()? {
@@ -1076,6 +1106,12 @@ impl App {
             GlobalAction::AssistBurn => {
                 if self.wallet().is_unlocked() {
                     self.begin_assist_burn();
+                }
+                return;
+            }
+            GlobalAction::LaunchAutoTrader => {
+                if self.wallet().is_unlocked() {
+                    self.needs_launch_auto_trader = true;
                 }
                 return;
             }
@@ -4860,6 +4896,8 @@ enum GlobalAction {
     CopyAddress,
     /// Prefill Home send for ≥13 WZRD burn unlock (footer `w` / Settings `w`).
     AssistBurn,
+    /// Launch the Hyperliquid Auto-Trader dashboard.
+    LaunchAutoTrader,
 }
 
 /// When a view swallows a footer chip key without acting on it, retry globally.
@@ -4903,6 +4941,7 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
 
     // Footer shortcuts — available from every unlocked view when idle.
     match key.code {
+        KeyCode::Char('1') => GlobalAction::LaunchAutoTrader,
         KeyCode::Char(c) => match c.to_ascii_lowercase() {
             's' => GlobalAction::Navigate(Screen::Dashboard),
             'v' => GlobalAction::Navigate(Screen::Receive),
@@ -4983,6 +5022,38 @@ fn same_f2_asset(a: &vaughan_core::chains::Balance, b: &vaughan_core::chains::Ba
 /// the same site (MetaMask-style) instead of being refused.
 fn joins_pending_connect(pending: &ApprovalKind, site: &str) -> bool {
     matches!(pending, ApprovalKind::Connect { site: open } if open == site)
+}
+
+/// Locate the `vaughan-hl` binary: sibling of current exe, ~/.cargo/bin, ~/.local/bin, workspace target, or PATH.
+fn find_vaughan_hl_bin() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("vaughan-hl");
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        for rel in [".local/bin/vaughan-hl", ".cargo/bin/vaughan-hl"] {
+            let p = home.join(rel);
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    for candidate in [
+        "target/release/vaughan-hl",
+        "target/debug/vaughan-hl",
+        "vaughan-hl/target/release/vaughan-hl",
+        "vaughan-hl/target/debug/vaughan-hl",
+    ] {
+        let p = std::path::PathBuf::from(candidate);
+        if p.is_file() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("vaughan-hl")
 }
 
 #[cfg(test)]
@@ -5084,13 +5155,17 @@ mod tests {
 
     #[test]
     fn other_keys_are_inert() {
-        // `c` is Hardware (footer); digits and already-handled outcomes stay inert.
+        // `c` is Hardware (footer); `1` is AutoTrader; other digits and already-handled outcomes stay inert.
         assert_eq!(
             global_action(press('c'), &KeyOutcome::NotHandled),
             GlobalAction::NavigateHardware
         );
         assert_eq!(
             global_action(press('1'), &KeyOutcome::NotHandled),
+            GlobalAction::LaunchAutoTrader
+        );
+        assert_eq!(
+            global_action(press('2'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
         assert_eq!(

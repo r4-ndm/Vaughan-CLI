@@ -1,0 +1,59 @@
+[package]
+name = "vaughan-hl"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vaughan Team"]
+license = "MIT OR Apache-2.0"
+description = "Modular Hyperliquid strategy lab, R:R backtester, L1 wire signer, and policy-bound execution engine for Vaughan-CLI"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "vaughan-hl"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli", "tui"]
+# Standalone CLI binary dependencies (`clap`, `anyhow`, `rpassword`, `tracing-subscriber`).
+# Omitted when `vaughan-hl` is linked as a library into `Vaughan-CLI`.
+cli = ["dep:anyhow", "dep:clap", "dep:rpassword", "dep:tracing-subscriber", "tokio/macros", "tokio/rt-multi-thread", "tokio/signal"]
+# Interactive Ratatui terminal dashboard (standalone `vaughan-hl` or embeddable in `vaughan-tui`).
+tui = ["dep:ratatui", "dep:crossterm"]
+
+[dependencies]
+# Core & CLI (matches Vaughan-CLI workspace allowlist)
+anyhow = { version = "1", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+# TUI (matches Vaughan-CLI workspace allowlist; gated by `tui` feature, no termwiz/palette bloat)
+crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+
+# Security & EIP-712 / L1 Signing (matches Vaughan-CLI workspace allowlist; zero unapproved crates)
+alloy = { version = "2", default-features = false, features = [
+    "std",
+    "signers",
+    "signer-local",
+    "sol-types",
+] }
+alloy-dyn-abi = { version = "1.6", features = ["eip712"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+hex = "0.4"
+rand = "0.8"
+rpassword = { version = "7", optional = true }
+secrecy = "0.8"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"

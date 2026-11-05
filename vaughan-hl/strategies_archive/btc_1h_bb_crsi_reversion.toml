@@ -1,0 +1,40 @@
+name = "BTC 1h — Bollinger Extreme + ConnorsRSI(18/82) + Wilder RSI(36/64) (1:2.5 R:R)"
+
+[market]
+coin = "BTC"
+interval = "1h"
+leverage = 10
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 2.0
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+connors_rsi = { rsi_period = 3, streak_period = 2, rank_period = 100 }
+bollinger = { period = 20, std_dev = 2.0 }
+atr = { period = 14 }
+
+# Long: Price closes below lower Bollinger Band while both ConnorsRSI (<18) and Wilder RSI (<36) confirm exhaustion.
+[entry.long]
+all = [
+    "close < bb_lower",
+    "connors_rsi < 18.0",
+    "rsi < 36.0",
+]
+
+# Short: Price closes above upper Bollinger Band while both ConnorsRSI (>82) and Wilder RSI (>64) confirm exhaustion.
+[entry.short]
+all = [
+    "close > bb_upper",
+    "connors_rsi > 82.0",
+    "rsi > 64.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 3.0, min_stop_bps = 85, max_stop_bps = 380 }
+take_profit_rr = 2.5
+cooldown_bars = 2

@@ -1,0 +1,42 @@
+name = "kate eth"
+
+[market]
+coin = "ETH"
+interval = "15m"
+leverage = 10
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 2.0
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+connors_rsi = { rsi_period = 3, streak_period = 2, rank_period = 100 }
+atr = { period = 14 }
+
+# Higher-timeframe 4h trend bias filter
+[indicators.htf]
+interval = "4h"
+stoch_rsi = { rsi_period = 14, stoch_period = 14, k_smooth = 3, d_smooth = 3 }
+
+[entry.long]
+all = [
+    "connors_rsi < 20.0",
+    "htf_stoch_k > htf_stoch_d",
+    "rsi < 40.0",
+]
+
+[entry.short]
+all = [
+    "connors_rsi > 80.0",
+    "htf_stoch_k < htf_stoch_d",
+    "rsi > 60.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 3.0, min_stop_bps = 75, max_stop_bps = 380 }
+take_profit_rr = 3.5
+cooldown_bars = 2

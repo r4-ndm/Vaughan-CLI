@@ -15,7 +15,9 @@ use vaughan_core::core::{
 #[tokio::test]
 #[ignore = "manual dev helper requiring local profile and unlocked session"]
 async fn requeue_latest_lp_brew_job() {
-    let prof = PathBuf::from("/home/r4/.local/share/vaughan-cli");
+    let prof = dirs::data_local_dir()
+        .map(|d| d.join("vaughan-cli"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/vaughan-cli"));
     let job_id = "lp_93639171";
     let job = lp_deploy_job_load(&prof, job_id).expect("load job");
     let params = V3LpDeployParams::try_from(&job.params).expect("params");

@@ -1,0 +1,36 @@
+name = "BTC 4h — EMA200 Trend Following (TSMOM proxy, ride until trend breaks)"
+
+[market]
+coin = "BTC"
+interval = "4h"
+leverage = 5
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 1.0
+initial_equity_usd = 1000.0
+
+[indicators]
+ema_trend = { period = 200 }
+atr = { period = 14 }
+
+# Time-series momentum: go with the direction of the long-term trend.
+[entry.long]
+all = [
+    "close crosses_above ema_trend",
+]
+
+[entry.short]
+all = [
+    "close crosses_below ema_trend",
+]
+
+[exit]
+# Wide disaster stop; the trend-break exit does the work.
+stop_loss = { kind = "atr", multiplier = 3.0, min_stop_bps = 100, max_stop_bps = 1000 }
+take_profit_rr = 10.0
+cooldown_bars = 1
+long_exit_any = ["close crosses_below ema_trend"]
+short_exit_any = ["close crosses_above ema_trend"]

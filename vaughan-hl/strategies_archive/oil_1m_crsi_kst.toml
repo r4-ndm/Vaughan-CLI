@@ -1,0 +1,50 @@
+name = "WTI Crude Oil (xyz:CL) 1m — Connors RSI 77/23 + StochRSI filter"
+
+[market]
+coin = "xyz:CL"
+interval = "1m"
+leverage = 5
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 1.0
+initial_equity_usd = 1000.0
+
+# UK local time (BST/GMT handled from bar timestamps). Entries are only taken
+# on bars that OPEN inside this window; the end is exclusive.
+[session]
+start = "07:00"
+end = "13:00"
+
+[indicators]
+connors_rsi = { rsi_period = 3, streak_period = 2, rank_period = 100 }
+stoch_rsi = { rsi_period = 14, stoch_period = 14, k_smooth = 3, d_smooth = 3 }
+atr = { period = 14 }
+
+[entry]
+# Per trading window (UK calendar day): hard cap on entries, and stop trading
+# the rest of the day once this many losing trades have closed.
+max_trades_per_window = 3
+max_losses_per_window = 2
+
+# Short: overbought composite RSI while StochRSI is overbought (> 80).
+[entry.short]
+all = [
+    "connors_rsi > 77.0",
+    "stoch_k > 80.0",
+]
+
+# Long: mirror image — oversold composite RSI while StochRSI is oversold (< 20).
+[entry.long]
+all = [
+    "connors_rsi < 23.0",
+    "stoch_k < 20.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 2.0, min_stop_bps = 25, max_stop_bps = 250 }
+t1 = { rr = 1.5, close_pct = 50.0, move_sl_to_breakeven = true }
+take_profit_rr = 3.0
+cooldown_bars = 2

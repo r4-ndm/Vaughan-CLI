@@ -1,0 +1,47 @@
+name = "t13 combo"
+
+[market]
+coin = "xyz:CL"
+interval = "15m"
+leverage = 20
+is_cross = false
+direction = "both"
+additional_coins = [
+    "BTC", "ETH", "SOL", "HYPE",
+    "xyz:GOLD", "xyz:SILVER", "xyz:COPPER", "xyz:NATGAS", "xyz:BRENTOIL",
+    "xyz:NVDA", "xyz:TSLA", "xyz:SP500"
+]
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 2.0
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+kst = { r1 = 10, r2 = 15, r3 = 20, r4 = 30, s1 = 10, s2 = 10, s3 = 10, s4 = 15, signal = 9 }
+adx = { period = 14 }
+atr = { period = 14 }
+
+[entry.long]
+all = [
+    "kst_line crosses_above kst_signal",
+    "rsi > 30.0",
+    "rsi < 60.0",
+    "adx > 18.0",
+]
+
+[entry.short]
+all = [
+    "kst_line crosses_below kst_signal",
+    "rsi < 70.0",
+    "rsi > 40.0",
+    "adx > 18.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 2.0, min_stop_bps = 60, max_stop_bps = 280 }
+# Bank 50% profit at 1.0R and move stop to breakeven (ensures high win rate)
+t1 = { rr = 1.0, close_pct = 50.0, move_sl_to_breakeven = true }
+take_profit_rr = 2.5
+cooldown_bars = 2

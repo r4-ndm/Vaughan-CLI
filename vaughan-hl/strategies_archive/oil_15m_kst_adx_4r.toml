@@ -1,0 +1,43 @@
+name = "WTI Crude Oil (xyz:CL) 15m — KST Momentum Cross + RSI(30..60) + ADX>18 (1:4.0 R:R)"
+
+[market]
+coin = "xyz:CL"
+interval = "15m"
+leverage = 10
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 2.0
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+kst = { r1 = 10, r2 = 15, r3 = 20, r4 = 30, s1 = 10, s2 = 10, s3 = 10, s4 = 15, signal = 9 }
+adx = { period = 14 }
+atr = { period = 14 }
+
+# Long: KST crosses bullish while RSI has room to run (30..60) and ADX confirms trend strength (>18).
+[entry.long]
+all = [
+    "kst_line crosses_above kst_signal",
+    "rsi > 30.0",
+    "rsi < 60.0",
+    "adx > 18.0",
+]
+
+# Short: KST crosses bearish while RSI has room to drop (40..70) and ADX confirms trend strength (>18).
+[entry.short]
+all = [
+    "kst_line crosses_below kst_signal",
+    "rsi < 70.0",
+    "rsi > 40.0",
+    "adx > 18.0",
+]
+
+[exit]
+# min_stop_bps = 75 keeps round-trip HL fees + slippage (~10 bps) under ~13% of 1R.
+stop_loss = { kind = "atr", multiplier = 2.5, min_stop_bps = 75, max_stop_bps = 380 }
+take_profit_rr = 4.0
+cooldown_bars = 2

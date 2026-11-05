@@ -1,0 +1,36 @@
+name = "HYPE 1h — Bollinger Band Extreme + Wilder RSI(35/65) + T1(1.5R) & 3.5R Runner"
+
+[market]
+coin = "HYPE"
+interval = "1h"
+leverage = 10
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 2.0
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+bollinger = { period = 20, std_dev = 2.0 }
+atr = { period = 14 }
+
+[entry.long]
+all = [
+    "close < bb_lower",
+    "rsi < 35.0",
+]
+
+[entry.short]
+all = [
+    "close > bb_upper",
+    "rsi > 65.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 2.5, min_stop_bps = 110, max_stop_bps = 380 }
+t1 = { rr = 1.5, close_pct = 50.0, move_sl_to_breakeven = true }
+take_profit_rr = 3.5
+cooldown_bars = 2

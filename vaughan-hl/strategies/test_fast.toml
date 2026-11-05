@@ -1,0 +1,56 @@
+name = "test fast"
+
+[market]
+coin = "BTC"
+interval = "1m"
+leverage = 5
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "fixed_usd"
+fixed_usd = 15.0
+initial_equity_usd = 25.0
+
+[indicators]
+rsi = { period = 14, ma_period = 14, ma_type = "sma" }
+connors_rsi = { rsi_period = 2, streak_period = 4, rank_period = 100 }
+ema_trend = { period = 200 }
+adx = { period = 14 }
+atr = { period = 14 }
+
+# Higher-timeframe 30m trend filter: StochRSI on 30m bars
+[indicators.htf]
+interval = "30m"
+stoch_rsi = { rsi_period = 14, stoch_period = 14, k_smooth = 3, d_smooth = 3 }
+
+[entry]
+# Daily circuit breaker: stop after 1 loss in a day
+max_losses_per_window = 1
+
+[entry.long]
+all = [
+    "connors_rsi crosses_above 30.0",
+    "rsi > rsi_ma",
+    "close > ema_trend",
+    "adx > 18.0",
+    "plus_di > minus_di",
+    "htf_stoch_k > htf_stoch_d",
+    "htf_stoch_k < 55.0",
+]
+
+[entry.short]
+all = [
+    "connors_rsi crosses_below 70.0",
+    "rsi < rsi_ma",
+    "close < ema_trend",
+    "adx > 18.0",
+    "minus_di > plus_di",
+    "htf_stoch_k < htf_stoch_d",
+    "htf_stoch_k > 45.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 2.0, min_stop_bps = 35, max_stop_bps = 200 }
+take_profit_rr = 2.5
+cooldown_bars = 2

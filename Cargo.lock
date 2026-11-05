@@ -8459,6 +8459,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "vaughan-hl"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "alloy",
+ "alloy-dyn-abi",
+ "anyhow",
+ "argon2",
+ "clap",
+ "crossterm 0.28.1",
+ "hex",
+ "rand 0.8.7",
+ "ratatui",
+ "reqwest",
+ "rpassword",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "vaughan-mcp"
 version = "0.1.0"
 dependencies = [

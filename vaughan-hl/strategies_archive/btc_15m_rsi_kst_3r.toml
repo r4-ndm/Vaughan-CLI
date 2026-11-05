@@ -1,0 +1,44 @@
+name = "BTC 15m — KST Crossover + Wilder RSI + EMA(200) Trend + 1:3 R:R"
+
+[market]
+coin = "BTC"
+interval = "15m"
+leverage = 5
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 1.0            # 1% of account equity risked per 1R stop distance
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+# Martin Pring / TradingView standard Know Sure Thing (KST)
+kst = { r1 = 10, r2 = 15, r3 = 20, r4 = 30, s1 = 10, s2 = 10, s3 = 10, s4 = 15, signal = 9 }
+ema_fast = { period = 21 }
+ema_trend = { period = 200 }
+adx = { period = 14 }
+atr = { period = 14 }
+
+[entry.long]
+all = [
+    "kst_line crosses_above kst_signal",
+    "rsi > 30.0",
+    "rsi < 58.0",
+    "close > ema_trend",
+]
+
+[entry.short]
+all = [
+    "kst_line crosses_below kst_signal",
+    "rsi < 70.0",
+    "rsi > 42.0",
+    "close < ema_trend",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 2.0, min_stop_bps = 25, max_stop_bps = 250 }
+t1 = { rr = 1.5, close_pct = 50.0, move_sl_to_breakeven = true }
+take_profit_rr = 3.0
+cooldown_bars = 2

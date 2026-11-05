@@ -1,0 +1,11 @@
+/target
+/data/candles/*.json
+/data/charts/*.html
+*.env
+.env*
+agent-vault.json
+hl-state.json
+hl_agent_keystore.json*
+approve_agent.json
+revoke_agent.json
+
