@@ -33,9 +33,6 @@ use crate::app::KeyOutcome;
 use crate::input::{Input, InputAction};
 use crate::jobs::{UiJob, UiJobResult};
 
-/// Sepolia WETH, the token Gate 2 is exercised with.
-const SEPOLIA_WETH: &str = "0xfff9976782d46cc05630d1f6ebab18b2324d6b14";
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Token,
@@ -74,6 +71,7 @@ struct Prepared {
     decimals: u8,
     amount: U256,
     fee_bps: u16,
+    is_native: bool,
 }
 
 /// The shield flow's state; owned by the Receive view while open.
@@ -98,8 +96,8 @@ impl Default for ShieldFlow {
 
 impl ShieldFlow {
     pub fn new() -> Self {
-        let mut token = Input::new(false, "ERC-20 token address (0x…)");
-        token.set_value(SEPOLIA_WETH);
+        let mut token = Input::new(false, "ETH (native) or ERC-20 token address (0x…)");
+        token.set_value("ETH");
         Self {
             stage: Stage::Form,
             field: Field::Amount,
@@ -221,17 +219,33 @@ impl ShieldFlow {
         };
         let amount = |v| format!("{} {}", units(v, p.decimals), p.symbol);
         let percent = format!("{}.{:02}%", plan.fee_bps / 100, plan.fee_bps % 100);
+        let (token_label, receive_label) = if p.is_native {
+            (
+                format!("{} (native → wraps to WETH)", p.symbol),
+                format!("{} WETH (private)", units(plan.net, p.decimals)),
+            )
+        } else {
+            (
+                format!("{} {:#x}", p.symbol, p.token),
+                format!("{} (private)", amount(plan.net)),
+            )
+        };
+        let contract_label = if p.is_native {
+            format!("RAILGUN RelayAdapt {:#x}", plan.contract)
+        } else {
+            format!("RAILGUN {:#x}", plan.contract)
+        };
         let mut lines = vec![
             Line::from("Shield (last step)"),
-            Line::from(format!("Token:        {} {:#x}", p.symbol, p.token)),
+            Line::from(format!("Token:        {token_label}")),
             Line::from(format!("Amount:       {}", amount(plan.amount))),
             Line::from(format!(
                 "Protocol fee: {} ({percent}, kept by RAILGUN)",
                 amount(plan.fee)
             )),
-            Line::from(format!("You receive:  {} (private)", amount(plan.net))),
+            Line::from(format!("You receive:  {receive_label}")),
             Line::from(format!("Recipient:    {}", self.recipient)),
-            Line::from(format!("Contract:     RAILGUN {:#x}", plan.contract)),
+            Line::from(format!("Contract:     {contract_label}")),
             Line::from(format!("From:         {:#x}", p.owner)),
             Line::from("Network:      Ethereum Sepolia"),
             Line::from(format!("Gas fee:      {}", fee.total)),
@@ -243,7 +257,7 @@ impl ShieldFlow {
             native_symbol: &net.native_symbol,
             native_decimals: net.decimals,
         };
-        let h = humanize(&ctx, plan.contract, U256::ZERO, &plan.shield_calldata);
+        let h = humanize(&ctx, plan.contract, plan.value, &plan.shield_calldata);
         for w in h.warnings {
             lines.push(Line::from(format!("Safety:       {}", w.message())));
         }
@@ -291,10 +305,7 @@ impl ShieldFlow {
             Stage::SignKey => match key.code {
                 KeyCode::Esc => self.cancel("Cancelled — nothing was signed."),
                 KeyCode::Enter => match self.sign_and_plan(wallet) {
-                    Ok(job) => {
-                        self.stage = Stage::CheckingAllowance;
-                        KeyOutcome::StartJob(job)
-                    }
+                    Ok(job) => KeyOutcome::StartJob(job),
                     Err(e) => self.cancel(&e.user_message()),
                 },
                 _ => KeyOutcome::Consumed,
@@ -375,7 +386,7 @@ impl ShieldFlow {
     }
 
     /// After the `RAILGUN_SHIELD` approval: sign, derive the key, build and
-    /// verify the plan, then check the allowance.
+    /// verify the plan, then check allowance or proceed directly to gas estimation.
     fn sign_and_plan(&mut self, wallet: &WalletState) -> Result<UiJob, WalletError> {
         let p = self
             .prepared
@@ -384,10 +395,31 @@ impl ShieldFlow {
         let account = wallet.with_hd_seed(RailgunAccount::from_seed)??;
         let signature = Zeroizing::new(wallet.sign_message(SHIELD_MESSAGE.as_bytes())?);
         let key = ShieldKey::from_signature_hex(&signature)?;
-        let plan = shield::plan(&p.deployment, &account, &key, p.token, p.amount, p.fee_bps)?;
+        let plan = if p.is_native {
+            shield::plan_native(&p.deployment, &account, &key, p.amount, p.fee_bps)?
+        } else {
+            shield::plan(&p.deployment, &account, &key, p.token, p.amount, p.fee_bps)?
+        };
         self.recipient = shield_recipients(&account, &plan.shield_calldata)
             .map(|r| r.card_value())
             .unwrap_or_default();
+        if p.is_native {
+            let tx = EvmTransaction {
+                from: format!("{:#x}", p.owner),
+                to: format!("{:#x}", plan.contract),
+                value: plan.value.to_string(),
+                data: Some(format!("0x{}", hex::encode(&plan.shield_calldata))),
+                gas_limit: None,
+                gas_price: None,
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
+                nonce: None,
+                chain_id: p.deployment.chain_id,
+            };
+            self.plan = Some(plan);
+            self.stage = Stage::EstimatingShield;
+            return Ok(UiJob::EstimateEvmFee { tx });
+        }
         let job = UiJob::DexAllowanceCheck {
             rpc_url: p.rpc_url.clone(),
             token_in: format!("{:#x}", p.token),
@@ -395,20 +427,21 @@ impl ShieldFlow {
             router: format!("{:#x}", plan.contract),
             amount_in: plan.amount.to_string(),
         };
+        self.stage = Stage::CheckingAllowance;
         self.plan = Some(plan);
         Ok(job)
     }
 
     fn tx(&self, which: Tx) -> Option<EvmTransaction> {
         let (p, plan) = (self.prepared.as_ref()?, self.plan.as_ref()?);
-        let (to, data) = match which {
-            Tx::Approve => (p.token, &plan.approve_calldata),
-            Tx::Shield => (plan.contract, &plan.shield_calldata),
+        let (to, data, value) = match which {
+            Tx::Approve => (p.token, &plan.approve_calldata, "0".into()),
+            Tx::Shield => (plan.contract, &plan.shield_calldata, plan.value.to_string()),
         };
         Some(EvmTransaction {
             from: format!("{:#x}", p.owner),
             to: format!("{to:#x}"),
-            value: "0".into(),
+            value,
             data: Some(format!("0x{}", hex::encode(data))),
             gas_limit: None,
             gas_price: None,
@@ -471,15 +504,43 @@ fn prepare(
         .filter(|d| deployment::shield_enabled(d.chain_id))
         .ok_or_else(|| WalletError::Other("Shielding is Sepolia-only for now.".into()))?;
     let owner = parse_address(wallet.active_address()?)?;
-    let token = parse_address(token)?;
     let rpc_url = wallet
         .active_rpc_url_list()?
         .into_iter()
         .next()
         .ok_or_else(|| WalletError::NetworkError("no RPC configured".into()))?;
 
-    let token_hex = format!("{token:#x}");
-    let (symbol, _, decimals) = handle.block_on(wallet.resolve_erc20_metadata(&token_hex))?;
+    let trimmed = token.trim();
+    let is_native = trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("eth")
+        || trimmed.eq_ignore_ascii_case("native")
+        || trimmed == "0x0"
+        || trimmed == "0x0000000000000000000000000000000000000000";
+
+    let (token_addr, symbol, decimals, balance) = if is_native {
+        let weth = deployment::wrapped_base_token(net.chain_id).ok_or_else(|| {
+            WalletError::Other("no wrapped base token configured for this chain".into())
+        })?;
+        let symbol = net.native_symbol.clone();
+        let decimals = net.decimals;
+        let bal = handle.block_on(wallet.balance())?;
+        let balance: U256 = bal
+            .raw
+            .parse()
+            .map_err(|_| WalletError::Other("native balance".into()))?;
+        (weth, symbol, decimals, balance)
+    } else {
+        let token_addr = parse_address(trimmed)?;
+        let token_hex = format!("{token_addr:#x}");
+        let (symbol, _, decimals) = handle.block_on(wallet.resolve_erc20_metadata(&token_hex))?;
+        let bal = handle.block_on(wallet.token_balance(&token_hex))?;
+        let balance: U256 = bal
+            .raw
+            .parse()
+            .map_err(|_| WalletError::Other("token balance".into()))?;
+        (token_addr, symbol, decimals, balance)
+    };
+
     let amount: U256 = parse_native_amount(amount.trim(), decimals)?
         .parse()
         .map_err(|_| WalletError::InvalidAmount("amount".into()))?;
@@ -488,11 +549,6 @@ fn prepare(
             "amount must be above zero".into(),
         ));
     }
-    let balance: U256 = handle
-        .block_on(wallet.token_balance(&token_hex))?
-        .raw
-        .parse()
-        .map_err(|_| WalletError::Other("token balance".into()))?;
     if balance < amount {
         return Err(WalletError::InvalidAmount(format!(
             "only {} {symbol} in this wallet",
@@ -505,11 +561,12 @@ fn prepare(
         deployment,
         rpc_url,
         owner,
-        token,
+        token: token_addr,
         symbol,
         decimals,
         amount,
         fee_bps,
+        is_native,
     })
 }
 
@@ -534,9 +591,9 @@ mod tests {
     }
 
     #[test]
-    fn form_prefills_sepolia_weth() {
+    fn form_prefills_native_eth() {
         let flow = ShieldFlow::new();
-        assert!(text(&flow).contains(SEPOLIA_WETH));
+        assert!(text(&flow).contains("ETH"));
         assert!(matches!(flow.stage, Stage::Form));
     }
 
@@ -612,7 +669,7 @@ mod tests {
         let mut w = unlocked_wallet();
         let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
         let owner: Address = w.active_address().unwrap().parse().unwrap();
-        let token: Address = SEPOLIA_WETH.parse().unwrap();
+        let token: Address = deployment::SEPOLIA_WETH;
         let dep = deployment::for_chain(deployment::SEPOLIA_CHAIN_ID).unwrap();
         let mut flow = ShieldFlow::new();
         flow.prepared = Some(Prepared {
@@ -624,6 +681,7 @@ mod tests {
             decimals: 18,
             amount: U256::from(10u64).pow(U256::from(16u64)),
             fee_bps: 25,
+            is_native: false,
         });
         flow.stage = Stage::SignKey;
         assert!(text(&flow).contains("RAILGUN_SHIELD"));
@@ -678,6 +736,64 @@ mod tests {
 
         flow.apply_job_result(sent("0xshield"));
         assert!(matches!(flow.stage, Stage::Done(ref h) if h == "0xshield"));
+    }
+
+    /// Walk through native ETH wrap-and-shield via RelayAdapt: skips approve card.
+    #[test]
+    fn walks_native_eth_shield_cards() {
+        let mut w = unlocked_wallet();
+        let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
+        let owner: Address = w.active_address().unwrap().parse().unwrap();
+        let token: Address = deployment::SEPOLIA_WETH;
+        let dep = deployment::for_chain(deployment::SEPOLIA_CHAIN_ID).unwrap();
+        let mut flow = ShieldFlow::new();
+        let amount = U256::from(10u64).pow(U256::from(16u64));
+        flow.prepared = Some(Prepared {
+            deployment: dep,
+            rpc_url: "http://127.0.0.1:1".into(),
+            owner,
+            token,
+            symbol: "ETH".into(),
+            decimals: 18,
+            amount,
+            fee_bps: 25,
+            is_native: true,
+        });
+        flow.stage = Stage::SignKey;
+        assert!(text(&flow).contains("RAILGUN_SHIELD"));
+
+        // Confirming sign-key card directly schedules gas estimation for the shield tx
+        let outcome = flow.handle_key(enter(), &mut w, &handle);
+        assert!(matches!(
+            &outcome,
+            KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx })
+                if tx.to == format!("{:#x}", dep.relay_adapt_contract) && tx.value == amount.to_string()
+        ));
+        assert_eq!(flow.recipient, "your RAILGUN wallet (verified)");
+
+        // Receive fee estimate -> shield card shown
+        flow.apply_job_result(UiJobResult::Fee(Ok(fee())));
+        let card = flow
+            .lines(&w)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(card.contains("ETH (native → wraps to WETH)"), "{card}");
+        assert!(card.contains("Protocol fee: 0.000025 ETH (0.25%"), "{card}");
+        assert!(
+            card.contains("You receive:  0.009975 WETH (private)"),
+            "{card}"
+        );
+        assert!(card.contains("RAILGUN RelayAdapt"), "{card}");
+
+        // Hitting enter signs and sends to RelayAdapt with value = amount
+        assert!(sends_to(
+            flow.handle_key(enter(), &mut w, &handle),
+            dep.relay_adapt_contract
+        ));
+        flow.apply_job_result(sent("0xnative_shield"));
+        assert!(matches!(flow.stage, Stage::Done(_)));
     }
 
     #[test]

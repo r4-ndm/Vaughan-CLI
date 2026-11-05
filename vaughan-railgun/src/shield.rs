@@ -13,6 +13,7 @@
 use alloy::primitives::{keccak256, Address, U256};
 use alloy::providers::Provider;
 use alloy::sol;
+use alloy::sol_types::SolCall;
 use broadcaster_core::contracts::shield::{build_approve_calldata, build_shield_calldata};
 use vaughan_core::error::WalletError;
 use zeroize::Zeroizing;
@@ -31,6 +32,17 @@ sol! {
     #[sol(rpc)]
     interface IRailgunFees {
         function shieldFee() external view returns (uint120);
+    }
+
+    interface IRelayAdapt {
+        struct Call {
+            address to;
+            bytes data;
+            uint256 value;
+        }
+
+        function multicall(bool _requireSuccess, Call[] _calls) external payable;
+        function wrapBase(uint256 _amount) external;
     }
 }
 
@@ -78,22 +90,26 @@ pub fn fee_split(amount: U256, fee_bps: u16) -> (U256, U256) {
 /// Everything the approval cards and transactions need for one shield.
 #[derive(Debug, Clone)]
 pub struct ShieldPlan {
-    /// ERC-20 being shielded.
+    /// Token being shielded (for native ETH, the wrapped token e.g. WETH).
     pub token: Address,
-    /// RAILGUN contract: the `approve` spender and the shield `to`.
+    /// RAILGUN contract: the `approve` spender and shield `to` (proxy or RelayAdapt).
     pub contract: Address,
     /// Amount taken from the public wallet (smallest unit).
     pub amount: U256,
+    /// Native value sent with the EVM transaction (non-zero for native ETH).
+    pub value: U256,
     /// Shield fee in basis points.
     pub fee_bps: u16,
     /// Part of `amount` RAILGUN keeps as its fee.
     pub fee: U256,
     /// Part of `amount` that lands in the private balance.
     pub net: U256,
-    /// `approve(contract, amount)`: exact amount, never unlimited.
+    /// `approve(contract, amount)`: exact amount, never unlimited (empty for native ETH).
     pub approve_calldata: Vec<u8>,
-    /// `shield([request])` paying this wallet's 0zk address.
+    /// `shield([request])` or `multicall(...)` paying this wallet's 0zk address.
     pub shield_calldata: Vec<u8>,
+    /// True when shielding native base asset (e.g. ETH) via RelayAdapt.
+    pub is_native: bool,
 }
 
 /// Plan shielding `amount` of `token` into `account`'s private balance.
@@ -148,11 +164,96 @@ pub fn plan(
         token,
         contract: deployment.contract,
         amount,
+        value: U256::ZERO,
         fee_bps,
         fee,
         net,
         approve_calldata: build_approve_calldata(deployment.contract, amount),
         shield_calldata,
+        is_native: false,
+    })
+}
+
+/// Plan shielding native base token (ETH on Sepolia/Ethereum) by wrapping and
+/// shielding in one atomic transaction through RelayAdapt.
+///
+/// Returns a [`ShieldPlan`] targeting the chain's `relay_adapt_contract` with
+/// `value: amount` and no ERC-20 approval requirement.
+pub fn plan_native(
+    deployment: &RailgunDeployment,
+    account: &RailgunAccount,
+    key: &ShieldKey,
+    amount: U256,
+    fee_bps: u16,
+) -> Result<ShieldPlan, WalletError> {
+    if !deployment::shield_enabled(deployment.chain_id) {
+        return Err(WalletError::Other(
+            "Shielding is Sepolia-only for now".into(),
+        ));
+    }
+    let weth = deployment::wrapped_base_token(deployment.chain_id).ok_or_else(|| {
+        WalletError::Other("no wrapped base token configured for this chain".into())
+    })?;
+    if amount.is_zero() || amount.bit_len() > 120 {
+        return Err(WalletError::InvalidAmount(
+            "shield amount must be above zero and fit a RAILGUN note".into(),
+        ));
+    }
+    if u64::from(fee_bps) >= BASIS_POINTS {
+        return Err(WalletError::Other("RAILGUN shield fee out of range".into()));
+    }
+    let (fee, net) = fee_split(amount, fee_bps);
+    if net.is_zero() {
+        return Err(WalletError::InvalidAmount(
+            "amount is too small: the shield fee would take all of it".into(),
+        ));
+    }
+    let keys = account.viewing().scan_keys();
+    let inner_shield = build_shield_calldata(
+        keys.master_public_key,
+        &keys.viewing_public_key,
+        weth,
+        amount,
+        &key.0,
+    )
+    .map_err(|e| WalletError::Other(format!("RAILGUN shield request: {e}")))?;
+
+    let wrap_data = IRelayAdapt::wrapBaseCall { _amount: amount }.abi_encode();
+    let calls = vec![
+        IRelayAdapt::Call {
+            to: deployment.relay_adapt_contract,
+            data: wrap_data.into(),
+            value: U256::ZERO,
+        },
+        IRelayAdapt::Call {
+            to: deployment.relay_adapt_contract,
+            data: inner_shield.into(),
+            value: U256::ZERO,
+        },
+    ];
+    let multicall_data = IRelayAdapt::multicallCall {
+        _requireSuccess: true,
+        _calls: calls,
+    }
+    .abi_encode();
+
+    if !shield_recipients(account, &multicall_data).is_some_and(|r| r.all_ours()) {
+        return Err(WalletError::Other(
+            "built shield doesn't pay this RAILGUN wallet".into(),
+        ));
+    }
+
+    Ok(ShieldPlan {
+        token: weth,
+        contract: deployment.relay_adapt_contract,
+        amount,
+        value: amount,
+        fee_bps,
+        fee,
+        net,
+        approve_calldata: Vec::new(),
+        shield_calldata: multicall_data,
+        is_native: true,
     })
 }
 
@@ -238,6 +339,39 @@ mod tests {
             .is_some());
         let approve = approveCall::abi_decode(&p.approve_calldata).unwrap();
         assert_eq!((approve.spender, approve.amount), (p.contract, amount));
+    }
+
+    #[test]
+    fn plan_native_wraps_and_shields_via_relay_adapt() {
+        let me = account(0);
+        let amount = U256::from(10_000_000u64);
+        let p = plan_native(&sepolia(), &me, &test_key(), amount, 25).unwrap();
+        assert!(p.is_native);
+        assert_eq!(p.contract, sepolia().relay_adapt_contract);
+        assert_eq!(p.value, amount);
+        assert_eq!(p.token, crate::deployment::SEPOLIA_WETH);
+        assert!(p.approve_calldata.is_empty());
+        assert_eq!(p.fee, U256::from(25_000u64));
+        assert_eq!(p.net, U256::from(9_975_000u64));
+
+        // Multicall calldata must decode and verify self-recipient
+        assert!(crate::verify::is_shield_call(&p.shield_calldata));
+        assert!(shield_recipients(&me, &p.shield_calldata)
+            .unwrap()
+            .all_ours());
+        assert!(shield_recipients(&account(1), &p.shield_calldata)
+            .unwrap()
+            .warning()
+            .is_some());
+
+        // Verify structure of the multicall
+        let multi = IRelayAdapt::multicallCall::abi_decode(&p.shield_calldata).unwrap();
+        assert!(multi._requireSuccess);
+        assert_eq!(multi._calls.len(), 2);
+        assert_eq!(multi._calls[0].to, sepolia().relay_adapt_contract);
+        let wrap = IRelayAdapt::wrapBaseCall::abi_decode(&multi._calls[0].data).unwrap();
+        assert_eq!(wrap._amount, amount);
+        assert_eq!(multi._calls[1].to, sepolia().relay_adapt_contract);
     }
 
     #[test]

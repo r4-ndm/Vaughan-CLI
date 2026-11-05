@@ -7,11 +7,24 @@
 //! viewing key and its `npk` recomputed from our master public key.
 
 use alloy::primitives::U256;
+use alloy::sol;
 use alloy::sol_types::SolCall;
 use broadcaster_core::contracts::railgun::{shieldCall, ShieldRequest};
 use broadcaster_core::crypto::shared_key::shared_symmetric_key;
 use broadcaster_core::notes::{decrypt_shield_random, Note};
 use zeroize::Zeroize;
+
+sol! {
+    interface IRelayAdaptVerify {
+        struct Call {
+            address to;
+            bytes data;
+            uint256 value;
+        }
+
+        function multicall(bool _requireSuccess, Call[] _calls) external payable;
+    }
+}
 
 use crate::keys::RailgunAccount;
 
@@ -59,22 +72,58 @@ impl ShieldRecipients {
 /// True if `calldata` calls `shield` (selector only; cheap, no keys needed).
 #[must_use]
 pub fn is_shield_call(calldata: &[u8]) -> bool {
-    calldata.starts_with(&shieldCall::SELECTOR)
+    if calldata.starts_with(&shieldCall::SELECTOR) {
+        return true;
+    }
+    if calldata.starts_with(&IRelayAdaptVerify::multicallCall::SELECTOR) {
+        if let Ok(m) = IRelayAdaptVerify::multicallCall::abi_decode(calldata) {
+            return m
+                ._calls
+                .iter()
+                .any(|c| c.data.starts_with(&shieldCall::SELECTOR));
+        }
+    }
+    false
 }
 
 /// Which notes in `shield` calldata pay `account`; `None` if not a shield call.
+///
+/// Supports direct `shield` calls and RelayAdapt `multicall` wraps.
 #[must_use]
 pub fn shield_recipients(account: &RailgunAccount, calldata: &[u8]) -> Option<ShieldRecipients> {
-    let call = shieldCall::abi_decode(calldata).ok()?;
-    let ours = call
-        ._shieldRequests
-        .iter()
-        .filter(|r| pays(account, r))
-        .count();
-    Some(ShieldRecipients {
-        ours,
-        total: call._shieldRequests.len(),
-    })
+    if let Ok(call) = shieldCall::abi_decode(calldata) {
+        let ours = call
+            ._shieldRequests
+            .iter()
+            .filter(|r| pays(account, r))
+            .count();
+        return Some(ShieldRecipients {
+            ours,
+            total: call._shieldRequests.len(),
+        });
+    }
+
+    if let Ok(multi) = IRelayAdaptVerify::multicallCall::abi_decode(calldata) {
+        let mut total = 0;
+        let mut ours = 0;
+        let mut found = false;
+        for c in &multi._calls {
+            if let Ok(call) = shieldCall::abi_decode(&c.data) {
+                found = true;
+                total += call._shieldRequests.len();
+                ours += call
+                    ._shieldRequests
+                    .iter()
+                    .filter(|r| pays(account, r))
+                    .count();
+            }
+        }
+        if found {
+            return Some(ShieldRecipients { ours, total });
+        }
+    }
+
+    None
 }
 
 fn pays(account: &RailgunAccount, request: &ShieldRequest) -> bool {

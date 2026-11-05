@@ -28,6 +28,8 @@ pub mod scan;
 #[cfg(feature = "enabled")]
 pub mod shield;
 #[cfg(feature = "enabled")]
+pub mod transact;
+#[cfg(feature = "enabled")]
 pub mod verify;
 
 /// Whether this build includes RAILGUN support (the `enabled` feature).

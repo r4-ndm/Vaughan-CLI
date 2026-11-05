@@ -183,7 +183,7 @@ impl ShieldedPanel {
         let keys = if !deployment::is_supported(self.chain_id) {
             "Esc back"
         } else if deployment::shield_enabled(self.chain_id) {
-            "s shield · r rescan · x stop · z copy 0zk · Esc back"
+            "s shield · u unshield · r rescan · x stop · z copy 0zk · Esc back"
         } else if self.receive_address().is_some() {
             "r rescan · x stop · z copy 0zk · Esc back"
         } else if quick::is_available(self.chain_id) {

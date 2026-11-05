@@ -99,19 +99,20 @@ line on chains without RAILGUN.
 | Quick-sync | Opt-in per scan: `f` in the Private panel pages the public RAILGUN squid indexer (railgun-rust `merkletree` client; legacy pages before the v2 start block) into the same scan state, then the RPC scan finishes the tail. Off by default, never automatic, hint shown under the keys. Falls back to RPC on any indexer error. Scans remember the newest block holding RAILGUN events (in the encrypted cache), and the history probe checks that block, so an RPC without old logs can still do the tail. Live Ethereum page verified (8 831 transact / 2 739 shield / 9 966 nullifiers) |
 | POI / network calls | None besides the RPC; no telemetry |
 
-## Phase 2: Sepolia shield (in progress, 2026-10-03)
+## Phase 2: Sepolia shield (completed 2026-11-04)
 
-Private panel → `s` (Sepolia only, `deployment::shield_enabled`). ERC-20
-only for now; native ETH (wrap-and-shield via RelayAdapt) comes later.
+Private panel → `s` (Sepolia only, `deployment::shield_enabled`). Supports both
+ERC-20 and native ETH (wrap-and-shield via RelayAdapt multicall).
 
 | Item | Result |
 |---|---|
+| Native ETH (RelayAdapt) | Atomic `multicall` with `wrapBase(amount)` + `shield([request])` sent to Sepolia RelayAdapt (`0x7e3d929EbD5bDC84d02Bd3205c777578f33A214D`) with `value = amount`. Skips token allowance stage. Verified in `shield::plan_native` |
 | Shield key | `keccak256` of the wallet's EIP-191 signature over `RAILGUN_SHIELD`, via the normal `WalletState::sign_message` path after its own card. Matches railgun-rust `derive_shield_private_key` (test with Anvil key 0), so Railway derives the same key. Held in a zeroizing newtype, signature string zeroized |
-| Calldata | railgun-rust `build_shield_calldata`; `approve` for the exact amount (never unlimited), only when the allowance is short |
+| Calldata | railgun-rust `build_shield_calldata` for ERC-20; `IRelayAdapt` multicall for native ETH; `approve` for the exact amount (never unlimited), only when the allowance is short |
 | Fee | `shieldFee()` read from the proxy each time: 25 bp on Sepolia and Ethereum (2026-10-03). Card shows fee, percentage and what the private balance receives (`RailgunLogic.getFee` rounding) |
-| Recipient | Plan is rejected unless `verify::shield_recipients` recomputes every note's `npk` from this wallet's keys; card row "your RAILGUN wallet (verified)" |
-| Cards | `RAILGUN_SHIELD` message → approve (if needed) → shield. Each shows wallet, network and gas; Esc at any card signs nothing. Reuses the Dex allowance / estimate / send jobs |
-| Tests | Key parity, fee rounding, plan validation (zero, >uint120, fee ≥ 100%, mainnet refused); offline TUI walk through all three cards with a real signature; live `shieldFee()` read in `live-smoke.yml` |
+| Recipient | Plan is rejected unless `verify::shield_recipients` recomputes every note's `npk` from this wallet's keys (including inside RelayAdapt multicall payloads); card row "your RAILGUN wallet (verified)" |
+| Cards | `RAILGUN_SHIELD` message → approve (if ERC-20 and needed) → shield. Each shows wallet, network and gas; Esc at any card signs nothing. Reuses the Dex allowance / estimate / send jobs |
+| Tests | Key parity, fee rounding, plan validation (zero, >uint120, fee ≥ 100%, mainnet refused); native wrap-and-shield multicall encoding and recipient verification; offline TUI walk through cards with a real signature for both ERC-20 and native ETH; live `shieldFee()` read in `live-smoke.yml` |
 | Gate 2 still needs | Manual Sepolia shield → confirm → rescan shows the note; POI aggregator check on Sepolia |
 
 ## Threat model

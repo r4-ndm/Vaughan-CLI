@@ -52,8 +52,16 @@ sol! {
         struct ShieldCiphertext { bytes32[3] encryptedBundle; bytes32 shieldKey; }
         struct ShieldRequest { CommitmentPreimage preimage; ShieldCiphertext ciphertext; }
 
+        struct Call {
+            address to;
+            bytes data;
+            uint256 value;
+        }
+
         function shield(ShieldRequest[] _shieldRequests) external payable;
         function transact(Transaction[] _transactions) external payable;
+        function multicall(bool _requireSuccess, Call[] _calls) external payable;
+        function wrapBase(uint256 _amount) external;
     }
 }
 
@@ -129,6 +137,9 @@ impl HumanizerModule for Railgun {
         if let Ok(c) = IRailgun::transactCall::abi_decode(calldata) {
             return Some(transact(ctx, to, &c._transactions));
         }
+        if let Ok(m) = IRailgun::multicallCall::abi_decode(calldata) {
+            return multicall_shield(ctx, to, value, &m._calls);
+        }
         None
     }
 }
@@ -174,6 +185,84 @@ fn shield(
         rows,
         warnings,
     }
+}
+
+fn multicall_shield(
+    ctx: &HumanizeContext<'_>,
+    to: Address,
+    value: U256,
+    calls: &[IRailgun::Call],
+) -> Option<Humanized> {
+    let mut requests = Vec::new();
+    let mut has_wrap = false;
+    for call in calls {
+        if let Ok(c) = IRailgun::shieldCall::abi_decode(&call.data) {
+            requests.extend(c._shieldRequests);
+        }
+        if IRailgun::wrapBaseCall::abi_decode(&call.data).is_ok() {
+            has_wrap = true;
+        }
+    }
+    if requests.is_empty() {
+        return None;
+    }
+
+    let action = if has_wrap {
+        format!(
+            "Wrap and Shield {} into RAILGUN (private balance)",
+            ctx.native_symbol
+        )
+    } else {
+        "Shield into RAILGUN via RelayAdapt (private balance)".into()
+    };
+
+    let mut rows = vec![row("Action", &action)];
+    if has_wrap && !value.is_zero() {
+        rows.push(row(
+            "Native Amount",
+            &format!(
+                "{} {}",
+                format_display_amount(&value.to_string(), ctx.native_decimals, 8),
+                ctx.native_symbol
+            ),
+        ));
+    }
+    for r in &requests {
+        let (token, amount) = token_amount(ctx, &r.preimage);
+        rows.push(row("Token", &token));
+        rows.push(row("Amount (raw)", &amount));
+    }
+    rows.push(row(
+        "Recipient",
+        "encrypted 0zk note (not readable from calldata)",
+    ));
+    rows.push(row("Contract", &label_address(ctx.chain_id, to)));
+
+    let summary = if has_wrap {
+        let amt_str = format_display_amount(&value.to_string(), ctx.native_decimals, 6);
+        format!(
+            "Wrap and Shield {amt_str} {} into RAILGUN",
+            ctx.native_symbol
+        )
+    } else {
+        match requests.as_slice() {
+            [one] => {
+                let (token, amount) = token_amount(ctx, &one.preimage);
+                format!("Shield {amount} {token} into RAILGUN")
+            }
+            many => format!("Shield {} tokens into RAILGUN", many.len()),
+        }
+    };
+
+    let mut warnings = common_warnings(ctx, to);
+    warnings.push(Warning::Advisory(
+        "RAILGUN deducts its shield fee from the shielded amount".into(),
+    ));
+    Some(Humanized {
+        summary,
+        rows,
+        warnings,
+    })
 }
 
 fn transact(
@@ -428,5 +517,58 @@ mod tests {
         assert!(Railgun
             .try_humanize(&ctx(), proxy(), U256::ZERO, &[0xde, 0xad, 0xbe, 0xef])
             .is_none());
+    }
+
+    #[test]
+    fn multicall_wrap_and_shield_decodes_cleanly() {
+        let (_proxy_addr, relay_addr) = railgun_contracts(SEPOLIA).unwrap();
+        let wrap_data = IRailgun::wrapBaseCall {
+            _amount: U256::from(10_000_000u64),
+        }
+        .abi_encode();
+        let shield_data = IRailgun::shieldCall {
+            _shieldRequests: vec![IRailgun::ShieldRequest {
+                preimage: IRailgun::CommitmentPreimage {
+                    npk: [0x55; 32].into(),
+                    token: IRailgun::TokenData {
+                        tokenType: 0,
+                        tokenAddress: address!("0xfff9976782d46cc05630d1f6ebab18b2324d6b14"),
+                        tokenSubID: U256::ZERO,
+                    },
+                    value: U120::from(10_000_000u64),
+                },
+                ciphertext: IRailgun::ShieldCiphertext {
+                    encryptedBundle: [[0u8; 32].into(); 3],
+                    shieldKey: [0u8; 32].into(),
+                },
+            }],
+        }
+        .abi_encode();
+
+        let multi_data = IRailgun::multicallCall {
+            _requireSuccess: true,
+            _calls: vec![
+                IRailgun::Call {
+                    to: relay_addr,
+                    data: wrap_data.into(),
+                    value: U256::ZERO,
+                },
+                IRailgun::Call {
+                    to: relay_addr,
+                    data: shield_data.into(),
+                    value: U256::ZERO,
+                },
+            ],
+        }
+        .abi_encode();
+
+        let h = Railgun
+            .try_humanize(&ctx(), relay_addr, U256::from(10_000_000u64), &multi_data)
+            .unwrap();
+        assert!(h.summary.contains("Wrap and Shield"), "{}", h.summary);
+        assert!(h
+            .rows
+            .iter()
+            .any(|r| r.label == "Contract" && r.value == "RAILGUN RelayAdapt"));
     }
 }

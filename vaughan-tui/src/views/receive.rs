@@ -29,6 +29,8 @@ enum Stage {
     Shielded,
     #[cfg(feature = "railgun")]
     Shield,
+    #[cfg(feature = "railgun")]
+    Unshield,
 }
 
 pub struct ReceiveView {
@@ -40,6 +42,8 @@ pub struct ReceiveView {
     shielded: super::shielded::ShieldedPanel,
     #[cfg(feature = "railgun")]
     shield: Option<super::shield_flow::ShieldFlow>,
+    #[cfg(feature = "railgun")]
+    unshield: Option<super::unshield_flow::UnshieldFlow>,
 }
 
 impl Default for ReceiveView {
@@ -53,6 +57,8 @@ impl Default for ReceiveView {
             shielded: super::shielded::ShieldedPanel::default(),
             #[cfg(feature = "railgun")]
             shield: None,
+            #[cfg(feature = "railgun")]
+            unshield: None,
         }
     }
 }
@@ -86,6 +92,17 @@ impl ReceiveView {
                     brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
                 frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
+            #[cfg(feature = "railgun")]
+            Stage::Unshield => {
+                let text = self
+                    .unshield
+                    .as_ref()
+                    .map(|u| u.lines(wallet))
+                    .unwrap_or_default();
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
         }
     }
 
@@ -95,19 +112,28 @@ impl ReceiveView {
         self.shielded.poll();
     }
 
-    /// Feed a background job result to the shield flow (if open).
+    /// Feed a background job result to the shield or unshield flow (if open).
     pub fn apply_job_result(&mut self, _result: crate::jobs::UiJobResult) {
         #[cfg(feature = "railgun")]
-        if let Some(flow) = self.shield.as_mut() {
-            flow.apply_job_result(_result);
+        {
+            if let Some(flow) = self.shield.as_mut() {
+                flow.apply_job_result(_result);
+            } else if let Some(flow) = self.unshield.as_mut() {
+                flow.apply_job_result(_result);
+            }
         }
     }
 
-    /// Next job the shield flow wants spawned (allowance → estimate → …).
+    /// Next job the shield or unshield flow wants spawned (allowance → estimate → …).
     pub fn take_followup(&mut self) -> Option<crate::jobs::UiJob> {
         #[cfg(feature = "railgun")]
-        if let Some(flow) = self.shield.as_mut() {
-            return flow.take_followup();
+        {
+            if let Some(flow) = self.shield.as_mut() {
+                return flow.take_followup();
+            }
+            if let Some(flow) = self.unshield.as_mut() {
+                return flow.take_followup();
+            }
         }
         None
     }
@@ -296,6 +322,16 @@ impl ReceiveView {
                         KeyOutcome::Flash("Shielding is Sepolia-only for now".into())
                     }
                 }
+                KeyCode::Char('u') | KeyCode::Char('U') => {
+                    let chain_id = wallet.networks().active().chain_id;
+                    if vaughan_railgun::deployment::shield_enabled(chain_id) {
+                        self.unshield = Some(super::unshield_flow::UnshieldFlow::new());
+                        self.stage = Stage::Unshield;
+                        KeyOutcome::Consumed
+                    } else {
+                        KeyOutcome::Flash("Unshielding is Sepolia-only for now".into())
+                    }
+                }
                 _ => KeyOutcome::NotHandled,
             },
             #[cfg(feature = "railgun")]
@@ -307,6 +343,21 @@ impl ReceiveView {
                 match flow.handle_key(key, wallet, handle) {
                     KeyOutcome::Back => {
                         self.shield = None;
+                        self.stage = Stage::Shielded;
+                        KeyOutcome::Consumed
+                    }
+                    other => other,
+                }
+            }
+            #[cfg(feature = "railgun")]
+            Stage::Unshield => {
+                let Some(flow) = self.unshield.as_mut() else {
+                    self.stage = Stage::Shielded;
+                    return KeyOutcome::Consumed;
+                };
+                match flow.handle_key(key, wallet, handle) {
+                    KeyOutcome::Back => {
+                        self.unshield = None;
                         self.stage = Stage::Shielded;
                         KeyOutcome::Consumed
                     }
