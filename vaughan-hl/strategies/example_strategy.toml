@@ -1,0 +1,53 @@
+# ==============================================================================
+# Vaughan-HL Example Strategy: BTC 1h Bollinger Mean Reversion (1:2.5 R:R)
+# ==============================================================================
+# This is a public reference strategy demonstrating Vaughan-HL's declarative syntax,
+# multi-indicator filtering, asymmetric risk-to-reward ratio, and conservative ATR stop.
+#
+# Backtest this strategy locally:
+#   vaughan-hl replay --strategy strategies/example_strategy.toml
+#
+# Arm simulation or live execution:
+#   vaughan-hl live --strategy strategies/example_strategy.toml
+# ==============================================================================
+
+name = "Example: BTC 1h Bollinger Mean Reversion"
+
+[market]
+coin = "BTC"
+interval = "1h"
+leverage = 10
+is_cross = false
+direction = "both"
+
+[sizing]
+mode = "risk_pct"
+risk_pct = 2.0
+initial_equity_usd = 1000.0
+
+[indicators]
+rsi = { period = 14 }
+connors_rsi = { rsi_period = 3, streak_period = 2, rank_period = 100 }
+bollinger = { period = 20, std_dev = 2.0 }
+atr = { period = 14 }
+
+# Long: Price pierces lower Bollinger band with oversold RSI confirmation
+[entry.long]
+all = [
+    "close < bb_lower",
+    "connors_rsi < 20.0",
+    "rsi < 40.0",
+]
+
+# Short: Price pierces upper Bollinger band with overbought RSI confirmation
+[entry.short]
+all = [
+    "close > bb_upper",
+    "connors_rsi > 80.0",
+    "rsi > 60.0",
+]
+
+[exit]
+stop_loss = { kind = "atr", multiplier = 3.0, min_stop_bps = 85, max_stop_bps = 380 }
+take_profit_rr = 2.5
+cooldown_bars = 2

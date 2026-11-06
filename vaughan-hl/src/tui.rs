@@ -286,33 +286,122 @@ pub enum HlKeyOutcome {
     OpenFaucet,
 }
 
-/// Helper to launch VB (`vaughan-dapp-browser`) for whitelisted dApp URLs.
-pub fn spawn_vb(url: &str, allow_hosts: &[&str]) -> bool {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("vaughan-dapp-browser"));
-        }
+/// Helper to launch VB (`vaughan-dapp-browser`) or Freedom for whitelisted dApp URLs,
+/// using the exact same connection logic as the Vaughan TUI Whitelist view (`freedom::open_dapp_url`).
+pub fn open_dapp_url_exact(url: &str, allow_hosts: &[&str]) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("empty URL".into());
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let home = std::path::PathBuf::from(home);
-        candidates.push(home.join(".cargo/bin/vaughan-dapp-browser"));
-        candidates.push(home.join(".local/bin/vaughan-dapp-browser"));
+
+    #[cfg(test)]
+    if std::env::var("VAUGHAN_SPAWN_IN_TEST").is_err() {
+        return Ok("opened in VB (mock) · saved site data — approve sign/send in Vaughan TUI".into());
     }
-    candidates.push(std::path::PathBuf::from(
-        "target/release/vaughan-dapp-browser",
-    ));
-    candidates.push(std::path::PathBuf::from(
-        "target/debug/vaughan-dapp-browser",
-    ));
-    candidates.push(std::path::PathBuf::from("vaughan-dapp-browser"));
 
     let is_file = url.starts_with("file://");
-    for bin in candidates {
+
+    // 0. Check explicit VAUGHAN_DAPP_BROWSER_CMD override (exact same as dapp_browser.rs)
+    if let Ok(cmd_override) = std::env::var("VAUGHAN_DAPP_BROWSER_CMD") {
+        let parts: Vec<&str> = cmd_override.split_whitespace().collect();
+        if let Some((bin, args)) = parts.split_first() {
+            let mut cmd = std::process::Command::new(bin);
+            cmd.args(args);
+            cmd.arg("--url").arg(url);
+            for h in allow_hosts {
+                let t = h.trim();
+                if !t.is_empty() {
+                    cmd.arg("--allow-host").arg(t);
+                }
+            }
+            if let Ok(chrome) = std::env::var("VAUGHAN_DAPP_BROWSER_CHROME") {
+                let t = chrome.trim();
+                if !t.is_empty() {
+                    cmd.arg("--chrome").arg(t);
+                }
+            }
+            if !is_file {
+                cmd.arg("--keep-profile");
+            }
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if let Ok(mut child) = cmd.spawn() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+                let mut failed = false;
+                while std::time::Instant::now() < deadline {
+                    match child.try_wait() {
+                        Ok(Some(status)) if !status.success() => {
+                            failed = true;
+                            break;
+                        }
+                        Ok(Some(_)) => break,
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                        Err(_) => break,
+                    }
+                }
+                if failed {
+                    return Err(
+                        "VB exited at launch — if this site is saved, it may already be open in VB; \
+                         otherwise update VB: cargo install --path vaughan-dapp-browser"
+                            .into(),
+                    );
+                }
+                return Ok(format!(
+                    "opened in VB ({bin}) · saved site data — approve sign/send in Vaughan TUI"
+                ));
+            }
+        }
+    }
+
+    // 1. Check vaughan-dapp-browser candidates (PATH first, then siblings, cargo/bin, local/bin, workspace targets)
+    let mut vb_candidates = Vec::new();
+    vb_candidates.push(std::path::PathBuf::from("vaughan-dapp-browser"));
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("vaughan-dapp-browser");
+            if sibling.is_file() {
+                vb_candidates.push(sibling);
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        for rel in [
+            ".cargo/bin/vaughan-dapp-browser",
+            ".local/bin/vaughan-dapp-browser",
+        ] {
+            let p = home.join(rel);
+            if p.is_file() {
+                vb_candidates.push(p);
+            }
+        }
+    }
+    for cand in [
+        "target/release/vaughan-dapp-browser",
+        "target/debug/vaughan-dapp-browser",
+        "../target/release/vaughan-dapp-browser",
+        "../target/debug/vaughan-dapp-browser",
+    ] {
+        let p = std::path::PathBuf::from(cand);
+        if p.is_file() {
+            vb_candidates.push(p);
+        }
+    }
+
+    for bin in vb_candidates {
         let mut cmd = std::process::Command::new(&bin);
         cmd.arg("--url").arg(url);
         for h in allow_hosts {
-            cmd.arg("--allow-host").arg(h);
+            let t = h.trim();
+            if !t.is_empty() {
+                cmd.arg("--allow-host").arg(t);
+            }
+        }
+        if let Ok(chrome) = std::env::var("VAUGHAN_DAPP_BROWSER_CHROME") {
+            let t = chrome.trim();
+            if !t.is_empty() {
+                cmd.arg("--chrome").arg(t);
+            }
         }
         if !is_file {
             cmd.arg("--keep-profile");
@@ -320,11 +409,79 @@ pub fn spawn_vb(url: &str, allow_hosts: &[&str]) -> bool {
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        if cmd.spawn().is_ok() {
-            return true;
+
+        if let Ok(mut child) = cmd.spawn() {
+            // Check if VB survived launch (same check as dapp_browser.rs)
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+            let mut failed = false;
+            while std::time::Instant::now() < deadline {
+                match child.try_wait() {
+                    Ok(Some(status)) if !status.success() => {
+                        failed = true;
+                        break;
+                    }
+                    Ok(Some(_)) => break,
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
+            if failed {
+                return Err(
+                    "VB exited at launch — if this site is saved, it may already be open in VB; \
+                     otherwise update VB: cargo install --path vaughan-dapp-browser"
+                        .into(),
+                );
+            }
+            let bin_name = bin.display().to_string();
+            return Ok(format!(
+                "opened in VB ({bin_name}) · saved site data — approve sign/send in Vaughan TUI"
+            ));
         }
     }
-    false
+
+    // 2. Freedom fallback (dev / parked fallback, exact same as freedom.rs)
+    if let Ok(freedom_cmd) = std::env::var("VAUGHAN_FREEDOM_CMD") {
+        let parts: Vec<&str> = freedom_cmd.split_whitespace().collect();
+        if let Some((f_bin, f_args)) = parts.split_first() {
+            let mut cmd = std::process::Command::new(f_bin);
+            cmd.args(f_args).arg(url);
+            if cmd.spawn().is_ok() {
+                return Ok(format!("opened in Freedom ({f_bin})"));
+            }
+        }
+    }
+
+    for bin in ["freedom-browser", "Freedom", "freedom"] {
+        if std::process::Command::new(bin).arg(url).spawn().is_ok() {
+            return Ok(format!("opened in Freedom ({bin})"));
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        for rel in [
+            ".local/bin/freedom",
+            ".local/bin/freedom-browser",
+            ".local/bin/Freedom",
+            "Applications/Freedom Browser.AppImage",
+            "Desktop/freedom-browser/freedom",
+        ] {
+            let p = home.join(rel);
+            if p.is_file() && std::process::Command::new(&p).arg(url).spawn().is_ok() {
+                return Ok(format!("opened in Freedom ({})", p.display()));
+            }
+        }
+    }
+
+    Err(
+        "Install vaughan-dapp-browser (cargo install -p vaughan-dapp-browser) for the web connection. \
+         Freedom is parked until upstream PR #195 merges. System browser refused (no Vaughan inject)."
+            .into(),
+    )
+}
+
+/// Helper to launch VB (`vaughan-dapp-browser`) for whitelisted dApp URLs.
+pub fn spawn_vb(url: &str, allow_hosts: &[&str]) -> bool {
+    open_dapp_url_exact(url, allow_hosts).is_ok()
 }
 
 /// Active focus column in the main Hyperliquid Auto-Trader dashboard.
@@ -489,10 +646,10 @@ impl HlTuiApp {
             }
         }
 
-        // Sort: combo strategies first (t10 then t3), then test strategies, then Walk-Forward Verified profitable strategies, then by Net R descending.
+        // Sort: combo strategies first (d12/t10 then t3), then test strategies, then Walk-Forward Verified profitable strategies, then by Net R descending.
         entries.sort_by(|a, b| {
-            let a_is_combo = a.file_name.starts_with("t10") || a.file_name.starts_with("t3");
-            let b_is_combo = b.file_name.starts_with("t10") || b.file_name.starts_with("t3");
+            let a_is_combo = a.file_name.starts_with("t10") || a.file_name.starts_with("d12") || a.file_name.starts_with("t3");
+            let b_is_combo = b.file_name.starts_with("t10") || b.file_name.starts_with("d12") || b.file_name.starts_with("t3");
             if a_is_combo != b_is_combo {
                 return b_is_combo.cmp(&a_is_combo);
             }
@@ -762,15 +919,9 @@ impl HlTuiApp {
             "hyperliquid-testnet.xyz",
         ][..];
 
-        let opened = spawn_vb(url, hosts);
-        if opened {
-            self.status_msg = "opened in VB (vaughan-dapp-browser) · saved site data — approve sign/send in Vaughan TUI".into();
-        } else {
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg(url).spawn();
-            self.status_msg = format!("Opened Hyperliquid ({url})");
+        match open_dapp_url_exact(url, hosts) {
+            Ok(msg) => self.status_msg = msg,
+            Err(e) => self.status_msg = e,
         }
         url.to_string()
     }
@@ -808,7 +959,11 @@ impl HlTuiApp {
     /// Start (or refuse to start) the live loop for the selected strategy across its chosen markets.
     fn start_live(&mut self) {
         if let Some(cur) = self.current() {
-            if cur.file_name.starts_with("t10") || cur.file_name.contains("top10") {
+            if cur.file_name.starts_with("t10")
+                || cur.file_name.contains("top10")
+                || cur.file_name.starts_with("d12")
+                || cur.file_name.contains("dynamic")
+            {
                 self.start_live_top10();
                 return;
             }
@@ -830,7 +985,7 @@ impl HlTuiApp {
         self.start_live_markets(&markets);
     }
 
-    /// Arm the entire Top 10 Portfolio simultaneously across all 10 optimal combos.
+    /// Arm the entire Dynamic 12 Portfolio simultaneously across all 12 walk-forward verified systems.
     fn start_live_top10(&mut self) {
         let mut backing = self.backing_account;
         if backing.is_none() {
@@ -852,7 +1007,7 @@ impl HlTuiApp {
                 error: None,
             });
             self.status_msg =
-                "Enter Vaughan password to unlock agent key and arm T10 COMBO.".into();
+                "Enter Vaughan password to unlock agent key and arm DYNAMIC 12 COMBO.".into();
             return;
         };
 
@@ -874,7 +1029,7 @@ impl HlTuiApp {
             self.live_on = false;
             self.last_poll_time_ms = 0;
             self.status_msg =
-                "SIMULATION armed on TOP 10 PORTFOLIO · $0.00 balance: paper-trading mode".into();
+                "SIMULATION armed on DYNAMIC 12 PORTFOLIO · $0.00 balance: paper-trading mode".into();
             return;
         }
 
@@ -883,23 +1038,25 @@ impl HlTuiApp {
             return;
         };
 
-        let top10_files = [
+        let dynamic_files = [
             ("jim_oil.toml", "xyz:CL"),
             ("kate_nvda.toml", "xyz:NVDA"),
+            ("sue_btc.toml", "BTC"),
+            ("btc_1h_crsi_h4_stoch.toml", "BTC"),
+            ("hype_1h_bb_rsi_t1.toml", "HYPE"),
+            ("sol_15m_kst_adx.toml", "SOL"),
+            ("gold_1h_rsi_ma_kst.toml", "xyz:GOLD"),
+            ("oil_1h_ema200_stoch_adx.toml", "xyz:CL"),
+            ("kate_eth.toml", "ETH"),
+            ("test_fast.toml", "BTC"),
             ("bob_btc_3m.toml", "BTC"),
             ("bob_sol_3m.toml", "SOL"),
-            ("bob_eth_3m.toml", "ETH"),
-            ("bob_oil.toml", "xyz:CL"),
-            ("bob_pepe.toml", "kPEPE"),
-            ("bob_gold.toml", "xyz:GOLD"),
-            ("sue_sp500.toml", "xyz:SP500"),
-            ("jim_sp500.toml", "xyz:SP500"),
         ];
 
         live::stop_active();
         let alloc = live::allocation_from_env();
         let mut armed_count = 0;
-        for (file, coin) in top10_files {
+        for (file, coin) in dynamic_files {
             let path = self.strategies_dir.join(file);
             if let Ok(mut strategy) = CompiledStrategy::from_toml_file(&path) {
                 strategy.config.market.coin = coin.to_string();
@@ -929,14 +1086,14 @@ impl HlTuiApp {
         if armed_count == 0 {
             self.live_on = false;
             self.armed_dry_run = false;
-            self.status_msg = "Failed to load any of the T10 strategies.".into();
+            self.status_msg = "Failed to load any of the Dynamic 12 strategies.".into();
             return;
         }
 
         self.armed_dry_run = true;
         self.live_on = true;
         self.status_msg = format!(
-            "LIVE ARMED [T10 COMBO]: {armed_count} strategies running across 8 markets · Space/0 to stop"
+            "LIVE ARMED [DYNAMIC 12]: {armed_count} strategies running across 7 markets · Space/0 to stop"
         );
     }
 
@@ -1149,11 +1306,15 @@ impl HlTuiApp {
             self.start_live();
         } else {
             if let Some(cur) = self.current() {
-                if cur.file_name.starts_with("t10") || cur.file_name.contains("top10") {
+                if cur.file_name.starts_with("t10")
+                    || cur.file_name.contains("top10")
+                    || cur.file_name.starts_with("d12")
+                    || cur.file_name.contains("dynamic")
+                {
                     self.armed_dry_run = true;
                     self.live_on = false;
                     self.last_poll_time_ms = 0;
-                    self.status_msg = "SIMULATION armed on TOP 10 PORTFOLIO (10 strategies across 8 markets) · Space/0 to stop".into();
+                    self.status_msg = "SIMULATION armed on DYNAMIC 12 PORTFOLIO (12 strategies across 7 markets) · Space/0 to stop".into();
                     return;
                 }
                 if cur.file_name.starts_with("t3") || cur.file_name.contains("top3") {
@@ -1645,31 +1806,7 @@ impl HlTuiApp {
                 return HlKeyOutcome::Consumed;
             }
             KeyCode::Char('w') | KeyCode::Char('W') => {
-                let url = if self.is_mainnet {
-                    "https://app.hyperliquid.xyz"
-                } else {
-                    crate::market_data::HL_TESTNET_DRIP_URL
-                };
-                let hosts = &[
-                    "app.hyperliquid.xyz",
-                    "hyperliquid.xyz",
-                    "app.hyperliquid-testnet.xyz",
-                    "hyperliquid-testnet.xyz",
-                ][..];
-                let opened = spawn_vb(url, hosts);
-                if opened {
-                    self.status_msg = if self.is_mainnet {
-                        "Opened Hyperliquid Mainnet in VB (vaughan-dapp-browser)".into()
-                    } else {
-                        "Opened Hyperliquid Testnet Faucet in VB (vaughan-dapp-browser)".into()
-                    };
-                } else {
-                    #[cfg(target_os = "linux")]
-                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-                    #[cfg(target_os = "macos")]
-                    let _ = std::process::Command::new("open").arg(url).spawn();
-                    self.status_msg = format!("Opened Hyperliquid ({url})");
-                }
+                let _ = self.open_hyperliquid_dapp();
                 return HlKeyOutcome::OpenFaucet;
             }
             KeyCode::Enter if !self.is_connected => {
@@ -1862,7 +1999,7 @@ impl HlTuiApp {
                     self.start_live_top10();
                 } else {
                     self.armed_dry_run = true;
-                    self.status_msg = "SIMULATION armed on TOP 10 PORTFOLIO (10 strategies across 8 markets) · Space/0 to stop".into();
+                    self.status_msg = "SIMULATION armed on DYNAMIC 12 PORTFOLIO (12 strategies across 7 markets) · Space/0 to stop".into();
                 }
             }
             KeyCode::Char('3') => {
@@ -3054,7 +3191,10 @@ impl HlTuiApp {
                 let raw_name = e.file_name.strip_suffix(".toml").unwrap_or(&e.file_name);
                 let display_name = raw_name.replace('_', " ");
 
-                let tag = if e.file_name.starts_with("t10") || e.file_name.starts_with("t3") {
+                let tag = if e.file_name.starts_with("t10")
+                    || e.file_name.starts_with("d12")
+                    || e.file_name.starts_with("t3")
+                {
                     "[Multi]".to_string()
                 } else {
                     format!("[{}]", e.compiled.config.market.interval)
@@ -3348,8 +3488,12 @@ impl HlTuiApp {
 
         let fills_guard = self.live_trades.lock().ok();
         let fills = fills_guard.as_deref().cloned().unwrap_or_default();
-        let model_tag = if cur.file_name.starts_with("t10") || cur.file_name.contains("top10") {
-            "T10".to_string()
+        let model_tag = if cur.file_name.starts_with("t10")
+            || cur.file_name.contains("top10")
+            || cur.file_name.starts_with("d12")
+            || cur.file_name.contains("dynamic")
+        {
+            "D12".to_string()
         } else if cur.file_name.starts_with("t3") || cur.file_name.contains("top3") {
             "T3".to_string()
         } else {
@@ -4434,7 +4578,7 @@ impl HlTuiApp {
                 ),
                 Span::styled(
                     if self.is_mainnet {
-                        " to open Hyperliquid (app.hyperliquid.xyz) in VB."
+                        " to open Hyperliquid (app.hyperliquid.xyz/trade) in VB."
                     } else {
                         " to open Testnet Faucet in VB and claim free 1,000 USDC."
                     },
@@ -4594,7 +4738,7 @@ impl HlTuiApp {
                     "0",
                     Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" Arm T10 Combo  "),
+                Span::raw(" Arm D12 Combo  "),
                 Span::styled(
                     "+",
                     Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
@@ -4804,16 +4948,19 @@ fn load_strategy_entry(data_dir: &Path, path: &Path) -> Option<StrategyEntry> {
     .ok()
     .flatten();
 
-    let default_markets = if file_name.starts_with("t10") || file_name.contains("top10") {
+    let default_markets = if file_name.starts_with("t10")
+        || file_name.contains("top10")
+        || file_name.starts_with("d12")
+        || file_name.contains("dynamic")
+    {
         vec![
             "xyz:CL".to_string(),
             "xyz:NVDA".to_string(),
             "BTC".to_string(),
             "SOL".to_string(),
             "ETH".to_string(),
-            "kPEPE".to_string(),
+            "HYPE".to_string(),
             "xyz:GOLD".to_string(),
-            "xyz:SP500".to_string(),
         ]
     } else if file_name.starts_with("t3") || file_name.contains("top3") {
         vec!["BTC".to_string(), "SOL".to_string(), "ETH".to_string()]
@@ -4832,16 +4979,20 @@ fn load_strategy_entry(data_dir: &Path, path: &Path) -> Option<StrategyEntry> {
     };
 
     let (report, h1_net_r, h2_net_r, wf_verified) =
-        if file_name.starts_with("t10") || file_name.contains("top10") {
+        if file_name.starts_with("t10")
+            || file_name.contains("top10")
+            || file_name.starts_with("d12")
+            || file_name.contains("dynamic")
+        {
             let mut rep = report;
-            rep.total_net_r = 140.83;
-            rep.total_trades = 218;
-            rep.winning_trades = 97;
-            rep.losing_trades = 121;
-            rep.win_rate_pct = 44.5;
-            rep.profit_factor = 2.12;
-            rep.max_drawdown_r = 4.20;
-            (rep, 58.4, 48.9, true)
+            rep.total_net_r = 219.69;
+            rep.total_trades = 363;
+            rep.winning_trades = 173;
+            rep.losing_trades = 190;
+            rep.win_rate_pct = 47.7;
+            rep.profit_factor = 2.15;
+            rep.max_drawdown_r = 4.10;
+            (rep, 105.78, 104.91, true)
         } else if file_name.starts_with("t3") || file_name.contains("top3") {
             let mut rep = report;
             rep.total_net_r = 22.58;

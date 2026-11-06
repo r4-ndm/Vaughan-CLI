@@ -713,7 +713,7 @@ async fn run_live_inner(
         let telem = fetch_user_account_telemetry(info_url, cfg.backing)
             .await
             .ok();
-        let equity = if let Some(t) = telem {
+        let equity = if let Some(ref t) = telem {
             t.portfolio_value
         } else {
             let perps_eq = fetch_clearinghouse_state(info_url, cfg.backing)
@@ -858,6 +858,27 @@ async fn run_live_inner(
             set_msg(status, format!("{heartbeat} · {event}"));
             continue;
         }
+
+        // Global portfolio concurrency guard: prevents multiple bots from opening simultaneous
+        // positions and exhausting margin or suffering correlated drawdowns across markets.
+        let max_concurrent_positions = std::env::var("VAUGHAN_MAX_CONCURRENT_POSITIONS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(2);
+
+        let active_other_positions = telem
+            .as_ref()
+            .map(|t| t.open_positions.iter().filter(|p| p.coin != coin).count())
+            .unwrap_or(0);
+
+        if active_other_positions >= max_concurrent_positions {
+            event = format!(
+                "portfolio cap reached ({active_other_positions}/{max_concurrent_positions} active) · entry held"
+            );
+            set_msg(status, format!("{heartbeat} · {event}"));
+            continue;
+        }
+
         if executed.contains(&last.open_time_ms) {
             continue;
         }

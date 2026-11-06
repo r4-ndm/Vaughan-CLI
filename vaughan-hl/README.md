@@ -18,37 +18,42 @@ Designed for minimal binary weight (`unsafe_code = "forbid"`, zero external MsgP
 - [`src/engine.rs`](src/engine.rs) — Deterministic 128-bit `cloid` generator and closed-candle bracket order builder (`Entry` + `SL` + `T1` + `TP`).
 - [`src/tui.rs`](src/tui.rs) — Feature-gated (`#[cfg(feature = "tui")]`) interactive Ratatui terminal dashboard (`HlTuiApp`) displaying the strategy leaderboard, walk-forward (`H1` / `H2`) metrics, latest closed-candle indicators, live tick signal telemetry, and trade tape.
 
-## Top Walk-Forward Verified Strategies (`H1` & `H2` Profitable)
+## Public Example Strategy
 
-| Strategy | Market & TF | Trades | Win % | Net `R` (`H1` / `H2`) | Profit Factor | Max DD | Net Return (`@ 2%` risk) |
-|---|---|---|---|---|---|---|---|
-| `strategies/oil_15m_kst_adx_4r.toml` | `xyz:CL` `15m` | 38 | 39.5% | `+33.11R` (`+12.57R` / `+18.27R`) | `2.20` | `5.59R` (`10.7%`) | **`+84.66%`** |
-| `strategies/nvda_15m_crsi_h4_stoch.toml` | `xyz:NVDA` `15m` | 28 | 46.4% | `+27.08R` (`+12.36R` / `+9.08R`) | `2.35` | `5.56R` (`10.6%`) | **`+66.44%`** |
-| `strategies/btc_1h_bb_crsi_reversion.toml` | `BTC` `1h` | 45 | 46.7% | `+25.49R` (`+8.95R` / `+15.40R`) | `1.92` | `3.18R` (`6.2%`) | **`+61.61%`** |
-| `strategies/btc_1h_crsi_h4_stoch.toml` | `BTC` `1h` | 41 | 41.5% | `+23.87R` (`+13.60R` / `+10.27R`) | `1.85` | `5.28R` (`10.1%`) | **`+55.86%`** |
-| `strategies/hype_1h_bb_rsi_t1.toml` | `HYPE` `1h` | 68 | 52.9% | `+22.49R` (`+16.83R` / `+9.10R`) | `1.62` | `7.59R` (`14.2%`) | **`+52.34%`** |
-| `strategies/gold_1h_rsi_ma_kst.toml` | `xyz:GOLD` `1h` | 20 | 45.0% | `+18.11R` (`+6.88R` / `+11.22R`) | `2.47` | `3.40R` (`6.7%`) | **`+40.43%`** |
+`vaughan-hl` includes a public reference strategy in [`strategies/example_strategy.toml`](strategies/example_strategy.toml):
+- **Market & Timeframe**: `BTC` `1h` (1:2.5 R:R with conservative ATR stop).
+- **Indicators**: Bollinger Bands + Wilder RSI + ConnorsRSI exhaustion filters.
+- **Walk-Forward Performance**: Net `+17.17R`, `1.59` Profit Factor, verified in both `H1` (`+7.66R`) and `H2` (`+4.86R`).
+
+```bash
+# 1. Run replay backtest with Walk-Forward (H1 vs H2) split verification:
+cargo run -- replay --strategy strategies/example_strategy.toml
+
+# 2. Paper trade / live simulation:
+cargo run -- live --strategy strategies/example_strategy.toml --dry-run
+```
+
+To create your own custom strategies, see [`STRATEGY_GUIDE.md`](STRATEGY_GUIDE.md). Custom `.toml` strategies placed in `strategies/` are gitignored by default to protect proprietary trading algorithms.
 
 ## Quick Start & `Vaughan-CLI` Integration
 
 ```bash
 # 0. Launch the interactive TUI dashboard (default when run with no subcommand):
 cargo run
-# (Inside TUI: ↑/↓ or j/k to switch strategies, Tab to scroll trade tape, Space to arm LIVE, r to reload, q to quit)
+# (Inside TUI: ↑/↓ to switch strategies, Space to arm LIVE/SIM, Esc to return, q to quit)
 
-# 1. Run replay with automatic Walk-Forward (H1 vs H2) split verification:
-cargo run -- replay --strategy strategies/oil_15m_kst_adx_4r.toml
-cargo run -- replay --strategy strategies/btc_1h_bb_crsi_reversion.toml
+# 1. Run replay backtest:
+cargo run -- replay --strategy strategies/example_strategy.toml
 
-# 2. Generate encrypted 0600 Agent Keystore + ApproveAgent EIP-712 JSON:
-cargo run -- agent-init --backing-account 0xYourIsolatedSubAccount
+# 2. Generate encrypted 0600 Agent Keystore:
+cargo run -- agent-init --backing-account 0xYourDedicatedSubAccount
 
-# 3. Sign once via Vaughan-CLI (master private key never touches vaughan-hl):
+# 3. Sign once via Vaughan-CLI or 1-click connect in TUI:
 vaughan sign-typed-data --file data/approve_agent.json
 
 # 4. Evaluate latest closed candle and emit deterministic L1 bracket order plan:
-cargo run -- tick --strategy strategies/oil_15m_kst_adx_4r.toml --asset-id 110000 --sz-decimals 2
+cargo run -- tick --strategy strategies/example_strategy.toml --asset-id 0 --sz-decimals 4
 
-# 5. Emergency kill-switch (emit ApproveAgent(0x0) revocation payload):
+# 5. Emergency kill-switch:
 cargo run -- kill
 ```
