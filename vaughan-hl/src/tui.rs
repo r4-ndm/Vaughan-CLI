@@ -43,7 +43,7 @@ use crate::replay::{
     run_replay_with_table, ReplayReport, Side, SimulatedTrade, DEFAULT_HL_TAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
 };
-use crate::strategy::{estimated_liq_distance_bps, CompiledStrategy, SizingMode, StopLossSpec};
+use crate::strategy::{CompiledStrategy, SizingMode};
 use crate::wire::build_approve_agent_typed_data;
 
 const COL_NEON_BLUE: Color = Color::Rgb(80, 200, 255);
@@ -104,6 +104,16 @@ pub fn colored_address_spans(address: &str) -> Vec<Span<'static>> {
         ));
     }
     spans
+}
+
+/// Abbreviates an address to `0x1234…5678` (11 chars) for clean display in compact UI bars.
+pub fn format_short_addr(addr: &Address) -> String {
+    let s = format!("{:#x}", addr);
+    if s.len() > 10 {
+        format!("{}…{}", &s[0..6], &s[s.len() - 4..])
+    } else {
+        s
+    }
 }
 
 /// Address spans during the copy pulse: a braille wave in the address colours with
@@ -2385,7 +2395,7 @@ impl HlTuiApp {
         self.draw_strategy_list(frame, body[0]);
         self.draw_market_column(frame, body[1]);
 
-        let details_height = 12;
+        let details_height = 8;
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -3075,9 +3085,12 @@ impl HlTuiApp {
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
+        let is_wide = area.width >= 115;
+        let is_compact = area.width < 90;
+
         let mode_span = if self.live_on {
             Span::styled(
-                " ● LIVE TRADING ",
+                " ● LIVE ",
                 Style::default()
                     .fg(Color::White)
                     .bg(COL_RED)
@@ -3085,7 +3098,7 @@ impl HlTuiApp {
             )
         } else if self.armed_dry_run {
             Span::styled(
-                " ● ARMED (AUTO-TRADER ACTIVE) ",
+                " ● PAPER ",
                 Style::default()
                     .fg(Color::Black)
                     .bg(COL_GREEN)
@@ -3101,7 +3114,7 @@ impl HlTuiApp {
             )
         } else {
             Span::styled(
-                " ○ STANDBY / LAB ",
+                " ○ STANDBY ",
                 Style::default()
                     .fg(Color::Black)
                     .bg(COL_YELLOW)
@@ -3109,38 +3122,131 @@ impl HlTuiApp {
             )
         };
 
-        let net_tag = if self.is_mainnet {
-            "MAINNET (Arbitrum Settled)"
+        let net_badge = if self.is_mainnet {
+            Span::styled(
+                "[MAINNET]",
+                Style::default()
+                    .fg(COL_GREEN)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
-            "TESTNET"
+            Span::styled(
+                "[TESTNET]",
+                Style::default()
+                    .fg(COL_YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            )
         };
 
-        let balance_span = if self.is_connected {
-            let telem_opt = self.live_telemetry_data.as_ref();
-            let portfolio_val = telem_opt
-                .map(|t| t.portfolio_value)
-                .or(self.live_equity_usd)
-                .unwrap_or_else(|| self.live_spot_balance_usd.unwrap_or(0.0));
-            let avail_val = telem_opt.map(|t| t.available_usdc).unwrap_or(portfolio_val);
-            let upnl = telem_opt.map(|t| t.total_unrealized_pnl).unwrap_or(0.0);
-            let upnl_sign = if upnl >= 0.0 { "+" } else { "" };
+        let telem_opt = self.live_telemetry_data.as_ref();
+        let portfolio_val = telem_opt
+            .map(|t| t.portfolio_value)
+            .or(self.live_equity_usd)
+            .unwrap_or_else(|| self.live_spot_balance_usd.unwrap_or(0.0));
+        let avail_val = telem_opt.map(|t| t.available_usdc).unwrap_or(portfolio_val);
+        let upnl = telem_opt.map(|t| t.total_unrealized_pnl).unwrap_or(0.0);
+        let upnl_sign = if upnl >= 0.0 { "+" } else { "" };
+        let upnl_col = if upnl >= 0.0 { COL_GREEN } else { COL_RED };
 
+        let balance_spans = if self.is_connected {
             if portfolio_val > 0.0 {
-                Span::styled(
-                    format!("  ● Portfolio: ${portfolio_val:.2} ({upnl_sign}${upnl:.2}) · ${avail_val:.2} Avail [{net_tag}]  "),
-                    Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                )
+                if is_compact {
+                    vec![
+                        Span::styled(
+                            format!("${portfolio_val:.2}"),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" ({upnl_sign}${upnl:.2})"),
+                            Style::default().fg(upnl_col).add_modifier(Modifier::BOLD),
+                        ),
+                    ]
+                } else {
+                    vec![
+                        Span::styled("Equity: ", Style::default().fg(COL_DIM)),
+                        Span::styled(
+                            format!("${portfolio_val:.2}"),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" ({upnl_sign}${upnl:.2})"),
+                            Style::default().fg(upnl_col).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" · ", Style::default().fg(COL_DIM)),
+                        Span::styled(
+                            format!("${avail_val:.2} Avail"),
+                            Style::default().fg(COL_GREEN),
+                        ),
+                    ]
+                }
             } else {
-                Span::styled(
-                    format!("  ● Portfolio: $0.00 USDC [{net_tag}]  "),
-                    Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                )
+                vec![
+                    Span::styled("Equity: ", Style::default().fg(COL_DIM)),
+                    Span::styled("$0.00 USDC", Style::default().fg(COL_GREEN)),
+                ]
             }
         } else {
-            Span::styled("  ○ Not Connected  ", Style::default().fg(COL_DIM))
+            vec![Span::styled("○ Disconnected", Style::default().fg(COL_DIM))]
         };
 
-        let header_line = Line::from(vec![
+        let wallet_spans: Vec<Span> = if let (Some(agent), Some(backing)) =
+            (self.agent_address, self.backing_account)
+        {
+            if is_wide {
+                vec![
+                    Span::styled("Agent: ", Style::default().fg(COL_DIM)),
+                    Span::styled(
+                        format_short_addr(&agent),
+                        Style::default()
+                            .fg(COL_NEON_BLUE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" -> ", Style::default().fg(COL_DIM)),
+                    Span::styled(
+                        format_short_addr(&backing),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]
+            } else {
+                vec![
+                    Span::styled("Agent: ", Style::default().fg(COL_DIM)),
+                    Span::styled(
+                        format_short_addr(&agent),
+                        Style::default()
+                            .fg(COL_NEON_BLUE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]
+            }
+        } else if let Some(agent) = self.agent_address {
+            vec![
+                Span::styled("Agent: ", Style::default().fg(COL_DIM)),
+                Span::styled(
+                    format_short_addr(&agent),
+                    Style::default()
+                        .fg(COL_NEON_BLUE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+        } else if self.is_connected {
+            vec![Span::styled(
+                "Agent Connected",
+                Style::default().fg(COL_GREEN),
+            )]
+        } else {
+            vec![Span::styled(
+                "No Agent [Enter: connect]",
+                Style::default().fg(COL_DIM),
+            )]
+        };
+
+        let mut header_spans = vec![
             Span::styled(
                 " VAUGHAN",
                 Style::default()
@@ -3148,19 +3254,23 @@ impl HlTuiApp {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "-HL ",
+                "-HL",
                 Style::default()
                     .fg(COL_HOT_PINK)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "· HYPERLIQUID AUTO-TRADER  ",
-                Style::default().fg(COL_PURPLE).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("  ", Style::default()),
             mode_span,
-            balance_span,
-            Span::styled(&self.agent_summary, Style::default().fg(COL_DIM)),
-        ]);
+            Span::styled("  ", Style::default()),
+            net_badge,
+            Span::styled("  │  ", Style::default().fg(COL_DIM)),
+        ];
+
+        header_spans.extend(balance_spans);
+        header_spans.push(Span::styled("  │  ", Style::default().fg(COL_DIM)));
+        header_spans.extend(wallet_spans);
+
+        let header_line = Line::from(header_spans);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -3402,46 +3512,6 @@ impl HlTuiApp {
             }
         });
 
-        let liq_bps = estimated_liq_distance_bps(cur.compiled.config.market.leverage);
-        let max_sl_bps = cur.compiled.config.exit.stop_loss.max_stop_bps();
-        let buffer_ratio = if max_sl_bps > 0 {
-            liq_bps as f64 / max_sl_bps as f64
-        } else {
-            0.0
-        };
-
-        let fmt_opt = |v: Option<f64>| {
-            v.map(|x| format!("{x:.1}"))
-                .unwrap_or_else(|| "-".to_string())
-        };
-
-        let last_px = cur
-            .last_candle
-            .as_ref()
-            .map(|c| format!("{:.4}", c.close))
-            .unwrap_or_else(|| "-".to_string());
-
-        let sl_spec_desc = match cur.compiled.config.exit.stop_loss {
-            StopLossSpec::Atr {
-                multiplier,
-                min_stop_bps,
-                max_stop_bps,
-            } => {
-                if is_narrow {
-                    format!("{multiplier:.1}x ATR ({min_stop_bps}-{max_stop_bps} bps)")
-                } else {
-                    format!(
-                        "{multiplier:.1}x ATR ({min_stop_bps}-{max_stop_bps} bps / {:.1}%-{:.1}%)",
-                        min_stop_bps as f64 / 100.0,
-                        max_stop_bps as f64 / 100.0
-                    )
-                }
-            }
-            StopLossSpec::FixedBps { bps } => {
-                format!("{bps} bps ({:.2}%)", bps as f64 / 100.0)
-            }
-        };
-
         let (risk_pct_desc, risk_usd_val) = match cur.compiled.config.sizing.mode {
             SizingMode::RiskPct => {
                 let pct = cur.compiled.config.sizing.risk_pct;
@@ -3457,8 +3527,6 @@ impl HlTuiApp {
                 (format!("${usd:.2}"), usd)
             }
         };
-        let tp_rr = cur.compiled.config.exit.take_profit_rr;
-        let tp_usd_val = risk_usd_val * tp_rr;
 
         let raw_strat_name = cur
             .file_name
@@ -3488,21 +3556,6 @@ impl HlTuiApp {
 
         let fills_guard = self.live_trades.lock().ok();
         let fills = fills_guard.as_deref().cloned().unwrap_or_default();
-        let model_tag = if cur.file_name.starts_with("t10")
-            || cur.file_name.contains("top10")
-            || cur.file_name.starts_with("d12")
-            || cur.file_name.contains("dynamic")
-        {
-            "D12".to_string()
-        } else if cur.file_name.starts_with("t3") || cur.file_name.contains("top3") {
-            "T3".to_string()
-        } else {
-            let raw = cur
-                .file_name
-                .strip_suffix(".toml")
-                .unwrap_or(&cur.file_name);
-            raw.replace('_', " ")
-        };
 
         let model_markets: &[String] = if !cur.selected_markets.is_empty() {
             &cur.selected_markets
@@ -3550,6 +3603,48 @@ impl HlTuiApp {
             .count();
         let all_time_model_pnl = norm_pnl(model_all_closes.iter().map(|f| f.closed_pnl).sum());
 
+        let session_total = session_wins + session_losses;
+        let session_win_rate = if session_total > 0 {
+            format!("{:.1}%", (session_wins as f64 / session_total as f64) * 100.0)
+        } else {
+            "—".to_string()
+        };
+        let session_wl_col = if session_wins > session_losses {
+            COL_GREEN
+        } else if session_losses > 0 {
+            COL_RED
+        } else {
+            Color::White
+        };
+        let session_pnl_col = if session_model_pnl > 0.0 {
+            COL_GREEN
+        } else if session_model_pnl < 0.0 {
+            COL_RED
+        } else {
+            COL_DIM
+        };
+
+        let all_time_total = all_time_wins + all_time_losses;
+        let all_time_win_rate = if all_time_total > 0 {
+            format!("{:.1}%", (all_time_wins as f64 / all_time_total as f64) * 100.0)
+        } else {
+            "—".to_string()
+        };
+        let all_time_wl_col = if all_time_wins > all_time_losses {
+            COL_GREEN
+        } else if all_time_losses > 0 {
+            COL_RED
+        } else {
+            Color::White
+        };
+        let all_time_pnl_col = if all_time_model_pnl > 0.0 {
+            COL_GREEN
+        } else if all_time_model_pnl < 0.0 {
+            COL_RED
+        } else {
+            COL_DIM
+        };
+
         let live_status_span = if self.live_on {
             Span::styled(
                 "● LIVE TRADING (ARMED)",
@@ -3567,7 +3662,7 @@ impl HlTuiApp {
             )
         } else {
             Span::styled(
-                "○ STANDBY (Press Space to Arm / 0 for T10 / 3 for T3)",
+                "○ STANDBY (Press Space to Arm / 0 for D12)",
                 Style::default().fg(COL_YELLOW),
             )
         };
@@ -3585,7 +3680,7 @@ impl HlTuiApp {
             .unwrap_or(&empty_positions);
 
         let positions_span = if open_positions.is_empty() {
-            Span::styled("● FLAT (0 Open)", Style::default().fg(COL_HOT_PINK))
+            Span::styled("● FLAT (0 Open Positions)", Style::default().fg(COL_HOT_PINK))
         } else {
             let names: Vec<String> = open_positions
                 .iter()
@@ -3601,7 +3696,7 @@ impl HlTuiApp {
                 .collect();
             Span::styled(
                 format!(
-                    "● {} Active ({})  ·  [ c ] Details",
+                    "● {} Active: {}  ·  [ c ] Details",
                     open_positions.len(),
                     names.join(", ")
                 ),
@@ -3610,26 +3705,16 @@ impl HlTuiApp {
         };
 
         let net_tag = if self.is_mainnet {
-            "Mainnet (Arbitrum Settled)"
+            "Mainnet"
         } else {
             "Testnet"
         };
 
-        let full_agent_str = self
-            .agent_address
-            .or_else(|| {
-                EncryptedAgentKeystore::load_from_file(&self.keystore_path())
-                    .ok()
-                    .map(|k| k.agent_address)
-            })
-            .map(|a| format!("{:#x}", a))
-            .unwrap_or_else(|| "None".to_string());
-
         let lines = if is_narrow {
             vec![
-                // Row 1: Clean Trader Account Summary (Narrow)
+                // Row 1: Account (Narrow)
                 Line::from(vec![
-                    Span::styled(" Acct   : ", Style::default().fg(COL_DIM)),
+                    Span::styled(" Acct    : ", Style::default().fg(COL_DIM)),
                     Span::styled(
                         format!("${portfolio_val:.2}"),
                         Style::default()
@@ -3646,47 +3731,61 @@ impl HlTuiApp {
                     ),
                     Span::styled(format!(" · {net_tag}"), Style::default().fg(COL_DIM)),
                 ]),
-                // Row 2: Agent Key & Copy Hotkey with Spinner Pulse Animation
-                {
-                    let mut r2 = vec![Span::styled(" Agent  : ", Style::default().fg(COL_DIM))];
-                    if self.copy_pulse_ticks > 0 {
-                        r2.extend(address_copy_pulse_spans(&full_agent_str, self.anim_tick));
-                        r2.push(Span::styled(
-                            " ✓",
-                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                        ));
+                // Row 2: Positions (Narrow)
+                Line::from(vec![
+                    Span::styled(" Pos     : ", Style::default().fg(COL_DIM)),
+                    if open_positions.is_empty() {
+                        Span::styled("● FLAT (0 Open)", Style::default().fg(COL_HOT_PINK))
                     } else {
-                        r2.extend(colored_address_spans(&full_agent_str));
-                        r2.push(Span::styled(" [y:copy]", Style::default().fg(COL_KEY)));
-                    }
-                    Line::from(r2)
-                },
-                // Row 3: Bot State
-                Line::from(vec![
-                    Span::styled(" Bot    : ", Style::default().fg(COL_DIM)),
-                    live_status_span,
+                        let parts: Vec<String> = open_positions
+                            .iter()
+                            .map(|p| {
+                                let p_coin = p.coin.strip_prefix("xyz:").unwrap_or(&p.coin);
+                                format!(
+                                    "{}: {}${:.2}",
+                                    p_coin,
+                                    if p.unrealized_pnl >= 0.0 { "+" } else { "" },
+                                    p.unrealized_pnl
+                                )
+                            })
+                            .collect();
+                        Span::styled(
+                            format!("● {} Active: {}", open_positions.len(), parts.join(", ")),
+                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+                        )
+                    },
                 ]),
-                // Row 4: Strategy & Market
+                // Row 3: Win / Loss (Narrow)
                 Line::from(vec![
-                    Span::styled(" Strat  : ", Style::default().fg(COL_DIM)),
+                    Span::styled(" Win/Loss: ", Style::default().fg(COL_DIM)),
                     Span::styled(
-                        strat_display,
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
+                        format!("Sess {session_wins}W/{session_losses}L ({session_win_rate})"),
+                        Style::default().fg(session_wl_col).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!(
-                            " · {} [{}]",
-                            cur.compiled.config.market.coin, cur.compiled.config.market.interval
-                        ),
-                        Style::default()
-                            .fg(COL_NEON_BLUE)
-                            .add_modifier(Modifier::BOLD),
+                        format!(" (${session_model_pnl:+.2})"),
+                        Style::default().fg(session_pnl_col),
                     ),
+                    Span::styled(" │ Acct: ", Style::default().fg(COL_DIM)),
+                    Span::styled(
+                        format!("{all_time_wins}W/{all_time_losses}L ({all_time_win_rate})"),
+                        Style::default().fg(all_time_wl_col),
+                    ),
+                ]),
+                // Row 4: Bot State (Narrow)
+                Line::from(vec![
+                    Span::styled(" Bot     : ", Style::default().fg(COL_DIM)),
+                    live_status_span.clone(),
+                ]),
+                // Row 5: Strategy (Narrow)
+                Line::from(vec![
+                    Span::styled(" Strat   : ", Style::default().fg(COL_DIM)),
                     Span::styled(
                         format!(
-                            " {}x {}",
+                            "{} · {} [{}] {}x {}",
+                            strat_display,
+                            cur.compiled.config.market.coin,
+                            cur.compiled.config.market.interval,
                             cur.compiled.config.market.leverage,
                             if cur.compiled.config.market.is_cross {
                                 "Cross"
@@ -3694,106 +3793,14 @@ impl HlTuiApp {
                                 "Iso"
                             }
                         ),
-                        Style::default().fg(COL_YELLOW).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                // Row 5: Risk & Sizing
-                Line::from(vec![
-                    Span::styled(" Risk   : ", Style::default().fg(COL_DIM)),
-                    if actual_bal > 0.0
-                        || matches!(cur.compiled.config.sizing.mode, SizingMode::FixedUsd)
-                    {
-                        Span::styled(
-                            format!("1R=${risk_usd_val:.2} ({risk_pct_desc})"),
-                            Style::default().fg(Color::White),
-                        )
-                    } else {
-                        Span::styled(
-                            format!("1R=— ({risk_pct_desc})"),
-                            Style::default().fg(Color::White),
-                        )
-                    },
-                    Span::styled(" │ SL: ", Style::default().fg(COL_DIM)),
-                    Span::styled(format!("{max_sl_bps}bps"), Style::default().fg(COL_YELLOW)),
-                    Span::styled(
-                        format!(" │ TP: +{tp_rr:.1}R"),
-                        Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                // Row 6: Safety vs Liq
-                Line::from(vec![
-                    Span::styled(" Safety : ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!(
-                            "SL {max_sl_bps}bps vs ~{liq_bps}bps Liq (Safe {:.1}x)",
-                            buffer_ratio
-                        ),
-                        Style::default().fg(COL_GREEN),
-                    ),
-                ]),
-                // Row 7: HTF & Indicators
-                Line::from(vec![
-                    Span::styled(" HTF    : ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("Px=${last_px}"),
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!(" · RSI={}", fmt_opt(cur.last_rsi)),
-                        Style::default().fg(COL_NEON_BLUE),
-                    ),
-                    Span::styled(
-                        format!(" · CRSI={}", fmt_opt(cur.last_crsi)),
-                        Style::default().fg(COL_HOT_PINK),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        match (cur.last_htf_stoch_k, cur.last_htf_stoch_d) {
-                            (Some(k), Some(d)) if k > d => "[4h BULL]",
-                            (Some(k), Some(d)) if k < d => "[4h BEAR]",
-                            _ => "[4h -]",
-                        },
-                        Style::default()
-                            .fg(
-                                if cur.last_htf_stoch_k.unwrap_or(0.0)
-                                    > cur.last_htf_stoch_d.unwrap_or(0.0)
-                                {
-                                    COL_GREEN
-                                } else {
-                                    COL_YELLOW
-                                },
-                            )
-                            .add_modifier(Modifier::BOLD),
-                    ),
                 ]),
-                // Row 8: Live Account Positions
+                // Row 6: Signal (Narrow)
                 Line::from(vec![
-                    Span::styled(" Pos    : ", Style::default().fg(COL_DIM)),
-                    if open_positions.is_empty() {
-                        Span::styled("● FLAT (0 Open)", Style::default().fg(COL_HOT_PINK))
-                    } else {
-                        let parts: Vec<String> = open_positions
-                            .iter()
-                            .map(|p| {
-                                format!(
-                                    "{}: {}${:.2}",
-                                    p.coin,
-                                    if p.unrealized_pnl >= 0.0 { "+" } else { "" },
-                                    p.unrealized_pnl
-                                )
-                            })
-                            .collect();
-                        Span::styled(
-                            format!("● {} Open: {}", open_positions.len(), parts.join(", ")),
-                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                        )
-                    },
-                ]),
-                // Row 9: Live Position / Signal
-                Line::from(vec![
-                    Span::styled(" Signal : ", Style::default().fg(COL_DIM)),
+                    Span::styled(" Signal  : ", Style::default().fg(COL_DIM)),
                     match &cur.latest_tick_plan {
                         Some(p) => Span::styled(
                             format!(
@@ -3810,37 +3817,6 @@ impl HlTuiApp {
                         ),
                     },
                 ]),
-                // Row 10: Model Wins/Losses for Session and All-Time (per Model, e.g. T10)
-                Line::from(vec![
-                    Span::styled(" Record : ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("[{model_tag}] "),
-                        Style::default()
-                            .fg(COL_NEON_BLUE)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(
-                            "Sess {session_wins}W/{session_losses}L (${session_model_pnl:+.2})"
-                        ),
-                        Style::default()
-                            .fg(if session_model_pnl >= 0.0 {
-                                COL_GREEN
-                            } else {
-                                COL_RED
-                            })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" │ All: ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("{all_time_wins}W/{all_time_losses}L (${all_time_model_pnl:+.2})"),
-                        Style::default().fg(if all_time_model_pnl >= 0.0 {
-                            COL_GREEN
-                        } else {
-                            COL_RED
-                        }),
-                    ),
-                ]),
             ]
         } else {
             vec![
@@ -3848,7 +3824,7 @@ impl HlTuiApp {
                 Line::from(vec![
                     Span::styled(" Account  : ", Style::default().fg(COL_DIM)),
                     Span::styled(
-                        format!("${portfolio_val:.2} Portfolio Value"),
+                        format!("${portfolio_val:.2} Equity"),
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
@@ -3863,6 +3839,18 @@ impl HlTuiApp {
                         format!("${avail_usdc:.2} Avail"),
                         Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(
+                        if let Some(t) = telem_opt {
+                            if t.spot_hold > 0.0 {
+                                format!(" (${:.2} margin)", t.spot_hold)
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        },
+                        Style::default().fg(COL_YELLOW),
+                    ),
                     Span::styled("  ·  Press ", Style::default().fg(COL_DIM)),
                     Span::styled(
                         "[ c ]",
@@ -3870,30 +3858,34 @@ impl HlTuiApp {
                     ),
                     Span::styled(" for Web dApp", Style::default().fg(Color::White)),
                 ]),
-                // Row 2: Hyperliquid Agent Address (Full Address & Copy Hotkey with Spinner Pulse Animation)
-                {
-                    let mut row2_spans =
-                        vec![Span::styled(" Agent Key: ", Style::default().fg(COL_DIM))];
-                    if self.copy_pulse_ticks > 0 {
-                        row2_spans
-                            .extend(address_copy_pulse_spans(&full_agent_str, self.anim_tick));
-                        row2_spans.push(Span::styled("  │  ", Style::default().fg(COL_DIM)));
-                        row2_spans.push(Span::styled(
-                            "✓ Copied to Clipboard!",
-                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                        ));
-                    } else {
-                        row2_spans.extend(colored_address_spans(&full_agent_str));
-                        row2_spans.push(Span::styled("  │  Press ", Style::default().fg(COL_DIM)));
-                        row2_spans.push(Span::styled(
-                            "[ y ]",
-                            Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
-                        ));
-                        row2_spans.push(Span::styled(" to Copy", Style::default().fg(COL_GREEN)));
-                    }
-                    Line::from(row2_spans)
-                },
-                // Row 3: Live Bot Execution State & Armed Markets
+                // Row 2: Live Positions (Wide)
+                Line::from(vec![
+                    Span::styled(" Positions: ", Style::default().fg(COL_DIM)),
+                    positions_span,
+                ]),
+                // Row 3: Win / Loss Record (Wide)
+                Line::from(vec![
+                    Span::styled(" Win/Loss : ", Style::default().fg(COL_DIM)),
+                    Span::styled("Session: ", Style::default().fg(COL_DIM)),
+                    Span::styled(
+                        format!("{session_wins}W / {session_losses}L ({session_win_rate})"),
+                        Style::default().fg(session_wl_col).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" (${session_model_pnl:+.2} USD)"),
+                        Style::default().fg(session_pnl_col),
+                    ),
+                    Span::styled("  │  Account Fills: ", Style::default().fg(COL_DIM)),
+                    Span::styled(
+                        format!("{all_time_wins}W / {all_time_losses}L ({all_time_win_rate})"),
+                        Style::default().fg(all_time_wl_col).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" (${all_time_model_pnl:+.2} USD)"),
+                        Style::default().fg(all_time_pnl_col),
+                    ),
+                ]),
+                // Row 4: Live Bot Execution State & Armed Markets (Wide)
                 Line::from(vec![
                     Span::styled(" Bot State: ", Style::default().fg(COL_DIM)),
                     live_status_span,
@@ -3905,7 +3897,7 @@ impl HlTuiApp {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]),
-                // Row 4: Strategy, Market & Leverage
+                // Row 5: Strategy, Market, Leverage & Risk (Wide)
                 Line::from(vec![
                     Span::styled(" Strategy : ", Style::default().fg(COL_DIM)),
                     Span::styled(
@@ -3937,112 +3929,21 @@ impl HlTuiApp {
                         ),
                         Style::default().fg(COL_YELLOW).add_modifier(Modifier::BOLD),
                     ),
-                ]),
-                // Row 4: Real Account Position Sizing & Risk
-                Line::from(vec![
-                    Span::styled(" Risk/Size: ", Style::default().fg(COL_DIM)),
-                    if actual_bal > 0.0
-                        || matches!(cur.compiled.config.sizing.mode, SizingMode::FixedUsd)
-                    {
-                        Span::styled(
-                            format!("1R = ${risk_usd_val:.2} ({risk_pct_desc})"),
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::styled(
-                            format!("1R = — ({risk_pct_desc})"),
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    },
-                    Span::styled("  │  SL: ", Style::default().fg(COL_DIM)),
-                    Span::styled(sl_spec_desc, Style::default().fg(COL_YELLOW)),
+                    Span::styled("  ·  Risk: ", Style::default().fg(COL_DIM)),
                     Span::styled(
-                        format!("  │  Target: +{tp_rr:.1}R (+${tp_usd_val:.2})"),
-                        Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                // Row 5: Exchange Safety & Liquidation Buffers
-                Line::from(vec![
-                    Span::styled(" Safety   : ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!(
-                            "Max SL: {max_sl_bps} bps ({:.1}%)",
-                            max_sl_bps as f64 / 100.0
-                        ),
-                        Style::default().fg(COL_YELLOW),
-                    ),
-                    Span::styled(
-                        format!(
-                            "  vs  Liq Distance: ~{liq_bps} bps ({:.1}%)",
-                            liq_bps as f64 / 100.0
-                        ),
-                        Style::default().fg(COL_GREEN),
-                    ),
-                    Span::styled(
-                        format!("  ·  Buffer: Safe ({buffer_ratio:.1}x)"),
-                        Style::default().fg(Color::White),
-                    ),
-                ]),
-                // Row 6: Live Market Telemetry & HTF Filter
-                Line::from(vec![
-                    Span::styled(" Telemetry: ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("Px=${last_px}  "),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("RSI={} ", fmt_opt(cur.last_rsi)),
-                        Style::default().fg(COL_NEON_BLUE),
-                    ),
-                    Span::styled(
-                        format!("CRSI={} ", fmt_opt(cur.last_crsi)),
-                        Style::default().fg(COL_HOT_PINK),
-                    ),
-                    Span::styled(
-                        format!("ADX={} ", fmt_opt(cur.last_adx)),
-                        Style::default().fg(Color::White),
-                    ),
-                    Span::styled(
-                        format!(
-                            "4h Stoch={}/{} ",
-                            fmt_opt(cur.last_htf_stoch_k),
-                            fmt_opt(cur.last_htf_stoch_d)
-                        ),
-                        Style::default().fg(COL_KEY),
-                    ),
-                    Span::styled(
-                        match (cur.last_htf_stoch_k, cur.last_htf_stoch_d) {
-                            (Some(k), Some(d)) if k > d => "[4h BULLISH]",
-                            (Some(k), Some(d)) if k < d => "[4h BEARISH]",
-                            _ => "[4h NEUTRAL]",
+                        if actual_bal > 0.0
+                            || matches!(cur.compiled.config.sizing.mode, SizingMode::FixedUsd)
+                        {
+                            format!("1R = ${risk_usd_val:.2} ({risk_pct_desc})")
+                        } else {
+                            format!("1R = — ({risk_pct_desc})")
                         },
-                        Style::default()
-                            .fg(
-                                if cur.last_htf_stoch_k.unwrap_or(0.0)
-                                    > cur.last_htf_stoch_d.unwrap_or(0.0)
-                                {
-                                    COL_GREEN
-                                } else {
-                                    COL_YELLOW
-                                },
-                            )
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::White),
                     ),
                 ]),
-                // Row 7: On-Chain Hyperliquid Positions (Across Default & Builder DEXes)
+                // Row 6: Real-Time Strategy Signal (Wide)
                 Line::from(vec![
-                    Span::styled(" Positions: ", Style::default().fg(COL_DIM)),
-                    positions_span,
-                ]),
-                // Row 8: Real-Time Strategy Signal
-                Line::from(vec![
-                    Span::styled(" Bot Signal: ", Style::default().fg(COL_DIM)),
+                    Span::styled(" Signal   : ", Style::default().fg(COL_DIM)),
                     match &cur.latest_tick_plan {
                         Some(p) => Span::styled(
                             format!(
@@ -4063,77 +3964,6 @@ impl HlTuiApp {
                             ),
                             Style::default().fg(COL_HOT_PINK),
                         ),
-                    },
-                ]),
-                // Row 10: Realized Model Wins/Losses for Session and All-Time (per Model, e.g. T10)
-                Line::from(vec![
-                    Span::styled(" Record   : ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("[{model_tag}] "),
-                        Style::default()
-                            .fg(COL_NEON_BLUE)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Session: ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("{session_wins}W / {session_losses}L"),
-                        Style::default()
-                            .fg(if session_wins > session_losses {
-                                COL_GREEN
-                            } else if session_losses > 0 {
-                                COL_RED
-                            } else {
-                                Color::White
-                            })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" (${session_model_pnl:+.2} USD)"),
-                        Style::default().fg(if session_model_pnl >= 0.0 {
-                            COL_GREEN
-                        } else {
-                            COL_RED
-                        }),
-                    ),
-                    Span::styled("  │  All-Time: ", Style::default().fg(COL_DIM)),
-                    Span::styled(
-                        format!("{all_time_wins}W / {all_time_losses}L"),
-                        Style::default()
-                            .fg(if all_time_wins > all_time_losses {
-                                COL_GREEN
-                            } else if all_time_losses > 0 {
-                                COL_RED
-                            } else {
-                                Color::White
-                            })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" (${all_time_model_pnl:+.2} USD)"),
-                        Style::default().fg(if all_time_model_pnl >= 0.0 {
-                            COL_GREEN
-                        } else {
-                            COL_RED
-                        }),
-                    ),
-                    Span::styled("  │  Status: ", Style::default().fg(COL_DIM)),
-                    if self.live_on {
-                        Span::styled(
-                            "Active (Live)",
-                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
-                        )
-                    } else if self.armed_dry_run {
-                        Span::styled(
-                            "Active (Paper)",
-                            Style::default().fg(COL_YELLOW).add_modifier(Modifier::BOLD),
-                        )
-                    } else if active_runs.iter().any(|h| h.snapshot().halted) {
-                        Span::styled(
-                            "HALTED",
-                            Style::default().fg(COL_RED).add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::styled("Standby", Style::default().fg(COL_DIM))
                     },
                 ]),
             ]
@@ -5504,6 +5334,18 @@ mod tests {
         assert_eq!(spans[4].style.fg, Some(ADDR_GREY));
         assert_eq!(spans[5].content.as_ref(), "224b2");
         assert_eq!(spans[5].style.fg, Some(ADDR_PURPLE));
+    }
+
+    #[test]
+    fn test_format_short_addr() {
+        let addr: Address = "0x5b9806b86c93bf8e570e62ab6fce41ca13e224b2"
+            .parse()
+            .unwrap();
+        assert_eq!(format_short_addr(&addr), "0x5b98…24b2");
+        let backing: Address = "0xfe4770adcedcbfe2b73bdb69f83321f1f79bfd63"
+            .parse()
+            .unwrap();
+        assert_eq!(format_short_addr(&backing), "0xfe47…fd63");
     }
 
     #[test]
