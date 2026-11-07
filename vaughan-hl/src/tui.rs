@@ -2395,7 +2395,7 @@ impl HlTuiApp {
         self.draw_strategy_list(frame, body[0]);
         self.draw_market_column(frame, body[1]);
 
-        let details_height = 8;
+        let details_height = 9;
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -3193,7 +3193,22 @@ impl HlTuiApp {
             vec![Span::styled("○ Disconnected", Style::default().fg(COL_DIM))]
         };
 
-        let wallet_spans: Vec<Span> = if let (Some(agent), Some(backing)) =
+        let wallet_spans: Vec<Span> = if self.copy_pulse_ticks > 0 {
+            let glyph = spinner_frame(self.anim_tick);
+            vec![
+                Span::styled("Agent: ", Style::default().fg(COL_DIM)),
+                Span::styled(
+                    self.agent_address
+                        .map(|a| format_short_addr(&a))
+                        .unwrap_or_else(|| "0x...".to_string()),
+                    Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {glyph} ✓ Copied!"),
+                    Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+                ),
+            ]
+        } else if let (Some(agent), Some(backing)) =
             (self.agent_address, self.backing_account)
         {
             if is_wide {
@@ -3212,6 +3227,7 @@ impl HlTuiApp {
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(" [y:copy]", Style::default().fg(COL_KEY)),
                 ]
             } else {
                 vec![
@@ -3222,6 +3238,7 @@ impl HlTuiApp {
                             .fg(COL_NEON_BLUE)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(" [y]", Style::default().fg(COL_KEY)),
                 ]
             }
         } else if let Some(agent) = self.agent_address {
@@ -3233,6 +3250,7 @@ impl HlTuiApp {
                         .fg(COL_NEON_BLUE)
                         .add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(" [y:copy]", Style::default().fg(COL_KEY)),
             ]
         } else if self.is_connected {
             vec![Span::styled(
@@ -3710,6 +3728,16 @@ impl HlTuiApp {
             "Testnet"
         };
 
+        let full_agent_str = self
+            .agent_address
+            .or_else(|| {
+                EncryptedAgentKeystore::load_from_file(&self.keystore_path())
+                    .ok()
+                    .map(|k| k.agent_address)
+            })
+            .map(|a| format!("{:#x}", a))
+            .unwrap_or_else(|| "None".to_string());
+
         let lines = if is_narrow {
             vec![
                 // Row 1: Account (Narrow)
@@ -3731,7 +3759,22 @@ impl HlTuiApp {
                     ),
                     Span::styled(format!(" · {net_tag}"), Style::default().fg(COL_DIM)),
                 ]),
-                // Row 2: Positions (Narrow)
+                // Row 2: Agent Key & Copy Hotkey with Spinner Pulse Animation (Narrow)
+                {
+                    let mut r2 = vec![Span::styled(" Agent   : ", Style::default().fg(COL_DIM))];
+                    if self.copy_pulse_ticks > 0 {
+                        r2.extend(address_copy_pulse_spans(&full_agent_str, self.anim_tick));
+                        r2.push(Span::styled(
+                            " ✓",
+                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        r2.extend(colored_address_spans(&full_agent_str));
+                        r2.push(Span::styled(" [y:copy]", Style::default().fg(COL_KEY)));
+                    }
+                    Line::from(r2)
+                },
+                // Row 3: Positions (Narrow)
                 Line::from(vec![
                     Span::styled(" Pos     : ", Style::default().fg(COL_DIM)),
                     if open_positions.is_empty() {
@@ -3755,7 +3798,7 @@ impl HlTuiApp {
                         )
                     },
                 ]),
-                // Row 3: Win / Loss (Narrow)
+                // Row 4: Win / Loss (Narrow)
                 Line::from(vec![
                     Span::styled(" Win/Loss: ", Style::default().fg(COL_DIM)),
                     Span::styled(
@@ -3772,12 +3815,12 @@ impl HlTuiApp {
                         Style::default().fg(all_time_wl_col),
                     ),
                 ]),
-                // Row 4: Bot State (Narrow)
+                // Row 5: Bot State (Narrow)
                 Line::from(vec![
                     Span::styled(" Bot     : ", Style::default().fg(COL_DIM)),
                     live_status_span.clone(),
                 ]),
-                // Row 5: Strategy (Narrow)
+                // Row 6: Strategy (Narrow)
                 Line::from(vec![
                     Span::styled(" Strat   : ", Style::default().fg(COL_DIM)),
                     Span::styled(
@@ -3798,7 +3841,7 @@ impl HlTuiApp {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]),
-                // Row 6: Signal (Narrow)
+                // Row 7: Signal (Narrow)
                 Line::from(vec![
                     Span::styled(" Signal  : ", Style::default().fg(COL_DIM)),
                     match &cur.latest_tick_plan {
@@ -3858,12 +3901,35 @@ impl HlTuiApp {
                     ),
                     Span::styled(" for Web dApp", Style::default().fg(Color::White)),
                 ]),
-                // Row 2: Live Positions (Wide)
+                // Row 2: Hyperliquid Agent Address (Full Address & Copy Hotkey with Spinner Pulse Animation)
+                {
+                    let mut row2_spans =
+                        vec![Span::styled(" Agent Key: ", Style::default().fg(COL_DIM))];
+                    if self.copy_pulse_ticks > 0 {
+                        row2_spans
+                            .extend(address_copy_pulse_spans(&full_agent_str, self.anim_tick));
+                        row2_spans.push(Span::styled("  │  ", Style::default().fg(COL_DIM)));
+                        row2_spans.push(Span::styled(
+                            "✓ Copied to Clipboard!",
+                            Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        row2_spans.extend(colored_address_spans(&full_agent_str));
+                        row2_spans.push(Span::styled("  │  Press ", Style::default().fg(COL_DIM)));
+                        row2_spans.push(Span::styled(
+                            "[ y ]",
+                            Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                        ));
+                        row2_spans.push(Span::styled(" to Copy", Style::default().fg(COL_GREEN)));
+                    }
+                    Line::from(row2_spans)
+                },
+                // Row 3: Live Positions (Wide)
                 Line::from(vec![
                     Span::styled(" Positions: ", Style::default().fg(COL_DIM)),
                     positions_span,
                 ]),
-                // Row 3: Win / Loss Record (Wide)
+                // Row 4: Win / Loss Record (Wide)
                 Line::from(vec![
                     Span::styled(" Win/Loss : ", Style::default().fg(COL_DIM)),
                     Span::styled("Session: ", Style::default().fg(COL_DIM)),
@@ -3885,7 +3951,7 @@ impl HlTuiApp {
                         Style::default().fg(all_time_pnl_col),
                     ),
                 ]),
-                // Row 4: Live Bot Execution State & Armed Markets (Wide)
+                // Row 5: Live Bot Execution State & Armed Markets (Wide)
                 Line::from(vec![
                     Span::styled(" Bot State: ", Style::default().fg(COL_DIM)),
                     live_status_span,
@@ -3897,7 +3963,7 @@ impl HlTuiApp {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]),
-                // Row 5: Strategy, Market, Leverage & Risk (Wide)
+                // Row 6: Strategy, Market, Leverage & Risk (Wide)
                 Line::from(vec![
                     Span::styled(" Strategy : ", Style::default().fg(COL_DIM)),
                     Span::styled(
@@ -3941,7 +4007,7 @@ impl HlTuiApp {
                         Style::default().fg(Color::White),
                     ),
                 ]),
-                // Row 6: Real-Time Strategy Signal (Wide)
+                // Row 7: Real-Time Strategy Signal (Wide)
                 Line::from(vec![
                     Span::styled(" Signal   : ", Style::default().fg(COL_DIM)),
                     match &cur.latest_tick_plan {
