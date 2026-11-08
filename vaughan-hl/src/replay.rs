@@ -740,6 +740,7 @@ pub fn run_parameter_sweep(
                         short_exit_any: vec![],
                         cooldown_bars: 2,
                     },
+                    auto_reinvest: None,
                 };
 
                 let compiled = CompiledStrategy::compile(cfg)?;

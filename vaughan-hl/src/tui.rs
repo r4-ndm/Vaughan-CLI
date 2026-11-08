@@ -217,6 +217,123 @@ impl MarketSelectorModal {
     }
 }
 
+/// Active perpetual DEX venue in the Auto-Trader dashboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PerpVenue {
+    #[default]
+    Hyperliquid,
+    AsterDex,
+}
+
+impl PerpVenue {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Hyperliquid => "HYPERLIQUID",
+            Self::AsterDex => "ASTER DEX",
+        }
+    }
+}
+
+/// Token option in the Siphon Settings Modal.
+#[derive(Debug, Clone)]
+pub struct SiphonTokenChoice {
+    pub symbol: String,
+    pub name: String,
+    pub address: String,
+}
+
+/// Modal dialog for configuring the automated Perp-to-Spot Profit Siphon.
+#[derive(Debug, Clone)]
+pub struct SiphonConfigModal {
+    pub strategy_label: String,
+    pub percentage: f64,
+    pub target_token: String,
+    pub target_symbol: String,
+    pub token_cursor: usize,
+    pub token_choices: Vec<SiphonTokenChoice>,
+    pub custom_input: String,
+    pub input_mode: bool,
+    pub error_msg: Option<String>,
+}
+
+impl SiphonConfigModal {
+    pub fn new(
+        strategy_label: String,
+        current_pct: f64,
+        current_token: String,
+        current_symbol: String,
+    ) -> Self {
+        let choices = vec![
+            SiphonTokenChoice {
+                symbol: "BTC".into(),
+                name: "Meme Coin BTC (PulseChain)".into(),
+                address: crate::siphon::DEFAULT_BTC_MEME_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "PLS".into(),
+                name: "Native PulseChain".into(),
+                address: crate::siphon::NATIVE_ZERO_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "PLSX".into(),
+                name: "PulseX Protocol".into(),
+                address: crate::siphon::PLSX_CONTRACT_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "HEX".into(),
+                name: "HEX Token".into(),
+                address: crate::siphon::HEX_CONTRACT_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "INC".into(),
+                name: "PulseX Incentive Token".into(),
+                address: crate::siphon::INC_CONTRACT_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "DAI".into(),
+                name: "Dai Stablecoin".into(),
+                address: crate::siphon::DAI_CONTRACT_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "WPLS".into(),
+                name: "Wrapped PLS".into(),
+                address: crate::siphon::WPLS_CONTRACT_ADDR.into(),
+            },
+            SiphonTokenChoice {
+                symbol: "CUSTOM".into(),
+                name: "Enter Custom 0x Contract...".into(),
+                address: "".into(),
+            },
+        ];
+
+        let token_cursor = choices
+            .iter()
+            .position(|c| {
+                c.symbol.eq_ignore_ascii_case(&current_symbol)
+                    || c.address.eq_ignore_ascii_case(&current_token)
+            })
+            .unwrap_or(0);
+
+        let custom_input = if token_cursor == choices.len() - 1 {
+            current_token.clone()
+        } else {
+            String::new()
+        };
+
+        Self {
+            strategy_label,
+            percentage: current_pct,
+            target_token: current_token,
+            target_symbol: current_symbol,
+            token_cursor,
+            token_choices: choices,
+            custom_input,
+            input_mode: false,
+            error_msg: None,
+        }
+    }
+}
+
 /// Popular default markets pre-populated in the selector.
 pub fn popular_market_choices(current_coins: &[String]) -> Vec<MarketSelectionItem> {
     let defaults = [
@@ -306,7 +423,9 @@ pub fn open_dapp_url_exact(url: &str, allow_hosts: &[&str]) -> Result<String, St
 
     #[cfg(test)]
     if std::env::var("VAUGHAN_SPAWN_IN_TEST").is_err() {
-        return Ok("opened in VB (mock) · saved site data — approve sign/send in Vaughan TUI".into());
+        return Ok(
+            "opened in VB (mock) · saved site data — approve sign/send in Vaughan TUI".into(),
+        );
     }
 
     let is_file = url.starts_with("file://");
@@ -537,6 +656,8 @@ pub struct HlTuiApp {
     pub poll_counter: u64,
     pub prompt: Option<PasswordPrompt>,
     pub market_modal: Option<MarketSelectorModal>,
+    pub siphon_modal: Option<SiphonConfigModal>,
+    pub active_perp_venue: PerpVenue,
     pub pending_password: Option<SecretString>,
     pub arm_after_unlock: bool,
     pub live_on: bool,
@@ -619,6 +740,8 @@ impl HlTuiApp {
             poll_counter: 0,
             prompt: None,
             market_modal: None,
+            siphon_modal: None,
+            active_perp_venue: PerpVenue::Hyperliquid,
             pending_password: None,
             arm_after_unlock: false,
             live_on: false,
@@ -658,8 +781,12 @@ impl HlTuiApp {
 
         // Sort: combo strategies first (d12/t10 then t3), then test strategies, then Walk-Forward Verified profitable strategies, then by Net R descending.
         entries.sort_by(|a, b| {
-            let a_is_combo = a.file_name.starts_with("t10") || a.file_name.starts_with("d12") || a.file_name.starts_with("t3");
-            let b_is_combo = b.file_name.starts_with("t10") || b.file_name.starts_with("d12") || b.file_name.starts_with("t3");
+            let a_is_combo = a.file_name.starts_with("t10")
+                || a.file_name.starts_with("d12")
+                || a.file_name.starts_with("t3");
+            let b_is_combo = b.file_name.starts_with("t10")
+                || b.file_name.starts_with("d12")
+                || b.file_name.starts_with("t3");
             if a_is_combo != b_is_combo {
                 return b_is_combo.cmp(&a_is_combo);
             }
@@ -773,6 +900,8 @@ impl HlTuiApp {
             poll_counter: 0,
             prompt: None,
             market_modal: None,
+            siphon_modal: None,
+            active_perp_venue: PerpVenue::Hyperliquid,
             pending_password: None,
             arm_after_unlock: false,
             live_on: false,
@@ -1039,7 +1168,8 @@ impl HlTuiApp {
             self.live_on = false;
             self.last_poll_time_ms = 0;
             self.status_msg =
-                "SIMULATION armed on DYNAMIC 12 PORTFOLIO · $0.00 balance: paper-trading mode".into();
+                "SIMULATION armed on DYNAMIC 12 PORTFOLIO · $0.00 balance: paper-trading mode"
+                    .into();
             return;
         }
 
@@ -1641,6 +1771,113 @@ impl HlTuiApp {
         HlKeyOutcome::Consumed
     }
 
+    fn handle_siphon_modal_key(&mut self, key: KeyEvent) -> HlKeyOutcome {
+        let Some(modal) = self.siphon_modal.as_mut() else {
+            return HlKeyOutcome::Consumed;
+        };
+
+        if modal.input_mode {
+            match key.code {
+                KeyCode::Esc => {
+                    modal.input_mode = false;
+                    modal.error_msg = None;
+                }
+                KeyCode::Backspace => {
+                    modal.custom_input.pop();
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    modal.custom_input.push(c);
+                }
+                KeyCode::Enter => {
+                    let trimmed = modal.custom_input.trim();
+                    match crate::siphon::resolve_target_token_address(trimmed) {
+                        Ok(addr) => {
+                            modal.target_token = format!("{:#x}", addr);
+                            modal.target_symbol = crate::siphon::display_token_symbol(trimmed);
+                            modal.input_mode = false;
+                            modal.error_msg = None;
+                        }
+                        Err(e) => {
+                            modal.error_msg = Some(format!("Invalid Address: {e}"));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return HlKeyOutcome::Consumed;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.siphon_modal = None;
+                self.status_msg = "Profit siphon settings closed (no changes applied).".into();
+            }
+            KeyCode::Enter => {
+                let choice = &modal.token_choices[modal.token_cursor];
+                let (target_token, target_symbol) = if choice.symbol == "CUSTOM" {
+                    if modal.target_token.is_empty() {
+                        modal.error_msg =
+                            Some("Please enter a custom ERC-20 address first.".into());
+                        return HlKeyOutcome::Consumed;
+                    }
+                    (modal.target_token.clone(), modal.target_symbol.clone())
+                } else {
+                    (choice.address.clone(), choice.symbol.clone())
+                };
+
+                let pct = modal.percentage;
+                if let Some(entry) = self.entries.get_mut(self.selected) {
+                    let reinvest_cfg = entry
+                        .compiled
+                        .config
+                        .auto_reinvest
+                        .get_or_insert_with(Default::default);
+                    reinvest_cfg.profit_pct = pct;
+                    reinvest_cfg.target_token = target_token.clone();
+                    reinvest_cfg.target_token_symbol = target_symbol.clone();
+
+                    let short_display = crate::siphon::display_token_symbol(&target_token);
+                    self.status_msg = format!(
+                        "✓ Profit Siphon updated: {:.0}% weekly into {} ({})",
+                        pct, target_symbol, short_display
+                    );
+                }
+                self.siphon_modal = None;
+            }
+            KeyCode::Left => {
+                modal.percentage = (modal.percentage - 5.0).max(5.0);
+            }
+            KeyCode::Right => {
+                modal.percentage = (modal.percentage + 5.0).min(100.0);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if modal.token_cursor > 0 {
+                    modal.token_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if modal.token_cursor + 1 < modal.token_choices.len() {
+                    modal.token_cursor += 1;
+                }
+            }
+            KeyCode::Char('1') => modal.percentage = 10.0,
+            KeyCode::Char('2') => modal.percentage = 20.0,
+            KeyCode::Char('3') => modal.percentage = 30.0,
+            KeyCode::Char('4') => modal.percentage = 50.0,
+            KeyCode::Char('5') => modal.percentage = 100.0,
+            KeyCode::Char('e') | KeyCode::Char('c') => {
+                modal.token_cursor = modal.token_choices.len().saturating_sub(1);
+                modal.input_mode = true;
+            }
+            _ => {}
+        }
+        HlKeyOutcome::Consumed
+    }
+
     pub fn current(&self) -> Option<&StrategyEntry> {
         self.entries.get(self.selected)
     }
@@ -1710,6 +1947,9 @@ impl HlTuiApp {
         }
         if self.market_modal.is_some() {
             return self.handle_market_modal_key(key);
+        }
+        if self.siphon_modal.is_some() {
+            return self.handle_siphon_modal_key(key);
         }
         if self.show_chart {
             return self.handle_chart_key(key);
@@ -2050,7 +2290,42 @@ impl HlTuiApp {
                     }
                 }
             }
-            KeyCode::Char('x') => {
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                self.active_perp_venue = match self.active_perp_venue {
+                    PerpVenue::Hyperliquid => PerpVenue::AsterDex,
+                    PerpVenue::AsterDex => PerpVenue::Hyperliquid,
+                };
+                self.status_msg = format!(
+                    "Active perpetual venue switched to [{}]",
+                    self.active_perp_venue.label()
+                );
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                if let Some(entry) = self.entries.get(self.selected) {
+                    let (pct, token, symbol) = if let Some(r) = &entry.compiled.config.auto_reinvest
+                    {
+                        (
+                            r.profit_pct,
+                            r.target_token.clone(),
+                            r.target_token_symbol.clone(),
+                        )
+                    } else {
+                        (
+                            20.0,
+                            crate::siphon::DEFAULT_BTC_MEME_ADDR.to_string(),
+                            "BTC".to_string(),
+                        )
+                    };
+                    self.siphon_modal = Some(SiphonConfigModal::new(
+                        entry.file_name.clone(),
+                        pct,
+                        token,
+                        symbol,
+                    ));
+                    self.status_msg = "Opened Profit Siphon & Auto-Reinvest Settings modal.".into();
+                }
+            }
+            KeyCode::Char('K') => {
                 live::stop_active();
                 self.live_on = false;
                 let revoke_json = build_approve_agent_typed_data(
@@ -2395,7 +2670,7 @@ impl HlTuiApp {
         self.draw_strategy_list(frame, body[0]);
         self.draw_market_column(frame, body[1]);
 
-        let details_height = 9;
+        let details_height = 10;
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -2415,6 +2690,8 @@ impl HlTuiApp {
             self.draw_prompt(frame, root[1]);
         } else if self.market_modal.is_some() {
             self.draw_market_modal(frame, root[1]);
+        } else if self.siphon_modal.is_some() {
+            self.draw_siphon_modal(frame, root[1]);
         } else if self.show_chart {
             self.draw_hyper_chart(frame, area);
         }
@@ -3014,6 +3291,266 @@ impl HlTuiApp {
         frame.render_widget(Paragraph::new(help), inner_layout[2]);
     }
 
+    fn draw_siphon_modal(&self, frame: &mut Frame, area: Rect) {
+        let Some(modal) = &self.siphon_modal else {
+            return;
+        };
+        let w = 72.min(area.width.saturating_sub(4));
+        let h = 20.min(area.height.saturating_sub(2));
+        let popup = Rect::new(
+            area.x + area.width.saturating_sub(w) / 2,
+            area.y + area.height.saturating_sub(h) / 2,
+            w,
+            h,
+        );
+        frame.render_widget(Clear, popup);
+
+        let title = format!(
+            " Profit Siphon & Auto-Reinvest Settings — {} ",
+            modal.strategy_label
+        );
+
+        let block = Block::default()
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(COL_HOT_PINK)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(COL_NEON_BLUE));
+
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+
+        let inner_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Percentage row
+                Constraint::Min(8),    // Token list
+                Constraint::Length(3), // Custom input or help
+                Constraint::Length(1), // Footer buttons
+            ])
+            .split(inner);
+
+        // Percentage row with quick presets
+        let p10 = if (modal.percentage - 10.0).abs() < 1e-2 {
+            "[ 10% ]"
+        } else {
+            "  10%  "
+        };
+        let p20 = if (modal.percentage - 20.0).abs() < 1e-2 {
+            "[ 20%* ]"
+        } else {
+            "  20%  "
+        };
+        let p30 = if (modal.percentage - 30.0).abs() < 1e-2 {
+            "[ 30% ]"
+        } else {
+            "  30%  "
+        };
+        let p50 = if (modal.percentage - 50.0).abs() < 1e-2 {
+            "[ 50% ]"
+        } else {
+            "  50%  "
+        };
+        let p100 = if (modal.percentage - 100.0).abs() < 1e-2 {
+            "[ 100% ]"
+        } else {
+            "  100%  "
+        };
+
+        let pct_line = Line::from(vec![
+            Span::styled(" Allocation: ", Style::default().fg(COL_DIM)),
+            Span::styled(
+                format!("{:.0}%  ", modal.percentage),
+                Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                p10,
+                if p10.starts_with('[') {
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(COL_DIM)
+                },
+            ),
+            Span::raw(" "),
+            Span::styled(
+                p20,
+                if p20.starts_with('[') {
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(COL_DIM)
+                },
+            ),
+            Span::raw(" "),
+            Span::styled(
+                p30,
+                if p30.starts_with('[') {
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(COL_DIM)
+                },
+            ),
+            Span::raw(" "),
+            Span::styled(
+                p50,
+                if p50.starts_with('[') {
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(COL_DIM)
+                },
+            ),
+            Span::raw(" "),
+            Span::styled(
+                p100,
+                if p100.starts_with('[') {
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(COL_DIM)
+                },
+            ),
+            Span::styled(" (←/→ / 1-5)", Style::default().fg(COL_DIM)),
+        ]);
+        let pct_block = Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(COL_BORDER));
+        frame.render_widget(Paragraph::new(pct_line).block(pct_block), inner_layout[0]);
+
+        // Token list
+        let rows: Vec<ListItem> = modal
+            .token_choices
+            .iter()
+            .enumerate()
+            .map(|(i, choice)| {
+                let is_cursor = i == modal.token_cursor;
+                let mark = if is_cursor { "▸ " } else { "  " };
+                let is_active = choice.symbol.eq_ignore_ascii_case(&modal.target_symbol);
+                let check = if is_active { "(•) " } else { "( ) " };
+                let row_style = if is_cursor {
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Rgb(30, 55, 90))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let check_style = if is_active {
+                    Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(COL_DIM)
+                };
+
+                let line = Line::from(vec![
+                    Span::styled(mark, row_style),
+                    Span::styled(check, check_style),
+                    Span::styled(format!("{:<8} ", choice.symbol), row_style),
+                    Span::styled(&choice.name, Style::default().fg(COL_DIM)),
+                ]);
+                ListItem::new(line)
+            })
+            .collect();
+
+        frame.render_widget(List::new(rows), inner_layout[1]);
+
+        // Custom address or active target description
+        if modal.input_mode {
+            let edit_line = Line::from(vec![
+                Span::styled(
+                    " Custom ERC-20 Address: ",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    &modal.custom_input,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("█", Style::default().fg(COL_GREEN)),
+            ]);
+            let edit_block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(COL_NEON_BLUE));
+            frame.render_widget(Paragraph::new(edit_line).block(edit_block), inner_layout[2]);
+        } else if let Some(err) = &modal.error_msg {
+            let err_line = Line::from(vec![
+                Span::styled(
+                    " Error: ",
+                    Style::default().fg(COL_RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(err, Style::default().fg(COL_RED)),
+            ]);
+            let err_block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(COL_BORDER));
+            frame.render_widget(Paragraph::new(err_line).block(err_block), inner_layout[2]);
+        } else {
+            let active_desc = Line::from(vec![
+                Span::styled(" Active Target: ", Style::default().fg(COL_DIM)),
+                Span::styled(
+                    &modal.target_symbol,
+                    Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" ("),
+                Span::styled(&modal.target_token, Style::default().fg(COL_DIM)),
+                Span::raw(")"),
+            ]);
+            let desc_block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(COL_BORDER));
+            frame.render_widget(
+                Paragraph::new(active_desc).block(desc_block),
+                inner_layout[2],
+            );
+        }
+
+        // Footer help
+        let help_line = if modal.input_mode {
+            Line::from(vec![
+                Span::styled(
+                    " <Enter>",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Confirm Address  "),
+                Span::styled(
+                    "<Esc>",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Cancel Edit"),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    " ↑/↓",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Select Token  "),
+                Span::styled(
+                    "←/→",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Adjust %  "),
+                Span::styled(
+                    "e/c",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Custom 0x  "),
+                Span::styled(
+                    "Enter",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Save & Apply  "),
+                Span::styled(
+                    "Esc",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Cancel"),
+            ])
+        };
+        frame.render_widget(Paragraph::new(help_line), inner_layout[3]);
+    }
+
     fn draw_prompt(&self, frame: &mut Frame, area: Rect) {
         let Some(p) = &self.prompt else {
             return;
@@ -3125,17 +3662,26 @@ impl HlTuiApp {
         let net_badge = if self.is_mainnet {
             Span::styled(
                 "[MAINNET]",
-                Style::default()
-                    .fg(COL_GREEN)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
             )
         } else {
             Span::styled(
                 "[TESTNET]",
-                Style::default()
-                    .fg(COL_YELLOW)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(COL_YELLOW).add_modifier(Modifier::BOLD),
             )
+        };
+
+        let venue_badge = match self.active_perp_venue {
+            PerpVenue::Hyperliquid => Span::styled(
+                "[HYPERLIQUID]",
+                Style::default()
+                    .fg(COL_NEON_BLUE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            PerpVenue::AsterDex => Span::styled(
+                "[ASTER DEX]",
+                Style::default().fg(COL_YELLOW).add_modifier(Modifier::BOLD),
+            ),
         };
 
         let telem_opt = self.live_telemetry_data.as_ref();
@@ -3208,9 +3754,7 @@ impl HlTuiApp {
                     Style::default().fg(COL_GREEN).add_modifier(Modifier::BOLD),
                 ),
             ]
-        } else if let (Some(agent), Some(backing)) =
-            (self.agent_address, self.backing_account)
-        {
+        } else if let (Some(agent), Some(backing)) = (self.agent_address, self.backing_account) {
             if is_wide {
                 vec![
                     Span::styled("Agent: ", Style::default().fg(COL_DIM)),
@@ -3281,6 +3825,8 @@ impl HlTuiApp {
             mode_span,
             Span::styled("  ", Style::default()),
             net_badge,
+            Span::styled(" ", Style::default()),
+            venue_badge,
             Span::styled("  │  ", Style::default().fg(COL_DIM)),
         ];
 
@@ -3623,7 +4169,10 @@ impl HlTuiApp {
 
         let session_total = session_wins + session_losses;
         let session_win_rate = if session_total > 0 {
-            format!("{:.1}%", (session_wins as f64 / session_total as f64) * 100.0)
+            format!(
+                "{:.1}%",
+                (session_wins as f64 / session_total as f64) * 100.0
+            )
         } else {
             "—".to_string()
         };
@@ -3644,7 +4193,10 @@ impl HlTuiApp {
 
         let all_time_total = all_time_wins + all_time_losses;
         let all_time_win_rate = if all_time_total > 0 {
-            format!("{:.1}%", (all_time_wins as f64 / all_time_total as f64) * 100.0)
+            format!(
+                "{:.1}%",
+                (all_time_wins as f64 / all_time_total as f64) * 100.0
+            )
         } else {
             "—".to_string()
         };
@@ -3698,7 +4250,10 @@ impl HlTuiApp {
             .unwrap_or(&empty_positions);
 
         let positions_span = if open_positions.is_empty() {
-            Span::styled("● FLAT (0 Open Positions)", Style::default().fg(COL_HOT_PINK))
+            Span::styled(
+                "● FLAT (0 Open Positions)",
+                Style::default().fg(COL_HOT_PINK),
+            )
         } else {
             let names: Vec<String> = open_positions
                 .iter()
@@ -3803,7 +4358,9 @@ impl HlTuiApp {
                     Span::styled(" Win/Loss: ", Style::default().fg(COL_DIM)),
                     Span::styled(
                         format!("Sess {session_wins}W/{session_losses}L ({session_win_rate})"),
-                        Style::default().fg(session_wl_col).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(session_wl_col)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!(" (${session_model_pnl:+.2})"),
@@ -3860,6 +4417,56 @@ impl HlTuiApp {
                         ),
                     },
                 ]),
+                // Row 8: Siphon (Narrow)
+                {
+                    let (s_pct, s_cadence, s_sym) =
+                        if let Some(r) = &cur.compiled.config.auto_reinvest {
+                            let cadence_str = match r.cadence {
+                                crate::strategy::ReinvestCadence::Weekly => "weekly",
+                                crate::strategy::ReinvestCadence::Daily => "daily",
+                                crate::strategy::ReinvestCadence::PerTrade => "per-trade",
+                            };
+                            (r.profit_pct, cadence_str, r.target_token_symbol.clone())
+                        } else {
+                            (20.0, "weekly", "BTC".to_string())
+                        };
+
+                    let receipt_desc = match crate::siphon::last_siphon_receipt() {
+                        Some(r) => match &r.status {
+                            crate::siphon::SiphonStatus::Quoted => {
+                                let v = r.winning_aggregator.as_deref().unwrap_or("SquirrelSwap");
+                                format!("last: quoted via {v}")
+                            }
+                            crate::siphon::SiphonStatus::Broadcast { tx_hash } => {
+                                let short = if tx_hash.len() > 10 {
+                                    &tx_hash[0..10]
+                                } else {
+                                    tx_hash
+                                };
+                                format!("last: broadcast {short}")
+                            }
+                            crate::siphon::SiphonStatus::Skipped { reason } => {
+                                format!("last: skipped ({reason})")
+                            }
+                        },
+                        None => "no receipt yet".to_string(),
+                    };
+
+                    Line::from(vec![
+                        Span::styled(
+                            " SIPHON ",
+                            Style::default()
+                                .fg(COL_HOT_PINK)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{s_pct:.0}% {s_cadence} -> {s_sym} · {receipt_desc}"),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ])
+                },
             ]
         } else {
             vec![
@@ -3935,7 +4542,9 @@ impl HlTuiApp {
                     Span::styled("Session: ", Style::default().fg(COL_DIM)),
                     Span::styled(
                         format!("{session_wins}W / {session_losses}L ({session_win_rate})"),
-                        Style::default().fg(session_wl_col).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(session_wl_col)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!(" (${session_model_pnl:+.2} USD)"),
@@ -3944,7 +4553,9 @@ impl HlTuiApp {
                     Span::styled("  │  Account Fills: ", Style::default().fg(COL_DIM)),
                     Span::styled(
                         format!("{all_time_wins}W / {all_time_losses}L ({all_time_win_rate})"),
-                        Style::default().fg(all_time_wl_col).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(all_time_wl_col)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!(" (${all_time_model_pnl:+.2} USD)"),
@@ -4032,6 +4643,56 @@ impl HlTuiApp {
                         ),
                     },
                 ]),
+                // Row 8: Auto-Reinvest & Profit Siphon (Wide)
+                {
+                    let (s_pct, s_cadence, s_sym) =
+                        if let Some(r) = &cur.compiled.config.auto_reinvest {
+                            let cadence_str = match r.cadence {
+                                crate::strategy::ReinvestCadence::Weekly => "weekly",
+                                crate::strategy::ReinvestCadence::Daily => "daily",
+                                crate::strategy::ReinvestCadence::PerTrade => "per-trade",
+                            };
+                            (r.profit_pct, cadence_str, r.target_token_symbol.clone())
+                        } else {
+                            (20.0, "weekly", "BTC".to_string())
+                        };
+
+                    let receipt_desc = match crate::siphon::last_siphon_receipt() {
+                        Some(r) => match &r.status {
+                            crate::siphon::SiphonStatus::Quoted => {
+                                let v = r.winning_aggregator.as_deref().unwrap_or("SquirrelSwap");
+                                format!("last: quoted via {v}")
+                            }
+                            crate::siphon::SiphonStatus::Broadcast { tx_hash } => {
+                                let short = if tx_hash.len() > 10 {
+                                    &tx_hash[0..10]
+                                } else {
+                                    tx_hash
+                                };
+                                format!("last: broadcast {short}")
+                            }
+                            crate::siphon::SiphonStatus::Skipped { reason } => {
+                                format!("last: skipped ({reason})")
+                            }
+                        },
+                        None => "no receipt yet".to_string(),
+                    };
+
+                    Line::from(vec![
+                        Span::styled(
+                            " SIPHON ",
+                            Style::default()
+                                .fg(COL_HOT_PINK)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{s_pct:.0}% {s_cadence} -> {s_sym} · {receipt_desc}"),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ])
+                },
             ]
         };
 
@@ -4676,6 +5337,16 @@ impl HlTuiApp {
                 }),
                 Span::styled(
                     "x",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Venue  "),
+                Span::styled(
+                    "s",
+                    Style::default().fg(COL_KEY).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" Siphon  "),
+                Span::styled(
+                    "K",
                     Style::default().fg(COL_RED).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" Kill  "),
@@ -4874,34 +5545,33 @@ fn load_strategy_entry(data_dir: &Path, path: &Path) -> Option<StrategyEntry> {
         vec![compiled.config.market.coin.clone()]
     };
 
-    let (report, h1_net_r, h2_net_r, wf_verified) =
-        if file_name.starts_with("t10")
-            || file_name.contains("top10")
-            || file_name.starts_with("d12")
-            || file_name.contains("dynamic")
-        {
-            let mut rep = report;
-            rep.total_net_r = 219.69;
-            rep.total_trades = 363;
-            rep.winning_trades = 173;
-            rep.losing_trades = 190;
-            rep.win_rate_pct = 47.7;
-            rep.profit_factor = 2.15;
-            rep.max_drawdown_r = 4.10;
-            (rep, 105.78, 104.91, true)
-        } else if file_name.starts_with("t3") || file_name.contains("top3") {
-            let mut rep = report;
-            rep.total_net_r = 22.58;
-            rep.total_trades = 28;
-            rep.winning_trades = 18;
-            rep.losing_trades = 10;
-            rep.win_rate_pct = 64.3;
-            rep.profit_factor = 2.78;
-            rep.max_drawdown_r = 2.50;
-            (rep, 9.00, 8.20, true)
-        } else {
-            (report, h1_net_r, h2_net_r, wf_verified)
-        };
+    let (report, h1_net_r, h2_net_r, wf_verified) = if file_name.starts_with("t10")
+        || file_name.contains("top10")
+        || file_name.starts_with("d12")
+        || file_name.contains("dynamic")
+    {
+        let mut rep = report;
+        rep.total_net_r = 219.69;
+        rep.total_trades = 363;
+        rep.winning_trades = 173;
+        rep.losing_trades = 190;
+        rep.win_rate_pct = 47.7;
+        rep.profit_factor = 2.15;
+        rep.max_drawdown_r = 4.10;
+        (rep, 105.78, 104.91, true)
+    } else if file_name.starts_with("t3") || file_name.contains("top3") {
+        let mut rep = report;
+        rep.total_net_r = 22.58;
+        rep.total_trades = 28;
+        rep.winning_trades = 18;
+        rep.losing_trades = 10;
+        rep.win_rate_pct = 64.3;
+        rep.profit_factor = 2.78;
+        rep.max_drawdown_r = 2.50;
+        (rep, 9.00, 8.20, true)
+    } else {
+        (report, h1_net_r, h2_net_r, wf_verified)
+    };
 
     Some(StrategyEntry {
         file_name,
@@ -5318,12 +5988,20 @@ mod tests {
         let mut app = HlTuiApp::load(&data_dir, &strat_dir).unwrap();
         assert_eq!(app.focus, HlFocus::Strategies);
 
+        // 'x' in Strategies view toggles venue between Hyperliquid and AsterDex
+        assert_eq!(app.active_perp_venue, PerpVenue::Hyperliquid);
+        let key_x = KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE);
+        assert_eq!(app.handle_key(key_x), HlKeyOutcome::Consumed);
+        assert_eq!(app.active_perp_venue, PerpVenue::AsterDex);
+        assert_eq!(app.handle_key(key_x), HlKeyOutcome::Consumed);
+        assert_eq!(app.active_perp_venue, PerpVenue::Hyperliquid);
+
         // Tab toggles focus to Markets column
         let tab = KeyEvent::new(KeyCode::Tab, crossterm::event::KeyModifiers::NONE);
         assert_eq!(app.handle_key(tab), HlKeyOutcome::Consumed);
         assert_eq!(app.focus, HlFocus::Markets);
 
-        // 'x' toggles selection on the focused market
+        // 'x' in Markets view toggles selection on the focused market
         let key_x = KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE);
         let init_sel = app.available_markets[0].selected;
         assert_eq!(app.handle_key(key_x), HlKeyOutcome::Consumed);
@@ -5651,5 +6329,30 @@ mod tests {
 
         // Clean up
         live::stop_active();
+    }
+
+    #[test]
+    fn test_siphon_modal_adjusts_percentage_and_token() {
+        let mut modal = SiphonConfigModal::new(
+            "test_model".into(),
+            20.0,
+            crate::siphon::DEFAULT_BTC_MEME_ADDR.into(),
+            "BTC".into(),
+        );
+
+        assert_eq!(modal.percentage, 20.0);
+        assert_eq!(modal.target_symbol, "BTC");
+
+        // Percentage adjustments
+        modal.percentage = (modal.percentage + 5.0).min(100.0);
+        assert_eq!(modal.percentage, 25.0);
+
+        // Preset 4 (50%)
+        modal.percentage = 50.0;
+        assert_eq!(modal.percentage, 50.0);
+
+        // Token navigation
+        modal.token_cursor = 1; // PLS
+        assert_eq!(modal.token_choices[1].symbol, "PLS");
     }
 }

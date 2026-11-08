@@ -34,6 +34,7 @@ use crate::market_data::{
     HL_TESTNET_EXCHANGE_URL, HL_TESTNET_INFO_URL,
 };
 use crate::replay::Side;
+use crate::siphon::{self, SiphonManager, SiphonReceipt};
 use crate::strategy::CompiledStrategy;
 use crate::wire::{
     format_px, format_sz, post_l1_action, resolve_asset_id, L1ActionWire, NonceAllocator,
@@ -440,6 +441,33 @@ pub fn record_execution(record: &LiveExecutionRecord) {
     }
 }
 
+/// Append a siphon receipt as one JSON line to `data/siphon_receipts.jsonl`.
+/// Failures to write are ignored, never propagated.
+pub fn record_siphon_receipt(receipt: &SiphonReceipt) {
+    if let Ok(line) = serde_json::to_string(receipt) {
+        use std::io::Write;
+        let _ = std::fs::create_dir_all("data");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("data/siphon_receipts.jsonl")
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+    siphon::set_last_siphon_receipt(receipt.clone());
+}
+
+/// Initialize a [`SiphonManager`] if `auto_reinvest` is configured and enabled.
+pub fn build_siphon_manager(cfg: &LiveConfig, now_ms: u64) -> Option<SiphonManager> {
+    cfg.strategy
+        .config
+        .auto_reinvest
+        .as_ref()
+        .filter(|r| r.enabled)
+        .map(|r| SiphonManager::new_with_recipient(r.clone(), now_ms, cfg.backing))
+}
+
 /// Place the entry + SL/TP bracket and verify the protective orders were accepted.
 async fn place_bracket(
     cfg: &LiveConfig,
@@ -638,6 +666,10 @@ async fn run_live_inner(
     };
 
     let armed_at = now_unix_ms();
+    // Epoch starts when the strategy is armed, so the first siphon measures profit
+    // made from this point on rather than the account's entire fill history.
+    let mut siphon_mgr = build_siphon_manager(cfg, armed_at);
+    let mut last_siphon_check_ms: u64 = 0;
     let nonces = NonceAllocator::new(0);
     let warmup = cfg.strategy.config.indicators.required_warmup_bars() as u64;
     let min_bars = warmup + 200;
@@ -661,6 +693,58 @@ async fn run_live_inner(
             break;
         }
         let now = now_unix_ms();
+
+        // Evaluate profit siphon cadence (at most once every 60 seconds)
+        if let Some(ref mut mgr) = siphon_mgr {
+            if now.saturating_sub(last_siphon_check_ms) >= 60_000 {
+                last_siphon_check_ms = now;
+
+                // Hard safety invariant: this path must never sign or broadcast anything.
+                // The siphon's only outputs are Quoted / Skipped receipts plus the persisted log.
+                // Do not import or touch UnlockedAgentSigner for this feature, and do not send any order request.
+                let siphon_eval = async {
+                    let fills = fetch_user_fills(info_url, cfg.backing).await?;
+                    mgr.evaluate_and_siphon(&fills, now_unix_ms()).await
+                };
+
+                // Liberty's cold-route quote takes ~10s, so the guard has to be well
+                // above that; this only runs on a due epoch, not on every 60s tick.
+                match tokio::time::timeout(Duration::from_secs(40), siphon_eval).await {
+                    Ok(Ok(Some(receipt))) => {
+                        record_siphon_receipt(&receipt);
+                        let venue = receipt.winning_aggregator.as_deref().unwrap_or("none");
+                        let status_desc = match &receipt.status {
+                            crate::siphon::SiphonStatus::Quoted => "Quoted".to_string(),
+                            crate::siphon::SiphonStatus::Skipped { reason } => {
+                                format!("Skipped: {reason}")
+                            }
+                            crate::siphon::SiphonStatus::Broadcast { tx_hash } => {
+                                format!("Broadcast: {tx_hash}")
+                            }
+                        };
+                        let summary = format!(
+                            "SIPHON {:.0}% -> {} (venue: {}) · {}",
+                            receipt.profit_pct, receipt.target_symbol, venue, status_desc
+                        );
+                        set_msg(status, summary.clone());
+                        event = summary;
+                    }
+                    Ok(Ok(None)) => {
+                        // Not due yet or disabled
+                    }
+                    Ok(Err(e)) => {
+                        let err_msg = format!("siphon: {e} (will retry)");
+                        set_msg(status, err_msg.clone());
+                        event = err_msg;
+                    }
+                    Err(e) => {
+                        let err_msg = format!("siphon: {e} (will retry)");
+                        set_msg(status, err_msg.clone());
+                        event = err_msg;
+                    }
+                }
+            }
+        }
 
         let candles = match fetch_live_candles(info_url, &coin, &interval, min_bars).await {
             Ok(c) if !c.is_empty() => c,
@@ -1017,5 +1101,55 @@ mod tests {
         let s = serde_json::to_string(&rec).unwrap();
         assert!(s.contains("\"slippage_bps\":2.0"));
         assert!(s.contains("\"strategy\":\"test_fast\""));
+    }
+
+    #[test]
+    fn live_config_with_auto_reinvest_none_leaves_siphon_untouched() {
+        let toml_str = r#"
+            [market]
+            coin = "BTC"
+            interval = "1h"
+            leverage = 5
+            direction = "long_only"
+            [entry.long]
+            all = ["rsi < 30.0"]
+            [exit]
+            stop_loss = { kind = "fixed_bps", bps = 100 }
+            take_profit_rr = 2.0
+        "#;
+        let strategy = CompiledStrategy::from_toml_str(toml_str).unwrap();
+        assert!(strategy.config.auto_reinvest.is_none());
+        let cfg = LiveConfig::new(true, Address::ZERO, strategy, "test".into(), 100.0);
+        let mgr = build_siphon_manager(&cfg, 0);
+        assert!(
+            mgr.is_none(),
+            "helper must return None when auto_reinvest is None"
+        );
+    }
+
+    #[test]
+    fn live_config_with_auto_reinvest_disabled_leaves_siphon_untouched() {
+        let toml_str = r#"
+            [market]
+            coin = "BTC"
+            interval = "1h"
+            leverage = 5
+            direction = "long_only"
+            [entry.long]
+            all = ["rsi < 30.0"]
+            [exit]
+            stop_loss = { kind = "fixed_bps", bps = 100 }
+            take_profit_rr = 2.0
+            [auto_reinvest]
+            enabled = false
+        "#;
+        let strategy = CompiledStrategy::from_toml_str(toml_str).unwrap();
+        assert!(!strategy.config.auto_reinvest.as_ref().unwrap().enabled);
+        let cfg = LiveConfig::new(true, Address::ZERO, strategy, "test".into(), 100.0);
+        let mgr = build_siphon_manager(&cfg, 0);
+        assert!(
+            mgr.is_none(),
+            "helper must return None when auto_reinvest is disabled"
+        );
     }
 }

@@ -6,7 +6,7 @@
 use alloy::primitives::{Address, U256};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
@@ -85,6 +85,36 @@ fn cycle_preset(idx: usize, forward: bool) -> usize {
     }
 }
 
+pub(crate) fn load_pending_siphon_line() -> Option<String> {
+    parse_pending_siphon_from_path(std::path::Path::new("data/siphon_pending.json"))
+}
+
+pub(crate) fn parse_pending_siphon_from_path(path: &std::path::Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let created_ms = val.get("created_ms")?.as_u64()?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    let age_s = now_ms.saturating_sub(created_ms) / 1000;
+    let symbol = val.get("target_symbol")?.as_str()?;
+    let raw_u256 = if let Some(s) = val.get("amount_usdc").and_then(|v| v.as_str()) {
+        U256::from_str(s).ok()?
+    } else {
+        val.get("amount_usdc")
+            .and_then(|v| v.as_u64())
+            .map(U256::from)?
+    };
+    let amount_fmt = format_base_units(&raw_u256.to_string(), 6);
+    Some(format!(
+        "pending siphon: {amount_fmt} USDC -> {symbol} via Liberty (quote {age_s}s old)"
+    ))
+}
+
 pub struct BridgeView {
     stage: Stage,
     focus: Focus,
@@ -98,6 +128,7 @@ pub struct BridgeView {
     confirm_lines: Vec<String>,
     tx_hash: Option<String>,
     approve_hash: Option<String>,
+    pending_siphon: Option<String>,
 }
 
 impl Default for BridgeView {
@@ -115,6 +146,7 @@ impl Default for BridgeView {
             confirm_lines: Vec::new(),
             tx_hash: None,
             approve_hash: None,
+            pending_siphon: load_pending_siphon_line(),
         }
     }
 }
@@ -214,16 +246,22 @@ impl BridgeView {
 
     fn render_input(&self, frame: &mut Frame, area: Rect) {
         let show_quote = self.busy == Busy::Quoting;
-        let constraints = vec![
+        let mut constraints = vec![
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
         ];
+        if show_quote {
+            constraints.push(Constraint::Length(1));
+        }
+        if self.pending_siphon.is_some() {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Min(0));
+
         let chunks = Layout::vertical(constraints).split(area);
         let mut i = 0;
 
@@ -298,8 +336,20 @@ impl BridgeView {
                 false,
                 false,
             );
+            i += 1;
         }
-        i += 1;
+
+        if let Some(pending) = &self.pending_siphon {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    pending.clone(),
+                    Style::default().fg(Color::DarkGray),
+                )))
+                .alignment(Alignment::Center),
+                chunks[i],
+            );
+            i += 1;
+        }
 
         render_form_footer(
             frame,
@@ -620,5 +670,52 @@ impl BridgeView {
                 KeyOutcome::StartJob(UiJob::SendEvm { tx })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_pending_siphon_nonexistent_file() {
+        let p = std::path::Path::new("nonexistent_path_definitely_not_here.json");
+        assert!(parse_pending_siphon_from_path(p).is_none());
+    }
+
+    #[test]
+    fn test_parse_pending_siphon_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("siphon_pending.json");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let created_ms = now_ms.saturating_sub(42_000); // 42 seconds ago
+
+        let json = serde_json::json!({
+            "created_ms": created_ms,
+            "recipient": "0xfe4770adcedcbfe2b73bdb69f83321f1f79bfd63",
+            "chain_id": 42161,
+            "amount_usdc": "10000000",
+            "target_symbol": "BTC",
+            "target_token": "0xF7bf2A938f971D7e4811A1170C43d651d21A0F81",
+            "router": "0x28b5a0e9c621a5badaa536219b3a228c8168cf5d",
+            "approval_spender": "0x28b5a0e9c621a5badaa536219b3a228c8168cf5d",
+            "approval_calldata": "0x095ea7b3",
+            "bridge_calldata": "0x779b432d",
+            "bridge_value": "0x0",
+            "dest_amount": "358806120622451933052928",
+            "fee_percent": 0.3,
+            "net_profit_usd": 50.0,
+            "profit_pct": 20.0
+        });
+
+        std::fs::write(&file_path, json.to_string()).unwrap();
+        let res = parse_pending_siphon_from_path(&file_path);
+        assert!(res.is_some());
+        let text = res.unwrap();
+        assert!(text.contains("pending siphon: 10 USDC -> BTC via Liberty (quote "));
+        assert!(text.ends_with("s old)"));
     }
 }
