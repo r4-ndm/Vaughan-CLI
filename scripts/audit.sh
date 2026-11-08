@@ -18,10 +18,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 RUN_TESTS=0
 CHECK_BINARY=0
+SKIP_RAILGUN=0
 for arg in "$@"; do
     case "$arg" in
         --with-tests) RUN_TESTS=1 ;;
         --binary) CHECK_BINARY=1 ;;
+        --skip-railgun) SKIP_RAILGUN=1 ;;
         -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
@@ -52,9 +54,14 @@ section "build health"
 run_check "cargo fmt --all -- --check" cargo fmt --all -- --check
 run_check "clippy (default features, -D warnings)" \
     cargo clippy --workspace --all-targets --quiet -- -D warnings
-run_check "clippy (railgun feature, -D warnings)" \
-    cargo clippy -p vaughan-railgun -p vaughan-tui -p vaughan-cli \
-    --features vaughan-railgun/enabled,vaughan-cli/railgun --all-targets --quiet -- -D warnings
+if [ "$SKIP_RAILGUN" -eq 1 ]; then
+    note "railgun clippy skipped (--skip-railgun; the dedicated CI job covers it)"
+    SKIPPED=$((SKIPPED + 1))
+else
+    run_check "clippy (railgun feature, -D warnings)" \
+        cargo clippy -p vaughan-railgun -p vaughan-tui -p vaughan-cli \
+        --features vaughan-railgun/enabled,vaughan-cli/railgun --all-targets --quiet -- -D warnings
+fi
 
 if [ "$RUN_TESTS" -eq 1 ]; then
     if ! command -v anvil >/dev/null 2>&1; then
@@ -142,7 +149,8 @@ section "installed binary"
 if [ "$CHECK_BINARY" -eq 1 ]; then
     BIN="${HOME}/.cargo/bin/vaughan"
     if [ ! -x "$BIN" ]; then
-        fail "no installed binary at $BIN"
+        note "no installed binary at $BIN (CI has none) — build with scripts/install-vaughan.sh to check it"
+        SKIPPED=$((SKIPPED + 1))
     else
         # NB: no `grep -q` here — it exits on first match, SIGPIPEs `strings`, and
         # `pipefail` would turn a hit into a failure.

@@ -32,18 +32,9 @@ This is a Rust-only repository.
 
 ## Non-negotiable rules
 
-1. **Rust only.** Pure Rust, no Node runtime. Edition 2021.
-2. **Never write secrets unencrypted.** Mnemonic/keys are encrypted (Argon2id +
-   AES-256-GCM) before touching disk, and zeroized in memory after use. Never log,
-   print, or commit a mnemonic, private key, password, or `.env`.
-3. **No telemetry / analytics / data collection** of any kind.
-4. **Testnet-first.** Any feature that moves funds is exercised on testnet before
-   mainnet. Never hardcode a mainnet-only path for a new flow.
-5. **Signing always requires explicit user approval.** No auto-sign anywhere.
-6. **Never push, deploy, or run destructive/irreversible commands** unless the user
-   explicitly asks. `git push` requires an explicit request.
-7. **Match existing conventions.** Follow rustfmt + clippy; `unsafe` is forbidden.
-   Keep the `vaughan-core` module layering (chains / core / security / error / logging).
+The canonical list is **`AGENTS.md` → "Rules (single source of truth)"** — read it, it is
+short and it wins any disagreement with this file. This document expands it: the security
+and engineering sections below add detail, they do not add exceptions.
 
 ## Security & crypto guardrails
 

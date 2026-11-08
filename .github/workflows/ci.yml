@@ -41,14 +41,12 @@ jobs:
       - name: Verify anvil on PATH
         run: anvil --version
 
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: cargo test
-        run: cargo test --workspace
+      # One gate, same as the one developers run locally: fmt, clippy, tests,
+      # tracked-file hygiene, secrets scan, and the default-build railgun leak
+      # check. Railgun clippy lives in the dedicated job below, which is the only
+      # place allowed to compile that stack.
+      - name: audit gate
+        run: scripts/audit.sh --with-tests --skip-railgun
 
   # Opt-in RAILGUN stack (docs/railgun-go-no-go.md). Separate job so the default
   # build above never compiles railgun-rust.

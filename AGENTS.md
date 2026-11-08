@@ -41,21 +41,37 @@ RAILGUN job. A red CI is not an opinion.
 | `vaughan-agent` | AI agent tools and proposals |
 | `vaughan-mcp` / `vaughan-provider` | agent surface and local EIP-1193 RPC |
 
-## Rules that must not be broken
+## Rules (single source of truth)
 
-Read `docs/audit-playbook.md` for the reasoning. Short form:
+`CLAUDE.md` expands these for Claude Code sessions; this list is canonical. If the two
+disagree, this file wins and `CLAUDE.md` should be fixed.
 
-1. The HL **agent key cannot withdraw** — automated profit paths stop at a quoted intent.
-2. **Never fabricate a transaction.** Model `Quoted` / `Broadcast { tx_hash }` /
+**Repo-wide**
+
+1. **Rust only.** Pure Rust, no Node runtime, edition 2021, `unsafe` forbidden.
+2. **No telemetry, analytics, or data collection** of any kind.
+3. **Nothing destructive without an explicit request.** No `git push`, deploy, or
+   irreversible command unless the user asked for it.
+4. **Match existing conventions** — rustfmt + clippy clean, `vaughan-core` layering
+   (chains / core / security / error / logging), `//!` module docs and `///` on public items.
+5. **Testnet-first.** Anything that moves funds is exercised on testnet before mainnet.
+
+**Money paths — read `docs/audit-playbook.md` before touching these**
+
+6. **Secrets are encrypted at rest and never logged.** Argon2id + AES-256-GCM, `secrecy`
+   + `zeroize` in memory; no mnemonic, key, or password in a log, error, UI buffer, or commit.
+7. **Signing always requires explicit user approval.** No auto-sign, approvals are never cached.
+8. The HL **agent key cannot withdraw** — automated profit paths stop at a quoted intent.
+9. **Never fabricate a transaction.** Model `Quoted` / `Broadcast { tx_hash }` /
    `Skipped { reason }`. A placeholder hash returned as real is a critical bug.
-3. **Never guess a constant on a money path** (account, price, conversion rate). Fail to
-   `Skipped { reason }` instead.
-4. **Custody stays where the wallet is.** No `vaughan-core` dependency in `vaughan-hl`;
-   no signing inside the bot binary.
-5. **New spending ships disabled** and reports why it is off. Withdrawals stay a
-   deliberate user action in the TUI.
-6. **Re-quote immediately before signing**; persisted quotes are display-only.
-7. **Allowlist routers/spenders.** An unknown contract in an execution path is a refusal.
+10. **Never guess a constant on a money path** (account, price, conversion rate). Fail to
+    `Skipped { reason }` instead.
+11. **Custody stays where the wallet is.** No `vaughan-core` dependency in `vaughan-hl`;
+    no signing inside the bot binary.
+12. **New spending ships disabled** and reports why it is off. Withdrawals stay a
+    deliberate user action in the TUI.
+13. **Re-quote immediately before signing**; persisted quotes are display-only.
+14. **Allowlist routers/spenders.** An unknown contract in an execution path is a refusal.
 
 ## Working style
 
