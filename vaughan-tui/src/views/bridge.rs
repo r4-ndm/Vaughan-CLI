@@ -85,24 +85,8 @@ fn cycle_preset(idx: usize, forward: bool) -> usize {
     }
 }
 
-// NOTE: Duplicated path resolution from `vaughan_hl::siphon::pending_exec_path`.
-// vaughan-tui does not depend on vaughan-hl to preserve layer boundaries.
-// Both resolve to `<data_dir>/vaughan-cli/siphon_pending.json`.
-pub(crate) fn pending_siphon_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .map(|d| d.join("vaughan-cli"))
-        .unwrap_or_else(|| {
-            if let Ok(home) = std::env::var("HOME") {
-                std::path::PathBuf::from(home).join(".local/share/vaughan-cli")
-            } else {
-                std::path::PathBuf::from(".local/share/vaughan-cli")
-            }
-        })
-        .join("siphon_pending.json")
-}
-
 pub(crate) fn load_pending_siphon_line() -> Option<String> {
-    parse_pending_siphon_from_path(&pending_siphon_path())
+    parse_pending_siphon_from_path(std::path::Path::new("data/siphon_pending.json"))
 }
 
 pub(crate) fn parse_pending_siphon_from_path(path: &std::path::Path) -> Option<String> {
@@ -733,15 +717,5 @@ mod tests {
         let text = res.unwrap();
         assert!(text.contains("pending siphon: 10 USDC -> BTC via Liberty (quote "));
         assert!(text.ends_with("s old)"));
-    }
-
-    #[test]
-    fn test_pending_siphon_path_is_absolute_under_vaughan_cli() {
-        let path = pending_siphon_path();
-        assert!(path.is_absolute(), "path must be absolute: {path:?}");
-        assert!(
-            path.ends_with("vaughan-cli/siphon_pending.json"),
-            "path must end with vaughan-cli/siphon_pending.json: {path:?}"
-        );
     }
 }

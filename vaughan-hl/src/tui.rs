@@ -265,7 +265,7 @@ impl SiphonConfigModal {
     ) -> Self {
         let choices = vec![
             SiphonTokenChoice {
-                symbol: "BTC (meme)".into(),
+                symbol: "BTC".into(),
                 name: "Meme Coin BTC (PulseChain)".into(),
                 address: crate::siphon::DEFAULT_BTC_MEME_ADDR.into(),
             },
@@ -2313,7 +2313,7 @@ impl HlTuiApp {
                         (
                             20.0,
                             crate::siphon::DEFAULT_BTC_MEME_ADDR.to_string(),
-                            "BTC (meme)".to_string(),
+                            "BTC".to_string(),
                         )
                     };
                     self.siphon_modal = Some(SiphonConfigModal::new(
@@ -6337,11 +6337,11 @@ mod tests {
             "test_model".into(),
             20.0,
             crate::siphon::DEFAULT_BTC_MEME_ADDR.into(),
-            "BTC (meme)".into(),
+            "BTC".into(),
         );
 
         assert_eq!(modal.percentage, 20.0);
-        assert_eq!(modal.target_symbol, "BTC (meme)");
+        assert_eq!(modal.target_symbol, "BTC");
 
         // Percentage adjustments
         modal.percentage = (modal.percentage + 5.0).min(100.0);

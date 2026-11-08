@@ -59,10 +59,7 @@ async fn profitable_epoch_writes_pending_execution() {
     std::env::set_current_dir(&dir).unwrap();
 
     let recipient = Address::from_str("0xfe4770adcedcbfe2b73bdb69f83321f1f79bfd63").unwrap();
-    let config = AutoReinvestConfig {
-        enabled: true,
-        ..Default::default()
-    }; // 20%, weekly, $25 threshold
+    let config = AutoReinvestConfig::default(); // 20%, weekly, $25 threshold
     let mut mgr = SiphonManager::new_with_recipient(config, 0, recipient);
 
     let fills = vec![LiveTradeFill {

@@ -8469,7 +8469,6 @@ dependencies = [
  "argon2",
  "clap",
  "crossterm 0.28.1",
- "dirs",
  "hex",
  "rand 0.8.7",
  "ratatui",

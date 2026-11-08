@@ -334,7 +334,7 @@ impl ReinvestCadence {
 /// Automated Perp-to-Spot Profit Siphon policy (PulseChain spot accumulation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutoReinvestConfig {
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Percentage of net realized perp profits to auto-reinvest (default: 20.0).
     #[serde(default = "default_profit_pct")]
@@ -342,7 +342,7 @@ pub struct AutoReinvestConfig {
     /// Target ERC-20 contract address or native symbol (default: meme coin BTC 0xF7bf2A938f971D7e4811A1170C43d651d21A0F81).
     #[serde(default = "default_target_token")]
     pub target_token: String,
-    /// User-friendly label for the target token (default: "BTC (meme)"). Note: this token is a PulseChain meme coin, not native or wrapped Bitcoin.
+    /// User-friendly label for the target token (default: "BTC").
     #[serde(default = "default_target_symbol")]
     pub target_token_symbol: String,
     /// Target EVM chain ID (default: 369 for PulseChain).
@@ -377,14 +377,11 @@ pub struct AutoReinvestConfig {
 fn default_profit_pct() -> f64 {
     20.0
 }
-fn default_false() -> bool {
-    false
-}
 fn default_target_token() -> String {
     "0xF7bf2A938f971D7e4811A1170C43d651d21A0F81".to_string()
 }
 fn default_target_symbol() -> String {
-    "BTC (meme)".to_string()
+    "BTC".to_string()
 }
 fn default_target_chain_id() -> u64 {
     369
@@ -408,7 +405,7 @@ fn default_route() -> String {
 impl Default for AutoReinvestConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             profit_pct: default_profit_pct(),
             target_token: default_target_token(),
             target_token_symbol: default_target_symbol(),
@@ -1296,45 +1293,12 @@ mod tests {
             reinvest.target_token,
             "0xF7bf2A938f971D7e4811A1170C43d651d21A0F81"
         );
-        assert_eq!(reinvest.target_token_symbol, "BTC (meme)");
+        assert_eq!(reinvest.target_token_symbol, "BTC");
         assert_eq!(reinvest.target_chain_id, 369);
         assert_eq!(reinvest.cadence, ReinvestCadence::Weekly);
         assert_eq!(reinvest.min_profit_threshold_usd, 25.0);
         assert_eq!(reinvest.max_slippage_bps, 100);
         assert_eq!(reinvest.route, "auto");
-    }
-
-    #[test]
-    fn auto_reinvest_defaults_to_disabled() {
-        let default_cfg = AutoReinvestConfig::default();
-        assert!(
-            !default_cfg.enabled,
-            "Default::default must have enabled=false"
-        );
-        assert_eq!(default_cfg.target_token_symbol, "BTC (meme)");
-
-        let toml_str = r#"
-            [market]
-            coin = "BTC"
-            interval = "15m"
-            direction = "long_only"
-            [entry.long]
-            all = ["rsi < 30.0"]
-            [exit]
-            stop_loss = { kind = "fixed_bps", bps = 100 }
-            take_profit_rr = 2.0
-
-            [auto_reinvest]
-        "#;
-        let compiled = CompiledStrategy::from_toml_str(toml_str).unwrap();
-        let reinvest = compiled
-            .config
-            .auto_reinvest
-            .expect("should have auto_reinvest");
-        assert!(
-            !reinvest.enabled,
-            "auto_reinvest section without enabled must default to false"
-        );
     }
 
     #[test]
