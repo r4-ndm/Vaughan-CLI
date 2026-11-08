@@ -86,7 +86,8 @@ Read the diff on every path that can move value, in this order:
 - swap and bridge quoting (`quote_aggregator`, Liberty client) — check latency budgets,
   min-out handling, spender allowlist, and whether the quoted calldata is rebuilt
 - RAILGUN shield/unshield (`vaughan-railgun`, `views/shield_flow.rs`, `views/unshield_flow.rs`)
-- the HL bot's reinvest/siphon path — confirm it really is intent-only
+- the HL bot's live path — confirm any reinvest/profit-routing code is intent-only and that it
+  cannot sign or withdraw (the siphon module was removed for exactly this reason; see the skill note)
 - MCP and the local provider: can an external process cause a signature without a human
   approval card?
 
