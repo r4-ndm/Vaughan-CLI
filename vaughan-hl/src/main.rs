@@ -61,18 +61,6 @@ enum HlSubcommands {
     },
     /// Display active Hyperliquid Agent Address, check exchange status, and copy to clipboard.
     Agent,
-    /// View or configure the automated Perp-to-Spot Profit Siphon (e.g. 20% into BTC 0xF7bf…0F81).
-    Siphon {
-        /// Percentage of net realized profits to auto-reinvest (default: 20.0).
-        #[arg(long)]
-        pct: Option<f64>,
-        /// Target token ticker (e.g. "BTC", "PLS", "PLSX") or ERC-20 contract address.
-        #[arg(long)]
-        token: Option<String>,
-        /// Test multi-aggregator quote flow on PulseChain without broadcasting.
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -80,19 +68,6 @@ enum Commands {
     /// Launch the interactive terminal user interface (default when run with no subcommand).
     #[cfg(feature = "tui")]
     Tui,
-
-    /// View or configure the automated Perp-to-Spot Profit Siphon (e.g. 20% into BTC 0xF7bf…0F81).
-    Siphon {
-        /// Percentage of net realized profits to auto-reinvest (default: 20.0).
-        #[arg(long)]
-        pct: Option<f64>,
-        /// Target token ticker (e.g. "BTC", "PLS", "PLSX") or ERC-20 contract address.
-        #[arg(long)]
-        token: Option<String>,
-        /// Test multi-aggregator quote flow on PulseChain without broadcasting.
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
 
     /// Hyperliquid strategy lab, walk-forward backtester & auto-trader TUI.
     Hl {
@@ -426,22 +401,7 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await?;
                 }
-                Some(HlSubcommands::Siphon {
-                    pct,
-                    token,
-                    dry_run,
-                }) => {
-                    handle_siphon_command(&cli.strategies_dir, pct, token, dry_run).await?;
-                }
             }
-        }
-
-        Commands::Siphon {
-            pct,
-            token,
-            dry_run,
-        } => {
-            handle_siphon_command(&cli.strategies_dir, pct, token, dry_run).await?;
         }
 
         Commands::Connect { mainnet } => {
@@ -1054,57 +1014,5 @@ async fn handle_run(
 
     vaughan_hl::live::run_live(cfg, signer, stop, status).await;
     println!("Live runner finished.");
-    Ok(())
-}
-
-async fn handle_siphon_command(
-    _strategies_dir: &Path,
-    pct: Option<f64>,
-    token: Option<String>,
-    dry_run: bool,
-) -> Result<(), anyhow::Error> {
-    let target_token =
-        token.unwrap_or_else(|| vaughan_hl::siphon::DEFAULT_BTC_MEME_ADDR.to_string());
-    let target_symbol = vaughan_hl::siphon::display_token_symbol(&target_token);
-    let target_pct = pct.unwrap_or(20.0);
-
-    println!("================================================================================");
-    println!(" PROFIT SIPHON & AUTO-REINVEST TELEMETRY (PULSECHAIN MAINNET)");
-    println!("================================================================================");
-    println!(
-        "  Allocation   : {:.1}% weekly of net realized perpetual profits",
-        target_pct
-    );
-    println!("  Target Token : {} ({})", target_symbol, target_token);
-    println!("  Routing      : Vaughan Ag Meta-Aggregator (SquirrelSwap + PulseSwap)");
-    println!("  Capital Gate : Zero-Loss Invariant ($0 spent during drawdown or flat weeks)");
-
-    if dry_run {
-        println!("\nTesting live multi-aggregator quote for 1,000 PLS input...");
-        let target_addr = vaughan_hl::siphon::resolve_target_token_address(&target_token)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let quote = vaughan_hl::siphon::quote_best_aggregator(
-            vaughan_hl::siphon::NATIVE_ZERO_ADDR,
-            &format!("{:#x}", target_addr),
-            "1000000000000000000000",
-            1.0,
-        )
-        .await;
-
-        match quote {
-            Ok(q) => {
-                println!("  ✓ Best Aggregator: {}", q.venue);
-                println!("  ✓ Route Chosen   : {}", q.route);
-                println!("  ✓ Output Tokens  : {}", q.amount_out);
-                println!("  ✓ Estimated Gas  : {}", q.gas_hint);
-                println!("  [SUCCESS] Multi-aggregator flow verified live on PulseChain.");
-            }
-            Err(e) => {
-                println!("  ✗ Multi-Aggregator Quote Failed: {e}");
-            }
-        }
-    } else {
-        println!("\nRun with `--dry-run` to test live multi-aggregator quotes from SquirrelSwap & PulseSwap.");
-    }
     Ok(())
 }

@@ -9,7 +9,6 @@ pub mod keystore;
 pub mod live;
 pub mod market_data;
 pub mod replay;
-pub mod siphon;
 pub mod strategy;
 #[cfg(feature = "tui")]
 pub mod tui;
