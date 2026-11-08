@@ -26,6 +26,7 @@ tui = ["dep:ratatui", "dep:crossterm"]
 # Core & CLI (matches Vaughan-CLI workspace allowlist)
 anyhow = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
+dirs = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -446,11 +446,14 @@ pub fn record_execution(record: &LiveExecutionRecord) {
 pub fn record_siphon_receipt(receipt: &SiphonReceipt) {
     if let Ok(line) = serde_json::to_string(receipt) {
         use std::io::Write;
-        let _ = std::fs::create_dir_all("data");
+        let path = siphon::wallet_data_dir().join("siphon_receipts.jsonl");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("data/siphon_receipts.jsonl")
+            .open(&path)
         {
             let _ = writeln!(f, "{line}");
         }
