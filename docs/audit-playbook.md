@@ -119,8 +119,10 @@ Documentation is part of the product, and it drifts silently:
 ## Repo-specific traps that look like bugs (and vice versa)
 
 - **Feature-gated UI "disappears".** RAILGUN is `default = []`. A plain
-  `cargo build -p vaughan-cli` has no `0` shortcut and no privacy chip. Check the binary
-  before filing a UI regression: `strings ~/.cargo/bin/vaughan | grep 'private (RAILGUN)'`.
+  `cargo build -p vaughan-cli` has no privacy chip and `0` only flashes "Private view
+  needs the vaughan-p build" — the shipped `scripts/install-vaughan.sh` build enables the
+  feature. Check the binary before filing a UI regression:
+  `strings ~/.cargo/bin/vaughan | grep 'private (RAILGUN)'`.
 - **Empty private panel is correct on PulseChain.** RAILGUN is deployed on Sepolia only
   (`vaughan-railgun/src/deployment.rs`). "Isn't deployed" on 369/943 is right.
 - **Stale install.** `~/.cargo/bin/vaughan` can be older than the tree. Compare with
@@ -147,6 +149,11 @@ P0/P1/P2 — one-line title
 - **P1** — wrong behaviour on a money-adjacent path, or a real security gap that needs
   user error to exploit.
 - **P2** — everything else that is worth fixing: drift, missing tests, misleading docs.
+
+**Latent vs live:** the same defect drops one level when nothing currently reaches it —
+executable calldata written to disk with no consumer is P1, the day something reads it
+and signs, it is P0. Say which you judged ("latent: no reader today") so the next audit
+does not have to re-derive it.
 
 Then say explicitly what you did **not** cover. An audit that claims full coverage is
 usually one that stopped early.
