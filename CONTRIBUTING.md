@@ -41,6 +41,8 @@ noted; install Foundry if those tests fail with "anvil not found".
 - [ ] `cargo fmt --all -- --check` passes
 - [ ] `cargo clippy --workspace -- -D warnings` passes
 - [ ] `cargo test --workspace` passes
+- [ ] `scripts/audit.sh` passes (mechanics) and any money-path change was reviewed
+      against [`docs/audit-playbook.md`](docs/audit-playbook.md) (judgement)
 - [ ] No secrets, mnemonics, or real keys in code, tests, logs, or fixtures
 - [ ] Signing / fund-moving paths keep explicit user approval (never auto-sign)
 - [ ] New dependencies are listed in CLAUDE.md allowlist or called out in the PR

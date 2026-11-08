@@ -210,6 +210,16 @@ scripts/install-vaughan.sh        # installs vaughan + vaughan-p alias
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.
 
+Before you trust a change to signing, bridging, swaps or RAILGUN, run the mechanical
+gate and then read the judgement half:
+
+```bash
+scripts/audit.sh --with-tests --binary   # fmt, clippy, tests, hygiene, secrets, binary
+```
+
+[`AGENTS.md`](AGENTS.md) has the cross-agent rules; [`docs/audit-playbook.md`](docs/audit-playbook.md)
+explains how to audit the money paths that a green test run does not cover.
+
 ## Features
 
 - 🐸 **Browserless Pulse**: Ag / Dex / contract browser / approvals in-TUI — approve calldata, not websites

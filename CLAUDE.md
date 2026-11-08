@@ -3,6 +3,11 @@
 Guidance for AI agents working in this repository. Read this first; it is
 authoritative for how work gets done here.
 
+**Portable entry point:** `AGENTS.md` at the repo root carries the same rules in the
+cross-agent format (Codex, Cursor, Antigravity, …). Auditing, and the invariants that
+must not be broken on money paths, are in `docs/audit-playbook.md`; the mechanical half
+of any audit is `scripts/audit.sh`.
+
 ## What this repo is
 
 **Vaughan-CLI** — a Rust multi-chain CLI wallet TUI. EVM-first, PulseChain-optimized.
