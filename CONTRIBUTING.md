@@ -30,7 +30,7 @@ cd Vaughan-CLI
 cargo build --workspace
 cargo test --workspace
 cargo fmt --all
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Integration tests spin up local [Anvil](https://book.getfoundry.sh/anvil/) where
@@ -39,7 +39,7 @@ noted; install Foundry if those tests fail with "anvil not found".
 ## Pull request checklist
 
 - [ ] `cargo fmt --all -- --check` passes
-- [ ] `cargo clippy --workspace -- -D warnings` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [ ] `cargo test --workspace` passes
 - [ ] `scripts/audit.sh` passes (mechanics) and any money-path change was reviewed
       against [`docs/audit-playbook.md`](docs/audit-playbook.md) (judgement)

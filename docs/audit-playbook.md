@@ -6,8 +6,10 @@ crate map and the rules that must not be broken; this document is the *procedure
 Two halves, and both are required:
 
 1. **Mechanical** — `scripts/audit.sh`. fmt, clippy (default and railgun features),
-   tracked-file hygiene, a secrets scan, and optionally the test suite and the
-   installed binary. It fails loudly. Cheap, repeatable, and it is not an audit.
+   dependency advisories (`cargo audit`), tracked-file hygiene, a secrets scan that
+   fails on any hit, the default-build RAILGUN leak checks, and optionally the test
+   suite and the installed binary. Cargo runs `--locked`, so the gate judges the
+   committed `Cargo.lock`. It fails loudly. Cheap, repeatable, and it is not an audit.
 2. **Judgement** — this document. Reading the diff, deciding whether the code does
    what the docs claim, and whether a money path can lose funds.
 
@@ -61,8 +63,14 @@ money a mistake costs.
    failed quote → `Skipped { reason }`. A hardcoded fallback account or price silently
    sizes every batch wrong and is invisible to tests.
 4. **Custody stays with the crate that holds the wallet.** `vaughan-hl` must not gain a
-   `vaughan-core` dependency, and signing must not move into the bot binary. The only
-   broadcast paths are `vaughan-tui`'s `UiJob::SendEvmWithFee` / `WalletState::send_transaction`.
+   `vaughan-core` dependency, and signing must not move into the bot binary. Broadcast
+   happens in exactly three places — audit all of them, not just the TUI:
+   `vaughan-core/src/chains/evm/adapter.rs::send_transaction` / `send_raw_transaction`
+   (the chokepoint), `vaughan-tui`'s `UiJob::SendEvmWithFee` / `WalletState::send_transaction`
+   (user-approved), and `vaughan-agent/src/sentient/trader.rs` (**signs and broadcasts on its
+   own in `SentientTrader` mode**, no approval card — reachable from
+   `vaughan-tui/src/sentient_mcp.rs`). A claim that "only the TUI broadcasts" is false and
+   will make you miss the autonomous path.
 5. **Spending starts disabled and explains itself.** A new spending feature ships off by
    default and reports why it is off; approvals and withdrawals stay deliberate user
    actions in the UI.
@@ -87,7 +95,8 @@ Read the diff on every path that can move value, in this order:
   min-out handling, spender allowlist, and whether the quoted calldata is rebuilt
 - RAILGUN shield/unshield (`vaughan-railgun`, `views/shield_flow.rs`, `views/unshield_flow.rs`)
 - the HL bot's live path — confirm any reinvest/profit-routing code is intent-only and that it
-  cannot sign or withdraw (the siphon module was removed for exactly this reason; see the skill note)
+  cannot sign or withdraw (there is no profit-siphoning module in the tree: `git grep -ri
+  siphon` matches only this paragraph; if one reappears in the bot, treat it as P0)
 - MCP and the local provider: can an external process cause a signature without a human
   approval card?
 
@@ -124,10 +133,13 @@ Documentation is part of the product, and it drifts silently:
   needs the vaughan-p build" — the shipped `scripts/install-vaughan.sh` build enables the
   feature. Check the binary before filing a UI regression:
   `strings ~/.cargo/bin/vaughan | grep 'private (RAILGUN)'`.
-- **Empty private panel is correct on PulseChain.** RAILGUN is deployed on Sepolia only
-  (`vaughan-railgun/src/deployment.rs`). "Isn't deployed" on 369/943 is right.
+- **Empty private panel is correct on PulseChain.** Vaughan enables RAILGUN receive and
+  shield on Sepolia only (`deployment.rs::receive_enabled` / `shield_enabled`); the
+  crate's supported-chain table also lists 1/56/137/42161, so "not deployed" is only
+  correct for chains absent from it — 369/943 are.
 - **Stale install.** `~/.cargo/bin/vaughan` can be older than the tree. Compare with
-  `cmp target/release/vaughan ~/.cargo/bin/vaughan` or a string literal that changed.
+  `cmp target/railgun/release/vaughan ~/.cargo/bin/vaughan` (the install script builds with
+  `CARGO_TARGET_DIR=target/railgun`) or a string literal that changed.
 - **Anvil version skew.** CI pins Foundry v1.2.1; newer anvil replies to
   `eth_sendTransaction` before mining and makes send-then-read tests flaky.
 - **`test-vectors/railgun/node_modules`** exists locally and is deliberately untracked.

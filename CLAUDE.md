@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-Guidance for AI agents working in this repository. Read this first; it is
-authoritative for how work gets done here.
+Guidance for AI agents working in this repository. `AGENTS.md` is authoritative; this
+file expands its rules for Claude Code sessions and loses any disagreement.
 
 **Portable entry point:** `AGENTS.md` at the repo root carries the same rules in the
 cross-agent format (Codex, Cursor, Antigravity, …). Auditing, and the invariants that
@@ -195,8 +195,8 @@ vaughan-core/src/
   security/                    # hd_wallet (BIP-39/32/44), encryption (Argon2id + AES-256-GCM)
   error.rs                     # WalletError + retry helper
   logging.rs                   # tracing setup
-  vaughan-railgun/src/           # opt-in RAILGUN (feature `enabled`; wraps pinned railgun-rust)
-  vaughan-tui/src/               # ratatui app: onboarding, unlock, dashboard, send, receive, settings
+vaughan-railgun/src/           # opt-in RAILGUN (feature `enabled`; wraps pinned railgun-rust)
+vaughan-tui/src/               # ratatui app: onboarding, unlock, dashboard, send, receive, settings
 vaughan-agent/skills/          # agent playbooks (any MCP host) — start at skills/INDEX.md
 REQUIREMENTS.md  PLAN.md  TASKS.md   # requirements / plan / task backlog
 ```

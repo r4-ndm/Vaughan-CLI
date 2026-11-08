@@ -2,6 +2,15 @@
 
 Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
+## Security debt (open)
+
+- [ ] **Dependency advisories — `cargo audit` reports 15 vulnerabilities and 8 warnings.**
+      Includes `tokio` RUSTSEC-2026-0386 (`AsyncFd` I/O-safety violation, *unsound*),
+      `chacha20` 0.10.1 and `crypto-bigint` 0.7.5 (`yanked`), `memmap2` 0.6.2 (unsound),
+      plus unmaintained transitive crates. Triage order: reachable-from-default-build first,
+      then the pinned RAILGUN stack. `scripts/audit.sh` fails on this, so CI runs it with
+      `--no-audit` — remove that flag once the set is triaged or baselined with justification.
+
 ## Phase 1 — EOA wallet on PulseChain
 
 ### vaughan-core

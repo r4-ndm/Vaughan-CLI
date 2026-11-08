@@ -26,20 +26,25 @@ scripts/audit.sh                            # mechanical audit gate
 scripts/audit.sh --with-tests --binary      # release-grade gate
 ```
 
-CI runs fmt, clippy, and the full test suite on every push and PR, plus a separate
-RAILGUN job. A red CI is not an opinion.
+CI runs fmt, clippy, and the full test suite on every push to `main` and every PR
+against `main`, plus a separate RAILGUN job. A push to any other branch runs no CI
+until it is opened as a PR — run `scripts/audit.sh` locally. A red CI is not an
+opinion.
 
 ## Crate map
 
 | Crate | Holds |
 |---|---|
 | `vaughan-core` | wallet, keys, signing, RPC, quoting (`quote_aggregator`), stealth |
-| `vaughan-tui` | the dashboard; owns the only broadcast paths (`UiJob::SendEvmWithFee`, `WalletState::send_transaction`) |
+| `vaughan-aa` | EIP-7702 / Ambire smart accounts, batched sends |
+| `vaughan-dapp-browser` | optional allowlisted Chromium dApp shell (EIP-1193 -> local provider) |
+| `vaughan-tui` | the dashboard; user-approved broadcast via `UiJob::SendEvmWithFee` / `WalletState::send_transaction` |
 | `vaughan-cli` | the `vaughan` binary; links `vaughan-tui` as a library |
 | `vaughan-hl` | Hyperliquid bot: strategies, replay, live runner, TUI; ships binary + lib |
-| `vaughan-railgun` | RAILGUN shielded balances (opt-in `railgun` feature, Sepolia only) |
+| `vaughan-railgun` | RAILGUN shielded balances (crate feature `enabled`, default off; frontends enable `vaughan-cli/railgun`; Sepolia only) |
 | `vaughan-agent` | AI agent tools and proposals |
 | `vaughan-mcp` / `vaughan-provider` | agent surface and local EIP-1193 RPC |
+| `crates/wiz4rd-math`, `crates/wiz4rd-sdk` | Uniswap V3 tick/swap math, pool/swap/LP tx builders |
 
 ## Rules (single source of truth)
 
@@ -67,7 +72,9 @@ disagree, this file wins and `CLAUDE.md` should be fixed.
 10. **Never guess a constant on a money path** (account, price, conversion rate). Fail to
     `Skipped { reason }` instead.
 11. **Custody stays where the wallet is.** No `vaughan-core` dependency in `vaughan-hl`;
-    no signing inside the bot binary.
+    no signing inside the bot binary. Broadcast is not TUI-only: the chokepoint is
+    `vaughan-core/.../adapter.rs`, and `vaughan-agent/src/sentient/trader.rs` signs and
+    broadcasts by itself in `SentientTrader` mode — audit it with the TUI paths.
 12. **New spending ships disabled** and reports why it is off. Withdrawals stay a
     deliberate user action in the TUI.
 13. **Re-quote immediately before signing**; persisted quotes are display-only.
@@ -79,8 +86,9 @@ disagree, this file wins and `CLAUDE.md` should be fixed.
   bot's live path — those are the surfaces that break silently.
 - Verify with the artifact, not the log line: `strings` the binary, read the file, run
   the command. Exit codes from agent wrappers lie.
-- Feature-gated code needs a feature check: RAILGUN is `default = []`, so the private
-  panel and the `0` shortcut do not exist in a plain build.
+- Feature-gated code needs a feature check: RAILGUN is `default = []`, so a plain
+  build has no private panel and `0` only flashes "Private view needs the vaughan-p
+  build (--features railgun)" — the key exists, the panel does not.
 - Write artifacts to absolute paths, not CWD-relative ones — the TUI launches the bot
   from another directory.
 - Update docs in the same commit as the behaviour change. Stale docs are a bug here.
