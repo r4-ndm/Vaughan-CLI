@@ -87,7 +87,10 @@ impl ShieldedPanel {
         let net = wallet.networks().active();
         self.chain_id = net.chain_id;
         let Some(dep) = deployment::for_chain(net.chain_id) else {
-            self.status = format!("RAILGUN isn't deployed on {}.", net.name);
+            self.status = format!(
+                "RAILGUN isn't deployed on {} — switch to Sepolia (n) to view private balances.",
+                net.name
+            );
             return;
         };
         let account = match wallet
@@ -408,9 +411,10 @@ mod tests {
     fn unsupported_chain_shows_only_the_reason() {
         let mut panel = ShieldedPanel::default();
         panel.chain_id = 369;
-        panel.status = "RAILGUN isn't deployed on PulseChain.".into();
+        panel.status = "RAILGUN isn't deployed on PulseChain — switch to Sepolia (n) to view private balances.".into();
         let t = text(&panel);
         assert!(t.contains("isn't deployed"));
+        assert!(t.contains("switch to Sepolia"));
         assert!(!t.contains("0zk"));
     }
 

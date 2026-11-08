@@ -192,7 +192,7 @@ impl UnshieldFlow {
         let active_addr = wallet
             .active_address()
             .ok()
-            .and_then(|a| parse_address(&a).ok());
+            .and_then(|a| parse_address(a).ok());
         let is_self = active_addr == Some(preview.recipient);
         let recipient_label = if is_self {
             format!("{:#x} (your active public wallet)", preview.recipient)

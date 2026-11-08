@@ -19,7 +19,7 @@ merges — see [docs/freedom-browser-status.md](docs/freedom-browser-status.md).
 
 - **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
 - **ratatui** for the terminal interface
-- **In-core ERC-5564 stealth** (Kohaku / RAILGUN deferred — see [docs/kohaku-go-no-go.md](docs/kohaku-go-no-go.md))
+- **In-core ERC-5564 stealth** plus **RAILGUN shielded balances** (opt-in feature, Sepolia only — see [docs/railgun-go-no-go.md](docs/railgun-go-no-go.md))
 - **MCP** for external agents — Cursor / Claude propose; you approve in Vaughan ([docs/mcp.md](docs/mcp.md))
 - **VB** (`vaughan-dapp-browser`) — optional allowlisted Chromium shell + CDP ([docs/dapp-browser-strategy.md](docs/dapp-browser-strategy.md))
 - **Freedom Browser** — **parked** (upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) pending); dev fallback only
@@ -93,6 +93,8 @@ supported but real money — treat mistakes as permanent.
 
 | Key | Screen | Use it for |
 |-----|--------|------------|
+| `v` | Receive | Public address, stealth URI, stealth-note scan |
+| `0` | Private | RAILGUN shielded balances (Sepolia only; requires the `railgun` feature build) |
 | `s` | Send | Send native PLS or ERC-20 |
 | `g` | Ag | Aggregator swap (best route across venues) |
 | `d` | Dex | Swap on a named DEX (PulseX, Wiz4rd, …) |
@@ -196,6 +198,14 @@ Or run without installing:
 cargo run -p vaughan-cli          # TUI
 cargo run -p vaughan-cli -- balance
 cargo run -p vaughan-tui           # TUI-only crate (dev convenience)
+```
+
+The private (RAILGUN) panel is a compile-time feature — the default build omits it
+entirely. `scripts/install-vaughan.sh` builds the release binary **with** `--features
+railgun`, installs it as `vaughan`, and symlinks `vaughan-p` to it:
+
+```bash
+scripts/install-vaughan.sh        # installs vaughan + vaughan-p alias
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.

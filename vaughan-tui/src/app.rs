@@ -1115,6 +1115,27 @@ impl App {
                 }
                 return;
             }
+            GlobalAction::PrivatePanel => {
+                if self.wallet().is_unlocked() {
+                    #[cfg(feature = "railgun")]
+                    {
+                        if self.screen() != Screen::Receive {
+                            self.navigate(Screen::Receive);
+                        }
+                        if let View::Receive(v) = &mut self.view {
+                            let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            v.open_private(&mut wallet, &self.handle);
+                        }
+                    }
+                    #[cfg(not(feature = "railgun"))]
+                    {
+                        self.set_flash(
+                            "Private view needs the vaughan-p build (--features railgun)",
+                        );
+                    }
+                }
+                return;
+            }
             GlobalAction::None => {}
         }
 
@@ -4898,6 +4919,8 @@ enum GlobalAction {
     AssistBurn,
     /// Launch the Hyperliquid Auto-Trader dashboard.
     LaunchAutoTrader,
+    /// Open the read-only RAILGUN private panel (footer `0`).
+    PrivatePanel,
 }
 
 /// When a view swallows a footer chip key without acting on it, retry globally.
@@ -4942,6 +4965,13 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
     // Footer shortcuts — available from every unlocked view when idle.
     match key.code {
         KeyCode::Char('1') => GlobalAction::LaunchAutoTrader,
+        KeyCode::Char('0')
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            GlobalAction::PrivatePanel
+        }
         KeyCode::Char(c) => match c.to_ascii_lowercase() {
             's' => GlobalAction::Navigate(Screen::Dashboard),
             'v' => GlobalAction::Navigate(Screen::Receive),
@@ -5165,6 +5195,14 @@ mod tests {
             GlobalAction::LaunchAutoTrader
         );
         assert_eq!(
+            global_action(press('0'), &KeyOutcome::NotHandled),
+            GlobalAction::PrivatePanel
+        );
+        assert_eq!(
+            global_action(ctrl('0'), &KeyOutcome::NotHandled),
+            GlobalAction::None
+        );
+        assert_eq!(
             global_action(press('2'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
@@ -5178,6 +5216,10 @@ mod tests {
     fn defer_footer_shortcut_retries_consumed_chip_keys() {
         assert!(matches!(
             defer_footer_shortcut(KeyOutcome::Consumed, press('d'), true),
+            KeyOutcome::NotHandled
+        ));
+        assert!(matches!(
+            defer_footer_shortcut(KeyOutcome::Consumed, press('0'), true),
             KeyOutcome::NotHandled
         ));
         assert!(matches!(

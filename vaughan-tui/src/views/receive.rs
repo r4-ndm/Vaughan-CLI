@@ -138,6 +138,14 @@ impl ReceiveView {
         None
     }
 
+    /// Open the read-only RAILGUN private balance panel and start background scan.
+    #[cfg(feature = "railgun")]
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn open_private(&mut self, wallet: &mut WalletState, handle: &Handle) {
+        self.stage = Stage::Shielded;
+        self.shielded.start(wallet, handle);
+    }
+
     /// Address / URI on unbordered rows so copy/select stays clean.
     fn render_address(&self, frame: &mut Frame, area: Rect, wallet: &WalletState, net_name: &str) {
         let address = wallet
@@ -249,9 +257,8 @@ impl ReceiveView {
                 }
                 #[cfg(feature = "railgun")]
                 KeyCode::Char('0') => {
-                    self.stage = Stage::Shielded;
-                    self.shielded.start(wallet, handle);
-                    KeyOutcome::Consumed
+                    self.open_private(wallet, handle);
+                    KeyOutcome::Handled
                 }
                 // `y` falls through to the global copy so it gets the address pulse.
                 KeyCode::Char('u') | KeyCode::Char('U') => match wallet.stealth_uri() {

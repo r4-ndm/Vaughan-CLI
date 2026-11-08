@@ -95,7 +95,7 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Char('x') | KeyCode::Char('X') => !ctrl,
-        KeyCode::Char('1') => !ctrl,
+        KeyCode::Char('1') | KeyCode::Char('0') => !ctrl,
         KeyCode::Char(c) if c.is_ascii_alphabetic() => {
             matches!(
                 c.to_ascii_lowercase(),
