@@ -4,12 +4,18 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ## Security debt (open)
 
-- [ ] **Dependency advisories — `cargo audit` reports 15 vulnerabilities and 8 warnings.**
-      Includes `tokio` RUSTSEC-2026-0386 (`AsyncFd` I/O-safety violation, *unsound*),
-      `chacha20` 0.10.1 and `crypto-bigint` 0.7.5 (`yanked`), `memmap2` 0.6.2 (unsound),
-      plus unmaintained transitive crates. Triage order: reachable-from-default-build first,
-      then the pinned RAILGUN stack. `scripts/audit.sh` fails on this, so CI runs it with
-      `--no-audit` — remove that flag once the set is triaged or baselined with justification.
+- [ ] **Dependency advisories — 15 → 2 after the lockfile triage; both accepted, both blocked upstream.**
+      Cleared by targeted `cargo update -p`: tokio RUSTSEC-2026-0386 (unsound), rustls
+      RUSTSEC-2026-0346..0349, rustls-webpki -0382, chacha20 (yanked), crypto-bigint 0.7.5
+      (yanked), ctutils -0385, quinn-proto -0338..0342, webpki-root-certs -0383, pin-utils.
+      Remaining, with reasons in `.cargo/audit.toml`:
+      - **RUSTSEC-2026-0387 `crypto-bigint 0.5.5`** (timing variability) — DEFAULT build via
+        `k256`/`alloy-signer`; no fixed 0.5.x and alloy still pins `k256 ^0.13`. Unblocks on an
+        alloy release using k256 ^0.14. Owner: unassigned — this is the one to watch.
+      - **RUSTSEC-2026-0344 `ruzstd 0.5.0`** (decompression bomb) — RAILGUN/wasmer only, not
+        compiled without `--features railgun`. Unblocks on a newer `railgun-rust` rev or wasmer 7.x.
+      Unmaintained notices (paste, pin-utils, derivative, proc-macro-error2, memmap2) are warnings,
+      not failures; re-check them whenever alloy or the RAILGUN rev moves.
 
 ## Phase 1 — EOA wallet on PulseChain
 

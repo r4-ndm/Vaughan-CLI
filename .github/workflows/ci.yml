@@ -46,13 +46,10 @@ jobs:
       # check. Railgun clippy lives in the dedicated job below, which is the only
       # place allowed to compile that stack.
       #
-      # --no-audit: `cargo audit` currently reports 15 vulnerabilities and 8
-      # warnings (tokio RUSTSEC-2026-0386 unsound, chacha20/crypto-bigint yanked,
-      # plus the pinned RAILGUN stack). That is real debt, tracked in TASKS.md —
-      # drop this flag once the advisory set is triaged. Until then the gate is
-      # green, not clean, and says so.
+      # cargo audit runs in the gate. Two advisories are accepted risk and listed
+      # with reasons in .cargo/audit.toml — anything new fails here.
       - name: audit gate
-        run: scripts/audit.sh --with-tests --skip-railgun --no-audit
+        run: scripts/audit.sh --with-tests --skip-railgun
 
   # Opt-in RAILGUN stack (docs/railgun-go-no-go.md). Separate job so the default
   # build above never compiles railgun-rust.
