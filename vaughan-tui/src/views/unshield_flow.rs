@@ -422,6 +422,10 @@ impl UnshieldFlow {
         let (Some(p), Some(proposal)) = (&self.prepared, &self.proposal) else {
             return KeyOutcome::Consumed;
         };
+        let fee = match &self.stage {
+            Stage::Approve(f) => f.clone(),
+            _ => return KeyOutcome::Consumed,
+        };
         let tx = EvmTransaction {
             from: format!("{:#x}", p.owner),
             to: format!("{:#x}", proposal.to),
@@ -435,7 +439,7 @@ impl UnshieldFlow {
             chain_id: p.deployment.chain_id,
         };
         self.stage = Stage::Broadcasting;
-        KeyOutcome::StartJob(UiJob::SendEvm { tx })
+        KeyOutcome::StartJob(UiJob::SendEvmWithFee { tx, fee })
     }
 }
 
@@ -688,7 +692,7 @@ mod tests {
         assert!(matches!(flow.stage, Stage::Broadcasting));
         assert!(matches!(
             broadcast_outcome,
-            KeyOutcome::StartJob(UiJob::SendEvm { .. })
+            KeyOutcome::StartJob(UiJob::SendEvmWithFee { ref fee, .. }) if fee.total == "0.0001 ETH"
         ));
 
         // 5. Send receipt arrives -> Done

@@ -14,6 +14,7 @@ use ratatui::{
     Frame,
 };
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee, FeeSpeed};
 use vaughan_core::core::is_allowed_dex_router;
@@ -41,6 +42,9 @@ use crate::views::{
 
 /// Common V3 fee tiers. Includes Pancake/wiz4rd `2500` and `20000` (2%).
 const FEE_TIERS: &[u32] = &[100, 500, 2500, 3000, 10_000, 20_000];
+
+/// Maximum allowable age for a DEX quote / prepared transaction before re-quoting is required.
+pub const QUOTE_MAX_AGE: Duration = Duration::from_secs(60);
 
 /// Longest Dex swap field label — value column starts after this width.
 const SWAP_LABEL_WIDTH: usize = 16;
@@ -118,7 +122,8 @@ pub struct DexView {
     speed: FeeSpeed,
     pending_step: Option<ConfirmStep>,
     pending_tx: Option<EvmTransaction>,
-    base_fee: Option<Fee>,
+    pub(crate) pending_tx_time: Option<Instant>,
+    pub(crate) base_fee: Option<Fee>,
     pending_auto_fee_estimate: bool,
     /// After allowance RPC check, queue confirm + fee estimate.
     pending_start_confirm: Option<ConfirmStep>,
@@ -165,6 +170,7 @@ impl Default for DexView {
             speed: FeeSpeed::Normal,
             pending_step: None,
             pending_tx: None,
+            pending_tx_time: None,
             base_fee: None,
             pending_auto_fee_estimate: false,
             pending_start_confirm: None,
@@ -215,6 +221,7 @@ impl DexView {
             self.quote_debounce = 4;
             self.quote_path = None;
             self.quote_hop_fees = None;
+            self.pending_tx_time = None;
         }
     }
 
@@ -1459,6 +1466,7 @@ impl DexView {
         };
         self.pending_step = Some(step);
         self.pending_tx = Some(tx.clone());
+        self.pending_tx_time = Some(Instant::now());
         self.base_fee = None;
         self.speed = FeeSpeed::Normal;
         self.confirm_focus = ConfirmFocus::Speed;
@@ -1607,6 +1615,19 @@ impl DexView {
     }
 
     fn begin_broadcast(&mut self, step: ConfirmStep) -> KeyOutcome {
+        if self
+            .pending_tx_time
+            .is_none_or(|t| t.elapsed() > QUOTE_MAX_AGE)
+        {
+            self.stage = Stage::Input;
+            self.pending_tx = None;
+            self.pending_tx_time = None;
+            self.pending_step = None;
+            self.base_fee = None;
+            self.status = "quote expired (>60s) — re-quote required".into();
+            return KeyOutcome::Consumed;
+        }
+
         let fee = match self.speed {
             FeeSpeed::Custom => match self
                 .base_fee
@@ -1636,6 +1657,7 @@ impl DexView {
             self.status = "transaction payload missing — Esc back and retry".into();
             return KeyOutcome::Consumed;
         };
+        self.pending_tx_time = None;
         self.base_fee = None;
         self.busy = match step {
             ConfirmStep::Approve => Busy::Approving,
@@ -1658,6 +1680,10 @@ impl DexView {
                     return KeyOutcome::Handled;
                 }
                 self.stage = Stage::Input;
+                self.pending_tx = None;
+                self.pending_tx_time = None;
+                self.pending_step = None;
+                self.base_fee = None;
                 self.confirm_focus = ConfirmFocus::Speed;
                 KeyOutcome::Handled
             }
@@ -1878,6 +1904,7 @@ impl DexView {
         let (rpc_url, _) = wallet.rpc_endpoints_for(wallet.networks().active());
         self.pending_step = Some(step);
         self.pending_tx = Some(tx.clone());
+        self.pending_tx_time = Some(Instant::now());
         self.base_fee = None;
         self.speed = FeeSpeed::Normal;
         self.confirm_focus = ConfirmFocus::Speed;
@@ -2007,5 +2034,69 @@ mod tests {
         let v = DexView::for_chain(369);
         assert_eq!(v.focus, Focus::None);
         assert_eq!(v.focus_tab_forward(), Focus::Dex);
+    }
+
+    fn sample_tx() -> EvmTransaction {
+        EvmTransaction {
+            from: "0x1111111111111111111111111111111111111111".into(),
+            to: "0x165C3410fC91EF562C50559f7d2289fEBed552d9".into(),
+            value: "1000000000000000000".into(),
+            data: Some("0x1234".into()),
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id: 369,
+        }
+    }
+
+    fn sample_fee() -> Fee {
+        Fee {
+            total: "0.005 PLS".into(),
+            currency: "PLS".into(),
+            details: vaughan_core::chains::FeeDetails::Evm {
+                gas_limit: 200_000,
+                max_fee_per_gas: Some("1000000000".into()),
+                max_priority_fee_per_gas: Some("1000000000".into()),
+            },
+        }
+    }
+
+    #[test]
+    fn stale_quote_on_confirm_refuses_broadcast_and_resets() {
+        let mut v = DexView::for_chain(369);
+        v.pending_tx = Some(sample_tx());
+        v.base_fee = Some(sample_fee());
+        v.pending_tx_time = Some(Instant::now().checked_sub(Duration::from_secs(61)).unwrap());
+        v.stage = Stage::Confirm(ConfirmStep::Swap);
+
+        let outcome = v.begin_broadcast(ConfirmStep::Swap);
+        assert!(matches!(outcome, KeyOutcome::Consumed));
+        assert!(
+            v.status.contains("quote expired (>60s)"),
+            "status was: {}",
+            v.status
+        );
+        assert!(matches!(v.stage, Stage::Input));
+        assert!(v.pending_tx.is_none());
+        assert!(v.pending_tx_time.is_none());
+    }
+
+    #[test]
+    fn fresh_quote_on_confirm_broadcasts_with_fee() {
+        let mut v = DexView::for_chain(369);
+        v.pending_tx = Some(sample_tx());
+        v.base_fee = Some(sample_fee());
+        v.pending_tx_time = Some(Instant::now());
+        v.stage = Stage::Confirm(ConfirmStep::Swap);
+
+        let outcome = v.begin_broadcast(ConfirmStep::Swap);
+        assert!(matches!(
+            outcome,
+            KeyOutcome::StartJob(crate::jobs::UiJob::SendEvmWithFee { ref fee, .. }) if fee.currency == "PLS"
+        ));
+        assert!(v.pending_tx.is_none());
+        assert!(v.pending_tx_time.is_none());
     }
 }
