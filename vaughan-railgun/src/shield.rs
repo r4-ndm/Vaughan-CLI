@@ -218,15 +218,19 @@ pub fn plan_native(
     )
     .map_err(|e| WalletError::Other(format!("RAILGUN shield request: {e}")))?;
 
+    let relay_adapt = deployment.relay_adapt_contract.ok_or_else(|| {
+        WalletError::Other("RelayAdapt contract not deployed on this chain".into())
+    })?;
+
     let wrap_data = IRelayAdapt::wrapBaseCall { _amount: amount }.abi_encode();
     let calls = vec![
         IRelayAdapt::Call {
-            to: deployment.relay_adapt_contract,
+            to: relay_adapt,
             data: wrap_data.into(),
             value: U256::ZERO,
         },
         IRelayAdapt::Call {
-            to: deployment.relay_adapt_contract,
+            to: relay_adapt,
             data: inner_shield.into(),
             value: U256::ZERO,
         },
@@ -245,7 +249,7 @@ pub fn plan_native(
 
     Ok(ShieldPlan {
         token: weth,
-        contract: deployment.relay_adapt_contract,
+        contract: relay_adapt,
         amount,
         value: amount,
         fee_bps,
@@ -347,7 +351,7 @@ mod tests {
         let amount = U256::from(10_000_000u64);
         let p = plan_native(&sepolia(), &me, &test_key(), amount, 25).unwrap();
         assert!(p.is_native);
-        assert_eq!(p.contract, sepolia().relay_adapt_contract);
+        assert_eq!(p.contract, sepolia().relay_adapt_contract.unwrap());
         assert_eq!(p.value, amount);
         assert_eq!(p.token, crate::deployment::SEPOLIA_WETH);
         assert!(p.approve_calldata.is_empty());
@@ -368,10 +372,10 @@ mod tests {
         let multi = IRelayAdapt::multicallCall::abi_decode(&p.shield_calldata).unwrap();
         assert!(multi._requireSuccess);
         assert_eq!(multi._calls.len(), 2);
-        assert_eq!(multi._calls[0].to, sepolia().relay_adapt_contract);
+        assert_eq!(multi._calls[0].to, sepolia().relay_adapt_contract.unwrap());
         let wrap = IRelayAdapt::wrapBaseCall::abi_decode(&multi._calls[0].data).unwrap();
         assert_eq!(wrap._amount, amount);
-        assert_eq!(multi._calls[1].to, sepolia().relay_adapt_contract);
+        assert_eq!(multi._calls[1].to, sepolia().relay_adapt_contract.unwrap());
     }
 
     #[test]

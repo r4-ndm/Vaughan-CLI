@@ -767,7 +767,7 @@ mod tests {
         assert!(matches!(
             &outcome,
             KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx })
-                if tx.to == format!("{:#x}", dep.relay_adapt_contract) && tx.value == amount.to_string()
+                if tx.to == format!("{:#x}", dep.relay_adapt_contract.expect("relay adapt")) && tx.value == amount.to_string()
         ));
         assert_eq!(flow.recipient, "your RAILGUN wallet (verified)");
 
@@ -790,7 +790,7 @@ mod tests {
         // Hitting enter signs and sends to RelayAdapt with value = amount
         assert!(sends_to(
             flow.handle_key(enter(), &mut w, &handle),
-            dep.relay_adapt_contract
+            dep.relay_adapt_contract.expect("relay adapt")
         ));
         flow.apply_job_result(sent("0xnative_shield"));
         assert!(matches!(flow.stage, Stage::Done(_)));

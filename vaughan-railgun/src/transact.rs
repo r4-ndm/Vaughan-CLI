@@ -25,7 +25,7 @@ use broadcaster_core::utxo::Utxo;
 use railgun_wallet::keys::WalletKeys;
 pub use railgun_wallet::tx::{
     max_send_spendable, max_unshield_spendable, unshield_selection_info, TransactionBuilder,
-    TransactionCall, UnshieldMode, UnshieldPlan, UnshieldRequest,
+    TransactionCall, UnshieldPlan, UnshieldRequest,
 };
 use vaughan_core::error::WalletError;
 use zeroize::Zeroize;
@@ -145,7 +145,6 @@ pub fn transaction_builder(deployment: &RailgunDeployment) -> TransactionBuilder
         chain_type: 0,
         chain_id: deployment.chain_id,
         railgun_contract: deployment.contract,
-        relay_adapt_contract: deployment.relay_adapt_contract,
     }
 }
 
@@ -155,18 +154,12 @@ pub fn unshield_request(
     token: Address,
     recipient: Address,
     amount: U256,
-    is_unwrap_base: bool,
+    _is_unwrap_base: bool,
 ) -> UnshieldRequest {
-    let mode = if is_unwrap_base {
-        UnshieldMode::UnwrapBase
-    } else {
-        UnshieldMode::Token
-    };
     UnshieldRequest {
         token_address: token,
         amount,
         recipient,
-        mode,
         verify_proof: true,
         spend_up_to: false,
         broadcaster_fee: None,
@@ -363,7 +356,6 @@ mod tests {
         let builder = transaction_builder(&dep);
         assert_eq!(builder.chain_id, dep.chain_id);
         assert_eq!(builder.railgun_contract, dep.contract);
-        assert_eq!(builder.relay_adapt_contract, dep.relay_adapt_contract);
 
         let req = unshield_request(
             address!("0xfff9976782d46cc05630d1f6ebab18b2324d6b14"),
@@ -371,7 +363,6 @@ mod tests {
             U256::from(500_000u64),
             true,
         );
-        assert!(matches!(req.mode, UnshieldMode::UnwrapBase));
         assert!(req.verify_proof);
     }
 

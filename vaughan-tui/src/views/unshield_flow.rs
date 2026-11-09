@@ -730,7 +730,7 @@ mod tests {
 
         // Construct a proofless proposal (has_proof = false)
         flow.proposal = Some(UnshieldTransactionProposal {
-            to: dep.relay_adapt_contract,
+            to: dep.relay_adapt_contract.expect("relay adapt"),
             calldata: vec![0x12, 0x34],
             preview,
             has_proof: false,
@@ -789,7 +789,7 @@ mod tests {
 
         // Proved proposal (has_proof = true)
         flow.proposal = Some(UnshieldTransactionProposal {
-            to: dep.relay_adapt_contract,
+            to: dep.relay_adapt_contract.expect("relay adapt"),
             calldata: vec![0x12, 0x34],
             preview,
             has_proof: true,

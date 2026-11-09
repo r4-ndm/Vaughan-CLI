@@ -624,6 +624,15 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 #### Phase 0 — groundwork (branch `railgun/phase-0`)
 
 - [x] Pin `railgun-wallet` / `broadcaster-core` @ `b61fca7e2476dc3e5f89463fcef97f53661890e6` (workspace deps)
+- [x] Re-pin `railgun-wallet` / `broadcaster-core` / `merkletree`: `b61fca7e2476dc3e5f89463fcef97f53661890e6` -> `95e05b0cc06bb6ee6d0d44d5112540b26da947c3` (2026-11-09, roadmap S1)
+  - Privacy fix: merges upstream PR #2 (`MEMO_SENDER_RANDOM_NULL` replaced with random `sender_random` in note ciphertexts, eliminating sender master public key leak).
+  - Built-in Sepolia chain config (`RailgunDeployment::for_chain(11_155_111)`).
+  - Optional `relay_adapt_contract: Option<Address>` upstream handling.
+  - Patch compatibility against `95e05b0`:
+    - `01-optional-singlepass.patch`: applies cleanly (not upstream).
+    - `02-zeroize-spending-key.patch`: applies cleanly (not upstream).
+    - `03-license-metadata.patch`: applies cleanly (not upstream).
+    - `07-shield-npk-check.patch`: applies cleanly (not upstream).
 - [x] `vaughan-railgun` stub crate; railgun-rust optional behind `enabled`; `railgun` feature in `vaughan-tui` / `vaughan-cli`
 - [x] Default `--workspace` build compiles no railgun-rust (`cargo tree` check, also in CI)
 - [x] Upstream parity + suites under Vaughan's lockfile: 148 passed (`scripts/railgun-parity.sh`)
