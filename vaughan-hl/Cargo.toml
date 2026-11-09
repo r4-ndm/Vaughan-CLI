@@ -24,36 +24,31 @@ tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
 # Core & CLI (matches Vaughan-CLI workspace allowlist)
-anyhow = { version = "1", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", default-features = false, features = ["time", "rt", "rt-multi-thread"] }
-toml = "0.8"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+anyhow = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 # TUI (matches Vaughan-CLI workspace allowlist; gated by `tui` feature, no termwiz/palette bloat)
-crossterm = { version = "0.28", optional = true }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
 
 # Security & EIP-712 / L1 Signing (matches Vaughan-CLI workspace allowlist; zero unapproved crates)
-alloy = { version = "2", default-features = false, features = [
-    "std",
-    "signers",
-    "signer-local",
-    "sol-types",
-] }
-alloy-dyn-abi = { version = "1.6", features = ["eip712"] }
-aes-gcm = "0.10"
-argon2 = "0.5"
-hex = "0.4"
-rand = "0.8"
-rpassword = { version = "7", optional = true }
-secrecy = "0.8"
-zeroize = "1"
+alloy = { workspace = true }
+alloy-dyn-abi = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+rpassword = { workspace = true, optional = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
