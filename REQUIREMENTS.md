@@ -16,8 +16,10 @@ Requirement IDs are referenced by `TASKS.md`.
   see `docs/freedom-browser-status.md`).
 - Smart accounts via Ambire (ERC-4337/7702 AA) reimplemented in Rust — done
   (FR-3.3, see `docs/ambire-aa.md`).
-- Privacy: ERC-5564 stealth in `vaughan-core` (no Kohaku). RAILGUN still
-  **deferred** (see `docs/kohaku-go-no-go.md` and `docs/erc-5564-stealth.md`).
+- Privacy: ERC-5564 stealth in `vaughan-core` (no Kohaku). RAILGUN shielded
+  balances are **in progress** behind the opt-in `railgun` feature on Sepolia only
+  (FR-3.4); Kohaku-rs stays deferred (`docs/kohaku-go-no-go.md`) and privacy pools
+  remain deferred (`docs/railgun-go-no-go.md`). See `docs/erc-5564-stealth.md`.
 
 ## Non-goals (deferred, not dropped)
 

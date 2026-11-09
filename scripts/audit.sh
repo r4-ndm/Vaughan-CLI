@@ -13,8 +13,13 @@
 #   scripts/audit.sh --skip-railgun  # default-features clippy only; CI's railgun job
 #                                    # owns the RAILGUN compile
 #   scripts/audit.sh --no-audit      # skip cargo audit (advisory debt NOT checked)
+#   scripts/audit.sh --history       # ALSO scan every reachable commit for secrets,
+#                                    # not just the working tree (slow: walks all of
+#                                    # `git rev-list --all`, O(commits x tree)); the
+#                                    # default run stays working-tree-only
 #
-# Exit code 0 only when every selected check passes.
+# `-history` is accepted as the same flag. Exit code 0 only when every selected
+# check passes.
 
 set -uo pipefail
 
@@ -24,12 +29,14 @@ RUN_TESTS=0
 CHECK_BINARY=0
 SKIP_RAILGUN=0
 SKIP_AUDIT=0
+HISTORY_SCAN=0
 for arg in "$@"; do
     case "$arg" in
         --with-tests) RUN_TESTS=1 ;;
         --binary) CHECK_BINARY=1 ;;
         --skip-railgun) SKIP_RAILGUN=1 ;;
         --no-audit) SKIP_AUDIT=1 ;;
+        -history|--history) HISTORY_SCAN=1 ;;
         -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
@@ -221,12 +228,21 @@ api_hits=$(git_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
 api_rc=$?
 
 hex_pat='[0-9a-fA-F]{64}'
+
+# Tier-2 filters, shared by the working-tree and history tiers so both judge the
+# same evidence by the same rules.
+hex_context='(priv|secret|mnemonic|signer|api[_-]?key)'
+hex_allow='anvil|ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80|59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d|b256!|SALT=|/tx/|topic|selector|0xaaaa|deadbeef|000000000000000000000000'
+hex_tier() { # hex_tier <raw tier-2 output> — filtered, truncated hits
+    printf '%s\n' "$1" \
+        | grep -iE "$hex_context" \
+        | grep -viE "$hex_allow" \
+        | head -10
+}
+
 hex_raw=$(git_grep "$hex_pat" "${scan_paths[@]}" ':!*package-lock.json' ':!*Cargo.lock' "${scan_skip[@]}")
 hex_rc=$?
-hex_hits=$(printf '%s\n' "$hex_raw" \
-    | grep -iE '(priv|secret|mnemonic|signer|api[_-]?key)' \
-    | grep -viE 'anvil|ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80|59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d|b256!|SALT=|/tx/|topic|selector|0xaaaa|deadbeef|000000000000000000000000' \
-    | head -10)
+hex_hits=$(hex_tier "$hex_raw")
 
 scan_broken=0
 [ "$api_rc" -gt 1 ] && scan_broken=1
@@ -240,6 +256,51 @@ elif [ -n "$api_hits" ] || [ -n "$hex_hits" ]; then
     [ -n "$hex_hits" ] && printf '%s\n' "$hex_hits" | sed 's/^/        /'
 else
     pass "no obvious live key material"
+fi
+
+# -------------------------------------------------------- secrets (history)
+section "secrets scan (git history, all refs)"
+
+# A key that was committed and later deleted is still public: the blob sits in
+# every clone and every `git rev-list --all` until history is rewritten. Same two
+# tiers and the same pathspecs as above, but judged over every reachable commit
+# instead of the working tree. Opt-in (--history) because it walks the whole graph.
+if [ "$HISTORY_SCAN" -eq 0 ]; then
+    note "git history skipped (--history) — committed-then-deleted keys unseen"
+    SKIPPED=$((SKIPPED + 1))
+elif ! hist_revs_raw=$(git rev-list --all 2>&1); then
+    fail "git rev-list --all failed — history scan UNCHECKED"
+    printf '%s\n' "$hist_revs_raw" | tail -5 | sed 's/^/        /'
+elif [ -z "$hist_revs_raw" ]; then
+    # Empty rev list would make `git grep` read the working tree and call it history.
+    fail "git rev-list --all returned no commits — history scan UNCHECKED"
+else
+    mapfile -t hist_revs <<< "$hist_revs_raw"
+
+    hist_grep() { # hist_grep <pattern> [pathspec...] — hits are `rev:path:line:text`
+        local pat="$1"; shift
+        git grep -nIE "$pat" "${hist_revs[@]}" -- "$@"
+    }
+
+    hist_api=$(hist_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
+    hist_api_rc=$?
+    hist_hex_raw=$(hist_grep "$hex_pat" "${scan_paths[@]}" ':!*package-lock.json' ':!*Cargo.lock' "${scan_skip[@]}")
+    hist_hex_rc=$?
+    hist_hex_hits=$(hex_tier "$hist_hex_raw")
+
+    hist_broken=0
+    [ "$hist_api_rc" -gt 1 ] && hist_broken=1
+    [ "$hist_hex_rc" -gt 1 ] && hist_broken=1
+
+    if [ "$hist_broken" -eq 1 ]; then
+        fail "history secrets scan did not run (git grep rc=$hist_api_rc/$hist_hex_rc) — UNCHECKED, not clean"
+    elif [ -n "$hist_api" ] || [ -n "$hist_hex_hits" ]; then
+        fail "history secrets scan: key material in committed history (${#hist_revs[@]} commits) — rotate first, then rewrite history"
+        [ -n "$hist_api" ] && printf '%s\n' "$hist_api" | head -5 | sed 's/^/        /'
+        [ -n "$hist_hex_hits" ] && printf '%s\n' "$hist_hex_hits" | sed 's/^/        /'
+    else
+        pass "no obvious live key material in history (${#hist_revs[@]} commits)"
+    fi
 fi
 
 # ---------------------------------------------------------------- installed binary
@@ -278,6 +339,8 @@ cat <<'EOF'
     - read every diff hunk on a money path, not just the green checkmarks
     - confirm no fabricated tx hash / guessed constant / unbound recipient
     - confirm the claim in docs matches what the binary actually does
+    - re-run with --history before a release: the working-tree scan cannot see a
+      key that was committed and deleted
 EOF
 
 [ "$FAILED" -eq 0 ] || exit 1

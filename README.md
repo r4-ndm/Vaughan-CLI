@@ -93,17 +93,23 @@ supported but real money — treat mistakes as permanent.
 
 | Key | Screen | Use it for |
 |-----|--------|------------|
+| `s` | Dashboard | Home — balance, and where a send starts |
 | `v` | Receive | Public address, stealth URI, stealth-note scan |
 | `0` | Private | RAILGUN shielded balances (Sepolia only; requires the `railgun` feature build) |
-| `s` | Send | Send native PLS or ERC-20 |
+| `b` | Batch Send | Ambire EIP-7702 batched transfers |
 | `g` | Ag | Aggregator swap (best route across venues) |
 | `d` | Dex | Swap on a named DEX (PulseX, Wiz4rd, …) |
-| `c` | Browse | Inspect any contract — read-only REPL |
+| `p` | LP | Add / remove liquidity (v2 and v3 pools) |
+| `f` | Bridge | LibertySwap cross-chain bridge (Pulse-centered) |
 | `e` | Wrap | Wrap / unwrap WPLS |
-| `m` | History | Recent token transfers |
+| `u` | HEX | pHEX stake manager (PulseChain 369 only) |
 | `j` | Approvals | See and revoke token allowances |
-| `w` | Web | Optional VB / Freedom fallback (Freedom parked — see docs) |
-| `Tab` | — | Cycle Ag → Dex → Browse → … |
+| `m` | History | Recent token transfers |
+| `c` | Keys › Hardware | Hardware hub — Ledger / Trezor setup |
+| `n` | Settings | Network, account, password, theme |
+| `w` | Dashboard (burn gate) | Prefill a ≥13 WZRD burn-unlock send |
+| `q` | Web (optional) | Optional VB / Freedom fallback (Freedom parked — see docs) |
+| `1` | Auto-Trader | Launch the Hyperliquid auto-trader dashboard |
 
 **Browserless Pulse** means: swap, inspect, and revoke **without opening
 PulseX (or similar) in a browser**. Prefer Ag / Dex / Browse / MCP; use **VB**
@@ -132,11 +138,13 @@ Then Keys → **4 Add Ledger** when ready (Trezor signing is Phase 2).
 
 **Send to someone**
 
-1. `s` → recipient address → amount → confirm (fee shown) → broadcast.
+1. `s` → Dashboard (the default send form) → recipient address → amount → confirm
+   (fee shown) → broadcast.
 
 **Inspect a contract**
 
-1. `c` → `browse 0x…` → `call balanceOf(0x…)` or `probe` to see what it is.
+1. Settings (`n`) → `c` (Contract Browser) → `browse 0x…` → `call balanceOf(0x…)` or
+   `probe` to see what it is.
 
 ### Using AI safely (MCP)
 
