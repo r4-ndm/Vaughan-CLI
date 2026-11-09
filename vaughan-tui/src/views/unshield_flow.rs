@@ -1,17 +1,17 @@
 //! Unshield tokens from the RAILGUN private balance (Private panel `u`).
 //!
 //! Sepolia only (`deployment::shield_enabled`), `railgun` feature only.
-//! Adheres strictly to CLAUDE.md Rule 5 using a two-step signing pipeline:
+//! Note on unshielding and proofs:
+//! Local zk-SNARK proof generation and Proof of Innocence (POI) verification are not
+//! yet implemented in this repository. In accordance with Rule 9 ("Never fabricate
+//! a transaction"), unshielding is preview-only:
 //!
 //! 1. Step 1 (Prepare / Preview): Proofless preview inspecting cached UTXOs,
 //!    displaying selected notes, amount, change, and privacy linkage warning.
 //!    No spend keys are derived or accessed.
-//! 2. Step 2 (Local Proving & Authorize): On user confirmation, spend keys are
-//!    derived ephemerally inside `with_hd_seed` and zeroized immediately upon
-//!    generating the proposal and proof.
-//! 3. Step 3 (Final EVM Broadcast Approval): The resulting transaction is
-//!    humanized, showing exact contract, gas fee estimate, and privacy advisories
-//!    before the user signs and broadcasts to the network.
+//! 2. Proof Generation & Broadcast (Disabled): Authorizing unshield transactions
+//!    and broadcasting are disabled until local proving and POI land. Proofless
+//!    proposals cannot be broadcast to the network.
 //!
 //! Esc cancels at any card; nothing is signed or sent without Enter.
 
@@ -222,12 +222,13 @@ impl UnshieldFlow {
                 dim,
             )),
             Line::from(Span::styled(
-                "Local proof: Spending key is derived only in memory and immediately \
-                 zeroized after proof derivation. No keys or proofs leave your computer.",
-                dim,
+                "Preview only: zk-SNARK prover and Proof of Innocence (POI) are not \
+                 yet implemented in this build. Unshield transactions cannot be proven \
+                 or broadcast.",
+                Style::default().fg(Color::Yellow),
             )),
             Line::from(""),
-            Line::from("Enter authorizes local proof & estimates gas · Esc cancel"),
+            Line::from("Unshield is preview-only (prover & POI pending) · Esc cancel"),
         ];
 
         if !is_self {
@@ -277,7 +278,18 @@ impl UnshieldFlow {
             lines.push(Line::from(format!("Safety:        {}", w.message())));
         }
         lines.push(Line::from(""));
-        lines.push(Line::from("Enter signs and broadcasts · Esc cancel"));
+        if !proposal.has_proof {
+            lines.push(Line::from(Span::styled(
+                "Preview only: Unshield is preview-only until the prover and POI land. Broadcast disabled.",
+                Style::default().fg(Color::Yellow),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "Esc cancel (broadcast disabled: unshield is preview-only)",
+            ));
+        } else {
+            lines.push(Line::from("Enter signs and broadcasts · Esc cancel"));
+        }
         lines
     }
 
@@ -319,7 +331,10 @@ impl UnshieldFlow {
                 KeyCode::Esc => self.cancel("Cancelled — no proof was generated."),
                 KeyCode::Enter => match self.authorize_and_estimate(wallet) {
                     Ok(job) => KeyOutcome::StartJob(job),
-                    Err(e) => self.cancel(&e.user_message()),
+                    Err(e) => {
+                        self.status = e.user_message();
+                        KeyOutcome::Consumed
+                    }
                 },
                 _ => KeyOutcome::Consumed,
             },
@@ -395,11 +410,18 @@ impl UnshieldFlow {
             }
         };
 
+        // create_unshield_proposal refuses because no prover is implemented in this repository.
+        let proposal = create_unshield_proposal(&p.deployment, &preview)?;
+        if !proposal.has_proof {
+            return Err(WalletError::Other(
+                "unshield is preview-only until the prover and POI land".into(),
+            ));
+        }
+
         // Derive ephemeral spending credentials inside with_hd_seed.
         // Dropping SpendingAccount zeroizes spending keys immediately.
         let _spend_keys = wallet.with_hd_seed(SpendingAccount::from_seed)??;
 
-        let proposal = create_unshield_proposal(&p.deployment, &preview);
         let tx = EvmTransaction {
             from: format!("{:#x}", p.owner),
             to: format!("{:#x}", proposal.to),
@@ -426,6 +448,10 @@ impl UnshieldFlow {
             Stage::Approve(f) => f.clone(),
             _ => return KeyOutcome::Consumed,
         };
+        if !proposal.has_proof {
+            self.status = "unshield is preview-only until the prover and POI land".into();
+            return KeyOutcome::Consumed;
+        }
         let tx = EvmTransaction {
             from: format!("{:#x}", p.owner),
             to: format!("{:#x}", proposal.to),
@@ -617,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn walks_unshield_cards_with_two_step_approval() {
+    fn preview_step_refuses_authorizing_unimplemented_prover() {
         let mut w = unlocked_wallet();
         let owner: Address = parse_address(w.active_address().unwrap()).unwrap();
         let weth = deployment::wrapped_base_token(deployment::SEPOLIA_CHAIN_ID).unwrap();
@@ -651,7 +677,7 @@ mod tests {
         };
         flow.stage = Stage::Preview(preview);
 
-        // 1. Verify Preview card (Step 1 of 2)
+        // 1. Verify Preview card shows honest preview-only status
         let preview_text = flow
             .lines(&w)
             .iter()
@@ -659,43 +685,126 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(preview_text.contains("Unshield Preview"));
-        assert!(preview_text.contains("Step 1 of 2"));
         assert!(preview_text.contains("1.5 ETH"));
-        assert!(preview_text.contains("Linkage warning"));
+        assert!(preview_text.contains("preview-only"));
 
-        // 2. Authorize proof and estimate gas -> EstimatingGas
+        // 2. Pressing Enter refuses proof generation and does not estimate gas
         let outcome = flow.handle_key(KeyEvent::from(KeyCode::Enter), &mut w, rt.handle());
-        assert!(matches!(flow.stage, Stage::EstimatingGas));
-        assert!(matches!(
-            outcome,
-            KeyOutcome::StartJob(UiJob::EstimateEvmFee { .. })
-        ));
+        assert!(matches!(flow.stage, Stage::Preview(_)));
+        assert!(matches!(outcome, KeyOutcome::Consumed));
+        assert!(flow.status.contains("RAILGUN prover not implemented"));
+        assert!(flow.proposal.is_none());
+    }
 
-        // 3. Gas estimate returns -> Approve card (Step 2 of 2)
-        flow.apply_job_result(UiJobResult::Fee(Ok(fee())));
-        assert!(matches!(flow.stage, Stage::Approve(_)));
+    #[test]
+    fn proofless_proposal_cannot_reach_broadcast_outcome() {
+        let mut w = unlocked_wallet();
+        let owner: Address = parse_address(w.active_address().unwrap()).unwrap();
+        let weth = deployment::wrapped_base_token(deployment::SEPOLIA_CHAIN_ID).unwrap();
+        let dep = deployment::for_chain(deployment::SEPOLIA_CHAIN_ID).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
 
+        let mut flow = UnshieldFlow::new();
+        let amount = U256::from(15u64) * U256::from(10u64).pow(U256::from(17u64));
+
+        flow.prepared = Some(Prepared {
+            deployment: dep,
+            owner,
+            token: weth,
+            symbol: "ETH".into(),
+            decimals: 18,
+            amount,
+            recipient: owner,
+            is_unwrap_base: true,
+        });
+
+        let preview = UnshieldPreview {
+            token: weth,
+            recipient: owner,
+            amount,
+            is_unwrap_base: true,
+            input_notes_count: 1,
+            total_input_amount: amount,
+            change_amount: U256::ZERO,
+        };
+
+        // Construct a proofless proposal (has_proof = false)
+        flow.proposal = Some(UnshieldTransactionProposal {
+            to: dep.relay_adapt_contract,
+            calldata: vec![0x12, 0x34],
+            preview,
+            has_proof: false,
+        });
+        flow.stage = Stage::Approve(fee());
+
+        // Card should display that broadcast is disabled
         let approve_text = flow
             .lines(&w)
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(approve_text.contains("Unshield Broadcast"));
-        assert!(approve_text.contains("Step 2 of 2"));
-        assert!(approve_text.contains("0.0001 ETH"));
-        assert!(approve_text.contains("RAILGUN RelayAdapt"));
+        assert!(approve_text.contains("Preview only"));
+        assert!(approve_text.contains("Broadcast disabled"));
 
-        // 4. Enter on Approve card broadcasts
-        let broadcast_outcome =
-            flow.handle_key(KeyEvent::from(KeyCode::Enter), &mut w, rt.handle());
+        // Enter must refuse broadcast, consume the key, and not start a broadcast job
+        let outcome = flow.handle_key(KeyEvent::from(KeyCode::Enter), &mut w, rt.handle());
+        assert!(matches!(outcome, KeyOutcome::Consumed));
+        assert!(matches!(flow.stage, Stage::Approve(_)));
+        assert!(flow.status.contains("preview-only"));
+        assert!(flow.take_followup().is_none());
+    }
+
+    #[test]
+    fn proved_proposal_can_broadcast_with_fee() {
+        let mut w = unlocked_wallet();
+        let owner: Address = parse_address(w.active_address().unwrap()).unwrap();
+        let weth = deployment::wrapped_base_token(deployment::SEPOLIA_CHAIN_ID).unwrap();
+        let dep = deployment::for_chain(deployment::SEPOLIA_CHAIN_ID).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let mut flow = UnshieldFlow::new();
+        let amount = U256::from(15u64) * U256::from(10u64).pow(U256::from(17u64));
+
+        flow.prepared = Some(Prepared {
+            deployment: dep,
+            owner,
+            token: weth,
+            symbol: "ETH".into(),
+            decimals: 18,
+            amount,
+            recipient: owner,
+            is_unwrap_base: true,
+        });
+
+        let preview = UnshieldPreview {
+            token: weth,
+            recipient: owner,
+            amount,
+            is_unwrap_base: true,
+            input_notes_count: 1,
+            total_input_amount: amount,
+            change_amount: U256::ZERO,
+        };
+
+        // Proved proposal (has_proof = true)
+        flow.proposal = Some(UnshieldTransactionProposal {
+            to: dep.relay_adapt_contract,
+            calldata: vec![0x12, 0x34],
+            preview,
+            has_proof: true,
+        });
+        flow.stage = Stage::Approve(fee());
+
+        // Enter on Approve card broadcasts with fee
+        let outcome = flow.handle_key(KeyEvent::from(KeyCode::Enter), &mut w, rt.handle());
         assert!(matches!(flow.stage, Stage::Broadcasting));
         assert!(matches!(
-            broadcast_outcome,
+            outcome,
             KeyOutcome::StartJob(UiJob::SendEvmWithFee { ref fee, .. }) if fee.total == "0.0001 ETH"
         ));
 
-        // 5. Send receipt arrives -> Done
+        // Send receipt arrives -> Done
         flow.apply_job_result(sent("0xunshield_hash"));
         assert!(matches!(flow.stage, Stage::Done(_)));
         let done_text = flow

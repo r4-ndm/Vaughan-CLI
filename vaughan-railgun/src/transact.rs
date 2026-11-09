@@ -1,19 +1,19 @@
 //! Phase 3: RAILGUN private transactions and unshielding engine.
 //!
-//! Provides the cryptographic and structural foundation for spending shielded notes:
-//! 1. On-chain Merkle root verification before any proof generation to protect
-//!    against lying RPCs.
-//! 2. Secure artifact and prover cache isolation under private profile directories
-//!    with owner-only permissions (`0700`).
-//! 3. Two-step signing approval pipeline conforming strictly to CLAUDE.md Rule 5:
-//!    - **Step 1 (Prepare / Preview):** Proofless UTXO selection, fee and change
-//!      calculation presented to the user on a preparation card.
-//!    - **Step 2 (Local Proving & Authorize):** Local zk-SNARK proof generated
-//!      inside [`vaughan_core::core::AccountManager::with_hd_seed`]; spend keys
-//!      are zeroized immediately after proof derivation.
-//!    - **Step 3 (Final EVM Broadcast Approval):** The resulting [`TransactionCall`]
-//!      is presented on the humanized approval card with gas estimate and
-//!      privacy linkage warnings before EVM broadcast.
+//! Provides the structural and cryptographic helpers for shielded balance management:
+//! 1. On-chain Merkle root verification (`verify_merkle_root`) to validate historical
+//!    tree roots against lying RPC nodes.
+//! 2. Secure artifact and prover cache isolation (`prover_cache_dir`) under private
+//!    profile directories with POSIX owner-only permissions (`0700`).
+//! 3. Proofless note inspection and change calculation (`preview_unshield`).
+//! 4. Ephemeral spending key derivation (`SpendingAccount`) zeroized immediately on drop.
+//!
+//! Note on unshielding and proofs:
+//! Local zk-SNARK proof generation and Proof of Innocence (POI) verification are not
+//! yet implemented in this repository. In accordance with Rule 9 ("Never fabricate
+//! a transaction"), [`create_unshield_proposal`] refuses to construct placeholder
+//! or unproved transactions, returning an error. Unshielding remains preview-only
+//! until the prover and POI pipeline are implemented.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,11 +21,6 @@ use std::path::{Path, PathBuf};
 use alloy::primitives::{Address, FixedBytes, U256};
 use alloy::providers::Provider;
 use alloy::sol;
-use alloy::sol_types::SolCall;
-use broadcaster_core::contracts::railgun::{
-    transactCall, BoundParams, CommitmentPreimage, G1Point, G2Point, SnarkProof, TokenData,
-    Transaction,
-};
 use broadcaster_core::utxo::Utxo;
 use railgun_wallet::keys::WalletKeys;
 pub use railgun_wallet::tx::{
@@ -188,6 +183,8 @@ pub struct UnshieldTransactionProposal {
     pub calldata: Vec<u8>,
     /// Summary of the unshield amounts and destinations.
     pub preview: UnshieldPreview,
+    /// Whether this proposal carries a verified local zk-SNARK proof.
+    pub has_proof: bool,
 }
 
 impl UnshieldTransactionProposal {
@@ -197,6 +194,7 @@ impl UnshieldTransactionProposal {
             to: plan.call.to,
             calldata: plan.call.data.to_vec(),
             preview,
+            has_proof: true,
         }
     }
 
@@ -238,71 +236,19 @@ impl Drop for SpendingAccount {
 }
 
 /// Create an unshield proposal with encoded transact calldata.
-#[must_use]
+///
+/// # Errors
+/// Always returns [`WalletError::Other`] because local zk-SNARK proof generation
+/// and Proof of Innocence (POI) verification are not yet implemented in this repository.
+/// In accordance with Rule 9 ("Never fabricate a transaction"), placeholder or
+/// zero-proof transactions cannot be emitted.
 pub fn create_unshield_proposal(
-    deployment: &RailgunDeployment,
-    preview: &UnshieldPreview,
-) -> UnshieldTransactionProposal {
-    let to = if preview.is_unwrap_base {
-        deployment.relay_adapt_contract
-    } else {
-        deployment.contract
-    };
-
-    let mut npk = [0u8; 32];
-    npk[12..].copy_from_slice(preview.recipient.as_slice());
-
-    let tx = Transaction {
-        proof: SnarkProof {
-            a: G1Point {
-                x: U256::ZERO,
-                y: U256::ZERO,
-            },
-            b: G2Point {
-                x: [U256::ZERO, U256::ZERO],
-                y: [U256::ZERO, U256::ZERO],
-            },
-            c: G1Point {
-                x: U256::ZERO,
-                y: U256::ZERO,
-            },
-        },
-        merkleRoot: FixedBytes::ZERO,
-        nullifiers: Vec::new(),
-        commitments: Vec::new(),
-        boundParams: BoundParams {
-            treeNumber: 0,
-            minGasPrice: Default::default(),
-            unshield: if preview.is_unwrap_base { 2 } else { 1 },
-            chainID: deployment.chain_id,
-            adaptContract: if preview.is_unwrap_base {
-                deployment.relay_adapt_contract
-            } else {
-                Address::ZERO
-            },
-            adaptParams: FixedBytes::ZERO,
-            commitmentCiphertext: Vec::new(),
-        },
-        unshieldPreimage: CommitmentPreimage {
-            npk: FixedBytes::from(npk),
-            token: TokenData {
-                tokenType: 0,
-                tokenAddress: preview.token,
-                tokenSubID: U256::ZERO,
-            },
-            value: alloy::primitives::Uint::<120, 2>::from(preview.amount.to::<u128>()),
-        },
-    };
-
-    let call = transactCall {
-        _transactions: vec![tx],
-    };
-
-    UnshieldTransactionProposal {
-        to,
-        calldata: call.abi_encode(),
-        preview: preview.clone(),
-    }
+    _deployment: &RailgunDeployment,
+    _preview: &UnshieldPreview,
+) -> Result<UnshieldTransactionProposal, WalletError> {
+    Err(WalletError::Other(
+        "RAILGUN prover not implemented — unshield is preview-only".into(),
+    ))
 }
 
 #[cfg(test)]
@@ -441,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn create_unshield_proposal_encodes_decodable_transact_call() {
+    fn create_unshield_proposal_refuses_proofless_transaction() {
         let dep = sepolia();
         let token = address!("0xfff9976782d46cc05630d1f6ebab18b2324d6b14");
         let recipient = address!("0x1111111111111111111111111111111111111111");
@@ -455,31 +401,19 @@ mod tests {
             change_amount: U256::from(500_000u64),
         };
 
-        let proposal = create_unshield_proposal(&dep, &preview);
-        assert_eq!(proposal.to, dep.contract);
-        assert!(!proposal.calldata.is_empty());
-
-        let decoded = transactCall::abi_decode(&proposal.calldata).unwrap();
-        assert_eq!(decoded._transactions.len(), 1);
-        let tx = &decoded._transactions[0];
-        assert_eq!(tx.boundParams.chainID, dep.chain_id);
-        assert_eq!(tx.boundParams.unshield, 1);
-        assert_eq!(tx.unshieldPreimage.token.tokenAddress, token);
-        assert_eq!(
-            tx.unshieldPreimage.value,
-            alloy::primitives::Uint::<120, 2>::from(1_500_000u64)
+        let result = create_unshield_proposal(&dep, &preview);
+        assert!(
+            result.is_err(),
+            "create_unshield_proposal must refuse without a prover"
         );
-
-        // Native unwrap variant targets RelayAdapt
-        let mut native_preview = preview.clone();
-        native_preview.is_unwrap_base = true;
-        let native_proposal = create_unshield_proposal(&dep, &native_preview);
-        assert_eq!(native_proposal.to, dep.relay_adapt_contract);
-        let decoded_native = transactCall::abi_decode(&native_proposal.calldata).unwrap();
-        assert_eq!(decoded_native._transactions[0].boundParams.unshield, 2);
-        assert_eq!(
-            decoded_native._transactions[0].boundParams.adaptContract,
-            dep.relay_adapt_contract
-        );
+        match result.unwrap_err() {
+            WalletError::Other(msg) => {
+                assert!(
+                    msg.contains("RAILGUN prover not implemented"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            err => panic!("unexpected error variant: {err:?}"),
+        }
     }
 }
