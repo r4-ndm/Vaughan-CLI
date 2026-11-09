@@ -80,6 +80,36 @@ disagree, this file wins and `CLAUDE.md` should be fixed.
 13. **Re-quote immediately before signing**; persisted quotes are display-only.
 14. **Allowlist routers/spenders.** An unknown contract in an execution path is a refusal.
 
+## Parallel agents and git
+
+More than one agent edits this repo at the same time. A dirty tree may contain work that is
+not yours, and git does not warn you about that — it silently includes whatever is staged.
+
+Prose rules did not stop this; the wrapper does:
+
+```bash
+scripts/agent-git.sh status                 # staged / unstaged / untracked, so you can see
+                                            # which files are not yours
+scripts/agent-git.sh commit "<msg>" <path>...   # stages exactly those paths, aborts if the
+                                            # index already holds anything else (exit 3)
+scripts/agent-git.sh scratch <name>         # throwaway worktree at HEAD, own index and tree
+scripts/agent-git.sh drop <path>            # remove that worktree
+scripts/agent-git.sh recover <ref> <path>...    # restore paths from a deleted/swept commit
+scripts/agent-git.sh undo                   # un-commit keeping content staged, for re-splitting
+```
+
+Rules that follow from those tools:
+
+- **Never** `git add -A`, `git add .`, `git commit -a`, or `git stash` in a tree someone else may
+  be working in. Stage the files you changed, by name.
+- Run negative tests and scratch commits in `scratch` worktrees, never on the shared branch. A
+  throwaway branch in the shared checkout carries everyone's uncommitted work into its commits.
+- Before any destructive verb (`branch -D`, `reset --hard`, `checkout -- <path>`, `clean`), run
+  `scripts/agent-git.sh status` and account for every dirty path.
+- If `git commit` reports "nothing to commit" while you know you made changes, stop: your staging
+  or your branch was wrong, and something may already be swept into someone else's commit. The
+  commit survives `git branch -D` — find it with `reflog` and restore paths with `recover`.
+
 ## Working style
 
 - Load `docs/audit-playbook.md` when touching signing, bridging, swaps, RAILGUN, or the
