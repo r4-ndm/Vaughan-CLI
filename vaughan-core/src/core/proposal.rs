@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -113,6 +113,9 @@ pub struct TxProposal {
     /// Unix timestamp when the proposal was created.
     #[serde(default)]
     pub created_at_unix: u64,
+    /// Structural marker set only by propose_stealth_send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stealth_note: Option<B256>,
 }
 
 impl TxProposal {
@@ -140,7 +143,13 @@ impl TxProposal {
             chain_id: 0,
             network_id: None,
             created_at_unix: now_unix(),
+            stealth_note: None,
         }
+    }
+
+    pub fn with_stealth_note(mut self, note: B256) -> Self {
+        self.stealth_note = Some(note);
+        self
     }
 
     pub fn with_chain(mut self, chain_id: u64, network_id: Option<String>) -> Self {

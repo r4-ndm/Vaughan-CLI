@@ -8,6 +8,7 @@ use vaughan_core::error::WalletError;
 use vaughan_core::security::stealth::StealthAnnouncement;
 
 /// Work the app should spawn on the tokio runtime.
+#[allow(clippy::large_enum_variant)]
 pub enum UiJob {
     /// Vault KDF + account derivation (Argon2id — seconds in a debug build).
     /// Carries the session mode to apply on success; the wallet itself is

@@ -183,9 +183,19 @@ impl Tool for ExecuteSentientSwapTool {
             (Bytes::from(call.abi_encode()), U256::ZERO)
         };
 
+        let input_token = if is_native_in { None } else { Some(path[0]) };
         let outcome = self
             .trader
-            .execute_swap(router, pair, calldata, value_wei, amount_in, slippage_bps)
+            .execute_swap(
+                router,
+                pair,
+                calldata,
+                value_wei,
+                amount_in,
+                slippage_bps,
+                input_token,
+                None,
+            )
             .await?;
 
         let rationale = args.get("rationale").and_then(|v| v.as_str()).unwrap_or("");

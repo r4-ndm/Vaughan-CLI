@@ -4054,7 +4054,8 @@ impl App {
                         let signer = signer.map_err(WalletError::Other)?;
                         let trader = vaughan_agent::SentientTrader::with_breaker(
                             signer, rpcs, chain_id, breaker,
-                        );
+                        )
+                        .with_profile_dir(&profile_dir);
                         let now = vaughan_agent::now_unix();
                         handle
                             .block_on(vaughan_agent::fire_plan(

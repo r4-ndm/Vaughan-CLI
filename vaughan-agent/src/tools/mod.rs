@@ -161,7 +161,12 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
 /// Sentient registry: sensory + `execute_sentient_swap` + `propose_policy` (human-approved).
 pub fn default_sentient_registry(trader: Arc<SentientTrader>, profile_dir: &Path) -> ToolRegistry {
     let mut registry = default_sensory_registry();
-    let swap: Arc<dyn Tool> = Arc::new(ExecuteSentientSwapTool::new(trader));
+    let bound_trader = if trader.profile_dir().is_none() {
+        Arc::new((*trader).clone().with_profile_dir(profile_dir))
+    } else {
+        trader
+    };
+    let swap: Arc<dyn Tool> = Arc::new(ExecuteSentientSwapTool::new(bound_trader));
     registry.register(Arc::clone(&swap));
     registry.register_alias("execute_degen_swap", swap);
     registry.register(Arc::new(ProposePolicyTool::new(profile_dir.to_path_buf())));

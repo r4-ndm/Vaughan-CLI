@@ -4,11 +4,20 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
+use alloy::sol;
+use alloy::sol_types::SolCall;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 use crate::error::AgentError;
 use crate::sentient::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::sentient::quorum::QuorumValidator;
+
+sol! {
+    interface IERC20Balance {
+        function balanceOf(address account) external view returns (uint256 balance);
+    }
+}
 
 /// Result of an autonomous swap attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +29,7 @@ pub struct SwapExecution {
 }
 
 /// Autonomous trader running inside an isolated burner wallet profile.
+#[derive(Clone)]
 pub struct SentientTrader {
     signer: PrivateKeySigner,
     circuit_breaker: CircuitBreaker,
@@ -27,6 +37,7 @@ pub struct SentientTrader {
     chain_id: u64,
     /// When true, validate + simulate but never broadcast (safe paper trading).
     dry_run: bool,
+    profile_dir: Option<PathBuf>,
 }
 
 impl SentientTrader {
@@ -57,7 +68,19 @@ impl SentientTrader {
             rpc_urls,
             chain_id,
             dry_run: dry_run_from_env(),
+            profile_dir: None,
         }
+    }
+
+    /// Set the profile directory for spend ledger accounting.
+    pub fn with_profile_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.profile_dir = Some(dir.into());
+        self
+    }
+
+    /// Bound profile dir, if any.
+    pub fn profile_dir(&self) -> Option<&Path> {
+        self.profile_dir.as_deref()
     }
 
     /// Enable or disable dry-run (overrides env default).
@@ -89,6 +112,7 @@ impl SentientTrader {
     ///
     /// In dry-run mode, steps 1–4 still run; step 5 returns [`SwapExecution`] with
     /// `dry_run: true` and a zero hash (nothing is signed or broadcast).
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_swap(
         &self,
         router: Address,
@@ -97,6 +121,36 @@ impl SentientTrader {
         value_wei: U256,
         trade_amount: U256,
         slippage_bps: u32,
+        input_token: Option<Address>,
+        input_token_balance: Option<U256>,
+    ) -> Result<SwapExecution, AgentError> {
+        self.execute_swap_keyed(
+            router,
+            pair,
+            calldata,
+            value_wei,
+            trade_amount,
+            slippage_bps,
+            input_token,
+            input_token_balance,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::execute_swap`], but accepts an explicit idempotency key for spend tracking.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_swap_keyed(
+        &self,
+        router: Address,
+        pair: Option<Address>,
+        calldata: Bytes,
+        value_wei: U256,
+        trade_amount: U256,
+        slippage_bps: u32,
+        input_token: Option<Address>,
+        input_token_balance: Option<U256>,
+        key: Option<&str>,
     ) -> Result<SwapExecution, AgentError> {
         self.execute_swap_inner(
             router,
@@ -105,8 +159,11 @@ impl SentientTrader {
             value_wei,
             trade_amount,
             slippage_bps,
+            input_token,
+            input_token_balance,
             false,
-            false, // DEX-only — never open aggregator routers to MCP execute_sentient_swap
+            false,
+            key,
         )
         .await
     }
@@ -126,8 +183,42 @@ impl SentientTrader {
         value_wei: U256,
         trade_amount: U256,
         slippage_bps: u32,
+        input_token: Option<Address>,
+        input_token_balance: Option<U256>,
         force_dry_run: bool,
         allow_agg: bool,
+    ) -> Result<SwapExecution, AgentError> {
+        self.execute_swap_maybe_dry_keyed(
+            router,
+            pair,
+            calldata,
+            value_wei,
+            trade_amount,
+            slippage_bps,
+            input_token,
+            input_token_balance,
+            force_dry_run,
+            allow_agg,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::execute_swap_maybe_dry`], but with an explicit idempotency key.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_swap_maybe_dry_keyed(
+        &self,
+        router: Address,
+        pair: Option<Address>,
+        calldata: Bytes,
+        value_wei: U256,
+        trade_amount: U256,
+        slippage_bps: u32,
+        input_token: Option<Address>,
+        input_token_balance: Option<U256>,
+        force_dry_run: bool,
+        allow_agg: bool,
+        key: Option<&str>,
     ) -> Result<SwapExecution, AgentError> {
         self.execute_swap_inner(
             router,
@@ -136,8 +227,11 @@ impl SentientTrader {
             value_wei,
             trade_amount,
             slippage_bps,
+            input_token,
+            input_token_balance,
             force_dry_run,
             allow_agg,
+            key,
         )
         .await
     }
@@ -151,8 +245,11 @@ impl SentientTrader {
         value_wei: U256,
         trade_amount: U256,
         slippage_bps: u32,
+        input_token: Option<Address>,
+        input_token_balance: Option<U256>,
         force_dry_run: bool,
         allow_agg: bool,
+        key: Option<&str>,
     ) -> Result<SwapExecution, AgentError> {
         if self.rpc_urls.is_empty() {
             return Err(AgentError::InvalidToolCall(
@@ -253,6 +350,62 @@ impl SentientTrader {
         }
 
         // 6. Build, sign, and broadcast
+        let dir = self.profile_dir.as_deref().ok_or_else(|| {
+            AgentError::SpendGuard(
+                "spend_ledger_unreadable: sentient trader has no profile dir bound — refusing to sign".into(),
+            )
+        })?;
+
+        let policy = crate::sentient::load_policy(dir)?;
+
+        let (asset, amount, balance) = if value_wei > U256::ZERO {
+            (format!("{}:native", self.chain_id), value_wei, balance)
+        } else {
+            let token = input_token.ok_or_else(|| {
+                AgentError::SpendGuard(
+                    "spend_ledger_unreadable: cannot determine spend asset for swap".into(),
+                )
+            })?;
+            let token_bal = match input_token_balance {
+                Some(b) => b,
+                None => {
+                    let bal_call = IERC20Balance::balanceOfCall {
+                        account: self.address(),
+                    };
+                    let tx_req = TransactionRequest::default()
+                        .to(token)
+                        .input(Bytes::from(bal_call.abi_encode()).into());
+                    let raw = provider.call(tx_req).await.map_err(|_| {
+                        AgentError::SpendGuard(
+                            "spend_ledger_unreadable: cannot determine spend asset for swap".into(),
+                        )
+                    })?;
+                    IERC20Balance::balanceOfCall::abi_decode_returns(&raw).map_err(|_| {
+                        AgentError::SpendGuard(
+                            "spend_ledger_unreadable: cannot determine spend asset for swap".into(),
+                        )
+                    })?
+                }
+            };
+            (
+                format!("{}:{token:#x}", self.chain_id),
+                trade_amount,
+                token_bal,
+            )
+        };
+
+        let fallback_key = format!("trader_swap_{:#x}", rand::random::<u64>());
+        let reserve_key = key.unwrap_or(&fallback_key);
+        crate::sentient::SpendLedger::reserve(
+            dir,
+            reserve_key,
+            &asset,
+            amount,
+            balance,
+            policy.daily_cap_pct,
+            policy.enforcement,
+        )?;
+
         let nonce = provider
             .get_transaction_count(self.address())
             .await

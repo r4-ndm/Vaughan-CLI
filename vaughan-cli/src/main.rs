@@ -10,8 +10,9 @@ mod lp;
 mod serve;
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use clap::{Parser, Subcommand};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
@@ -623,6 +624,18 @@ async fn run_cli(
             if !yes && !confirm_broadcast()? {
                 anyhow::bail!("aborted: transaction not confirmed");
             }
+            if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+                let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+                let bal = wallet.balance().await?;
+                gate_and_reserve_sentient_send(
+                    &profile_dir,
+                    net.chain_id,
+                    &evm.to,
+                    &evm.value,
+                    &bal.raw,
+                    evm.data.as_deref(),
+                )?;
+            }
             let hash = wallet.send_transaction(evm).await?;
             println!("{hash}");
         }
@@ -632,6 +645,11 @@ async fn run_cli(
             password_env,
             yes,
         } => {
+            if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+                anyhow::bail!(
+                    "typed_data_not_permitted: signing authorisations is an adviser-path action"
+                );
+            }
             unlock(&mut wallet, password_env.as_deref())?;
             let typed_data = load_typed_data_json(data.as_deref(), file.as_deref())?;
             validate_typed_data_shape(&typed_data)?;
@@ -1388,6 +1406,53 @@ fn validate_typed_data_shape(v: &serde_json::Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn gate_and_reserve_sentient_send(
+    profile_dir: &std::path::Path,
+    chain_id: u64,
+    to_str: &str,
+    val_str: &str,
+    bal_raw: &str,
+    data: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(d) = data {
+        let clean = d.trim().strip_prefix("0x").unwrap_or(d.trim());
+        if !clean.is_empty() {
+            anyhow::bail!(
+                "calldata_send_not_permitted: sentient profiles must use a typed proposal (propose_*) for contract calls"
+            );
+        }
+    }
+    let policy =
+        vaughan_agent::sentient::load_policy(profile_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let to_addr = Address::from_str(to_str)
+        .map_err(|e| anyhow::anyhow!("invalid destination address `{to_str}`: {e}"))?;
+    vaughan_agent::sentient::check_destination_allowed(&policy, to_addr)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let balance = U256::from_str(bal_raw)
+        .or_else(|_| U256::from_str_radix(bal_raw.trim_start_matches("0x"), 16))
+        .map_err(|e| anyhow::anyhow!("failed to parse wallet balance `{bal_raw}`: {e}"))?;
+    let send_val = U256::from_str(val_str)
+        .or_else(|_| U256::from_str_radix(val_str.trim_start_matches("0x"), 16))
+        .map_err(|e| anyhow::anyhow!("failed to parse send value `{val_str}`: {e}"))?;
+    let asset = format!("{chain_id}:native");
+    let now = vaughan_agent::dca::now_unix();
+    let data_bytes = data.unwrap_or("").as_bytes();
+    let data_hash = alloy::primitives::keccak256(data_bytes);
+    let key = format!("cli_send_{now}_{to_addr:#x}_{data_hash:#x}_{send_val}");
+    vaughan_agent::sentient::SpendLedger::reserve(
+        profile_dir,
+        &key,
+        &asset,
+        send_val,
+        balance,
+        policy.daily_cap_pct,
+        policy.enforcement,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(())
+}
+
 /// `y/N` gate before broadcasting. Fails closed: EOF (piped/closed stdin)
 /// and anything but an explicit "y"/"yes" mean "do not broadcast" — scripts
 /// must pass `--yes`.
@@ -1430,5 +1495,78 @@ mod tests {
             }
             _ => panic!("expected EVM variant"),
         }
+    }
+
+    #[test]
+    fn sentient_cli_refuses_unparseable_value_or_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = vaughan_agent::sentient::AgentSessionPolicy {
+            allow_transfer_to: vec!["0x1111111111111111111111111111111111111111".into()],
+            ..Default::default()
+        };
+        vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+
+        let valid_to = "0x1111111111111111111111111111111111111111";
+        // 1. Unparseable value refuses
+        let err1 =
+            gate_and_reserve_sentient_send(dir.path(), 369, valid_to, "not_a_number", "1000", None);
+        assert!(err1.is_err(), "expected error on unparseable value");
+        assert!(err1
+            .unwrap_err()
+            .to_string()
+            .contains("failed to parse send value"));
+
+        // 2. Unparseable destination refuses
+        let err2 =
+            gate_and_reserve_sentient_send(dir.path(), 369, "not_an_address", "100", "1000", None);
+        assert!(err2.is_err(), "expected error on unparseable destination");
+        assert!(err2
+            .unwrap_err()
+            .to_string()
+            .contains("invalid destination address"));
+
+        // 3. Unparseable balance refuses
+        let err3 =
+            gate_and_reserve_sentient_send(dir.path(), 369, valid_to, "100", "not_a_balance", None);
+        assert!(err3.is_err(), "expected error on unparseable balance");
+        assert!(err3
+            .unwrap_err()
+            .to_string()
+            .contains("failed to parse wallet balance"));
+    }
+
+    #[test]
+    fn sentient_cli_refuses_non_empty_calldata() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_to = "0x1111111111111111111111111111111111111111";
+        let policy = vaughan_agent::sentient::AgentSessionPolicy {
+            allow_transfer_to: vec![valid_to.into()],
+            ..Default::default()
+        };
+        vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+
+        // Non-empty calldata must be refused in sentient profiles
+        let err = gate_and_reserve_sentient_send(
+            dir.path(),
+            369,
+            valid_to,
+            "0",
+            "1000",
+            Some("0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111"),
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("calldata_send_not_permitted:"),
+            "expected calldata_send_not_permitted, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sentient_profile_refuses_sign_typed_data_and_adviser_unaffected() {
+        assert!(vaughan_core::core::is_sentient_profile("sentient"));
+        assert!(vaughan_core::core::is_sentient_profile("degen"));
+        assert!(!vaughan_core::core::is_sentient_profile("adviser"));
+        assert!(!vaughan_core::core::is_sentient_profile("default"));
     }
 }

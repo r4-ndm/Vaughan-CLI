@@ -191,6 +191,8 @@ async fn test_sentient_mode_circuit_breaker_soft_rejects_slippage() {
             U256::from(100),
             U256::from(100),
             200, // 200 bps = 2.0%
+            None,
+            None,
         )
         .await
         .unwrap_err();

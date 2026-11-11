@@ -74,6 +74,10 @@ impl Tool for ProposeStealthSendTool {
         let announcement = generate_stealth_address(&meta, None)
             .map_err(|e| AgentError::InvalidToolCall(format!("stealth generate: {e}")))?;
 
+        if let Some(ref dir) = context.profile_dir {
+            crate::sentient::record_stealth_pending(dir, announcement.stealth_address)?;
+        }
+
         let pay = attach_estimated_fee(
             TxProposal::new(
                 format!("stealth_pay_{}", rand_id()),
@@ -91,7 +95,8 @@ impl Tool for ProposeStealthSendTool {
                     announcement.stealth_address
                 ),
             )
-            .with_chain(context.chain_id, None),
+            .with_chain(context.chain_id, None)
+            .with_stealth_note(alloy::primitives::keccak256(announcement.ephemeral_pubkey)),
             context,
         )
         .await;

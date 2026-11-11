@@ -98,15 +98,117 @@ pub fn gate_sentient_proposal(
         )));
     }
 
+    // Refuse LpDeployStep unbounded calldata
+    if matches!(&proposal.proposal_type, ProposalType::LpDeployStep { .. }) {
+        return Err(ProviderError::InvalidParams(
+            "lp_step_unbounded: LP deploy step carries deposit calldata; auto-exec refuses until sized"
+                .into(),
+        ));
+    }
+
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+    let policy = vaughan_agent::sentient::load_policy(&profile_dir)
+        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+
+    // Destination allowlist check
+    if proposal.stealth_note.is_some() {
+        let ProposalType::NativeTransfer { to, .. } = &proposal.proposal_type else {
+            return Err(ProviderError::InvalidParams(
+                "destination_not_allowed: stealth transfer to an address that was not minted by propose_stealth_send".into(),
+            ));
+        };
+        if *to != proposal.to {
+            return Err(ProviderError::InvalidParams(format!(
+                "envelope mismatch: proposal.to {:#x} != variant to {:#x}",
+                proposal.to, to
+            )));
+        }
+        let allowed = vaughan_agent::sentient::consume_stealth_pending(&profile_dir, proposal.to)
+            .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+        if !allowed {
+            return Err(ProviderError::InvalidParams(
+                "destination_not_allowed: stealth transfer to an address that was not minted by propose_stealth_send".into(),
+            ));
+        }
+    } else {
+        match &proposal.proposal_type {
+            ProposalType::NativeTransfer { to, .. } => {
+                if *to != proposal.to {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "envelope mismatch: proposal.to {:#x} != variant to {:#x}",
+                        proposal.to, to
+                    )));
+                }
+                vaughan_agent::sentient::check_destination_allowed(&policy, *to)
+                    .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+                vaughan_agent::sentient::check_destination_allowed(&policy, proposal.to)
+                    .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+            }
+            ProposalType::Erc20Transfer {
+                token, recipient, ..
+            } => {
+                if proposal.to != *token {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "envelope mismatch: proposal.to {:#x} != token contract {:#x}",
+                        proposal.to, token
+                    )));
+                }
+                let calldata_to =
+                    decode_erc20_transfer_recipient(&proposal.calldata).ok_or_else(|| {
+                        ProviderError::InvalidParams(
+                            "invalid ERC-20 transfer calldata: cannot decode recipient".into(),
+                        )
+                    })?;
+                if calldata_to != *recipient {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "calldata mismatch: transfer recipient {calldata_to:#x} != variant recipient {recipient:#x}"
+                    )));
+                }
+                vaughan_agent::sentient::check_destination_allowed(&policy, *recipient)
+                    .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+            }
+            ProposalType::ContractCall { target, .. } => {
+                if proposal.value_wei > U256::ZERO {
+                    if *target != proposal.to {
+                        return Err(ProviderError::InvalidParams(format!(
+                            "envelope mismatch: proposal.to {:#x} != target {:#x}",
+                            proposal.to, target
+                        )));
+                    }
+                    vaughan_agent::sentient::check_destination_allowed(&policy, *target)
+                        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+                    vaughan_agent::sentient::check_destination_allowed(&policy, proposal.to)
+                        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+                }
+            }
+            ProposalType::Batch7702 { .. } => {
+                vaughan_agent::sentient::check_destination_allowed(&policy, proposal.to)
+                    .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+                let txns = vaughan_aa::decode_execute(&proposal.calldata)
+                    .map_err(|e| ProviderError::InvalidParams(format!("batch7702 decode: {e}")))?;
+                for tx in txns {
+                    if tx.value > U256::ZERO {
+                        vaughan_agent::sentient::check_destination_allowed(&policy, tx.to)
+                            .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+                    }
+                    if !tx.data.is_empty() {
+                        if let Some(to) = decode_erc20_transfer_recipient(&tx.data) {
+                            vaughan_agent::sentient::check_destination_allowed(&policy, to)
+                                .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Per-asset position sizing. Every leg must fit its own balance.
     let legs = sizeable_legs(wallet, handle, proposal)?;
     if legs.is_empty() {
-        // Typed testnet workflows (token deploy / LP Brew steps) are not
-        // "raw unknown calldata" — createPool/initialize/mint are allowlisted
-        // by proposal type + mainnet guard. Everything else with no sizeable
-        // leg stays refused (blind contract_call).
+        // Typed testnet workflows: TokenLaunch is allowed only when value_wei == 0
         match &proposal.proposal_type {
-            ProposalType::TokenLaunch { .. } | ProposalType::LpDeployStep { .. } => {}
+            ProposalType::TokenLaunch { .. } if proposal.value_wei.is_zero() => {}
             _ => {
                 return Err(ProviderError::InvalidParams(
                     "sentient auto-exec requires a sizeable value leg (native value, token \
@@ -116,11 +218,15 @@ pub fn gate_sentient_proposal(
             }
         }
     }
-    for (amount, balance) in &legs {
+    for (_asset, amount, balance) in &legs {
         breaker
             .validate_trade(*amount, *balance, 0)
             .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
     }
+
+    // Cumulative 24h spend ledger reservation across sized legs
+    vaughan_agent::sentient::reserve_legs(&profile_dir, &proposal.proposal_id, &legs, &policy)
+        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
 
     // DexSwap: audited router allowlist + slippage floor.
     // V2 DEX routers get a fresh on-chain quote; Agg routers are allowlisted but
@@ -249,7 +355,7 @@ fn fresh_fee_estimate(
 
 /// Amount-at-risk legs and the balance each is measured against.
 ///
-/// One entry per (asset, amount) leg: native value, token transfers, sized
+/// One entry per (asset_key, amount, balance) leg: native value, token transfers, sized
 /// approve/unwrap, and swap inputs. Token legs are capped as a percentage of
 /// that token's own balance — a per-asset position limit that needs no price
 /// oracle. An empty result means the proposal carries no sizeable leg
@@ -258,7 +364,8 @@ fn sizeable_legs(
     wallet: &WalletState,
     handle: &Handle,
     proposal: &TxProposal,
-) -> Result<Vec<(U256, U256)>, ProviderError> {
+) -> Result<Vec<(String, U256, U256)>, ProviderError> {
+    let chain_id = wallet.networks().active().chain_id;
     let native_balance = |handle: &Handle| -> Result<U256, ProviderError> {
         let bal = handle
             .block_on(wallet.balance())
@@ -274,21 +381,30 @@ fn sizeable_legs(
 
     match &proposal.proposal_type {
         ProposalType::Batch7702 { .. } => batch_legs(wallet, handle, proposal),
-        ProposalType::NativeTransfer { amount_wei, .. } => {
-            Ok(vec![(*amount_wei, native_balance(handle)?)])
-        }
-        ProposalType::Erc20Transfer { token, amount, .. } => {
-            Ok(vec![(*amount, token_balance(handle, &token.to_string())?)])
-        }
+        ProposalType::NativeTransfer { amount_wei, .. } => Ok(vec![(
+            format!("{chain_id}:native"),
+            *amount_wei,
+            native_balance(handle)?,
+        )]),
+        ProposalType::Erc20Transfer { token, amount, .. } => Ok(vec![(
+            format!("{chain_id}:{token:#x}"),
+            *amount,
+            token_balance(handle, &token.to_string())?,
+        )]),
         ProposalType::DexSwap {
             path, amount_in, ..
         } => {
             if proposal.value_wei > U256::ZERO {
                 // Native-in swap: the value leg is the amount at risk.
-                return Ok(vec![(proposal.value_wei, native_balance(handle)?)]);
+                return Ok(vec![(
+                    format!("{chain_id}:native"),
+                    proposal.value_wei,
+                    native_balance(handle)?,
+                )]);
             }
             match path.first() {
                 Some(input) => Ok(vec![(
+                    format!("{chain_id}:{input:#x}"),
                     *amount_in,
                     token_balance(handle, &input.to_string())?,
                 )]),
@@ -298,18 +414,24 @@ fn sizeable_legs(
         ProposalType::ContractCall { .. } => {
             if proposal.value_wei > U256::ZERO {
                 // Native wrap / payable call: value is the amount at risk.
-                return Ok(vec![(proposal.value_wei, native_balance(handle)?)]);
+                return Ok(vec![(
+                    format!("{chain_id}:native"),
+                    proposal.value_wei,
+                    native_balance(handle)?,
+                )]);
             }
             // Typed ERC-20 approve / WETH9 withdraw — decode amount from calldata.
             if let Some(amount) = decode_erc20_approve_amount(&proposal.calldata) {
                 refuse_unlimited_approve(amount)?;
                 return Ok(vec![(
+                    format!("{chain_id}:{:#x}", proposal.to),
                     amount,
                     token_balance(handle, &proposal.to.to_string())?,
                 )]);
             }
             if let Some(amount) = decode_weth_withdraw_amount(&proposal.calldata) {
                 return Ok(vec![(
+                    format!("{chain_id}:{:#x}", proposal.to),
                     amount,
                     token_balance(handle, &proposal.to.to_string())?,
                 )]);
@@ -330,7 +452,8 @@ fn batch_legs(
     wallet: &WalletState,
     handle: &Handle,
     proposal: &TxProposal,
-) -> Result<Vec<(U256, U256)>, ProviderError> {
+) -> Result<Vec<(String, U256, U256)>, ProviderError> {
+    let chain_id = wallet.networks().active().chain_id;
     let txns = vaughan_aa::decode_execute(&proposal.calldata)
         .map_err(|e| ProviderError::InvalidParams(format!("batch7702 decode: {e}")))?;
     if txns.is_empty() {
@@ -372,13 +495,21 @@ fn batch_legs(
         let bal = handle
             .block_on(wallet.balance())
             .map_err(|e| ProviderError::Internal(e.user_message()))?;
-        legs.push((native_total, parse_balance_raw(&bal.raw)?));
+        legs.push((
+            format!("{chain_id}:native"),
+            native_total,
+            parse_balance_raw(&bal.raw)?,
+        ));
     }
     for (token, total) in token_totals {
         let bal = handle
             .block_on(wallet.token_balance(&token.to_string()))
             .map_err(|e| ProviderError::Internal(e.user_message()))?;
-        legs.push((total, parse_balance_raw(&bal.raw)?));
+        legs.push((
+            format!("{chain_id}:{token:#x}"),
+            total,
+            parse_balance_raw(&bal.raw)?,
+        ));
     }
     Ok(legs)
 }
@@ -390,6 +521,15 @@ fn decode_erc20_transfer_amount(data: &[u8]) -> Option<U256> {
         return None;
     }
     Some(U256::from_be_slice(&data[36..68]))
+}
+
+/// Decode recipient address from ERC-20 `transfer(address,uint256)` calldata.
+fn decode_erc20_transfer_recipient(data: &[u8]) -> Option<Address> {
+    const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+    if data.len() != 68 || data[..4] != TRANSFER_SELECTOR {
+        return None;
+    }
+    Some(Address::from_slice(&data[16..36]))
 }
 
 /// Decode amount from ERC-20 `approve(address,uint256)` (incl. revoke = 0).
@@ -486,6 +626,41 @@ pub fn auto_exec_stealth_sweep(
             breaker.trip_reason().unwrap_or_else(|| "halted".into())
         )));
     }
+    let stealth_addr = match kind {
+        ApprovalKind::StealthSweep {
+            stealth_address, ..
+        } => stealth_address.clone(),
+        _ => return Err(ProviderError::Internal("expected StealthSweep".into())),
+    };
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+    let policy = vaughan_agent::sentient::load_policy(&profile_dir)
+        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+    let notes = handle
+        .block_on(wallet.scan_stealth_notes())
+        .map_err(|e| ProviderError::Internal(e.user_message()))?;
+    let note = notes
+        .into_iter()
+        .find(|n| {
+            format!("{:#x}", n.announcement.stealth_address).eq_ignore_ascii_case(&stealth_addr)
+        })
+        .ok_or_else(|| {
+            ProviderError::InvalidParams(format!("no unswept note for {stealth_addr}"))
+        })?;
+
+    let net = wallet.networks().active();
+    let asset = format!("{}:native", net.chain_id);
+    let key = format!("sweep_{stealth_addr}");
+    vaughan_agent::sentient::SpendLedger::reserve(
+        &profile_dir,
+        &key,
+        &asset,
+        note.balance_wei,
+        note.balance_wei,
+        100, // recovery, not spend: note is its own budget
+        policy.enforcement,
+    )
+    .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+
     let result = provider::execute_approval_sync(kind, wallet, handle);
     match &result {
         Ok(_) => {
@@ -576,5 +751,379 @@ mod tests {
         assert_eq!(parse_balance_raw("0x1000").unwrap(), U256::from(4096u64));
         assert!(parse_balance_raw("not-a-number").is_err());
         assert!(parse_balance_raw("").is_err());
+    }
+
+    #[test]
+    fn erc20_transfer_recipient_decodes() {
+        use alloy::primitives::address;
+        let target = address!("0x1111111111111111111111111111111111111111");
+        let mut data = vec![0xa9, 0x05, 0x9c, 0xbb];
+        data.extend_from_slice(&[0u8; 12]);
+        data.extend_from_slice(target.as_slice());
+        data.extend_from_slice(&U256::from(42_000u64).to_be_bytes::<32>());
+        assert_eq!(decode_erc20_transfer_recipient(&data), Some(target));
+    }
+
+    #[test]
+    fn gate_sentient_refuses_lp_deploy_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut wallet = WalletState::load_with_session(
+            dir.path().join("wallet.json"),
+            OperatingMode::SentientTrader,
+            "sentient",
+        )
+        .unwrap();
+        wallet.set_active_network("pulsechain-testnet-v4").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let breaker = CircuitBreaker::new(vaughan_agent::CircuitBreakerConfig::default());
+        let prop = TxProposal::new(
+            "prop_lp",
+            ProposalType::LpDeployStep {
+                job_id: "job1".into(),
+                step_label: "step1".into(),
+            },
+            Address::ZERO,
+            U256::ZERO,
+            alloy::primitives::Bytes::new(),
+            100_000,
+            true,
+            "lp deploy",
+        );
+        let err = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &prop).unwrap_err();
+        match err {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("lp_step_unbounded:"),
+                    "expected lp_step_unbounded:, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_sentient_enforces_destination_allowlist() {
+        use alloy::primitives::address;
+        let dir = tempfile::tempdir().unwrap();
+        let mut wallet = WalletState::load_with_session(
+            dir.path().join("wallet.json"),
+            OperatingMode::SentientTrader,
+            "sentient",
+        )
+        .unwrap();
+        wallet.set_active_network("pulsechain-testnet-v4").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let breaker = CircuitBreaker::new(vaughan_agent::CircuitBreakerConfig::default());
+
+        let target = address!("0x1111111111111111111111111111111111111111");
+        let prop = TxProposal::new(
+            "prop_transfer",
+            ProposalType::NativeTransfer {
+                to: target,
+                amount_wei: U256::from(100),
+            },
+            target,
+            U256::from(100),
+            alloy::primitives::Bytes::new(),
+            21_000,
+            true,
+            "transfer",
+        );
+
+        // 1. Refused when not in allow_transfer_to
+        let err = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &prop).unwrap_err();
+        match err {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("destination_not_allowed:"),
+                    "expected destination_not_allowed:, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        // 2. Value-bearing ContractCall to non-allowlisted target is refused
+        let call_prop = TxProposal::new(
+            "prop_call",
+            ProposalType::ContractCall {
+                target,
+                function_name: Some("foo".into()),
+            },
+            target,
+            U256::from(50),
+            alloy::primitives::Bytes::new(),
+            50_000,
+            true,
+            "call",
+        );
+        let err2 = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &call_prop).unwrap_err();
+        match err2 {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("destination_not_allowed:"),
+                    "expected destination_not_allowed:, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        // 3. Erc20Transfer with recipient not allowlisted is refused
+        let token = address!("0x2222222222222222222222222222222222222222");
+        let non_allowlisted_recipient = address!("0x3333333333333333333333333333333333333333");
+        let mut erc20_calldata = vec![0xa9, 0x05, 0x9c, 0xbb];
+        erc20_calldata.extend_from_slice(&[0u8; 12]);
+        erc20_calldata.extend_from_slice(non_allowlisted_recipient.as_slice());
+        erc20_calldata.extend_from_slice(&U256::from(500).to_be_bytes::<32>());
+        let erc20_prop = TxProposal::new(
+            "prop_erc20",
+            ProposalType::Erc20Transfer {
+                token,
+                recipient: non_allowlisted_recipient,
+                amount: U256::from(500),
+            },
+            token,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(erc20_calldata.clone()),
+            65_000,
+            true,
+            "erc20 transfer",
+        );
+        let err_erc20 =
+            gate_sentient_proposal(&wallet, rt.handle(), &breaker, &erc20_prop).unwrap_err();
+        match err_erc20 {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("destination_not_allowed:"),
+                    "expected destination_not_allowed:, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        // 4. Erc20Transfer with calldata-recipient != envelope recipient is refused
+        let another_recipient = address!("0x4444444444444444444444444444444444444444");
+        let mismatched_erc20 = TxProposal::new(
+            "prop_erc20_mismatch",
+            ProposalType::Erc20Transfer {
+                token,
+                recipient: another_recipient,
+                amount: U256::from(500),
+            },
+            token,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(erc20_calldata),
+            65_000,
+            true,
+            "erc20 mismatch",
+        );
+        let err_mismatch =
+            gate_sentient_proposal(&wallet, rt.handle(), &breaker, &mismatched_erc20).unwrap_err();
+        match err_mismatch {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("calldata mismatch:"),
+                    "expected calldata mismatch:, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        // 5. Batch7702 with call to non-allowlisted target is refused
+        let batch_txns = vec![vaughan_aa::Transaction {
+            to: non_allowlisted_recipient,
+            value: U256::from(10),
+            data: alloy::primitives::Bytes::new(),
+        }];
+        let batch_calldata = vaughan_aa::encode_execute(&batch_txns, &[0u8; 65]);
+        let batch_prop = TxProposal::new(
+            "prop_batch",
+            ProposalType::Batch7702 {
+                target_count: 1,
+                total_value: U256::from(10),
+            },
+            target,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(batch_calldata),
+            150_000,
+            true,
+            "batch 7702",
+        );
+        let err_batch =
+            gate_sentient_proposal(&wallet, rt.handle(), &breaker, &batch_prop).unwrap_err();
+        match err_batch {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("destination_not_allowed:"),
+                    "expected destination_not_allowed:, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        // 6. Allowed when in allow_transfer_to: passes destination check and reaches RPC sizing
+        let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+        let policy = vaughan_agent::sentient::AgentSessionPolicy {
+            allow_transfer_to: vec![format!("{target:#x}")],
+            ..Default::default()
+        };
+        vaughan_agent::sentient::save_policy(&profile_dir, &policy).unwrap();
+
+        let res = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &prop);
+        match res.unwrap_err() {
+            ProviderError::Internal(msg) => {
+                assert!(
+                    !msg.contains("destination_not_allowed"),
+                    "destination allowlist should have passed, but got: {msg}"
+                );
+            }
+            other => panic!("expected ProviderError::Internal from sizing RPC, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_non_stealth_transfer_with_stealth_pay_id_prefix_still_refused() {
+        use alloy::primitives::address;
+        let dir = tempfile::tempdir().unwrap();
+        let mut wallet = WalletState::load_with_session(
+            dir.path().join("wallet.json"),
+            OperatingMode::SentientTrader,
+            "sentient",
+        )
+        .unwrap();
+        wallet.set_active_network("pulsechain-testnet-v4").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let breaker = CircuitBreaker::new(vaughan_agent::CircuitBreakerConfig::default());
+        let target = address!("0x1111111111111111111111111111111111111111");
+
+        // 1. Proposal id starts with stealth_pay_, but stealth_note is None (no structural marker)
+        let fake_stealth_prop = TxProposal::new(
+            "stealth_pay_spoofed_id",
+            ProposalType::NativeTransfer {
+                to: target,
+                amount_wei: U256::from(100),
+            },
+            target,
+            U256::from(100),
+            alloy::primitives::Bytes::new(),
+            21_000,
+            true,
+            "spoofed stealth",
+        );
+        assert!(fake_stealth_prop.stealth_note.is_none());
+
+        let err =
+            gate_sentient_proposal(&wallet, rt.handle(), &breaker, &fake_stealth_prop).unwrap_err();
+        match err {
+            ProviderError::InvalidParams(msg) => {
+                assert!(
+                    msg.starts_with("destination_not_allowed:"),
+                    "expected destination_not_allowed: for spoofed stealth proposal, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        // 2. Structural marker present (stealth_note.is_some()), but destination absent from stealth-pending.json
+        let legitimate_stealth = fake_stealth_prop
+            .clone()
+            .with_stealth_note(alloy::primitives::B256::repeat_byte(0x55));
+
+        let err_absent =
+            gate_sentient_proposal(&wallet, rt.handle(), &breaker, &legitimate_stealth)
+                .unwrap_err();
+        match err_absent {
+            ProviderError::InvalidParams(msg) => {
+                assert_eq!(
+                    msg,
+                    "destination_not_allowed: stealth transfer to an address that was not minted by propose_stealth_send"
+                );
+            }
+            other => {
+                panic!("expected InvalidParams for unminted stealth destination, got {other:?}")
+            }
+        }
+
+        // 3. Recorded in stealth-pending.json: passes destination check and reaches sizing
+        let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+        vaughan_agent::sentient::record_stealth_pending(&profile_dir, target).unwrap();
+
+        let res = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &legitimate_stealth);
+        match res.unwrap_err() {
+            ProviderError::Internal(msg) => {
+                assert!(
+                    !msg.contains("destination_not_allowed"),
+                    "stealth destination in pending list should have passed, got: {msg}"
+                );
+            }
+            other => panic!("expected ProviderError::Internal from sizing RPC, got {other:?}"),
+        }
+
+        // 4. Second gate attempt with the same proposal is refused because entry was consumed
+        let err_consumed =
+            gate_sentient_proposal(&wallet, rt.handle(), &breaker, &legitimate_stealth)
+                .unwrap_err();
+        match err_consumed {
+            ProviderError::InvalidParams(msg) => {
+                assert_eq!(
+                    msg,
+                    "destination_not_allowed: stealth transfer to an address that was not minted by propose_stealth_send"
+                );
+            }
+            other => {
+                panic!("expected InvalidParams after stealth destination consumed, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_stealth_sweep_reserves_100_pct_under_default_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_dir = dir.path();
+        let policy = vaughan_agent::sentient::AgentSessionPolicy::default();
+        assert_eq!(policy.daily_cap_pct, 20);
+        assert!(policy.allow_transfer_to.is_empty());
+
+        let stealth_addr = "0x1111111111111111111111111111111111111111";
+        let asset = "369:native";
+        let key = format!("sweep_{stealth_addr}");
+        let note_balance = U256::from(1_000_000_000_000_000_000u64); // 1 ETH
+
+        // Under 100% cap (sweep recovery), reserving 100% of note balance succeeds under default policy
+        let res = vaughan_agent::sentient::SpendLedger::reserve(
+            profile_dir,
+            &key,
+            asset,
+            note_balance,
+            note_balance,
+            100, // recovery cap
+            policy.enforcement,
+        );
+        assert!(
+            res.is_ok(),
+            "sweep reservation must succeed under 100% recovery cap: {res:?}"
+        );
+
+        // Ledger records the amount for audit trail
+        let snap = vaughan_agent::sentient::SpendLedger::snapshot(profile_dir).unwrap();
+        assert_eq!(snap.assets.get(asset).unwrap().spent, note_balance);
+
+        // Prove that under the default 20% daily cap it would have failed
+        let res_failed = vaughan_agent::sentient::SpendLedger::reserve(
+            profile_dir,
+            "another_key",
+            "369:0xother",
+            note_balance,
+            note_balance,
+            policy.daily_cap_pct, // 20%
+            policy.enforcement,
+        );
+        assert!(
+            res_failed.is_err(),
+            "20% cap should fail for 100% balance spend"
+        );
+        assert!(res_failed
+            .unwrap_err()
+            .to_string()
+            .contains("spend_cap_exceeded"));
     }
 }

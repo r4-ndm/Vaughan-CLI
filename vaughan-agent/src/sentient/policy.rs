@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 
 use super::circuit_breaker::CircuitBreakerConfig;
@@ -82,6 +82,12 @@ pub struct AgentSessionPolicy {
     /// Max % of native balance per trade (1–100).
     #[serde(default = "default_max_position_pct")]
     pub max_position_pct: u8,
+    /// Max % of an asset's window-start balance that may leave the account per 24h window.
+    #[serde(default = "default_daily_cap_pct")]
+    pub daily_cap_pct: u8,
+    /// Addresses the sentient agent may transfer native/tokens TO. Empty = all transfers refused.
+    #[serde(default)]
+    pub allow_transfer_to: Vec<String>,
     /// Max slippage in basis points.
     #[serde(default = "default_max_slippage_bps")]
     pub max_slippage_bps: u32,
@@ -97,7 +103,10 @@ pub struct AgentSessionPolicy {
 }
 
 fn default_max_position_pct() -> u8 {
-    100
+    10
+}
+fn default_daily_cap_pct() -> u8 {
+    20
 }
 fn default_max_slippage_bps() -> u32 {
     100
@@ -118,6 +127,8 @@ impl Default for AgentSessionPolicy {
             enforcement: EnforcementMode::Enforced,
             acknowledge_unsafe: false,
             max_position_pct: default_max_position_pct(),
+            daily_cap_pct: default_daily_cap_pct(),
+            allow_transfer_to: Vec::new(),
             max_slippage_bps: default_max_slippage_bps(),
             max_session_gas_wei: default_max_session_gas_wei_str(),
             max_consecutive_errors: default_max_consecutive_errors(),
@@ -133,6 +144,25 @@ impl AgentSessionPolicy {
             return Err(AgentError::InvalidToolCall(
                 "max_position_pct must be 1..=100".into(),
             ));
+        }
+        if self.daily_cap_pct == 0 || self.daily_cap_pct > 100 {
+            return Err(AgentError::InvalidToolCall(
+                "daily_cap_pct must be 1..=100".into(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for entry in &self.allow_transfer_to {
+            if entry.trim().parse::<Address>().is_err() {
+                return Err(AgentError::InvalidToolCall(format!(
+                    "invalid address in allow_transfer_to: `{entry}`"
+                )));
+            }
+            let lower = entry.trim().to_ascii_lowercase();
+            if !seen.insert(lower) {
+                return Err(AgentError::InvalidToolCall(format!(
+                    "duplicate address in allow_transfer_to: `{entry}`"
+                )));
+            }
         }
         if self.max_slippage_bps > 10_000 {
             return Err(AgentError::InvalidToolCall(
@@ -175,6 +205,18 @@ impl AgentSessionPolicy {
                 self.max_position_pct = value.parse().map_err(|_| {
                     AgentError::InvalidToolCall("max_position_pct: need integer 1..=100".into())
                 })?;
+            }
+            "daily_cap_pct" => {
+                self.daily_cap_pct = value.parse().map_err(|_| {
+                    AgentError::InvalidToolCall("daily_cap_pct: need integer 1..=100".into())
+                })?;
+            }
+            "allow_transfer_to" => {
+                self.allow_transfer_to = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             "max_slippage_bps" => {
                 self.max_slippage_bps = value.parse().map_err(|_| {
@@ -254,6 +296,8 @@ pub fn build_policy_proposal(
         let old = match key.as_str() {
             "enforcement" => before.enforcement.as_str().to_string(),
             "max_position_pct" => before.max_position_pct.to_string(),
+            "daily_cap_pct" => before.daily_cap_pct.to_string(),
+            "allow_transfer_to" => before.allow_transfer_to.join(", "),
             "max_slippage_bps" => before.max_slippage_bps.to_string(),
             "max_session_gas_wei" => before.max_session_gas_wei.clone(),
             "max_consecutive_errors" => before.max_consecutive_errors.to_string(),
@@ -319,6 +363,12 @@ pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
         ))
     })?;
     policy.validate()?;
+    if policy.max_position_pct == 100 {
+        tracing::warn!(
+            target: "vaughan_agent::sentient",
+            "per-trade cap 100% — the 24h cap is the only bound"
+        );
+    }
     match policy.enforcement {
         EnforcementMode::Enforced => {}
         EnforcementMode::WarnOnly => tracing::warn!(
@@ -536,5 +586,52 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn policy_defaults_and_validation() {
+        let p = AgentSessionPolicy::default();
+        assert_eq!(p.max_position_pct, 10);
+        assert_eq!(p.daily_cap_pct, 20);
+        assert!(p.allow_transfer_to.is_empty());
+        assert!(p.validate().is_ok());
+
+        let mut bad_cap = p.clone();
+        bad_cap.daily_cap_pct = 0;
+        assert!(bad_cap.validate().is_err());
+
+        let mut bad_cap2 = p.clone();
+        bad_cap2.daily_cap_pct = 101;
+        assert!(bad_cap2.validate().is_err());
+
+        let mut bad_addr = p.clone();
+        bad_addr.allow_transfer_to = vec!["not-an-address".into()];
+        assert!(bad_addr.validate().is_err());
+
+        let mut duplicate_addr = p.clone();
+        duplicate_addr.allow_transfer_to = vec![
+            "0x0000000000000000000000000000000000000001".into(),
+            "0x0000000000000000000000000000000000000001".into(),
+        ];
+        assert!(duplicate_addr.validate().is_err());
+
+        // Dedupe case-insensitively
+        let mut case_dupe = p;
+        case_dupe.allow_transfer_to = vec![
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed".into(),
+            "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed".into(),
+        ];
+        assert!(case_dupe.validate().is_err());
+    }
+
+    #[test]
+    fn policy_file_with_bad_address_fails_closed() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SENTIENT_POLICY_TOML),
+            "allow_transfer_to = [\"0xinvalid\"]\n",
+        )
+        .unwrap();
+        assert!(load_policy(dir.path()).is_err());
     }
 }
