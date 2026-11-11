@@ -180,7 +180,7 @@ impl McpDispatcher {
             }
             "get_address" => {
                 let addr = ctx.active_address.ok_or_else(|| {
-                    "wallet_locked: unlock Vaughan TUI or pass account_address".to_string()
+                    "wallet_locked: no unlocked vault for this profile — the operator must run `vaughan serve --profile <name> --password-env <VAR>` (headless) or keep the TUI unlocked. Read-only tools also accept `account_address`; write tools do not.".to_string()
                 })?;
                 let session = McpSessionToken::read(&self.profile_dir)
                     .map_err(|e| e.user_message())?
@@ -232,7 +232,7 @@ impl McpDispatcher {
 
     async fn list_assets(&self, ctx: &McpContext) -> Result<Value, String> {
         let addr = ctx.active_address.ok_or_else(|| {
-            "wallet_locked: unlock Vaughan TUI or pass account_address".to_string()
+            "wallet_locked: no unlocked vault for this profile — the operator must run `vaughan serve --profile <name> --password-env <VAR>` (headless) or keep the TUI unlocked. Read-only tools also accept `account_address`; write tools do not.".to_string()
         })?;
         let net = get_network_by_id(&ctx.network_id)
             .ok_or_else(|| format!("unknown network: {}", ctx.network_id))?;
@@ -336,7 +336,7 @@ impl McpDispatcher {
         // Vault-wide: positive cache for this chain unlocks every account. Cold
         // scan uses the session address; TUI re-verify writes the vault cache.
         let addr = ctx.active_address.ok_or_else(|| {
-            "wallet_locked: unlock Vaughan TUI or pass account_address".to_string()
+            "wallet_locked: no unlocked vault for this profile — the operator must run `vaughan serve --profile <name> --password-env <VAR>` (headless) or keep the TUI unlocked. Read-only tools also accept `account_address`; write tools do not.".to_string()
         })?;
         require_power_features(Some(&self.profile_dir), chain_id, &[addr])
             .await
