@@ -190,3 +190,16 @@ case ":${PATH}:" in
 esac
 
 say "done — run: vaughan"
+
+# A second copy earlier on PATH silently shadows this one, and the symptom is a
+# feature that exists in the repo but not in the binary the user is running.
+resolved=$(command -v vaughan 2>/dev/null || true)
+if [ -n "$resolved" ]; then
+    installed="${INSTALL_DIR}/vaughan"
+    if [ "$(cd "$(dirname "$resolved")" 2>/dev/null && pwd)" != "$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" ]; then
+        say "WARNING: 'vaughan' resolves to ${resolved}, not ${installed}"
+        say "         another install is earlier on PATH; remove it or reorder PATH,"
+        say "         otherwise you will run an older build and wonder where the feature went."
+    fi
+fi
+
