@@ -31,10 +31,17 @@ jobs:
           cargo test -p vaughan-core live_quote_usdc_pulse_to_base
           -- --ignored --nocapture
 
-      - name: SquirrelSwap Brain quote + prepare (no sign)
+      # cargo test takes ONE test-name positional; two names on one line made the whole
+      # job fail with "unexpected argument" before any test ran, so the nightly was red
+      # for reasons unrelated to the endpoints it exists to watch.
+      - name: SquirrelSwap Brain quote (no sign)
         run: >
-          cargo test -p vaughan-core
-          live_preview_quote_pls_to_plsx live_prepare_swap_inspect_pls_to_plsx
+          cargo test -p vaughan-core live_preview_quote_pls_to_plsx
+          -- --ignored --nocapture
+
+      - name: SquirrelSwap Brain prepare (inspect, no sign)
+        run: >
+          cargo test -p vaughan-core live_prepare_swap_inspect_pls_to_plsx
           -- --ignored --nocapture
 
       - name: Piteas public quote
