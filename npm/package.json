@@ -28,6 +28,6 @@
     "url": "git+https://github.com/r4-ndm/Vaughan-CLI.git"
   },
   "scripts": {
-    "test": "node test/resolve.test.js"
+    "test": "node test/resolve.test.js && node test/exec.test.js"
   }
 }

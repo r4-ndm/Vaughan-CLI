@@ -1,5 +1,7 @@
 //! Tool dispatch for MCP — maps tool names to `vaughan-agent` registry.
 
+use std::path::PathBuf;
+
 use alloy::primitives::Address;
 use serde_json::{json, Value};
 use vaughan_agent::paths::profile_dir;
@@ -45,11 +47,15 @@ impl McpDispatcher {
         let wallet_path = StateManager::profile_path(profile)
             .map_err(|e| format!("profile path: {}", e.user_message()))?;
         let profile_dir = profile_dir(&wallet_path);
-        Ok(Self {
+        Ok(Self::for_profile_dir(profile_dir))
+    }
+
+    pub fn for_profile_dir(profile_dir: PathBuf) -> Self {
+        Self {
             sensory: default_sensory_registry(),
             assist: default_assist_registry_for(Some(&profile_dir)),
             profile_dir,
-        })
+        }
     }
 
     pub fn tool_definitions(&self) -> Vec<Value> {
@@ -86,6 +92,7 @@ impl McpDispatcher {
             "get_proposal_status" => self.get_proposal_status(args, &ctx).await,
             "list_pending_proposals" => self.list_pending_proposals(&ctx),
             "get_control_plane_status" => self.control_plane_status(&ctx).await,
+            "budget_status" => self.budget_status(&ctx).await,
             "import_token" => self.assist_side_effect("import_token", args, &ctx).await,
             "get_stealth_uri" => {
                 self.require_power_unlocked(&ctx).await?;
@@ -519,6 +526,80 @@ impl McpDispatcher {
                 "Adviser profile: proposes need human approval in TUI"
             },
         }))
+    }
+
+    async fn budget_status(&self, ctx: &McpContext) -> Result<Value, String> {
+        // The profile NAME must come from the caller's context: the default profile's
+        // wallet lives at <data>/vaughan-cli/wallet.json (no `profiles/` segment), so
+        // deriving it from the directory basename reports "vaughan-cli" instead of
+        // "default" and makes the response ambiguous for an agent reading it.
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+
+        if !vaughan_core::core::is_sentient_profile(profile_name) {
+            return Ok(json!({
+                "profile": profile_name,
+                "enforcement": "n/a",
+                "assets": [],
+                "note": "adviser profile — proposals need human approval",
+            }));
+        }
+
+        let policy = vaughan_agent::sentient::load_policy(&self.profile_dir)
+            .map_err(|e| format!("spend_ledger_unreadable: {e}"))?;
+
+        let view = vaughan_agent::sentient::SpendLedger::snapshot(&self.profile_dir)
+            .map_err(|e| e.to_string())?;
+
+        let ledger_path = self.profile_dir.join("sentient-spend.json");
+        let window_reset_unix = if view.window_start_unix == 0 {
+            0
+        } else {
+            view.window_start_unix.saturating_add(view.window_seconds)
+        };
+
+        let mut assets_out = Vec::new();
+        let mut asset_keys: Vec<_> = view.assets.keys().collect();
+        asset_keys.sort();
+        for key in asset_keys {
+            let item = &view.assets[key];
+            let cap = item
+                .snapshot
+                .saturating_mul(alloy::primitives::U256::from(policy.daily_cap_pct))
+                .checked_div(alloy::primitives::U256::from(100))
+                .unwrap_or(alloy::primitives::U256::ZERO);
+            let remaining = cap.saturating_sub(item.spent);
+            assets_out.push(json!({
+                "asset": key,
+                "snapshot": item.snapshot.to_string(),
+                "spent": item.spent.to_string(),
+                "cap": cap.to_string(),
+                "remaining": remaining.to_string(),
+            }));
+        }
+
+        let mut out = json!({
+            "profile": profile_name,
+            "chain_id": ctx.chain_id,
+            "enforcement": policy.enforcement.as_str(),
+            "daily_cap_pct": policy.daily_cap_pct,
+            "window_reset_unix": window_reset_unix,
+            "assets": assets_out,
+            "allow_transfer_to": policy.allow_transfer_to,
+            "ledger_path": ledger_path.display().to_string(),
+        });
+
+        if view.assets.is_empty() {
+            out["note"] = json!("no spend recorded this window");
+        }
+
+        Ok(out)
     }
 
     async fn stealth_uri(&self, _ctx: &McpContext) -> Result<Value, String> {

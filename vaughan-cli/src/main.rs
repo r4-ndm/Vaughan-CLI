@@ -7,6 +7,7 @@
 
 mod json_out;
 mod lp;
+mod mcp_install;
 mod serve;
 
 use std::path::PathBuf;
@@ -171,6 +172,8 @@ enum Command {
     },
     /// MCP stdio server for external agents (Cursor, Claude Code, …).
     Mcp {
+        #[command(subcommand)]
+        action: Option<mcp_install::McpCmd>,
         /// Client label shown on approval cards (e.g. cursor, claude).
         #[arg(long, default_value = "cursor")]
         source: String,
@@ -376,16 +379,26 @@ fn main() {
         None | Some(Command::Tui) => {
             vaughan_tui::run_interactive(&profile).map_err(|e| anyhow::anyhow!("{}", e))
         }
-        Some(Command::Mcp { source }) => match reject_deferred_sentient_profile(&profile) {
-            Err(e) => Err(anyhow::anyhow!("{}", e.user_message())),
-            Ok(()) => {
-                vaughan_core::logging::init_logging();
-                let runtime =
-                    tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-                runtime
-                    .block_on(vaughan_mcp::run_stdio_server(profile, source))
-                    .map_err(|e| anyhow::anyhow!("{e}"))
+        Some(Command::Mcp { action, source }) => match action {
+            Some(mcp_install::McpCmd::Install {
+                client,
+                profile: cmd_profile,
+                dry_run,
+            }) => {
+                let prof = cmd_profile.as_deref().unwrap_or(&profile);
+                mcp_install::run_install(client, prof, dry_run)
             }
+            None => match reject_deferred_sentient_profile(&profile) {
+                Err(e) => Err(anyhow::anyhow!("{}", e.user_message())),
+                Ok(()) => {
+                    vaughan_core::logging::init_logging();
+                    let runtime =
+                        tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+                    runtime
+                        .block_on(vaughan_mcp::run_stdio_server(profile, source))
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                }
+            },
         },
         Some(Command::Serve { password_env }) => {
             vaughan_core::logging::init_logging();
