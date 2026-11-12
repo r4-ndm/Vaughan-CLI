@@ -101,12 +101,30 @@ pub fn review_mcp_proposal_with(
                 crate::core::proposal::DexSwapKind::V3 { .. } => "DEX swap (V3)",
                 crate::core::proposal::DexSwapKind::V2 => "DEX swap (V2)",
                 crate::core::proposal::DexSwapKind::Aggregator => "Aggregator swap",
-                crate::core::proposal::DexSwapKind::Unknown => "DEX / Agg swap",
+                crate::core::proposal::DexSwapKind::Unknown => {
+                    "Unclassified swap (legacy — no dex_kind)"
+                }
             };
             review.rows.push(VerifyRow {
                 label: "Action".into(),
                 value: action_label.into(),
             });
+            if matches!(dex_kind, crate::core::proposal::DexSwapKind::Unknown) {
+                review.safety_hints.push(
+                    "unclassified swap (legacy — no dex_kind): router, path, and calldata were not cross-checked"
+                        .into(),
+                );
+            }
+            if let crate::core::proposal::DexSwapKind::V3 { pool, fee, .. } = dex_kind {
+                review.rows.push(VerifyRow {
+                    label: "V3 pool".into(),
+                    value: format!("{pool:#x}"),
+                });
+                review.rows.push(VerifyRow {
+                    label: "Fee tier".into(),
+                    value: fee.to_string(),
+                });
+            }
             review.rows.push(VerifyRow {
                 label: "Router".into(),
                 value: format!("{router:#x}"),
@@ -272,7 +290,7 @@ pub fn review_mcp_proposal_with(
 mod tests {
     use super::*;
     use crate::core::hex_stake::{ehex_address, encode_stake_start, phex_address};
-    use crate::core::proposal::ProposalType;
+    use crate::core::proposal::{DexSwapKind, ProposalType};
     use alloy::primitives::{address, Bytes, U256};
     use alloy::sol;
     use alloy::sol_types::SolCall;
@@ -426,5 +444,75 @@ mod tests {
         );
         let r = review_mcp_proposal(&p, "PLS", 18);
         assert!(r.safety_hints.is_empty(), "{:?}", r.safety_hints);
+    }
+
+    #[test]
+    fn reviews_dex_swap_unknown_kind_labels_unclassified_with_safety_hint() {
+        let p = TxProposal::new(
+            "t",
+            ProposalType::DexSwap {
+                router: address!("0x1111111111111111111111111111111111111111"),
+                path: vec![
+                    address!("0x2222222222222222222222222222222222222222"),
+                    address!("0x3333333333333333333333333333333333333333"),
+                ],
+                amount_in: U256::from(100),
+                min_amount_out: U256::from(90),
+                dex_kind: DexSwapKind::Unknown,
+            },
+            address!("0x1111111111111111111111111111111111111111"),
+            U256::ZERO,
+            Bytes::new(),
+            250_000,
+            true,
+            "swap",
+        );
+        let r = review_mcp_proposal(&p, "PLS", 18);
+        assert!(r
+            .rows
+            .iter()
+            .any(|row| row.label == "Action"
+                && row.value == "Unclassified swap (legacy — no dex_kind)"));
+        assert!(r
+            .safety_hints
+            .iter()
+            .any(|h| h.contains("router, path, and calldata were not cross-checked")));
+    }
+
+    #[test]
+    fn reviews_dex_swap_v3_shows_pool_and_fee_rows() {
+        let pool = address!("0x4444444444444444444444444444444444444444");
+        let p = TxProposal::new(
+            "t",
+            ProposalType::DexSwap {
+                router: address!("0x1111111111111111111111111111111111111111"),
+                path: vec![
+                    address!("0x2222222222222222222222222222222222222222"),
+                    address!("0x3333333333333333333333333333333333333333"),
+                ],
+                amount_in: U256::from(100),
+                min_amount_out: U256::from(90),
+                dex_kind: DexSwapKind::V3 {
+                    pool,
+                    fee: 500,
+                    quote: U256::from(95),
+                },
+            },
+            address!("0x1111111111111111111111111111111111111111"),
+            U256::ZERO,
+            Bytes::new(),
+            350_000,
+            true,
+            "v3 swap",
+        );
+        let r = review_mcp_proposal(&p, "PLS", 18);
+        assert!(r
+            .rows
+            .iter()
+            .any(|row| row.label == "V3 pool" && row.value == format!("{pool:#x}")));
+        assert!(r
+            .rows
+            .iter()
+            .any(|row| row.label == "Fee tier" && row.value == "500"));
     }
 }

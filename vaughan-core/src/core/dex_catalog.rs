@@ -673,6 +673,40 @@ pub fn v3_swap_routers(chain_id: u64) -> impl Iterator<Item = Address> {
     })
 }
 
+/// Assert that every `DexContractRole::SwapRouter` row for `chain_id` lands in
+/// exactly one of `v2_swap_routers` or `v3_swap_routers` (partition invariant).
+pub fn assert_swap_router_partition(chain_id: u64) {
+    let effective = if chain_id == 31337 { 369 } else { chain_id };
+    let v2_set: std::collections::HashSet<Address> = v2_swap_routers(chain_id).collect();
+    let v3_set: std::collections::HashSet<Address> = v3_swap_routers(chain_id).collect();
+
+    // Disjoint
+    for addr in &v2_set {
+        assert!(
+            !v3_set.contains(addr),
+            "router {addr:#x} on chain {chain_id} is in both V2 and V3 router sets"
+        );
+    }
+
+    // Every SwapRouter in CATALOG for effective chain_id must be in exactly one
+    let mut count = 0;
+    for entry in CATALOG
+        .iter()
+        .filter(|e| e.chain_id == effective && e.role == DexContractRole::SwapRouter)
+    {
+        count += 1;
+        let addr = parse_static_addr(entry.address).expect("valid catalog router address");
+        let in_v2 = v2_set.contains(&addr);
+        let in_v3 = v3_set.contains(&addr);
+        assert!(
+            in_v2 ^ in_v3,
+            "catalog swap router {addr:#x} ({:?}) on chain {chain_id} must land in exactly one set (v2: {in_v2}, v3: {in_v3})",
+            entry.venue
+        );
+    }
+    assert!(count > 0, "chain {chain_id} has no catalogued swap routers");
+}
+
 /// Venues with a catalogued NPM on `chain_id` (wiz4rd 943 focus).
 pub fn lp_v3_venues(chain_id: u64) -> impl Iterator<Item = DexVenue> {
     DEX_VENUES
@@ -1055,5 +1089,20 @@ mod tests {
     fn balancer_listed_but_no_router() {
         assert!(DexVenue::Phux.unsupported_reason().is_some());
         assert!(venue_swap_router(DexVenue::Phux, DexProtocol::V2, 369).is_none());
+    }
+
+    #[test]
+    fn swap_router_partition_369() {
+        assert_swap_router_partition(369);
+    }
+
+    #[test]
+    fn swap_router_partition_943() {
+        assert_swap_router_partition(943);
+    }
+
+    #[test]
+    fn swap_router_partition_10001() {
+        assert_swap_router_partition(10_001);
     }
 }
