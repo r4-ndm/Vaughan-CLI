@@ -4,6 +4,19 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ## Security debt (open)
 
+- [ ] **npm publish credential is a bypass-2FA granular token with write on all packages.**
+      It sits in `~/.npmrc` (`//registry.npmjs.org/:_authToken=`) as `r4ndm` and is currently the only
+      way `vaughan-mcp` can be published — npm's account 2FA is security-key (WebAuthn) only, so a CLI
+      publish cannot satisfy it interactively.
+      Exposure: anyone who can read that file (or the fish history entry it was typed into — the token
+      value there has been redacted) can publish any version of any package the account can write.
+      It cannot perform account-identity/governance actions (Aug 2026 rule).
+      Fix: configure **Trusted Publishing** (OIDC from `release.yml`, job `publish-npm`, gated by the
+      `NPM_TRUSTED_PUBLISH` repo variable), cut one release through it, then delete the token at
+      npmjs.com/settings/r4ndm/tokens and remove the `_authToken` line from `~/.npmrc`.
+      Deadline: npm removes direct publish with bypass-2FA tokens in **January 2027**.
+      Owner: r4ndm.
+
 - [ ] **Dependency advisories — 15 → 2 after the lockfile triage; both accepted, both blocked upstream.**
       Cleared by targeted `cargo update -p`: tokio RUSTSEC-2026-0386 (unsound), rustls
       RUSTSEC-2026-0346..0349, rustls-webpki -0382, chacha20 (yanked), crypto-bigint 0.7.5
