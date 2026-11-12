@@ -134,3 +134,49 @@ jobs:
           files: |
             vaughan-*.tar.gz
             SHA256SUMS
+
+  # npm publish via Trusted Publishing (OIDC): no token, no 2FA prompt.
+  #
+  # It is OFF until the npm side is configured, because a missing trusted
+  # publisher makes this job fail with a misleading 404. To enable:
+  #   1. npmjs.com -> vaughan-mcp -> Settings -> Trusted Publisher -> GitHub Actions
+  #      repository: r4-ndm/Vaughan-CLI   workflow filename: release.yml
+  #      (casing is validated against the OIDC token; it must match exactly)
+  #   2. GitHub repo -> Settings -> Variables -> Actions -> new variable
+  #      NPM_TRUSTED_PUBLISH = true
+  #   3. then delete any bypass-2FA token from ~/.npmrc and npmjs.com
+  publish-npm:
+    name: publish npm package
+    needs: release
+    if: vars.NPM_TRUSTED_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm >= 11.5.1 (OIDC exchange + provenance).
+      - name: Upgrade npm for OIDC publishing
+        run: npm install -g npm@^11.15.0
+
+      - name: Verify the package version matches the tag
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          want="${tag#v}"
+          have="$(node -p "require('./npm/package.json').version")"
+          if [ "$want" != "$have" ]; then
+            echo "ERROR: tag is $tag but npm/package.json is $have — bump the version before tagging" >&2
+            exit 1
+          fi
+
+      - name: Publish to npm (trusted publishing)
+        working-directory: npm
+        run: npm publish --access public
