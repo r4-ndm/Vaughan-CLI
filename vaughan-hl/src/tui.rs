@@ -5018,6 +5018,146 @@ mod tests {
 
     #[test]
     fn loads_strategy_entries_and_ranks_walk_forward_winners_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let strat_dir = tmp.path().join("strategies");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(&strat_dir).unwrap();
+
+        // Build synthetic candles: warmup bars followed by predictable winning cycles
+        let mut candles = Vec::new();
+        // Warmup bars (default indicators require ~230 warmup bars)
+        for i in 0..250 {
+            let t = (i as u64) * 900_000;
+            candles.push(Candle {
+                open_time_ms: t,
+                close_time_ms: t + 899_999,
+                open: 100.0,
+                high: 100.5,
+                low: 99.5,
+                close: 100.0,
+                volume: 1000.0,
+                trades: 50,
+            });
+        }
+        // Cycles with clear upward pushes to trigger longs and take profit
+        for cycle in 0..120 {
+            let base_idx = 250 + cycle * 3;
+            let t0 = (base_idx as u64) * 900_000;
+            // Bar 0: triggers long (close > open)
+            candles.push(Candle {
+                open_time_ms: t0,
+                close_time_ms: t0 + 899_999,
+                open: 100.0,
+                high: 101.5,
+                low: 99.8,
+                close: 101.0,
+                volume: 1000.0,
+                trades: 50,
+            });
+            let t1 = ((base_idx + 1) as u64) * 900_000;
+            // Bar 1: spikes up to 104.0 (take-profit at 103.0), closes lower so close <= open
+            candles.push(Candle {
+                open_time_ms: t1,
+                close_time_ms: t1 + 899_999,
+                open: 102.0,
+                high: 104.0,
+                low: 101.0,
+                close: 101.0,
+                volume: 1000.0,
+                trades: 50,
+            });
+            let t2 = ((base_idx + 2) as u64) * 900_000;
+            // Bar 2: cooldown bar returning price to 100.0, close <= open
+            candles.push(Candle {
+                open_time_ms: t2,
+                close_time_ms: t2 + 899_999,
+                open: 101.0,
+                high: 101.2,
+                low: 99.8,
+                close: 100.0,
+                volume: 1000.0,
+                trades: 50,
+            });
+        }
+
+        let cache_path = default_cache_path(&data_dir, "BTC", "15m");
+        save_candles_cache(&cache_path, &candles).unwrap();
+
+        // Strategy A: Long only, wins on the upward spikes
+        let strat_a = r#"
+            name = "winner_long"
+            [market]
+            coin = "BTC"
+            interval = "15m"
+            leverage = 5
+            direction = "long_only"
+
+            [sizing]
+            mode = "fixed_usd"
+            fixed_usd = 100.0
+            initial_equity_usd = 1000.0
+
+            [entry.long]
+            all = ["close > open"]
+
+            [exit]
+            stop_loss = { kind = "fixed_bps", bps = 100 }
+            take_profit_rr = 2.0
+            cooldown_bars = 1
+        "#;
+        fs::write(strat_dir.join("winner_long.toml"), strat_a).unwrap();
+
+        // Strategy B: Short only, enters on the same upward bar and gets stopped out
+        let strat_b = r#"
+            name = "loser_short"
+            [market]
+            coin = "BTC"
+            interval = "15m"
+            leverage = 5
+            direction = "short_only"
+
+            [sizing]
+            mode = "fixed_usd"
+            fixed_usd = 100.0
+            initial_equity_usd = 1000.0
+
+            [entry.short]
+            all = ["close > open"]
+
+            [exit]
+            stop_loss = { kind = "fixed_bps", bps = 50 }
+            take_profit_rr = 2.0
+            cooldown_bars = 1
+        "#;
+        fs::write(strat_dir.join("loser_short.toml"), strat_b).unwrap();
+
+        let app = HlTuiApp::load(&data_dir, &strat_dir).expect("load TUI app from fixtures");
+        assert_eq!(app.entries.len(), 2, "must load both fixture strategies");
+
+        // The walk-forward verified winner must be ranked first
+        let top = &app.entries[0];
+        assert_eq!(top.file_name, "winner_long.toml");
+        assert!(
+            top.wf_verified,
+            "top-ranked strategy should be walk-forward verified"
+        );
+        assert!(
+            top.report.total_net_r > 20.0,
+            "winner should have positive net R"
+        );
+
+        let second = &app.entries[1];
+        assert_eq!(second.file_name, "loser_short.toml");
+        assert!(
+            !second.wf_verified,
+            "losing strategy should not be walk-forward verified"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local historical candle data in data/ and strategies/"]
+    fn live_strategy_entries_and_ranks_walk_forward_winners_first() {
         let data_dir = Path::new("data");
         let strat_dir = Path::new("strategies");
         if !data_dir.exists() || !strat_dir.exists() {
@@ -5025,22 +5165,6 @@ mod tests {
         }
         let app = HlTuiApp::load(data_dir, strat_dir).expect("load TUI app");
         assert!(!app.entries.is_empty(), "must load strategies");
-        println!("\n=== STRATEGY LEADERBOARD (RANKED BY WF & NET R) ===");
-        for (i, e) in app.entries.iter().enumerate() {
-            println!(
-                "{:2}. {:<32} | Net R: {:>+6.2}R | WR: {:>5.1}% ({:>2}W/{:>2}L) | PF: {:>5.2} | MaxDD: {:>5.2}R | WF: {}",
-                i + 1,
-                e.file_name,
-                e.report.total_net_r,
-                e.report.win_rate_pct,
-                e.report.winning_trades,
-                e.report.losing_trades,
-                e.report.profit_factor,
-                e.report.max_drawdown_r,
-                if e.wf_verified { "YES (H1 & H2 profitable)" } else { "NO" }
-            );
-        }
-        println!("====================================================\n");
         let top = &app.entries[0];
         assert!(
             top.wf_verified,
