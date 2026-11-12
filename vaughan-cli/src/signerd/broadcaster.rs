@@ -48,7 +48,9 @@ impl MockBroadcaster {
             should_fail: Arc::new(Mutex::new(false)),
             fail_message: Arc::new(Mutex::new("network error: dropped from mempool".into())),
             next_tx_hash: Arc::new(Mutex::new(
-                "0x1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff".into(),
+                // Obviously-synthetic mock hash: repeated `aa` bytes are on the repo audit's
+                // own allowlist, so a fixture can never be mistaken for committed key material.
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             )),
         }
     }
