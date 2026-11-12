@@ -50,9 +50,32 @@ pub fn mcp_control_port() -> u16 {
         .unwrap_or(MCP_CONTROL_PORT)
 }
 
+/// Family / protocol flavour of a DEX swap proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum DexSwapKind {
+    /// Classic Uni V2-style AMM pair (e.g. PulseX V1/V2, Uniswap V2).
+    V2,
+    /// Uni / Pancake V3 concentrated-liquidity pool swap.
+    V3 {
+        pool: Address,
+        fee: u32,
+        /// Propose-time V3 quote (expected amount out before slippage).
+        quote: U256,
+    },
+    /// DEX aggregator (e.g. 1inch, ParaSwap, KyberSwap).
+    Aggregator,
+    /// Unknown or untagged swap family (e.g. from an older binary).
+    /// Always fails closed in the sentient gate.
+    #[serde(other)]
+    #[default]
+    Unknown,
+}
+
 /// Type of proposed on-chain action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProposalType {
     NativeTransfer {
         to: Address,
@@ -68,6 +91,8 @@ pub enum ProposalType {
         path: Vec<Address>,
         amount_in: U256,
         min_amount_out: U256,
+        #[serde(default)]
+        dex_kind: DexSwapKind,
     },
     Batch7702 {
         target_count: usize,
@@ -1176,5 +1201,127 @@ mod tests {
             queue.get_pending("prop_tamper", secret),
             Err(ProposalError::HmacInvalid)
         ));
+    }
+
+    #[test]
+    fn v3_swap_proposal_serde_roundtrip_and_deny_unknown() {
+        let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
+        let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
+        let path = vec![
+            address!("70499adebb11efd915e3b69e700c331778628707"),
+            address!("29bab93456c0e97ee931c1554c7c215480aa7766"),
+        ];
+        let prop = TxProposal::new(
+            "prop_v3_test",
+            ProposalType::DexSwap {
+                router,
+                path: path.clone(),
+                amount_in: U256::from(500_000_000_000_000_000u64),
+                min_amount_out: U256::from(91_117_645_839_760_755u64),
+                dex_kind: DexSwapKind::V3 {
+                    pool,
+                    fee: 500,
+                    quote: U256::from(92_038_026_100_768_440u64),
+                },
+            },
+            router,
+            U256::from(500_000_000_000_000_000u64),
+            Bytes::new(),
+            350_000,
+            true,
+            "v3 swap proposal",
+        )
+        .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+        // 1. Serde JSON round-trip
+        let json_str = serde_json::to_string(&prop).unwrap();
+        let decoded: TxProposal = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(decoded, prop);
+        match &decoded.proposal_type {
+            ProposalType::DexSwap { dex_kind, .. } => match dex_kind {
+                DexSwapKind::V3 {
+                    pool: p,
+                    fee: f,
+                    quote: q,
+                } => {
+                    assert_eq!(*p, pool);
+                    assert_eq!(*f, 500);
+                    assert_eq!(*q, U256::from(92_038_026_100_768_440u64));
+                }
+                other => panic!("expected V3 dex_kind, got {other:?}"),
+            },
+            other => panic!("expected DexSwap, got {other:?}"),
+        }
+
+        // 2. Older binary proposal without dex_kind deserializes as Unknown (fails closed)
+        let older_json = serde_json::json!({
+            "type": "dex_swap",
+            "router": format!("{router:#x}"),
+            "path": path.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>(),
+            "amount_in": "500000000000000000",
+            "min_amount_out": "91117645839760755"
+        });
+        let older_prop_type: ProposalType = serde_json::from_value(older_json).unwrap();
+        match older_prop_type {
+            ProposalType::DexSwap { dex_kind, .. } => {
+                assert_eq!(dex_kind, DexSwapKind::Unknown);
+            }
+            other => panic!("expected DexSwap, got {other:?}"),
+        }
+
+        // 3. Unknown kind tag deserializes as Unknown
+        let unknown_kind_json = serde_json::json!({
+            "type": "dex_swap",
+            "router": format!("{router:#x}"),
+            "path": path.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>(),
+            "amount_in": "500000000000000000",
+            "min_amount_out": "91117645839760755",
+            "dex_kind": {
+                "kind": "curve_v2"
+            }
+        });
+        let unknown_kind_type: ProposalType = serde_json::from_value(unknown_kind_json).unwrap();
+        match unknown_kind_type {
+            ProposalType::DexSwap { dex_kind, .. } => {
+                assert_eq!(dex_kind, DexSwapKind::Unknown);
+            }
+            other => panic!("expected DexSwap, got {other:?}"),
+        }
+
+        // 4. deny_unknown_fields on DexSwapKind rejects unknown subfields
+        let bogus_v3_kind_json = serde_json::json!({
+            "type": "dex_swap",
+            "router": format!("{router:#x}"),
+            "path": path.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>(),
+            "amount_in": "500000000000000000",
+            "min_amount_out": "91117645839760755",
+            "dex_kind": {
+                "kind": "v3",
+                "pool": format!("{pool:#x}"),
+                "fee": 500,
+                "quote": "92038026100768440",
+                "unrecognized_field": "injected"
+            }
+        });
+        assert!(serde_json::from_value::<ProposalType>(bogus_v3_kind_json).is_err());
+
+        // 5. deny_unknown_fields on ProposalType rejects unknown envelope fields
+        let bogus_proposal_type_json = serde_json::json!({
+            "type": "dex_swap",
+            "router": format!("{router:#x}"),
+            "path": path.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>(),
+            "amount_in": "500000000000000000",
+            "min_amount_out": "91117645839760755",
+            "injected_extra_field": 12345
+        });
+        assert!(serde_json::from_value::<ProposalType>(bogus_proposal_type_json).is_err());
+
+        // 6. ProposalQueue write and read path round-trips V3 proposal
+        let dir = TempDir::new().unwrap();
+        let queue = ProposalQueue::new(dir.path());
+        let secret = b"queue-v3-roundtrip-secret";
+        queue.enqueue(prop.clone(), "cursor", secret).unwrap();
+        let loaded = queue.get_pending(&prop.proposal_id, secret).unwrap();
+        assert_eq!(loaded.proposal, prop);
     }
 }

@@ -9,11 +9,11 @@ use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_agent::{breaker_config_for_session, CircuitBreaker, EnforcementMode};
 use vaughan_core::core::is_sentient_profile;
-use vaughan_core::core::proposal::{ProposalType, TxProposal};
+use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{
     apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write,
-    is_allowed_agg_router_on_chain, is_allowed_dex_router, quote_v2_exact_in, OperatingMode,
-    WalletState,
+    is_allowed_agg_router_on_chain, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
+    quote_v2_exact_in, OperatingMode, WalletState,
 };
 use vaughan_provider::ProviderError;
 
@@ -228,50 +228,92 @@ pub fn gate_sentient_proposal(
     vaughan_agent::sentient::reserve_legs(&profile_dir, &proposal.proposal_id, &legs, &policy)
         .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
 
-    // DexSwap: audited router allowlist + slippage floor.
-    // V2 DEX routers get a fresh on-chain quote; Agg routers are allowlisted but
-    // cannot use the V2 quoter — require min_amount_out > 0 (propose-time bound).
+    // DexSwap: audited router allowlist + slippage floor per swap family.
+    // V2: fresh on-chain quote via quote_v2_exact_in capped by max_slippage_bps.
+    // V3: propose-time V3 quote capped by max_slippage_bps (no V2 quoter call).
+    // Aggregator: audited agg allowlist + min_amount_out > 0.
+    // Unknown: refuse (fail-closed, cannot distinguish family safely).
     if let ProposalType::DexSwap {
         router,
         path,
         amount_in,
         min_amount_out,
+        dex_kind,
     } = &proposal.proposal_type
     {
         let net = wallet.networks().active();
-        let dex_ok = is_allowed_dex_router(net.chain_id, *router);
-        let agg_ok = is_allowed_agg_router_on_chain(net.chain_id, *router);
-        if !dex_ok && !agg_ok {
-            return Err(ProviderError::InvalidParams(format!(
-                "router {router} is not on the audited DEX/Agg allowlist for chain {}",
-                net.chain_id
-            )));
-        }
-        if dex_ok {
-            let quote = handle
-                .block_on(quote_v2_exact_in(&net.rpc_url, *router, *amount_in, path))
-                .map_err(|e| {
-                    ProviderError::Internal(format!(
-                        "fresh swap quote failed (fail-closed): {}",
-                        e.user_message()
-                    ))
-                })?;
-            let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
-            let floor = quote.amount_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
-            if *min_amount_out < floor {
-                return Err(ProviderError::InvalidParams(format!(
-                    "min_amount_out {min_amount_out} is below the policy floor {floor} \
-                     (fresh quote {} less {max_bps} bps slippage) — re-propose with a \
-                     tighter bound",
-                    quote.amount_out
-                )));
+        match dex_kind {
+            DexSwapKind::V3 {
+                pool: _,
+                fee: _,
+                quote,
+            } => {
+                if !is_allowed_dex_v3_router(net.chain_id, *router) {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "router {router} is not on the audited V3 DEX allowlist for chain {}",
+                        net.chain_id
+                    )));
+                }
+                let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
+                let floor = *quote * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
+                if *min_amount_out < floor {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "min_amount_out {min_amount_out} is below the policy floor {floor} \
+                         (propose-time quote {quote} less {max_bps} bps slippage) — re-propose with a \
+                         tighter bound"
+                    )));
+                }
             }
-        } else if min_amount_out.is_zero() {
-            return Err(ProviderError::InvalidParams(
-                "agg swap auto-exec requires min_amount_out > 0 (propose-time bound; \
-                 fresh V2 quote does not apply to aggregator routers)"
-                    .into(),
-            ));
+            DexSwapKind::V2 => {
+                let dex_ok = is_allowed_dex_v2_router(net.chain_id, *router);
+                if !dex_ok {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "router {router} is not on the audited V2 DEX allowlist for chain {}",
+                        net.chain_id
+                    )));
+                }
+                let quote = handle
+                    .block_on(quote_v2_exact_in(&net.rpc_url, *router, *amount_in, path))
+                    .map_err(|e| {
+                        ProviderError::Internal(format!(
+                            "fresh swap quote failed (fail-closed): {}",
+                            e.user_message()
+                        ))
+                    })?;
+                let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
+                let floor =
+                    quote.amount_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
+                if *min_amount_out < floor {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "min_amount_out {min_amount_out} is below the policy floor {floor} \
+                         (fresh quote {} less {max_bps} bps slippage) — re-propose with a \
+                         tighter bound",
+                        quote.amount_out
+                    )));
+                }
+            }
+            DexSwapKind::Aggregator => {
+                let agg_ok = is_allowed_agg_router_on_chain(net.chain_id, *router);
+                if !agg_ok {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "router {router} is not on the audited Agg allowlist for chain {}",
+                        net.chain_id
+                    )));
+                }
+                if min_amount_out.is_zero() {
+                    return Err(ProviderError::InvalidParams(
+                        "agg swap auto-exec requires min_amount_out > 0 (propose-time bound; \
+                         fresh V2 quote does not apply to aggregator routers)"
+                            .into(),
+                    ));
+                }
+            }
+            DexSwapKind::Unknown => {
+                return Err(ProviderError::InvalidParams(
+                    "unknown swap kind: swap proposal cannot be distinguished safely and is refused (fail-closed)"
+                        .into(),
+                ));
+            }
         }
     }
 

@@ -72,9 +72,10 @@ pub use denylist::{deny_reason, is_bundled, is_denied, DenyEntry};
 pub use dex_catalog::{
     chain_label, cycle_dex_swap_venue, cycle_lp_stack, default_lp_v3_venue, default_lp_venue,
     dex_swap_venues, lp_stack_for_chain, lp_stacks_for_chain, lp_v2_venue, lp_v3_venue_picker,
-    lp_v3_venues, missing_router_hint, parse_dex_venue_label, venue_pool_deployer,
-    venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router, venue_v2_factory,
-    venue_v3_factory, DexContractRole, DexProtocol, DexVenue, LpStack, DEX_VENUES,
+    lp_v3_venues, missing_router_hint, parse_dex_venue_label, v2_swap_routers, v3_swap_routers,
+    venue_pool_deployer, venue_position_manager, venue_quoter_v2, venue_slug, venue_swap_router,
+    venue_v2_factory, venue_v3_factory, DexContractRole, DexProtocol, DexVenue, LpStack,
+    DEX_VENUES,
 };
 pub use dex_lp::{
     build_v3_collect_evm, build_v3_create_pool_evm, build_v3_decrease_evm, build_v3_increase_evm,
@@ -101,8 +102,8 @@ pub use dex_quote::{
     wait_erc20_allowance, DexQuote, V3DiscoveredRoute, DEFAULT_DEX_SLIPPAGE_BPS,
 };
 pub use dex_routers::{
-    dex_routers_labeled, is_allowed_dex_router, venue_wrapped_native, wpls_for_chain,
-    PULSEX_V2_MAINNET,
+    dex_routers_labeled, is_allowed_dex_router, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
+    venue_wrapped_native, wpls_for_chain, PULSEX_V2_MAINNET,
 };
 pub use dexscreener::{
     catalog_chain_id_for_dex_slug, resolve_dex_chain, DexScreenerClient, DEFAULT_DEXSCREENER_CHAIN,
@@ -151,10 +152,11 @@ pub use piteas::{
 pub use profile::{tui_mode_for_profile, OperatingMode};
 pub use proposal::{
     apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write, mcp_control_port,
-    mcp_mainnet_writes_allowed, proposal_status_json, validate_proposal_id, McpSessionToken,
-    ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal, TxProposal,
-    MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT, MCP_ENQUEUE_RATE_WINDOW_SECS,
-    MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW, PROPOSAL_TTL_SECS,
+    mcp_mainnet_writes_allowed, proposal_status_json, validate_proposal_id, DexSwapKind,
+    McpSessionToken, ProposalError, ProposalQueue, ProposalStatus, ProposalType, QueuedProposal,
+    TxProposal, MAX_PENDING_PROPOSALS, MAX_PROPOSAL_ID_LEN, MCP_CONTROL_PORT,
+    MCP_ENQUEUE_RATE_WINDOW_SECS, MCP_FEE_SPIKE_THRESHOLD_BPS, MCP_MAX_ENQUEUES_PER_WINDOW,
+    PROPOSAL_TTL_SECS,
 };
 pub use proposal_review::{review_mcp_proposal, review_mcp_proposal_with, ProposalReview};
 pub use proposal_verify::{

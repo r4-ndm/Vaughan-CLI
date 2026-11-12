@@ -6,14 +6,15 @@ use serde_json::{json, Value};
 use std::str::FromStr;
 
 use crate::error::AgentError;
-use crate::proposal::{ProposalType, TxProposal};
+use crate::proposal::{DexSwapKind, ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
+use crate::tools::v3_lp::proposal_network_id;
 use crate::tools::wiz4rd_common::{
     build_exact_in_calldata, load_pool, quote_pool, resolve_token, slippage_min_out,
 };
 use crate::tools::{Tool, ToolContext};
-use vaughan_core::core::is_allowed_dex_router;
+use vaughan_core::core::is_allowed_dex_v3_router;
 
 #[derive(Default)]
 pub struct ProposeV3SwapTool;
@@ -115,9 +116,9 @@ impl Tool for ProposeV3SwapTool {
         let (router, calldata, _) =
             build_exact_in_calldata(&cfg, &pool, token_in, amount_in, amount_out_min, recipient)?;
 
-        if !is_allowed_dex_router(context.chain_id, router) {
+        if !is_allowed_dex_v3_router(context.chain_id, router) {
             return Err(AgentError::InvalidToolCall(format!(
-                "router {router:#x} not on DEX allowlist for chain {}",
+                "router {router:#x} not on V3 DEX allowlist for chain {}",
                 context.chain_id
             )));
         }
@@ -140,6 +141,11 @@ impl Tool for ProposeV3SwapTool {
                     path,
                     amount_in,
                     min_amount_out: amount_out_min,
+                    dex_kind: DexSwapKind::V3 {
+                        pool: pool.pool,
+                        fee,
+                        quote: quote.amount_out,
+                    },
                 },
                 router,
                 value_wei,
@@ -151,7 +157,7 @@ impl Tool for ProposeV3SwapTool {
                     amount_in, amount_out_min
                 ),
             )
-            .with_chain(context.chain_id, Some("pulsechain-testnet-v4".into())),
+            .with_chain(context.chain_id, proposal_network_id(context)),
             context,
         )
         .await;

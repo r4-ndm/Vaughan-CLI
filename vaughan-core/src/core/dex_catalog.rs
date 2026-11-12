@@ -643,6 +643,36 @@ pub fn write_allowed_addresses(chain_id: u64) -> impl Iterator<Item = Address> {
     })
 }
 
+/// Allowed V2 swap router addresses for `chain_id`.
+pub fn v2_swap_routers(chain_id: u64) -> impl Iterator<Item = Address> {
+    let effective = if chain_id == 31337 { 369 } else { chain_id };
+    CATALOG.iter().filter_map(move |e| {
+        if e.chain_id != effective {
+            return None;
+        }
+        if e.role == DexContractRole::SwapRouter && e.protocol == Some(DexProtocol::V2) {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
+/// Allowed V3 swap router addresses for `chain_id`.
+pub fn v3_swap_routers(chain_id: u64) -> impl Iterator<Item = Address> {
+    let effective = if chain_id == 31337 { 369 } else { chain_id };
+    CATALOG.iter().filter_map(move |e| {
+        if e.chain_id != effective {
+            return None;
+        }
+        if e.role == DexContractRole::SwapRouter && e.protocol == Some(DexProtocol::V3) {
+            parse_static_addr(e.address)
+        } else {
+            None
+        }
+    })
+}
+
 /// Venues with a catalogued NPM on `chain_id` (wiz4rd 943 focus).
 pub fn lp_v3_venues(chain_id: u64) -> impl Iterator<Item = DexVenue> {
     DEX_VENUES

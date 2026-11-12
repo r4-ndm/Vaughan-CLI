@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::str::FromStr;
 
 use crate::error::AgentError;
-use crate::proposal::{ProposalType, TxProposal};
+use crate::proposal::{DexSwapKind, ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::proposals::propose_transfer::rand_id;
 use crate::tools::{Tool, ToolContext};
@@ -162,6 +162,7 @@ impl Tool for ProposeAggSwapTool {
                     path,
                     amount_in: quote.amount_in,
                     min_amount_out: quote.amount_out,
+                    dex_kind: DexSwapKind::Aggregator,
                 },
                 quote.tx.to,
                 quote.tx.value,

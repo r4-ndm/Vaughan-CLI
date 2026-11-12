@@ -10,7 +10,7 @@ use std::str::FromStr;
 use url::Url;
 
 use crate::error::AgentError;
-use crate::proposal::{ProposalType, TxProposal};
+use crate::proposal::{DexSwapKind, ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::{Tool, ToolContext};
 
@@ -210,6 +210,7 @@ impl Tool for ProposeSwapTool {
                     path,
                     amount_in,
                     min_amount_out,
+                    dex_kind: DexSwapKind::V2,
                 },
                 router,
                 value_wei,

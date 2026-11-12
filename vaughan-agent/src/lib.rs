@@ -21,7 +21,7 @@ pub use dca::{
 pub use error::AgentError;
 pub use paths::profile_dir;
 pub use presets::{apply_preset, presets_root, BUNDLED_PRESET_IDS};
-pub use proposal::{ProposalType, TxProposal};
+pub use proposal::{DexSwapKind, ProposalType, TxProposal};
 pub use sentient::{
     breaker_config_for_session, build_policy_proposal, check_destination_allowed,
     consume_stealth_pending, dry_run_from_env, load_policy, record_stealth_pending, reserve_legs,

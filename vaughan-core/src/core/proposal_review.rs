@@ -95,10 +95,17 @@ pub fn review_mcp_proposal_with(
             path,
             amount_in,
             min_amount_out,
+            dex_kind,
         } => {
+            let action_label = match dex_kind {
+                crate::core::proposal::DexSwapKind::V3 { .. } => "DEX swap (V3)",
+                crate::core::proposal::DexSwapKind::V2 => "DEX swap (V2)",
+                crate::core::proposal::DexSwapKind::Aggregator => "Aggregator swap",
+                crate::core::proposal::DexSwapKind::Unknown => "DEX / Agg swap",
+            };
             review.rows.push(VerifyRow {
                 label: "Action".into(),
-                value: "DEX / Agg swap".into(),
+                value: action_label.into(),
             });
             review.rows.push(VerifyRow {
                 label: "Router".into(),
