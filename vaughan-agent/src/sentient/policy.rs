@@ -82,6 +82,9 @@ pub struct AgentSessionPolicy {
     /// Max % of native balance per trade (1–100).
     #[serde(default = "default_max_position_pct")]
     pub max_position_pct: u8,
+    /// Max % of an asset balance per approval (1–100). Defaults to max_position_pct if not set.
+    #[serde(default)]
+    pub max_approve_pct: Option<u8>,
     /// Max % of an asset's window-start balance that may leave the account per 24h window.
     #[serde(default = "default_daily_cap_pct")]
     pub daily_cap_pct: u8,
@@ -127,6 +130,7 @@ impl Default for AgentSessionPolicy {
             enforcement: EnforcementMode::Enforced,
             acknowledge_unsafe: false,
             max_position_pct: default_max_position_pct(),
+            max_approve_pct: None,
             daily_cap_pct: default_daily_cap_pct(),
             allow_transfer_to: Vec::new(),
             max_slippage_bps: default_max_slippage_bps(),
@@ -138,12 +142,31 @@ impl Default for AgentSessionPolicy {
 }
 
 impl AgentSessionPolicy {
+    /// Effective maximum percentage of asset balance for approvals (default: max_position_pct).
+    pub fn max_approve_pct(&self) -> u8 {
+        self.max_approve_pct.unwrap_or(self.max_position_pct)
+    }
+
+    /// Compute a deterministic SHA-256 hex digest of this policy.
+    pub fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(self).unwrap_or_default();
+        hex::encode(Sha256::digest(&bytes))
+    }
+
     /// Validate ranges and unsafe acknowledgement.
     pub fn validate(&self) -> Result<(), AgentError> {
         if self.max_position_pct == 0 || self.max_position_pct > 100 {
             return Err(AgentError::InvalidToolCall(
                 "max_position_pct must be 1..=100".into(),
             ));
+        }
+        if let Some(pct) = self.max_approve_pct {
+            if pct == 0 || pct > 100 {
+                return Err(AgentError::InvalidToolCall(
+                    "max_approve_pct must be 1..=100".into(),
+                ));
+            }
         }
         if self.daily_cap_pct == 0 || self.daily_cap_pct > 100 {
             return Err(AgentError::InvalidToolCall(
@@ -461,6 +484,43 @@ mod tests {
         assert_eq!(loaded.enforcement, EnforcementMode::Enforced);
         assert_eq!(loaded.max_slippage_bps, 100);
         assert!(!loaded.acknowledge_unsafe);
+        assert_eq!(loaded.max_approve_pct, None);
+        assert_eq!(loaded.max_approve_pct(), loaded.max_position_pct);
+    }
+
+    #[test]
+    fn max_approve_pct_override_and_validation() {
+        let mut p = AgentSessionPolicy {
+            max_position_pct: 15,
+            max_approve_pct: Some(25),
+            ..Default::default()
+        };
+        assert_eq!(p.max_approve_pct(), 25);
+        assert!(p.validate().is_ok());
+
+        p.max_approve_pct = Some(0);
+        assert!(p.validate().is_err());
+
+        p.max_approve_pct = Some(101);
+        assert!(p.validate().is_err());
+
+        p.max_approve_pct = None;
+        assert_eq!(p.max_approve_pct(), 15);
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn policy_digest_deterministic() {
+        let p1 = AgentSessionPolicy::default();
+        let p2 = AgentSessionPolicy::default();
+        assert_eq!(p1.digest(), p2.digest());
+        assert_eq!(p1.digest().len(), 64);
+
+        let p3 = AgentSessionPolicy {
+            max_slippage_bps: 200,
+            ..Default::default()
+        };
+        assert_ne!(p1.digest(), p3.digest());
     }
 
     #[test]

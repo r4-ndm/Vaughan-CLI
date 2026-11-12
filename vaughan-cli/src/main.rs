@@ -9,6 +9,7 @@ mod json_out;
 mod lp;
 mod mcp_install;
 mod serve;
+pub mod signerd;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -181,6 +182,21 @@ enum Command {
     /// Headless wallet daemon (v2): unlock profile and serve MCP control plane.
     Serve {
         /// Env var holding the vault password (required).
+        #[arg(long)]
+        password_env: Option<String>,
+    },
+    /// Isolated signer daemon: peer-UID-gated Unix domain socket for typed intents.
+    Signerd {
+        /// Store directory containing wallet.json, sentient-policy.toml, and spend ledger.
+        #[arg(long)]
+        store: PathBuf,
+        /// Unix domain socket path.
+        #[arg(long)]
+        socket: PathBuf,
+        /// Peer UID permitted to connect (repeatable; default: invoking UID).
+        #[arg(long = "allow-uid")]
+        allow_uid: Vec<u32>,
+        /// Env var holding the vault password (non-interactive).
         #[arg(long)]
         password_env: Option<String>,
     },
@@ -412,6 +428,27 @@ fn main() {
                         tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
                     runtime
                         .block_on(serve::run_serve(profile, password))
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                }
+            }
+        }
+        Some(Command::Signerd {
+            store,
+            socket,
+            allow_uid,
+            password_env,
+        }) => {
+            vaughan_core::logging::init_logging();
+            match prompt_password(password_env.as_deref()) {
+                Err(e) => Err(e),
+                Ok(password) => {
+                    if let Some(var) = password_env.as_deref() {
+                        std::env::remove_var(var);
+                    }
+                    let runtime =
+                        tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+                    runtime
+                        .block_on(signerd::run_signerd(store, socket, allow_uid, password))
                         .map_err(|e| anyhow::anyhow!("{e}"))
                 }
             }
@@ -872,6 +909,7 @@ async fn run_cli(
         }
         Command::Mcp { .. } => unreachable!("mcp handled in main"),
         Command::Serve { .. } => unreachable!("serve handled in main"),
+        Command::Signerd { .. } => unreachable!("signerd handled in main"),
         Command::Preset { .. } => unreachable!("preset handled in main"),
         Command::Config { .. } => unreachable!("config handled in main"),
         Command::Propose { action } => {

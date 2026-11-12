@@ -6,6 +6,10 @@ license.workspace = true
 description = "Vaughan wallet: interactive TUI (default) and scriptable CLI subcommands"
 repository = "https://github.com/r4-ndm/Vaughan-CLI"
 
+[lib]
+name = "vaughan_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vaughan"
 path = "src/main.rs"
@@ -20,6 +24,8 @@ vaughan-core = { path = "../vaughan-core" }
 vaughan-tui = { path = "../vaughan-tui" }
 vaughan-agent = { path = "../vaughan-agent" }
 vaughan-mcp = { path = "../vaughan-mcp" }
+vaughan-aa = { path = "../vaughan-aa" }
+rustix = { workspace = true }
 alloy = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
