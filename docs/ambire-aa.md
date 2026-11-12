@@ -126,12 +126,15 @@ revisiting are below.
 
 ### Why self-pay 7702 wins for now
 
-- **It's proven.** `tests/self_pay_e2e.rs` runs the full flow against a fork of
-  PulseChain testnet (943) with Ambire's *real* deployed implementation
+- **Proven locally against Prague, NOT runnable on PulseChain.** `tests/self_pay_e2e.rs`
+  runs the full flow against `anvil --hardfork prague` forking PulseChain testnet (943)
+  with Ambire's *real* deployed implementation
   (`0x2A2b85EB1054d6f0c6c2E37dA05eD3E5feA684EF`, present on both testnet and
   mainnet): bootstrap the key privilege, sign the batch, broadcast, and the batch
-  executes on-chain. The correctness chain (digest → signature → calldata →
-  envelope) is additionally pinned byte-for-byte by the differential harness.
+  executes on-chain. However, PulseChain runs Shanghai+Capella, so a type-0x04 tx is
+  rejected at the txpool on 369 and 943; `vaughan-aa` is a Pectra-chain library.
+  The correctness chain (digest → signature → calldata → envelope) is additionally
+  pinned byte-for-byte by the differential harness.
 - **No new infrastructure.** Self-pay needs only the account EOA's own PLS for
   gas — no EntryPoint deployment, no bundler, no relayer. That matches the
   testnet-first constraint (NFR-3) and keeps the trust surface small.
