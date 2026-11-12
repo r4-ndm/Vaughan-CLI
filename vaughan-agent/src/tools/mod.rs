@@ -16,7 +16,6 @@ pub mod list_v2_positions;
 pub mod list_v3_positions;
 pub mod proposals;
 pub mod propose_dca_plan;
-pub mod propose_policy;
 pub mod quote_bridge;
 pub mod quote_swap;
 pub mod quote_v3_swap;
@@ -55,7 +54,6 @@ pub use proposals::{
     ProposeV3TransferPositionTool, ProposeWrapTool,
 };
 pub use propose_dca_plan::ProposeDcaPlanTool;
-pub use propose_policy::{commit_policy_proposal, ProposePolicyTool};
 pub use quote_bridge::{ProposeBridgeTool, QuoteBridgeTool};
 pub use quote_swap::QuoteSwapTool;
 pub use quote_v3_swap::QuoteV3SwapTool;
@@ -158,7 +156,7 @@ pub fn default_assist_registry_for(profile_dir: Option<&Path>) -> ToolRegistry {
     registry
 }
 
-/// Sentient registry: sensory + `execute_sentient_swap` + `propose_policy` (human-approved).
+/// Sentient registry: sensory + `execute_sentient_swap` + DCA planning.
 pub fn default_sentient_registry(trader: Arc<SentientTrader>, profile_dir: &Path) -> ToolRegistry {
     let mut registry = default_sensory_registry();
     let bound_trader = if trader.profile_dir().is_none() {
@@ -169,7 +167,6 @@ pub fn default_sentient_registry(trader: Arc<SentientTrader>, profile_dir: &Path
     let swap: Arc<dyn Tool> = Arc::new(ExecuteSentientSwapTool::new(bound_trader));
     registry.register(Arc::clone(&swap));
     registry.register_alias("execute_degen_swap", swap);
-    registry.register(Arc::new(ProposePolicyTool::new(profile_dir.to_path_buf())));
     registry.register(Arc::new(ProposeDcaPlanTool::new()));
     registry.register(Arc::new(ListDcaPlansTool::new(profile_dir.to_path_buf())));
     registry.register(Arc::new(CancelDcaPlanTool::new(profile_dir.to_path_buf())));
@@ -215,5 +212,28 @@ mod tests {
         let names: Vec<_> = registry.definitions().into_iter().map(|d| d.name).collect();
         assert!(names.iter().any(|n| n == "execute_sentient_swap"));
         assert!(names.iter().any(|n| n == "execute_degen_swap"));
+        assert!(
+            !names.iter().any(|n| n == "propose_policy"),
+            "propose_policy must be absent from sentient tool registry"
+        );
+        assert!(registry.get("propose_policy").is_none());
+    }
+
+    #[test]
+    fn propose_policy_is_absent_from_sentient_tool_list() {
+        let signer: PrivateKeySigner =
+            "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+                .parse()
+                .unwrap();
+        let trader = Arc::new(SentientTrader::new(
+            signer,
+            vec!["http://127.0.0.1:8545".into()],
+            31337,
+            CircuitBreakerConfig::default(),
+        ));
+        let registry = default_sentient_registry(trader, Path::new("/tmp/vaughan-sentient-test"));
+        assert!(registry.get("propose_policy").is_none());
+        let names: Vec<_> = registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(!names.contains(&"propose_policy".to_string()));
     }
 }

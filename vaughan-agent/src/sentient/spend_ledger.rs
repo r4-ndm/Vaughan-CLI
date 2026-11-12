@@ -230,6 +230,8 @@ impl SpendLedger {
         let file_path = dir.join(SPEND_LEDGER_FILE);
 
         let mut ledger = if file_path.exists() {
+            crate::sentient::file_guard::assert_owner_only_file(&file_path)
+                .map_err(|e| AgentError::SpendGuard(format!("spend_ledger_insecure: {e}")))?;
             let raw = fs::read_to_string(&file_path).map_err(|e| {
                 AgentError::SpendGuard(format!(
                     "spend_ledger_unreadable: failed to read {}: {e}",
@@ -391,6 +393,8 @@ impl SpendLedger {
         if !file_path.exists() {
             return Ok(LedgerView::default());
         }
+        crate::sentient::file_guard::assert_owner_only_file(&file_path)
+            .map_err(|e| AgentError::SpendGuard(format!("spend_ledger_insecure: {e}")))?;
         let raw = fs::read_to_string(&file_path).map_err(|e| {
             AgentError::SpendGuard(format!(
                 "spend_ledger_unreadable: failed to read {}: {e}",
@@ -426,6 +430,8 @@ impl SpendLedger {
         if !file_path.exists() {
             return Ok(());
         }
+        crate::sentient::file_guard::assert_owner_only_file(&file_path)
+            .map_err(|e| AgentError::SpendGuard(format!("spend_ledger_insecure: {e}")))?;
 
         let _guard = acquire_lock(dir, now)?;
         let raw = fs::read_to_string(&file_path).map_err(|e| {
@@ -752,7 +758,13 @@ mod tests {
     #[test]
     fn test_corrupt_json_unreadable() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join(SPEND_LEDGER_FILE), "{ invalid json }").unwrap();
+        let path = dir.path().join(SPEND_LEDGER_FILE);
+        fs::write(&path, "{ invalid json }").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
 
         let res = SpendLedger::reserve(
             dir.path(),
@@ -768,6 +780,57 @@ mod tests {
             err.to_string().starts_with("spend_ledger_unreadable:"),
             "expected spend_ledger_unreadable:, got: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ledger_file_mode_0644_refused_mode_0600_accepted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SPEND_LEDGER_FILE);
+
+        // Reserve once to create a valid ledger file
+        let res = SpendLedger::reserve(
+            dir.path(),
+            "k1",
+            "369:native",
+            U256::from(10),
+            U256::from(100),
+            20,
+            EnforcementMode::Enforced,
+        );
+        assert!(res.is_ok());
+
+        // Change mode to 0644 -> must be refused with actionable error mentioning 0644 and 0600
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let err = SpendLedger::reserve(
+            dir.path(),
+            "k2",
+            "369:native",
+            U256::from(10),
+            U256::from(100),
+            20,
+            EnforcementMode::Enforced,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0644") && msg.contains("0600"),
+            "expected mode error mentioning 0644 and 0600, got: {msg}"
+        );
+
+        // Restore mode to 0600 -> accepted
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let res2 = SpendLedger::reserve(
+            dir.path(),
+            "k2",
+            "369:native",
+            U256::from(10),
+            U256::from(100),
+            20,
+            EnforcementMode::Enforced,
+        );
+        assert!(res2.is_ok());
     }
 
     // 6. stale lock is reclaimed; live lock expires to spend_ledger_busy: within retry budget

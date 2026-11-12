@@ -31,6 +31,11 @@ use vaughan_tui::sentient_mcp::{self, mcp_auto_exec_enabled};
 pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Result<()> {
     reject_deferred_sentient_profile(&profile)
         .map_err(|e| anyhow::anyhow!("{}", e.user_message()))?;
+
+    if is_sentient_profile(&profile) {
+        validate_signer_store_env()?;
+    }
+
     let path = StateManager::profile_path(&profile)?;
     let mut wallet = WalletState::load_with_session(
         path.clone(),
@@ -329,11 +334,114 @@ fn execute_propose(
     }
 
     let queue = ProposalQueue::new(profile_dir);
+    let secret = if is_sentient_profile(profile_name) {
+        vaughan_agent::sentient::sentient_queue_hmac_key(profile_dir)
+            .map_err(|e| e.to_string())?
+            .to_vec()
+    } else {
+        session_token.as_bytes().to_vec()
+    };
     queue
-        .enqueue(proposal, source, session_token.as_bytes())
+        .enqueue(proposal, source, &secret)
         .map_err(|e| e.to_string())?;
     Ok(McpProposeOutcome::Queued {
         proposal_id,
         message: "Queued — open Vaughan TUI on this profile to approve".into(),
     })
+}
+
+/// Validate the `VAUGHAN_SIGNER_STORE` environment variable for sentient serve.
+///
+/// Refuses to start without `VAUGHAN_SIGNER_STORE`. The directory must exist and have mode 0700.
+pub fn validate_signer_store_env() -> anyhow::Result<PathBuf> {
+    let raw = std::env::var("VAUGHAN_SIGNER_STORE").map_err(|_| {
+        anyhow::anyhow!(
+            "VAUGHAN_SIGNER_STORE is required for sentient serve — signer store is unconfigured.\n\
+             Export the signer store path and create the directory with mode 0700:\n    \
+                 export VAUGHAN_SIGNER_STORE=/var/lib/vaughan/sentient\n    \
+                 mkdir -p /var/lib/vaughan/sentient && chmod 0700 /var/lib/vaughan/sentient"
+        )
+    })?;
+    let path = PathBuf::from(raw.trim());
+    if raw.trim().is_empty() || !path.exists() || !path.is_dir() {
+        anyhow::bail!(
+            "VAUGHAN_SIGNER_STORE directory `{}` does not exist.\n\
+             Create it with mode 0700:\n    \
+                 mkdir -p {} && chmod 0700 {}",
+            path.display(),
+            path.display(),
+            path.display(),
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(&path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to read VAUGHAN_SIGNER_STORE metadata {}: {e}",
+                path.display()
+            )
+        })?;
+        let mode = meta.mode() & 0o777;
+        if mode != 0o700 {
+            anyhow::bail!(
+                "VAUGHAN_SIGNER_STORE `{}` has invalid permissions: {:04o} (expected 0700).\n\
+                 Fix permissions with:\n    \
+                     chmod 0700 {}",
+                path.display(),
+                mode,
+                path.display(),
+            );
+        }
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn test_missing_signer_store_env_fails() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("VAUGHAN_SIGNER_STORE");
+        let err = validate_signer_store_env().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("VAUGHAN_SIGNER_STORE is required"));
+        assert!(msg.contains("export VAUGHAN_SIGNER_STORE="));
+    }
+
+    #[test]
+    fn test_nonexistent_signer_store_fails() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "VAUGHAN_SIGNER_STORE",
+            "/tmp/nonexistent_signer_store_path_12345",
+        );
+        let err = validate_signer_store_env().unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+        std::env::remove_var("VAUGHAN_SIGNER_STORE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_signer_store_mode_0755_fails_mode_0700_succeeds() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("sentient_store");
+        std::fs::create_dir(&store).unwrap();
+
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("VAUGHAN_SIGNER_STORE", &store);
+        let err = validate_signer_store_env().unwrap_err();
+        assert!(err.to_string().contains("0755") && err.to_string().contains("0700"));
+
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(validate_signer_store_env().is_ok());
+        std::env::remove_var("VAUGHAN_SIGNER_STORE");
+    }
 }

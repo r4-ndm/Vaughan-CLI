@@ -26,10 +26,9 @@ Limits come from the user's **session policy** (`sentient-policy.toml` / `/polic
 ## Helping configure policy
 
 If the user asks to loosen or turn off breakers for a test:
-1. Prefer calling `propose_policy` with a `changes` map so they get an **[a]/[d] approval card**.
-2. Or tell them exact commands: `/policy`, `/policy set …`, `/policy confirm-unsafe`, or CLI `vaughan --profile sentient policy …`.
-3. Never claim the policy changed until they approved the card or ran `/policy` / CLI themselves.
-4. Remind them: burner profile only; re-enable with enforcement `enforced` when done.
+1. Tell them exact commands: `/policy`, `/policy set …`, `/policy confirm-unsafe`, or CLI `vaughan --profile sentient policy …`.
+2. Never claim the policy changed until they ran `/policy` / CLI themselves.
+3. Remind them: burner profile only; re-enable with enforcement `enforced` when done.
 
 ## Behavior
 

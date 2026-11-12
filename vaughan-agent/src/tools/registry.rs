@@ -31,6 +31,11 @@ impl ToolRegistry {
         self.tools.insert(alias.to_string(), tool);
     }
 
+    /// Look up a tool by registered name.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
+    }
+
     /// Retrieve all tool definitions formatted for LLM schema declarations.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools

@@ -286,7 +286,7 @@ pub fn build_policy_proposal(
 ) -> Result<PolicyProposal, AgentError> {
     if patches.is_empty() {
         return Err(AgentError::InvalidToolCall(
-            "propose_policy needs at least one change".into(),
+            "policy proposal needs at least one change".into(),
         ));
     }
     let explanation = explanation.into();
@@ -351,6 +351,7 @@ pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
     let Some(path) = policy_file_path(dir) else {
         return Ok(AgentSessionPolicy::default());
     };
+    crate::sentient::file_guard::assert_owner_only_file(&path)?;
     let raw = fs::read_to_string(&path).map_err(|e| {
         AgentError::ProviderError(format!("failed to read {}: {e}", path.display()))
     })?;
@@ -413,6 +414,11 @@ pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentE
     fs::rename(&tmp, &path).map_err(|e| {
         AgentError::ProviderError(format!("failed to replace {}: {e}", path.display()))
     })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
@@ -525,11 +531,20 @@ mod tests {
         assert_eq!(prop.after.enforcement, EnforcementMode::Disabled);
     }
 
+    fn write_test_policy(path: &Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     #[test]
     fn loads_legacy_degen_policy_toml_when_sentient_missing() {
         let dir = tempdir().unwrap();
         let legacy = dir.path().join(LEGACY_DEGEN_POLICY_TOML);
-        std::fs::write(&legacy, "max_slippage_bps = 250\n").unwrap();
+        write_test_policy(&legacy, "max_slippage_bps = 250\n");
         let loaded = load_policy(dir.path()).unwrap();
         assert_eq!(loaded.max_slippage_bps, 250);
     }
@@ -537,16 +552,14 @@ mod tests {
     #[test]
     fn sentient_policy_takes_precedence_over_legacy_degen_policy() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join(LEGACY_DEGEN_POLICY_TOML),
+        write_test_policy(
+            &dir.path().join(LEGACY_DEGEN_POLICY_TOML),
             "max_slippage_bps = 250\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join(SENTIENT_POLICY_TOML),
+        );
+        write_test_policy(
+            &dir.path().join(SENTIENT_POLICY_TOML),
             "max_slippage_bps = 100\n",
-        )
-        .unwrap();
+        );
         assert_eq!(load_policy(dir.path()).unwrap().max_slippage_bps, 100);
     }
 
@@ -567,11 +580,10 @@ mod tests {
     fn unknown_field_fails_closed() {
         // A typo'd key must not silently fall back to (weaker) defaults.
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join(SENTIENT_POLICY_TOML),
+        write_test_policy(
+            &dir.path().join(SENTIENT_POLICY_TOML),
             "max_slippage_bpss = 500\n",
-        )
-        .unwrap();
+        );
         assert!(load_policy(dir.path()).is_err());
     }
 
@@ -586,6 +598,27 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_policy_file_mode_0644_refused_mode_0600_accepted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SENTIENT_POLICY_TOML);
+        std::fs::write(&path, "max_slippage_bps = 100\n").unwrap();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = load_policy(dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0644") && msg.contains("0600"),
+            "expected mode error mentioning 0644 and 0600, got: {msg}"
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let loaded = load_policy(dir.path()).unwrap();
+        assert_eq!(loaded.max_slippage_bps, 100);
     }
 
     #[test]
@@ -627,11 +660,10 @@ mod tests {
     #[test]
     fn policy_file_with_bad_address_fails_closed() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join(SENTIENT_POLICY_TOML),
+        write_test_policy(
+            &dir.path().join(SENTIENT_POLICY_TOML),
             "allow_transfer_to = [\"0xinvalid\"]\n",
-        )
-        .unwrap();
+        );
         assert!(load_policy(dir.path()).is_err());
     }
 }

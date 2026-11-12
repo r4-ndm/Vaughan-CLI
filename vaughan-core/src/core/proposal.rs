@@ -216,6 +216,7 @@ pub enum ProposalError {
     UserRejected,
     MainnetBlocked,
     HmacInvalid,
+    HmacInvalidReason(String),
     NotFound,
     QueueFull,
     InvalidProposalId,
@@ -235,7 +236,7 @@ impl ProposalError {
             Self::SimulationReverted => "simulation_reverted",
             Self::UserRejected => "user_rejected",
             Self::MainnetBlocked => "mainnet_blocked",
-            Self::HmacInvalid => "hmac_invalid",
+            Self::HmacInvalid | Self::HmacInvalidReason(_) => "hmac_invalid",
             Self::NotFound => "not_found",
             Self::QueueFull => "queue_full",
             Self::InvalidProposalId => "invalid_proposal_id",
@@ -262,7 +263,13 @@ impl fmt::Display for ProposalError {
             Self::SimulationReverted => write!(f, "simulation reverted at approve time"),
             Self::UserRejected => write!(f, "user rejected proposal"),
             Self::MainnetBlocked => write!(f, "mainnet writes blocked for MCP"),
-            Self::HmacInvalid => write!(f, "proposal integrity check failed"),
+            Self::HmacInvalid => write!(
+                f,
+                "proposal integrity check failed: HMAC invalid (sentient queue key derived from signer key, not session token)"
+            ),
+            Self::HmacInvalidReason(reason) => {
+                write!(f, "proposal integrity check failed: {reason}")
+            }
             Self::NotFound => write!(f, "proposal not found"),
             Self::QueueFull => write!(f, "too many pending proposals"),
             Self::InvalidProposalId => write!(f, "proposal_id must be 1-64 chars [a-zA-Z0-9_]"),
@@ -482,6 +489,29 @@ impl ProposalQueue {
         Ok(queued)
     }
 
+    /// Load and verify a pending proposal for a sentient profile.
+    ///
+    /// Validates HMAC against `queue_secret` (derived from the signer key).
+    /// If signed with `legacy_session_token`, fails closed with an actionable reason
+    /// naming the key change.
+    pub fn get_pending_sentient(
+        &self,
+        proposal_id: &str,
+        queue_secret: &[u8],
+        legacy_session_token: Option<&[u8]>,
+    ) -> Result<QueuedProposal, ProposalError> {
+        validate_proposal_id(proposal_id)?;
+        let path = self.pending_dir().join(format!("{proposal_id}.json"));
+        let data = read_capped(&path).map_err(|_| ProposalError::NotFound)?;
+        let queued: QueuedProposal =
+            serde_json::from_str(&data).map_err(|e| ProposalError::Io(e.to_string()))?;
+        verify_proposal_hmac_sentient(queue_secret, legacy_session_token, &queued)?;
+        if queued.proposal.is_expired() {
+            return Err(ProposalError::ProposalExpired);
+        }
+        Ok(queued)
+    }
+
     pub fn mark_approved(
         &self,
         proposal_id: &str,
@@ -552,7 +582,9 @@ impl ProposalQueue {
                 return Ok(ProposalStatus::PendingUser);
             }
             Err(ProposalError::ProposalExpired) => return Ok(ProposalStatus::Expired),
-            Err(ProposalError::NotFound) | Err(ProposalError::HmacInvalid) => {}
+            Err(ProposalError::NotFound)
+            | Err(ProposalError::HmacInvalid)
+            | Err(ProposalError::HmacInvalidReason(_)) => {}
             Err(e) => return Err(e),
         }
 
@@ -846,6 +878,36 @@ fn verify_proposal_hmac(secret: &[u8], queued: &QueuedProposal) -> Result<(), Pr
     } else {
         Err(ProposalError::HmacInvalid)
     }
+}
+
+/// Verify proposal HMAC against `queue_secret`. If HMAC verification fails and
+/// `legacy_session_token` is provided, checks if it was signed with the old
+/// session token and returns a descriptive refusal naming the key change.
+pub fn verify_proposal_hmac_sentient(
+    queue_secret: &[u8],
+    legacy_session_token: Option<&[u8]>,
+    queued: &QueuedProposal,
+) -> Result<(), ProposalError> {
+    let expected = compute_proposal_hmac(queue_secret, &queued.source, &queued.proposal)?;
+    if constant_time_eq(expected.as_bytes(), queued.hmac.as_bytes()) {
+        return Ok(());
+    }
+
+    if let Some(old_token) = legacy_session_token {
+        if !old_token.is_empty() {
+            if let Ok(old_expected) =
+                compute_proposal_hmac(old_token, &queued.source, &queued.proposal)
+            {
+                if constant_time_eq(old_expected.as_bytes(), queued.hmac.as_bytes()) {
+                    return Err(ProposalError::HmacInvalidReason(
+                        "refused: proposal was signed with legacy session token; sentient queue requires key derived from signer key file (signer.key)".into(),
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(ProposalError::HmacInvalid)
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

@@ -56,6 +56,13 @@ pub fn apply_preset(preset_id: &str, profile_dir: &Path) -> Result<PathBuf, Agen
     let policy_dst = profile_dir.join(SENTIENT_POLICY_TOML);
     fs::copy(&policy_src, &policy_dst)
         .map_err(|e| AgentError::ProviderError(format!("copy policy: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&policy_dst, fs::Permissions::from_mode(0o600));
+    }
+
+    crate::sentient::signer_key::init_signer_key(profile_dir)?;
 
     Ok(skill_dst_dir)
 }
@@ -71,5 +78,10 @@ mod tests {
         apply_preset("balanced", dir.path()).unwrap();
         assert!(dir.path().join("skills/balanced/SKILL.md").is_file());
         assert!(dir.path().join(SENTIENT_POLICY_TOML).is_file());
+        assert!(dir.path().join(crate::sentient::SIGNER_KEY_FILE).is_file());
+
+        // Policy and signer key must pass ownership and mode 0600 asserts
+        assert!(crate::sentient::load_policy(dir.path()).is_ok());
+        assert!(crate::sentient::load_signer_key(dir.path()).is_ok());
     }
 }

@@ -327,11 +327,13 @@ async fn test_trader_refuses_on_unreadable_policy() {
     let anvil = AnvilGuard::spawn(8565);
     plant_stub_contract(&anvil.rpc_url, TARGET).await;
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("sentient-policy.toml"),
-        "invalid toml {[[[[",
-    )
-    .unwrap();
+    let policy_path = dir.path().join("sentient-policy.toml");
+    std::fs::write(&policy_path, "invalid toml {[[[[").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600));
+    }
 
     let trader = trader_for(anvil.rpc_url.clone()).with_profile_dir(dir.path());
 

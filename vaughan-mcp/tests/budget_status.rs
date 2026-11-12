@@ -4,6 +4,15 @@ use serde_json::json;
 use tempfile::tempdir;
 use vaughan_mcp::{McpContext, McpDispatcher};
 
+fn write_mode_0600(path: &std::path::Path, content: &str) {
+    std::fs::write(path, content).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
 #[tokio::test]
 async fn test_budget_status_adviser_profile_shape() {
     let dir = tempdir().unwrap();
@@ -47,7 +56,7 @@ enforcement = "enforced"
 daily_cap_pct = 20
 allow_transfer_to = ["0x1111111111111111111111111111111111111111"]
 "#;
-    std::fs::write(sentient_dir.join("sentient-policy.toml"), policy_toml).unwrap();
+    write_mode_0600(&sentient_dir.join("sentient-policy.toml"), policy_toml);
 
     // Ledger with 1 ETH snapshot and 0.1 ETH spent
     let ledger_json = r#"{
@@ -62,7 +71,7 @@ allow_transfer_to = ["0x1111111111111111111111111111111111111111"]
   },
   "recent": []
 }"#;
-    std::fs::write(sentient_dir.join("sentient-spend.json"), ledger_json).unwrap();
+    write_mode_0600(&sentient_dir.join("sentient-spend.json"), ledger_json);
 
     let dispatcher = McpDispatcher::for_profile_dir(sentient_dir.clone());
     let ctx = McpContext {
@@ -118,7 +127,7 @@ enforcement = "enforced"
 daily_cap_pct = 20
 allow_transfer_to = []
 "#;
-    std::fs::write(sentient_dir.join("sentient-policy.toml"), policy_toml).unwrap();
+    write_mode_0600(&sentient_dir.join("sentient-policy.toml"), policy_toml);
 
     let dispatcher = McpDispatcher::for_profile_dir(sentient_dir);
     let ctx = McpContext {
@@ -151,14 +160,13 @@ async fn test_budget_status_corrupt_ledger_errors() {
 enforcement = "enforced"
 daily_cap_pct = 20
 "#;
-    std::fs::write(sentient_dir.join("sentient-policy.toml"), policy_toml).unwrap();
+    write_mode_0600(&sentient_dir.join("sentient-policy.toml"), policy_toml);
 
     // Write corrupted JSON to sentient-spend.json
-    std::fs::write(
-        sentient_dir.join("sentient-spend.json"),
+    write_mode_0600(
+        &sentient_dir.join("sentient-spend.json"),
         "this is not valid json {{{[[",
-    )
-    .unwrap();
+    );
 
     let dispatcher = McpDispatcher::for_profile_dir(sentient_dir);
     let ctx = McpContext {
