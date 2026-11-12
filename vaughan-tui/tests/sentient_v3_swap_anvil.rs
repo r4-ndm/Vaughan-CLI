@@ -11,10 +11,12 @@
 
 mod common;
 
-use alloy::primitives::{address, Bytes, U256};
+use alloy::primitives::{address, Address, Bytes, U256};
+use common::lp_anvil_fixtures::{plant_factory_pool, plant_v3_pool};
 use common::mock_evm::plant_code;
 use common::{Anvil, PASSWORD};
 use secrecy::SecretString;
+use std::str::FromStr;
 use vaughan_agent::sentient::{
     AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, EnforcementMode, SpendLedger,
 };
@@ -24,6 +26,30 @@ use vaughan_core::security::hd_wallet::validate_mnemonic;
 use vaughan_provider::ProviderError;
 use vaughan_tui::provider::ApprovalKind;
 use vaughan_tui::sentient_mcp::{auto_exec_mcp_proposal, gate_sentient_proposal};
+
+fn encode_exact_input_single_calldata(
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    recipient: Address,
+    amount_in: U256,
+    amount_out_min: U256,
+) -> Bytes {
+    use alloy::sol_types::SolCall;
+    use wiz4rd_sdk::abi::ISwapRouter;
+
+    let params = ISwapRouter::ExactInputSingleParams {
+        tokenIn: token_in,
+        tokenOut: token_out,
+        fee: alloy::primitives::aliases::U24::from(fee),
+        recipient,
+        deadline: U256::from(u64::MAX),
+        amountIn: amount_in,
+        amountOutMinimum: amount_out_min,
+        sqrtPriceLimitX96: alloy::primitives::aliases::U160::ZERO,
+    };
+    Bytes::from(ISwapRouter::exactInputSingleCall { params }.abi_encode())
+}
 
 fn setup_sentient_wallet(anvil: &Anvil) -> (WalletState, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -63,12 +89,43 @@ fn test_v3_proposal_passes_gate_without_v2_quoter_and_enforces_quote_floor() {
     let token_in = address!("70499adebb11efd915e3b69e700c331778628707"); // tWPLS
     let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
     let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 PLS
-    let quote_amount_out = U256::from(100_000_000u64);
-    // Floor at 100 bps (1%) slippage is 100_000_000 * 99 / 100 = 99_000_000.
-    let below_floor = U256::from(98_999_999u64);
-    let at_floor = U256::from(99_000_000u64);
+    let recipient = Address::from_str(wallet.active_address().unwrap()).unwrap();
 
-    // 1. Min amount out below floor is refused based on propose-time quote
+    // Plant factory returning mock pool and plant pool state on Anvil
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+    plant_factory_pool(&anvil, pool);
+    plant_v3_pool(&anvil, pool, sqrt, liquidity, false);
+    plant_code(&anvil, router, &[0x00]);
+
+    // Re-derive expected output via pool state read
+    let (p, expected_out) = rt
+        .block_on(vaughan_core::core::quote_v3_pool_exact_in(
+            &anvil.url(),
+            943,
+            token_in,
+            token_out,
+            500,
+            amount_in,
+        ))
+        .unwrap();
+    assert_eq!(p, pool);
+    assert!(expected_out > U256::ZERO);
+
+    // Floor at 100 bps (1%) slippage
+    let floor = expected_out * U256::from(9900) / U256::from(10000);
+    let below_floor = floor - U256::from(1);
+    let at_floor = floor;
+
+    // 1. Min amount out below floor is refused based on re-derived pool quote
+    let loose_calldata = encode_exact_input_single_calldata(
+        token_in,
+        token_out,
+        500,
+        recipient,
+        amount_in,
+        below_floor,
+    );
     let loose_prop = TxProposal::new(
         "prop_v3_loose",
         ProposalType::DexSwap {
@@ -79,12 +136,12 @@ fn test_v3_proposal_passes_gate_without_v2_quoter_and_enforces_quote_floor() {
             dex_kind: DexSwapKind::V3 {
                 pool,
                 fee: 500,
-                quote: quote_amount_out,
+                quote: expected_out,
             },
         },
         router,
         amount_in, // native-in
-        Bytes::new(),
+        loose_calldata,
         350_000,
         true,
         "v3 swap loose",
@@ -98,14 +155,128 @@ fn test_v3_proposal_passes_gate_without_v2_quoter_and_enforces_quote_floor() {
                 msg.contains("below the policy floor"),
                 "expected slippage floor refusal, got: {msg}"
             );
-            assert!(msg.contains("propose-time quote 100000000 less 100 bps slippage"));
+            assert!(msg.contains("fresh pool quote"));
         }
         other => panic!("expected InvalidParams, got {other:?}"),
     }
 
-    // 2. Bound at floor passes the swap gate without calling quote_v2_exact_in.
-    // Router has no V2 quoter on Anvil, so calling quote_v2_exact_in would fail-closed
-    // with 'fresh swap quote failed'. Instead, it passes through to fresh fee estimate.
+    // 2. Calldata mismatch on amountOutMinimum is refused
+    let mismatched_amount_calldata = encode_exact_input_single_calldata(
+        token_in,
+        token_out,
+        500,
+        recipient,
+        amount_in,
+        U256::from(1),
+    );
+    let mismatched_amount_prop = TxProposal::new(
+        "prop_v3_mismatch_amount",
+        ProposalType::DexSwap {
+            router,
+            path: vec![token_in, token_out],
+            amount_in,
+            min_amount_out: at_floor,
+            dex_kind: DexSwapKind::V3 {
+                pool,
+                fee: 500,
+                quote: expected_out,
+            },
+        },
+        router,
+        amount_in,
+        mismatched_amount_calldata,
+        350_000,
+        true,
+        "v3 mismatch amount",
+    )
+    .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+    let err_mismatch =
+        gate_sentient_proposal(&wallet, rt.handle(), &breaker, &mismatched_amount_prop)
+            .unwrap_err();
+    assert!(err_mismatch
+        .to_string()
+        .contains("calldata mismatch: encoded amountOutMinimum"));
+
+    // 3. Calldata mismatch on recipient is refused
+    let wrong_recipient = Address::repeat_byte(0xee);
+    let mismatched_recipient_calldata = encode_exact_input_single_calldata(
+        token_in,
+        token_out,
+        500,
+        wrong_recipient,
+        amount_in,
+        at_floor,
+    );
+    let mismatched_recipient_prop = TxProposal::new(
+        "prop_v3_mismatch_recip",
+        ProposalType::DexSwap {
+            router,
+            path: vec![token_in, token_out],
+            amount_in,
+            min_amount_out: at_floor,
+            dex_kind: DexSwapKind::V3 {
+                pool,
+                fee: 500,
+                quote: expected_out,
+            },
+        },
+        router,
+        amount_in,
+        mismatched_recipient_calldata,
+        350_000,
+        true,
+        "v3 mismatch recip",
+    )
+    .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+    let err_recip =
+        gate_sentient_proposal(&wallet, rt.handle(), &breaker, &mismatched_recipient_prop)
+            .unwrap_err();
+    assert!(err_recip
+        .to_string()
+        .contains("calldata mismatch: encoded recipient"));
+
+    // 4. Zero quote / zero min_out is refused
+    let zero_calldata = encode_exact_input_single_calldata(
+        token_in,
+        token_out,
+        500,
+        recipient,
+        amount_in,
+        U256::ZERO,
+    );
+    let zero_prop = TxProposal::new(
+        "prop_v3_zero",
+        ProposalType::DexSwap {
+            router,
+            path: vec![token_in, token_out],
+            amount_in,
+            min_amount_out: U256::ZERO,
+            dex_kind: DexSwapKind::V3 {
+                pool,
+                fee: 500,
+                quote: U256::ZERO,
+            },
+        },
+        router,
+        amount_in,
+        zero_calldata,
+        350_000,
+        true,
+        "v3 zero",
+    )
+    .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+    let err_zero = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &zero_prop).unwrap_err();
+    assert!(err_zero
+        .to_string()
+        .contains("quote or min_amount_out is zero"));
+
+    // 5. Bound at floor passes the swap gate without calling quote_v2_exact_in.
+    let tight_calldata = encode_exact_input_single_calldata(
+        token_in, token_out, 500, recipient, amount_in, at_floor,
+    );
     let mut tight_prop = TxProposal::new(
         "prop_v3_tight",
         ProposalType::DexSwap {
@@ -116,12 +287,12 @@ fn test_v3_proposal_passes_gate_without_v2_quoter_and_enforces_quote_floor() {
             dex_kind: DexSwapKind::V3 {
                 pool,
                 fee: 500,
-                quote: quote_amount_out,
+                quote: expected_out,
             },
         },
         router,
         amount_in,
-        Bytes::new(),
+        tight_calldata,
         350_000,
         true,
         "v3 swap tight",
@@ -360,11 +531,36 @@ fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
     let token_in = address!("70499adebb11efd915e3b69e700c331778628707"); // PLS/WPLS
     let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
     let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 tPLS
-    let quote_amount_out = U256::from(92_038_026_100_768_440u64);
-    let min_amount_out = U256::from(91_117_645_839_760_755u64); // exactly 100 bps slippage
+    let recipient = Address::from_str(wallet.active_address().unwrap()).unwrap();
 
-    // Plant mock router code at SWAP_ROUTER_943 so broadcast succeeds on Anvil
+    // Plant mock pool, factory, and router code at SWAP_ROUTER_943 so gate & broadcast succeed on Anvil
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+    plant_factory_pool(&anvil, pool);
+    plant_v3_pool(&anvil, pool, sqrt, liquidity, false);
     plant_code(&anvil, router, &[0x00]);
+
+    let (p, expected_out) = rt
+        .block_on(vaughan_core::core::quote_v3_pool_exact_in(
+            &anvil.url(),
+            943,
+            token_in,
+            token_out,
+            500,
+            amount_in,
+        ))
+        .unwrap();
+    assert_eq!(p, pool);
+
+    let min_amount_out = expected_out * U256::from(9900) / U256::from(10000); // 100 bps slippage
+    let calldata = encode_exact_input_single_calldata(
+        token_in,
+        token_out,
+        500,
+        recipient,
+        amount_in,
+        min_amount_out,
+    );
 
     let mut proposal = TxProposal::new(
         "v3_swap_reproduce",
@@ -376,12 +572,12 @@ fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
             dex_kind: DexSwapKind::V3 {
                 pool,
                 fee: 500,
-                quote: quote_amount_out,
+                quote: expected_out,
             },
         },
         router,
         amount_in, // native-in
-        Bytes::new(),
+        calldata,
         350_000,
         true,
         "reproduced sentient swap",

@@ -97,9 +97,11 @@ pub use dex_lp::{
     V3_LP_FEE_TIERS,
 };
 pub use dex_quote::{
-    discover_v3_swap_route, encode_v3_packed_path, erc20_allowance_covers, min_out_after_slippage,
-    quote_v2_exact_in, quote_v3_exact_in, quote_v3_path_exact_in, resolve_v3_swap_path,
-    wait_erc20_allowance, DexQuote, V3DiscoveredRoute, DEFAULT_DEX_SLIPPAGE_BPS,
+    decode_v3_packed_path_tokens, decode_v3_swap_calldata, discover_v3_swap_route,
+    encode_v3_packed_path, erc20_allowance_covers, min_out_after_slippage, quote_v2_exact_in,
+    quote_v3_exact_in, quote_v3_path_exact_in, quote_v3_pool_exact_in, resolve_v3_swap_path,
+    wait_erc20_allowance, DecodedV3SwapCalldata, DexQuote, V3DiscoveredRoute,
+    DEFAULT_DEX_SLIPPAGE_BPS, EXACT_INPUT_SELECTOR, EXACT_INPUT_SINGLE_SELECTOR,
 };
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, is_allowed_dex_v2_router, is_allowed_dex_v3_router,

@@ -11,9 +11,9 @@ use vaughan_agent::{breaker_config_for_session, CircuitBreaker, EnforcementMode}
 use vaughan_core::core::is_sentient_profile;
 use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{
-    apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write,
+    apply_proposal, decode_v3_swap_calldata, fee_spike_exceeds_threshold, guard_mainnet_write,
     is_allowed_agg_router_on_chain, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
-    is_v2_swap_selector, quote_v2_exact_in, OperatingMode, WalletState,
+    is_v2_swap_selector, quote_v2_exact_in, quote_v3_pool_exact_in, OperatingMode, WalletState,
 };
 use vaughan_provider::ProviderError;
 
@@ -238,24 +238,94 @@ pub fn gate_sentient_proposal(
     } = &proposal.proposal_type
     {
         let net = wallet.networks().active();
+        let (rpc_url, _) = wallet.rpc_endpoints_for(net);
         match dex_kind {
-            DexSwapKind::V3 {
-                pool: _,
-                fee: _,
-                quote,
-            } => {
+            DexSwapKind::V3 { pool, fee, quote } => {
                 if !is_allowed_dex_v3_router(net.chain_id, *router) {
                     return Err(ProviderError::InvalidParams(format!(
                         "router {router} is not on the audited V3 DEX allowlist for chain {}",
                         net.chain_id
                     )));
                 }
+
+                // 1. Decode V3 calldata and require encoded parameters to match proposal & wallet
+                let decoded = decode_v3_swap_calldata(&proposal.calldata)
+                    .map_err(|e| ProviderError::InvalidParams(e.user_message()))?;
+                if decoded.amount_out_min != *min_amount_out {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "calldata mismatch: encoded amountOutMinimum ({}) != proposal min_amount_out ({})",
+                        decoded.amount_out_min, min_amount_out
+                    )));
+                }
+                let active_addr = wallet
+                    .active_address()
+                    .ok()
+                    .and_then(|a| Address::from_str(a).ok())
+                    .ok_or_else(|| ProviderError::Internal("no active wallet".into()))?;
+                if decoded.recipient != active_addr {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "calldata mismatch: encoded recipient ({:#x}) != wallet active address ({active_addr:#x})",
+                        decoded.recipient
+                    )));
+                }
+                if decoded.path != *path {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "calldata mismatch: encoded token path ({:?}) != proposal path ({:?})",
+                        decoded.path, path
+                    )));
+                }
+
+                if path.len() < 2 {
+                    return Err(ProviderError::InvalidParams(
+                        "V3 swap path must have at least 2 tokens".into(),
+                    ));
+                }
+
+                // 2. Refuse zero quotes or zero min_amount_out
+                if quote.is_zero() || min_amount_out.is_zero() {
+                    return Err(ProviderError::InvalidParams(
+                        "quote or min_amount_out is zero: auto-exec refuses unbounded swap with no minimum output protection"
+                            .into(),
+                    ));
+                }
+
+                // 3. Re-derive expected output from live pool state (slot0/liquidity)
+                let (actual_pool, expected_out) = handle
+                    .block_on(quote_v3_pool_exact_in(
+                        &rpc_url,
+                        net.chain_id,
+                        path[0],
+                        path[1],
+                        *fee,
+                        *amount_in,
+                    ))
+                    .map_err(|e| {
+                        ProviderError::Internal(format!(
+                            "fresh V3 pool quote failed (fail-closed): {}",
+                            e.user_message()
+                        ))
+                    })?;
+
+                if *pool != Address::ZERO && *pool != actual_pool {
+                    return Err(ProviderError::InvalidParams(format!(
+                        "proposal pool {pool:#x} does not match factory pool {actual_pool:#x}"
+                    )));
+                }
+
+                if expected_out.is_zero() {
+                    return Err(ProviderError::InvalidParams(
+                        "re-derived pool quote is zero: auto-exec refuses unbounded swap with no minimum output protection"
+                            .into(),
+                    ));
+                }
+
+                // 4. Apply max_slippage_bps to THAT re-derived expected output
                 let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
-                let floor = *quote * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
+                let floor = expected_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
                 if *min_amount_out < floor {
                     return Err(ProviderError::InvalidParams(format!(
                         "min_amount_out {min_amount_out} is below the policy floor {floor} \
-                         (propose-time quote {quote} less {max_bps} bps slippage) — re-propose with a \
+                         (fresh pool quote {expected_out} less {max_bps} bps slippage) — re-propose with a \
                          tighter bound"
                     )));
                 }
@@ -279,7 +349,7 @@ pub fn gate_sentient_proposal(
                     )));
                 }
                 let quote = handle
-                    .block_on(quote_v2_exact_in(&net.rpc_url, *router, *amount_in, path))
+                    .block_on(quote_v2_exact_in(&rpc_url, *router, *amount_in, path))
                     .map_err(|e| {
                         ProviderError::Internal(format!(
                             "fresh swap quote failed (fail-closed): {}",

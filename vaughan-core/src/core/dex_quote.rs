@@ -141,6 +141,119 @@ pub async fn quote_v3_exact_in(
     .await
 }
 
+/// Single-hop V3 exact-in quote re-derived directly from live pool state (slot0 and liquidity).
+///
+/// Uses the canonical factory to resolve the pool address, reads slot0 and liquidity,
+/// and calculates exact-in output using local pool math without quoter contracts.
+pub async fn quote_v3_pool_exact_in(
+    rpc_url: &str,
+    chain_id: u64,
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    amount_in: U256,
+) -> Result<(Address, U256), WalletError> {
+    if token_in == token_out {
+        return Err(WalletError::InvalidTransaction(
+            "token_in and token_out must differ".into(),
+        ));
+    }
+    let cfg = wiz4rd_config(chain_id, rpc_url)?;
+    let provider = connect_http(rpc_url)?;
+    let key = get_pool_key(token_in, token_out, fee);
+    let pool = match get_pool_info(&provider, &cfg, key).await {
+        Ok(p) => p,
+        Err(SdkError::PoolNotFound) => {
+            return Err(WalletError::Other(format!(
+                "no V3 pool for {token_in:#x} ↔ {token_out:#x} at fee {fee}"
+            )));
+        }
+        Err(e) => return Err(map_pool_read_error(e)),
+    };
+    if pool.pool.is_zero() {
+        return Err(WalletError::Other(format!(
+            "no V3 pool for {token_in:#x} ↔ {token_out:#x} at fee {fee}"
+        )));
+    }
+    if pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
+        return Ok((pool.pool, U256::ZERO));
+    }
+    let zfo = zero_for_one(&pool, token_in);
+    let quote = quote_exact_in(&pool, amount_in, zfo)
+        .map_err(|e| WalletError::Other(format!("V3 quote math: {e}")))?;
+    Ok((pool.pool, quote.amount_out))
+}
+
+/// Decoded parameters from V3 swap calldata (`exactInputSingle` or `exactInput`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedV3SwapCalldata {
+    pub recipient: Address,
+    pub amount_in: U256,
+    pub amount_out_min: U256,
+    pub path: Vec<Address>,
+}
+
+/// Selector for `exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))`.
+pub const EXACT_INPUT_SINGLE_SELECTOR: [u8; 4] = [0x41, 0x4b, 0xf3, 0x89];
+
+/// Selector for `exactInput((bytes,address,uint256,uint256,uint256))`.
+pub const EXACT_INPUT_SELECTOR: [u8; 4] = [0xc0, 0x4b, 0x8d, 0x59];
+
+/// Decode tokens from Uniswap V3 packed path: `token (20) || fee (3) || token (20) ...`.
+pub fn decode_v3_packed_path_tokens(packed: &[u8]) -> Option<Vec<Address>> {
+    if packed.len() < 43 || !(packed.len() - 20).is_multiple_of(23) {
+        return None;
+    }
+    let num_tokens = 1 + (packed.len() - 20) / 23;
+    let mut tokens = Vec::with_capacity(num_tokens);
+    for i in 0..num_tokens {
+        let start = i * 23;
+        let end = start + 20;
+        tokens.push(Address::from_slice(&packed[start..end]));
+    }
+    Some(tokens)
+}
+
+/// Decode V3 swap calldata (`exactInputSingle` or `exactInput`).
+pub fn decode_v3_swap_calldata(calldata: &[u8]) -> Result<DecodedV3SwapCalldata, WalletError> {
+    if calldata.len() < 4 {
+        return Err(WalletError::InvalidTransaction(
+            "V3 swap calldata is too short (< 4 bytes)".into(),
+        ));
+    }
+    let sel = [calldata[0], calldata[1], calldata[2], calldata[3]];
+    if sel == EXACT_INPUT_SINGLE_SELECTOR {
+        use wiz4rd_sdk::abi::ISwapRouter;
+        let call = ISwapRouter::exactInputSingleCall::abi_decode(calldata).map_err(|e| {
+            WalletError::InvalidTransaction(format!("decode exactInputSingle: {e}"))
+        })?;
+        Ok(DecodedV3SwapCalldata {
+            recipient: call.params.recipient,
+            amount_in: call.params.amountIn,
+            amount_out_min: call.params.amountOutMinimum,
+            path: vec![call.params.tokenIn, call.params.tokenOut],
+        })
+    } else if sel == EXACT_INPUT_SELECTOR {
+        use wiz4rd_sdk::abi::ISwapRouter;
+        let call = ISwapRouter::exactInputCall::abi_decode(calldata)
+            .map_err(|e| WalletError::InvalidTransaction(format!("decode exactInput: {e}")))?;
+        let path = decode_v3_packed_path_tokens(&call.params.path).ok_or_else(|| {
+            WalletError::InvalidTransaction("invalid V3 packed path in exactInput calldata".into())
+        })?;
+        Ok(DecodedV3SwapCalldata {
+            recipient: call.params.recipient,
+            amount_in: call.params.amountIn,
+            amount_out_min: call.params.amountOutMinimum,
+            path,
+        })
+    } else {
+        Err(WalletError::InvalidTransaction(format!(
+            "calldata selector 0x{} is not a recognized V3 swap selector (expected exactInputSingle 0x414bf389 or exactInput 0xc04b8d59)",
+            hex::encode(sel)
+        )))
+    }
+}
+
 /// Multi-hop V3 exact-in quote.
 ///
 /// On wiz4rd chains (943) uses local pool math. Else uses `quoter` when set
@@ -847,5 +960,61 @@ mod tests {
         assert_eq!(packed.len(), 66);
         assert_eq!(&packed[20..23], &[0, 0x01, 0xf4]); // 500
         assert_eq!(&packed[43..46], &[0, 0x4e, 0x20]); // 20000
+    }
+
+    #[test]
+    fn decode_v3_exact_input_single_calldata() {
+        use wiz4rd_sdk::abi::ISwapRouter;
+        let token_in = Address::repeat_byte(0x11);
+        let token_out = Address::repeat_byte(0x22);
+        let recipient = Address::repeat_byte(0x33);
+        let params = ISwapRouter::ExactInputSingleParams {
+            tokenIn: token_in,
+            tokenOut: token_out,
+            fee: U24::from(500u32),
+            recipient,
+            deadline: U256::from(1000),
+            amountIn: U256::from(500),
+            amountOutMinimum: U256::from(490),
+            sqrtPriceLimitX96: U160::ZERO,
+        };
+        let calldata = ISwapRouter::exactInputSingleCall { params }.abi_encode();
+        let decoded = decode_v3_swap_calldata(&calldata).unwrap();
+        assert_eq!(decoded.recipient, recipient);
+        assert_eq!(decoded.amount_in, U256::from(500));
+        assert_eq!(decoded.amount_out_min, U256::from(490));
+        assert_eq!(decoded.path, vec![token_in, token_out]);
+    }
+
+    #[test]
+    fn decode_v3_exact_input_calldata() {
+        use wiz4rd_sdk::abi::ISwapRouter;
+        let token_a = Address::repeat_byte(0x11);
+        let token_b = Address::repeat_byte(0x22);
+        let token_c = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let packed_path =
+            encode_v3_packed_path(&[token_a, token_b, token_c], &[500, 2500]).unwrap();
+        let params = ISwapRouter::ExactInputParams {
+            path: packed_path,
+            recipient,
+            deadline: U256::from(1000),
+            amountIn: U256::from(1000),
+            amountOutMinimum: U256::from(900),
+        };
+        let calldata = ISwapRouter::exactInputCall { params }.abi_encode();
+        let decoded = decode_v3_swap_calldata(&calldata).unwrap();
+        assert_eq!(decoded.recipient, recipient);
+        assert_eq!(decoded.amount_in, U256::from(1000));
+        assert_eq!(decoded.amount_out_min, U256::from(900));
+        assert_eq!(decoded.path, vec![token_a, token_b, token_c]);
+    }
+
+    #[test]
+    fn decode_v3_invalid_calldata() {
+        // Too short
+        assert!(decode_v3_swap_calldata(&[0x41, 0x4b]).is_err());
+        // Unknown selector
+        assert!(decode_v3_swap_calldata(&[0x12, 0x34, 0x56, 0x78, 0x00]).is_err());
     }
 }

@@ -90,6 +90,11 @@ impl Tool for ProposeV3SwapTool {
             .get("slippage_bps")
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as u32;
+        if slippage_bps == 0 || slippage_bps >= 10_000 {
+            return Err(AgentError::InvalidToolCall(format!(
+                "slippage_bps must be between 1 and 9999 (got {slippage_bps})"
+            )));
+        }
         let explanation = args
             .get("explanation")
             .and_then(|v| v.as_str())
@@ -112,6 +117,12 @@ impl Tool for ProposeV3SwapTool {
         let (cfg, pool) = load_pool(context, token_in, token_out, fee).await?;
         let quote = quote_pool(&pool, token_in, amount_in)?;
         let amount_out_min = slippage_min_out(quote.amount_out, slippage_bps);
+        if quote.amount_out.is_zero() || amount_out_min.is_zero() {
+            return Err(AgentError::InvalidToolCall(format!(
+                "quote or min_amount_out is zero (quote: {}, min_out: {}) — pool has insufficient liquidity",
+                quote.amount_out, amount_out_min
+            )));
+        }
 
         let (router, calldata, _) =
             build_exact_in_calldata(&cfg, &pool, token_in, amount_in, amount_out_min, recipient)?;
@@ -187,4 +198,65 @@ async fn simulate_swap(
         .input(calldata.clone().into())
         .value(value);
     provider.call(tx).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn propose_v3_swap_rejects_zero_slippage() {
+        let tool = ProposeV3SwapTool::new();
+        let ctx = ToolContext {
+            rpc_url: "http://127.0.0.1:8545".into(),
+            chain_id: 943,
+            active_address: Some(address!("0x1111111111111111111111111111111111111111")),
+            profile_dir: None,
+        };
+
+        let args = json!({
+            "token_in": "WPLS",
+            "token_out": "WZRD",
+            "amount_in": "1000",
+            "fee": 500,
+            "slippage_bps": 0,
+            "explanation": "test"
+        });
+
+        let err = tool.execute(args, &ctx).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("slippage_bps must be between 1 and 9999"),
+            "expected slippage_bps error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn propose_v3_swap_rejects_10000_slippage() {
+        let tool = ProposeV3SwapTool::new();
+        let ctx = ToolContext {
+            rpc_url: "http://127.0.0.1:8545".into(),
+            chain_id: 943,
+            active_address: Some(address!("0x1111111111111111111111111111111111111111")),
+            profile_dir: None,
+        };
+
+        let args = json!({
+            "token_in": "WPLS",
+            "token_out": "WZRD",
+            "amount_in": "1000",
+            "fee": 500,
+            "slippage_bps": 10000,
+            "explanation": "test"
+        });
+
+        let err = tool.execute(args, &ctx).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("slippage_bps must be between 1 and 9999"),
+            "expected slippage_bps error, got: {err}"
+        );
+    }
 }
