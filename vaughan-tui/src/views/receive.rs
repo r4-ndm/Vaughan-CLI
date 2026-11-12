@@ -1,7 +1,9 @@
 //! Receive: public address, stealth URI, and scan/sweep of stealth notes.
 //!
 //! `y` copies the public address; `u` copies the stealth URI — both via
-//! clipboard helpers so mouse-select never grabs box borders.
+//! clipboard helpers so mouse-select never grabs box borders. With the
+//! `railgun` feature, `0` opens the read-only RAILGUN private balance (letters
+//! are global shortcuts here).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -23,6 +25,12 @@ use crate::clipboard;
 enum Stage {
     Address,
     Notes,
+    #[cfg(feature = "railgun")]
+    Shielded,
+    #[cfg(feature = "railgun")]
+    Shield,
+    #[cfg(feature = "railgun")]
+    Unshield,
 }
 
 pub struct ReceiveView {
@@ -30,6 +38,12 @@ pub struct ReceiveView {
     notes: Vec<StealthNote>,
     selected: usize,
     status: String,
+    #[cfg(feature = "railgun")]
+    shielded: super::shielded::ShieldedPanel,
+    #[cfg(feature = "railgun")]
+    shield: Option<super::shield_flow::ShieldFlow>,
+    #[cfg(feature = "railgun")]
+    unshield: Option<super::unshield_flow::UnshieldFlow>,
 }
 
 impl Default for ReceiveView {
@@ -39,6 +53,12 @@ impl Default for ReceiveView {
             notes: Vec::new(),
             selected: 0,
             status: String::new(),
+            #[cfg(feature = "railgun")]
+            shielded: super::shielded::ShieldedPanel::default(),
+            #[cfg(feature = "railgun")]
+            shield: None,
+            #[cfg(feature = "railgun")]
+            unshield: None,
         }
     }
 }
@@ -54,7 +74,76 @@ impl ReceiveView {
                     brand::render_faded_box(frame, area, Some(brand::fade_line(" Receive ")));
                 frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
             }
+            #[cfg(feature = "railgun")]
+            Stage::Shielded => {
+                let text = self.shielded.lines(net.name.as_str());
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
+            #[cfg(feature = "railgun")]
+            Stage::Shield => {
+                let text = self
+                    .shield
+                    .as_ref()
+                    .map(|s| s.lines(wallet))
+                    .unwrap_or_default();
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
+            #[cfg(feature = "railgun")]
+            Stage::Unshield => {
+                let text = self
+                    .unshield
+                    .as_ref()
+                    .map(|u| u.lines(wallet))
+                    .unwrap_or_default();
+                let inner =
+                    brand::render_faded_box(frame, area, Some(brand::fade_line(" Private ")));
+                frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+            }
         }
+    }
+
+    /// Drain background work (RAILGUN scan progress); call every UI tick.
+    pub fn poll(&mut self) {
+        #[cfg(feature = "railgun")]
+        self.shielded.poll();
+    }
+
+    /// Feed a background job result to the shield or unshield flow (if open).
+    pub fn apply_job_result(&mut self, _result: crate::jobs::UiJobResult) {
+        #[cfg(feature = "railgun")]
+        {
+            if let Some(flow) = self.shield.as_mut() {
+                flow.apply_job_result(_result);
+            } else if let Some(flow) = self.unshield.as_mut() {
+                flow.apply_job_result(_result);
+            }
+        }
+    }
+
+    /// Next job the shield or unshield flow wants spawned (allowance → estimate → …).
+    pub fn take_followup(&mut self) -> Option<crate::jobs::UiJob> {
+        #[cfg(feature = "railgun")]
+        {
+            if let Some(flow) = self.shield.as_mut() {
+                return flow.take_followup();
+            }
+            if let Some(flow) = self.unshield.as_mut() {
+                return flow.take_followup();
+            }
+        }
+        None
+    }
+
+    /// Open the read-only RAILGUN private balance panel and start background scan.
+    #[cfg(feature = "railgun")]
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn open_private(&mut self, wallet: &mut WalletState, handle: &Handle) {
+        self.stage = Stage::Shielded;
+        self.shielded.start(wallet, handle);
     }
 
     /// Address / URI on unbordered rows so copy/select stays clean.
@@ -101,9 +190,12 @@ impl ReceiveView {
         };
         frame.render_widget(Paragraph::new(uri_line).wrap(Wrap { trim: false }), uri_row);
 
-        let mut foot_lines = vec![Line::from(
-            "y address · u stealth URI · s scan notes · Esc dashboard",
-        )];
+        let keys = if cfg!(feature = "railgun") {
+            "y address · u stealth URI · s scan notes · 0 private (RAILGUN) · Esc dashboard"
+        } else {
+            "y address · u stealth URI · s scan notes · Esc dashboard"
+        };
+        let mut foot_lines = vec![Line::from(keys)];
         if !self.status.is_empty() {
             foot_lines.push(Line::from(Span::styled(
                 self.status.clone(),
@@ -142,6 +234,10 @@ impl ReceiveView {
     }
 
     pub fn allows_footer_shortcuts(&self) -> bool {
+        #[cfg(feature = "railgun")]
+        if matches!(self.stage, Stage::Shielded | Stage::Shield) {
+            return false;
+        }
         true
     }
 
@@ -157,7 +253,12 @@ impl ReceiveView {
                 KeyCode::Esc => KeyOutcome::Back,
                 KeyCode::Char('s') => {
                     self.scan(wallet, handle);
-                    KeyOutcome::Consumed
+                    KeyOutcome::Handled
+                }
+                #[cfg(feature = "railgun")]
+                KeyCode::Char('0') => {
+                    self.open_private(wallet, handle);
+                    KeyOutcome::Handled
                 }
                 // `y` falls through to the global copy so it gets the address pulse.
                 KeyCode::Char('u') | KeyCode::Char('U') => match wallet.stealth_uri() {
@@ -167,7 +268,7 @@ impl ReceiveView {
                     },
                     Err(e) => {
                         self.status = e.user_message();
-                        KeyOutcome::Consumed
+                        KeyOutcome::Handled
                     }
                 },
                 _ => KeyOutcome::NotHandled,
@@ -193,6 +294,83 @@ impl ReceiveView {
                 }
                 _ => KeyOutcome::NotHandled,
             },
+            #[cfg(feature = "railgun")]
+            Stage::Shielded => match key.code {
+                KeyCode::Esc => {
+                    self.stage = Stage::Address;
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    self.shielded.start(wallet, handle);
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    self.shielded.stop();
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.shielded.quick_sync(wallet, handle);
+                    KeyOutcome::Consumed
+                }
+                KeyCode::Char('z') | KeyCode::Char('Z') => match self.shielded.receive_address() {
+                    Some(addr) => match clipboard::copy_text(addr) {
+                        Ok(()) => KeyOutcome::Flash("0zk address copied".into()),
+                        Err(e) => KeyOutcome::Flash(e),
+                    },
+                    None => KeyOutcome::Flash("0zk receive address is testnet-only for now".into()),
+                },
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    let chain_id = wallet.networks().active().chain_id;
+                    if vaughan_railgun::deployment::shield_enabled(chain_id) {
+                        self.shield = Some(super::shield_flow::ShieldFlow::new());
+                        self.stage = Stage::Shield;
+                        KeyOutcome::Consumed
+                    } else {
+                        KeyOutcome::Flash("Shielding is Sepolia-only for now".into())
+                    }
+                }
+                KeyCode::Char('u') | KeyCode::Char('U') => {
+                    let chain_id = wallet.networks().active().chain_id;
+                    if vaughan_railgun::deployment::shield_enabled(chain_id) {
+                        self.unshield = Some(super::unshield_flow::UnshieldFlow::new());
+                        self.stage = Stage::Unshield;
+                        KeyOutcome::Consumed
+                    } else {
+                        KeyOutcome::Flash("Unshielding is Sepolia-only for now".into())
+                    }
+                }
+                _ => KeyOutcome::NotHandled,
+            },
+            #[cfg(feature = "railgun")]
+            Stage::Shield => {
+                let Some(flow) = self.shield.as_mut() else {
+                    self.stage = Stage::Shielded;
+                    return KeyOutcome::Consumed;
+                };
+                match flow.handle_key(key, wallet, handle) {
+                    KeyOutcome::Back => {
+                        self.shield = None;
+                        self.stage = Stage::Shielded;
+                        KeyOutcome::Consumed
+                    }
+                    other => other,
+                }
+            }
+            #[cfg(feature = "railgun")]
+            Stage::Unshield => {
+                let Some(flow) = self.unshield.as_mut() else {
+                    self.stage = Stage::Shielded;
+                    return KeyOutcome::Consumed;
+                };
+                match flow.handle_key(key, wallet, handle) {
+                    KeyOutcome::Back => {
+                        self.unshield = None;
+                        self.stage = Stage::Shielded;
+                        KeyOutcome::Consumed
+                    }
+                    other => other,
+                }
+            }
         }
     }
 

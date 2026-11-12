@@ -252,12 +252,12 @@ impl AssetsView {
                             }
                             Err(e) => {
                                 self.status = e.user_message();
-                                KeyOutcome::Consumed
+                                KeyOutcome::Handled
                             }
                         }
                     } else {
                         self.status = "Only custom imports can be removed (x).".into();
-                        KeyOutcome::Consumed
+                        KeyOutcome::Handled
                     }
                 }
                 _ => KeyOutcome::NotHandled,

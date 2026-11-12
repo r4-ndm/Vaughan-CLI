@@ -423,16 +423,21 @@ pub async fn fire_plan(
         });
     }
 
-    let exec = trader
-        .execute_swap_maybe_dry(
+    let key = format!("dca_{plan_id}_{}", plan.slices_done);
+    let trader_with_dir = trader.clone().with_profile_dir(dir);
+    let exec = trader_with_dir
+        .execute_swap_maybe_dry_keyed(
             prepared.to,
             prepared.pair,
             prepared.data,
             prepared.value,
             prepared.value, // breaker sizes against the value we actually send
             plan.max_slippage_bps,
+            None,
+            None,
             plan_dry,
             prepared.allow_agg,
+            Some(&key),
         )
         .await;
 

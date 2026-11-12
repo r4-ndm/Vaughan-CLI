@@ -1176,7 +1176,7 @@ impl SendView {
                     }
                     KeyOutcome::Consumed
                 }
-                KeyCode::Char('r') | KeyCode::Char('R') => self.begin_poll_status(),
+                KeyCode::Char('r') | KeyCode::Char('R') => self.begin_poll_status().acted(),
                 KeyCode::Enter | KeyCode::Esc => {
                     if self.home_mode {
                         *self = Self::home();

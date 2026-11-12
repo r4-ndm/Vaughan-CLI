@@ -95,6 +95,13 @@ async fn wiz4rd_build_swap_and_lp_proposals_on_943() {
         swap["to"].as_str().unwrap().to_lowercase(),
         "0xfc656c95ecd418536844feeaa46949bb9365beaf"
     );
+    assert_eq!(swap["proposal_type"]["dex_kind"]["kind"], "v3");
+    assert_eq!(swap["proposal_type"]["dex_kind"]["fee"], 500);
+    assert!(swap["proposal_type"]["dex_kind"]["quote"].is_string());
+    assert_eq!(
+        swap["network_id"].as_str().unwrap(),
+        "pulsechain-testnet-v4"
+    );
     // eth_call often reverts until WZRD is approved on the SwapRouter — proposal still valid.
 
     let mint = registry

@@ -1,0 +1,26 @@
+# cargo-audit configuration — see docs/audit-playbook.md ("Dependency advisories").
+#
+# Ignore entries are ACCEPTED RISK, not fixes. Each one needs: the RUSTSEC id, why
+# it cannot be cleared in this tree, who owns it, and what unblocks it. An advisory
+# with no entry here fails `scripts/audit.sh` and therefore CI.
+
+[advisories]
+ignore = [
+    # crypto-bigint 0.5.5 — timing variability in constant-time ops.
+    # Reached by the DEFAULT build: vaughan-core/k256 0.13 and alloy-signer (k256 ^0.13).
+    # No fixed 0.5.x exists; k256 0.14 needs crypto-bigint ^0.7, and every published
+    # alloy (through 2.5.0) still requires k256 ^0.13, so no in-tree bump clears it.
+    # Exposure is a local timing side channel on a signing process, not remote code
+    # execution. Unblocks when alloy moves to k256 ^0.14 — watch their releases.
+    "RUSTSEC-2026-0387",
+
+    # ruzstd 0.5.0 — decompression bomb in zstd decoding.
+    # RAILGUN stack only (wasmer 6.1 -> object 0.32 -> ruzstd ^0.5); not compiled
+    # without --features railgun and not present in the shipped binary. object >=0.38
+    # needs ruzstd ^0.9 and wasmer 6.1 pins object ^0.32, so only a newer railgun-rust
+    # rev (or wasmer 7.x) clears it.
+    "RUSTSEC-2026-0344",
+]
+
+# Unmaintained/yanked notices stay visible (they are printed, not fatal). If one of
+# them becomes a real vulnerability it will arrive as a new advisory id and fail.

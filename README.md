@@ -19,7 +19,7 @@ merges — see [docs/freedom-browser-status.md](docs/freedom-browser-status.md).
 
 - **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
 - **ratatui** for the terminal interface
-- **In-core ERC-5564 stealth** (Kohaku / RAILGUN deferred — see [docs/kohaku-go-no-go.md](docs/kohaku-go-no-go.md))
+- **In-core ERC-5564 stealth** plus **RAILGUN shielded balances** (opt-in feature, Sepolia only — see [docs/railgun-go-no-go.md](docs/railgun-go-no-go.md))
 - **MCP** for external agents — Cursor / Claude propose; you approve in Vaughan ([docs/mcp.md](docs/mcp.md))
 - **VB** (`vaughan-dapp-browser`) — optional allowlisted Chromium shell + CDP ([docs/dapp-browser-strategy.md](docs/dapp-browser-strategy.md))
 - **Freedom Browser** — **parked** (upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) pending); dev fallback only
@@ -93,15 +93,23 @@ supported but real money — treat mistakes as permanent.
 
 | Key | Screen | Use it for |
 |-----|--------|------------|
-| `s` | Send | Send native PLS or ERC-20 |
+| `s` | Dashboard | Home — balance, and where a send starts |
+| `v` | Receive | Public address, stealth URI, stealth-note scan |
+| `0` | Private | RAILGUN shielded balances (Sepolia only; requires the `railgun` feature build) |
+| `b` | Batch Send | Ambire EIP-7702 batched transfers |
 | `g` | Ag | Aggregator swap (best route across venues) |
 | `d` | Dex | Swap on a named DEX (PulseX, Wiz4rd, …) |
-| `c` | Browse | Inspect any contract — read-only REPL |
+| `p` | LP | Add / remove liquidity (v2 and v3 pools) |
+| `f` | Bridge | LibertySwap cross-chain bridge (Pulse-centered) |
 | `e` | Wrap | Wrap / unwrap WPLS |
-| `m` | History | Recent token transfers |
+| `u` | HEX | pHEX stake manager (PulseChain 369 only) |
 | `j` | Approvals | See and revoke token allowances |
-| `w` | Web | Optional VB / Freedom fallback (Freedom parked — see docs) |
-| `Tab` | — | Cycle Ag → Dex → Browse → … |
+| `m` | History | Recent token transfers |
+| `c` | Keys › Hardware | Hardware hub — Ledger / Trezor setup |
+| `n` | Settings | Network, account, password, theme |
+| `w` | Dashboard (burn gate) | Prefill a ≥13 WZRD burn-unlock send |
+| `q` | Web (optional) | Optional VB / Freedom fallback (Freedom parked — see docs) |
+| `1` | Auto-Trader | Launch the Hyperliquid auto-trader dashboard |
 
 **Browserless Pulse** means: swap, inspect, and revoke **without opening
 PulseX (or similar) in a browser**. Prefer Ag / Dex / Browse / MCP; use **VB**
@@ -130,11 +138,13 @@ Then Keys → **4 Add Ledger** when ready (Trezor signing is Phase 2).
 
 **Send to someone**
 
-1. `s` → recipient address → amount → confirm (fee shown) → broadcast.
+1. `s` → Dashboard (the default send form) → recipient address → amount → confirm
+   (fee shown) → broadcast.
 
 **Inspect a contract**
 
-1. `c` → `browse 0x…` → `call balanceOf(0x…)` or `probe` to see what it is.
+1. Settings (`n`) → `c` (Contract Browser) → `browse 0x…` → `call balanceOf(0x…)` or
+   `probe` to see what it is.
 
 ### Using AI safely (MCP)
 
@@ -198,7 +208,25 @@ cargo run -p vaughan-cli -- balance
 cargo run -p vaughan-tui           # TUI-only crate (dev convenience)
 ```
 
+The private (RAILGUN) panel is a compile-time feature — the default build omits it
+entirely. `scripts/install-vaughan.sh` builds the release binary **with** `--features
+railgun`, installs it as `vaughan`, and symlinks `vaughan-p` to it:
+
+```bash
+scripts/install-vaughan.sh        # installs vaughan + vaughan-p alias
+```
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for fmt/clippy/test expectations.
+
+Before you trust a change to signing, bridging, swaps or RAILGUN, run the mechanical
+gate and then read the judgement half:
+
+```bash
+scripts/audit.sh --with-tests --binary   # fmt, clippy, tests, hygiene, secrets, binary
+```
+
+[`AGENTS.md`](AGENTS.md) has the cross-agent rules; [`docs/audit-playbook.md`](docs/audit-playbook.md)
+explains how to audit the money paths that a green test run does not cover.
 
 ## Features
 

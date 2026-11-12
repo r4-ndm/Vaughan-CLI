@@ -41,11 +41,47 @@ jobs:
       - name: Verify anvil on PATH
         run: anvil --version
 
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # One gate, same as the one developers run locally: fmt, clippy, tests,
+      # tracked-file hygiene, secrets scan, and the default-build railgun leak
+      # check. Railgun clippy lives in the dedicated job below, which is the only
+      # place allowed to compile that stack.
+      #
+      # cargo audit runs in the gate. Two advisories are accepted risk and listed
+      # with reasons in .cargo/audit.toml — anything new fails here.
+      - name: audit gate
+        run: scripts/audit.sh --with-tests --skip-railgun
 
-      - name: cargo test
-        run: cargo test --workspace
+  # Opt-in RAILGUN stack (docs/railgun-go-no-go.md). Separate job so the default
+  # build above never compiles railgun-rust.
+  railgun:
+    name: railgun feature · upstream parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          key: railgun
+
+      - name: cargo clippy (railgun)
+        run: cargo clippy -p vaughan-railgun -p vaughan-tui -p vaughan-cli --features vaughan-railgun/enabled,vaughan-cli/railgun --all-targets -- -D warnings
+
+      - name: cargo test (railgun)
+        run: |
+          cargo test -p vaughan-railgun --features enabled
+          cargo test -p vaughan-tui --features railgun --lib views::shield
+          cargo test -p vaughan-tui --features railgun --lib provider
+
+      - name: Upstream parity tests under Vaughan's lockfile
+        run: scripts/railgun-parity.sh

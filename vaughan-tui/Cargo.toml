@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "ratatui terminal frontend for Vaughan"
 
+[features]
+default = []
+# Opt-in RAILGUN shielded balances (heavy; see docs/railgun-go-no-go.md).
+railgun = ["dep:vaughan-railgun", "vaughan-railgun/enabled"]
+
 [dependencies]
+vaughan-railgun = { workspace = true, optional = true }
 vaughan-aa = { path = "../vaughan-aa" }
 vaughan-agent = { path = "../vaughan-agent" }
 vaughan-core = { path = "../vaughan-core" }

@@ -99,6 +99,9 @@ impl Screen {
 pub enum KeyOutcome {
     /// The view consumed the key; the app must not apply global shortcuts.
     Consumed,
+    /// The view acted on the key, so it is never retried as a footer shortcut
+    /// (unlike `Consumed`, which may be a footer chip key the view ignored).
+    Handled,
     /// The view did not use the key; the app may apply global shortcuts.
     NotHandled,
     /// The view wants to navigate to a new screen.
@@ -128,6 +131,7 @@ impl std::fmt::Debug for KeyOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Consumed => write!(f, "Consumed"),
+            Self::Handled => write!(f, "Handled"),
             Self::NotHandled => write!(f, "NotHandled"),
             Self::Navigate(s) => f.debug_tuple("Navigate").field(s).finish(),
             Self::Back => write!(f, "Back"),
@@ -139,6 +143,16 @@ impl std::fmt::Debug for KeyOutcome {
             Self::AssistBurn => write!(f, "AssistBurn"),
             Self::AccountListChanged => write!(f, "AccountListChanged"),
             Self::SwitchProfile(p, m) => f.debug_tuple("SwitchProfile").field(p).field(m).finish(),
+        }
+    }
+}
+
+impl KeyOutcome {
+    /// Mark a `Consumed` result as `Handled` (the view acted on the key).
+    pub(crate) fn acted(self) -> Self {
+        match self {
+            Self::Consumed => Self::Handled,
+            other => other,
         }
     }
 }
@@ -409,6 +423,8 @@ pub struct App {
     trezor_sign: Option<TrezorSignSession>,
     /// F3 rename buffer (`→` while Account focused); Enter commits.
     f3_rename: Option<crate::input::Input>,
+    /// Launch the Hyperliquid Auto-Trader dashboard (suspends TUI).
+    pub needs_launch_auto_trader: bool,
 }
 
 /// Host-side phases while a Trezor signs (Send / Keys share the PIN bridge).
@@ -575,6 +591,7 @@ impl App {
             trezor_passphrase: None,
             trezor_sign: None,
             f3_rename: None,
+            needs_launch_auto_trader: false,
         };
         app.navigate(screen);
         Ok(app)
@@ -790,6 +807,9 @@ impl App {
             if let View::Keys(v) = &mut self.view {
                 v.poll(self.tick);
             }
+            if let View::Receive(v) = &mut self.view {
+                v.poll();
+            }
             if self.screen() == Screen::Approve
                 && self.pending_approval.is_none()
                 && !self.mcp_approve_inflight
@@ -850,6 +870,33 @@ impl App {
             }
             if let View::Unlock(v) = &mut self.view {
                 v.set_tick(self.tick);
+            }
+            if self.needs_launch_auto_trader {
+                self.needs_launch_auto_trader = false;
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = crossterm::execute!(
+                    terminal.backend_mut(),
+                    crossterm::terminal::LeaveAlternateScreen
+                );
+                let _ = terminal.show_cursor();
+
+                let mut cmd = std::process::Command::new(find_vaughan_hl_bin());
+                cmd.env("VAUGHAN_PARENT_TUI", "1");
+                for candidate in ["vaughan-hl", "."] {
+                    let p = std::path::Path::new(candidate);
+                    if p.join("strategies").is_dir() {
+                        cmd.current_dir(p);
+                        break;
+                    }
+                }
+                let _ = cmd.status();
+
+                let _ = crossterm::terminal::enable_raw_mode();
+                let _ = crossterm::execute!(
+                    terminal.backend_mut(),
+                    crossterm::terminal::EnterAlternateScreen
+                );
+                let _ = terminal.clear();
             }
             terminal.draw(|frame| crate::views::render(frame, self))?;
             if event::poll(Duration::from_millis(80))? {
@@ -1062,6 +1109,33 @@ impl App {
                 }
                 return;
             }
+            GlobalAction::LaunchAutoTrader => {
+                if self.wallet().is_unlocked() {
+                    self.needs_launch_auto_trader = true;
+                }
+                return;
+            }
+            GlobalAction::PrivatePanel => {
+                if self.wallet().is_unlocked() {
+                    #[cfg(feature = "railgun")]
+                    {
+                        if self.screen() != Screen::Receive {
+                            self.navigate(Screen::Receive);
+                        }
+                        if let View::Receive(v) = &mut self.view {
+                            let mut wallet = self.wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            v.open_private(&mut wallet, &self.handle);
+                        }
+                    }
+                    #[cfg(not(feature = "railgun"))]
+                    {
+                        self.set_flash(
+                            "Private view needs the vaughan-p build (--features railgun)",
+                        );
+                    }
+                }
+                return;
+            }
             GlobalAction::None => {}
         }
 
@@ -1113,7 +1187,7 @@ impl App {
                 self.spawn_refresh_assets();
             }
             KeyOutcome::SwitchProfile(profile, mode) => self.switch_profile(&profile, mode),
-            KeyOutcome::Consumed | KeyOutcome::NotHandled => {}
+            KeyOutcome::Consumed | KeyOutcome::Handled | KeyOutcome::NotHandled => {}
         }
     }
 
@@ -3980,7 +4054,8 @@ impl App {
                         let signer = signer.map_err(WalletError::Other)?;
                         let trader = vaughan_agent::SentientTrader::with_breaker(
                             signer, rpcs, chain_id, breaker,
-                        );
+                        )
+                        .with_profile_dir(&profile_dir);
                         let now = vaughan_agent::now_unix();
                         handle
                             .block_on(vaughan_agent::fire_plan(
@@ -4777,6 +4852,10 @@ impl App {
                             v.apply_job_result(other);
                             None
                         }
+                        View::Receive(v) => {
+                            v.apply_job_result(other);
+                            v.take_followup()
+                        }
                         _ => None,
                     };
                     let dex_followup = {
@@ -4839,6 +4918,10 @@ enum GlobalAction {
     CopyAddress,
     /// Prefill Home send for ≥13 WZRD burn unlock (footer `w` / Settings `w`).
     AssistBurn,
+    /// Launch the Hyperliquid Auto-Trader dashboard.
+    LaunchAutoTrader,
+    /// Open the read-only RAILGUN private panel (footer `0`).
+    PrivatePanel,
 }
 
 /// When a view swallows a footer chip key without acting on it, retry globally.
@@ -4882,6 +4965,14 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
 
     // Footer shortcuts — available from every unlocked view when idle.
     match key.code {
+        KeyCode::Char('1') => GlobalAction::LaunchAutoTrader,
+        KeyCode::Char('0')
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            GlobalAction::PrivatePanel
+        }
         KeyCode::Char(c) => match c.to_ascii_lowercase() {
             's' => GlobalAction::Navigate(Screen::Dashboard),
             'v' => GlobalAction::Navigate(Screen::Receive),
@@ -4962,6 +5053,38 @@ fn same_f2_asset(a: &vaughan_core::chains::Balance, b: &vaughan_core::chains::Ba
 /// the same site (MetaMask-style) instead of being refused.
 fn joins_pending_connect(pending: &ApprovalKind, site: &str) -> bool {
     matches!(pending, ApprovalKind::Connect { site: open } if open == site)
+}
+
+/// Locate the `vaughan-hl` binary: sibling of current exe, ~/.cargo/bin, ~/.local/bin, workspace target, or PATH.
+fn find_vaughan_hl_bin() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("vaughan-hl");
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        for rel in [".local/bin/vaughan-hl", ".cargo/bin/vaughan-hl"] {
+            let p = home.join(rel);
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    for candidate in [
+        "target/release/vaughan-hl",
+        "target/debug/vaughan-hl",
+        "vaughan-hl/target/release/vaughan-hl",
+        "vaughan-hl/target/debug/vaughan-hl",
+    ] {
+        let p = std::path::PathBuf::from(candidate);
+        if p.is_file() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("vaughan-hl")
 }
 
 #[cfg(test)]
@@ -5063,13 +5186,25 @@ mod tests {
 
     #[test]
     fn other_keys_are_inert() {
-        // `c` is Hardware (footer); digits and already-handled outcomes stay inert.
+        // `c` is Hardware (footer); `1` is AutoTrader; other digits and already-handled outcomes stay inert.
         assert_eq!(
             global_action(press('c'), &KeyOutcome::NotHandled),
             GlobalAction::NavigateHardware
         );
         assert_eq!(
             global_action(press('1'), &KeyOutcome::NotHandled),
+            GlobalAction::LaunchAutoTrader
+        );
+        assert_eq!(
+            global_action(press('0'), &KeyOutcome::NotHandled),
+            GlobalAction::PrivatePanel
+        );
+        assert_eq!(
+            global_action(ctrl('0'), &KeyOutcome::NotHandled),
+            GlobalAction::None
+        );
+        assert_eq!(
+            global_action(press('2'), &KeyOutcome::NotHandled),
             GlobalAction::None
         );
         assert_eq!(
@@ -5085,6 +5220,10 @@ mod tests {
             KeyOutcome::NotHandled
         ));
         assert!(matches!(
+            defer_footer_shortcut(KeyOutcome::Consumed, press('0'), true),
+            KeyOutcome::NotHandled
+        ));
+        assert!(matches!(
             defer_footer_shortcut(KeyOutcome::Consumed, press('d'), false),
             KeyOutcome::Consumed
         ));
@@ -5092,6 +5231,14 @@ mod tests {
             defer_footer_shortcut(KeyOutcome::Navigate(Screen::Dex), press('d'), true),
             KeyOutcome::Navigate(Screen::Dex)
         ));
+    }
+
+    #[test]
+    fn handled_keys_are_never_retried_as_footer_shortcuts() {
+        let outcome = defer_footer_shortcut(KeyOutcome::Consumed.acted(), press('s'), true);
+        assert!(matches!(outcome, KeyOutcome::Handled));
+        assert_eq!(global_action(press('s'), &outcome), GlobalAction::None);
+        assert!(matches!(KeyOutcome::Back.acted(), KeyOutcome::Back));
     }
 
     #[test]

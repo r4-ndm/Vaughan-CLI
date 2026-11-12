@@ -1,0 +1,72 @@
+From e8d55adfd05d5fb4a48013a814d9ca87cce8e5f0 Mon Sep 17 00:00:00 2001
+From: Vaughan contributors <noreply@example.invalid>
+Date: Fri, 2 Oct 2026 17:44:24 +0100
+Subject: [PATCH] railgun-wallet: zeroize the spending key when WalletKeys is
+ dropped
+
+WalletKeys holds the RAILGUN spending private key in a plain [u8; 32]
+and is Clone, so every copy left the key in freed memory. Wipe it in a
+Drop impl using the zeroize crate (already in the dependency graph).
+
+Scope is deliberately narrow: ViewingKeyData and the intermediate
+WalletNode derivation values are Copy, so wiping them would need an API
+change; happy to follow up if you want that.
+---
+ Cargo.lock                        | 1 +
+ crates/railgun-wallet/Cargo.toml  | 1 +
+ crates/railgun-wallet/src/keys.rs | 8 ++++++++
+ 3 files changed, 10 insertions(+)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 4c4ce2c..3c84233 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -7436,6 +7436,7 @@ dependencies = [
+  "url",
+  "wasmer",
+  "wasmer-compiler-singlepass",
++ "zeroize",
+ ]
+ 
+ [[package]]
+diff --git a/crates/railgun-wallet/Cargo.toml b/crates/railgun-wallet/Cargo.toml
+index fc3e875..44629a2 100644
+--- a/crates/railgun-wallet/Cargo.toml
++++ b/crates/railgun-wallet/Cargo.toml
+@@ -44,6 +44,7 @@ wasmer = { version = "6.1", features = ["singlepass"] }
+ wasmer-compiler-singlepass = "6.1"
+ tokio = { workspace = true, features = ["sync"] }
+ rayon = { workspace = true }
++zeroize = "1"
+ 
+ [dev-dependencies]
+ tokio = { workspace = true, features = ["full"] }
+diff --git a/crates/railgun-wallet/src/keys.rs b/crates/railgun-wallet/src/keys.rs
+index dc4c0a2..e39b104 100644
+--- a/crates/railgun-wallet/src/keys.rs
++++ b/crates/railgun-wallet/src/keys.rs
+@@ -14,6 +14,7 @@ use num_traits::{One, Zero};
+ use ruint::uint;
+ use sha2::{Digest, Sha512};
+ use thiserror::Error;
++use zeroize::Zeroize;
+ 
+ use broadcaster_core::crypto::ark_utils::prime_field_to_u256;
+ use broadcaster_core::crypto::poseidon::poseidon;
+@@ -63,6 +64,13 @@ pub struct WalletKeys {
+     pub viewing: ViewingKeyData,
+ }
+ 
++/// Wipe the spending key when keys are dropped so it doesn't linger in freed memory.
++impl Drop for WalletKeys {
++    fn drop(&mut self) {
++        self.spending_private_key.zeroize();
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub struct EddsaSignature {
+     pub r8: [U256; 2],
+-- 
+2.55.0
+

@@ -2,6 +2,21 @@
 
 Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
+## Security debt (open)
+
+- [ ] **Dependency advisories — 15 → 2 after the lockfile triage; both accepted, both blocked upstream.**
+      Cleared by targeted `cargo update -p`: tokio RUSTSEC-2026-0386 (unsound), rustls
+      RUSTSEC-2026-0346..0349, rustls-webpki -0382, chacha20 (yanked), crypto-bigint 0.7.5
+      (yanked), ctutils -0385, quinn-proto -0338..0342, webpki-root-certs -0383, pin-utils.
+      Remaining, with reasons in `.cargo/audit.toml`:
+      - **RUSTSEC-2026-0387 `crypto-bigint 0.5.5`** (timing variability) — DEFAULT build via
+        `k256`/`alloy-signer`; no fixed 0.5.x and alloy still pins `k256 ^0.13`. Unblocks on an
+        alloy release using k256 ^0.14. Owner: unassigned — this is the one to watch.
+      - **RUSTSEC-2026-0344 `ruzstd 0.5.0`** (decompression bomb) — RAILGUN/wasmer only, not
+        compiled without `--features railgun`. Unblocks on a newer `railgun-rust` rev or wasmer 7.x.
+      Unmaintained notices (paste, pin-utils, derivative, proc-macro-error2, memmap2) are warnings,
+      not failures; re-check them whenever alloy or the RAILGUN rev moves.
+
 ## Phase 1 — EOA wallet on PulseChain
 
 ### vaughan-core
@@ -65,10 +80,10 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
   - [x] Encode the inner `Transaction[]` batch calldata (`execute` selector + `abi.encode`, round-trip tested). *(Fixture byte-equality is covered by the differential harness below — still pending fixtures.)*
   - [x] Sign a `scw_transaction` and recover/verify the 66-byte `r‖s‖v‖mode` signature (raw-hash + EIP-191)
   - [x] EIP-7702 assembly (`build.rs`): sign the `Authorization` delegating the account EOA to the Ambire implementation and build the `TxEip7702` carrying `execute(txns, signature)` (self-pay, testnet-first). Authority/chain-id are validated against the batch before assembling.
-  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — **deferred by decision**: self-pay 7702 is the broadcast route for testnet-first; 4337 only buys gas sponsorship + EntryPoint interop. See `docs/ambire-aa.md` §7.
+  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — **deferred by decision**: 7702 is implemented and proven against a Prague fork, but blocked on 369/943; 4337 only buys gas sponsorship + EntryPoint interop. See `docs/ambire-aa.md` §7.
   - [x] Broadcast via `EvmAdapter` (`adapter.rs`): the **self-pay** path is wired — fetch the account's *pending* nonce (uncached), derive EIP-1559 fees through the adapter's existing heuristic (pinned gas limit, since `eth_estimateGas` can't price a pre-delegation 7702 call), sign the 7702 envelope (auth nonce = account nonce + 1 per EIP-7702's "after the sender's nonce is incremented"), and submit via the adapter's primary + fallback broadcast. Relayer / bundler routes still TBD.
   - [x] Differential test harness: fixtures captured from the **EVM reference** (self-contained forge test in `vaughan-aa/.fixtures-capture/`, gitignored — Solidity's own encoder is the canonical independent implementation); `tests/differential.rs` asserts Rust matches byte-for-byte on preimage + digest + `execute` calldata across 5 cases (single zero-value, native transfer, multi-txn batch, empty batch revert, ERC-20 transfer). See `tests/fixtures/README.md`.
-  - [x] Live E2E on a forked testnet (`tests/self_pay_e2e.rs`): forks PulseChain testnet (943, where the real `AmbireAccount` impl lives at `0x2A2b…684EF`), bootstraps the account key privilege via a self-call `setAddrPrivilege(account, bytes32(1))` 7702 tx (a fresh EOA otherwise reverts `INSUFFICIENT_PRIVILEGE`), then `submit_self_pay` signs + broadcasts the batch — the recipient receives exactly the value, and the delegation persists as `0xef0100 || impl` per the final EIP-7702 (delegations are permanent; the transient variant was dropped in the spec).
+  - [x] Live E2E on a forked testnet (`vaughan-aa/tests/self_pay_e2e.rs`): forks PulseChain testnet (943, where the real `AmbireAccount` impl lives at `0x2A2b…684EF`), bootstraps the account key privilege via a self-call `setAddrPrivilege(account, bytes32(1))` 7702 tx (a fresh EOA otherwise reverts `INSUFFICIENT_PRIVILEGE`), then `submit_self_pay` signs + broadcasts the batch — the recipient receives exactly the value, and the delegation persists as `0xef0100 || impl` per the final EIP-7702 (delegations are permanent; the transient variant was dropped in the spec).
   - [x] TUI integration: AA batched-send view (`vaughan-tui/src/views/aa_send.rs`, dashboard `b` shortcut). Compose N native transfers (ctrl+a/d rows, ↑↓/tab navigation), confirm shows the per-row list + estimated fee + a one-time delegation note when the account isn't yet delegated, and Enter broadcasts through the 7702 self-pay path. New `vaughan-aa` adapter helpers: `AMBIRE_IMPLEMENTATION` const, `is_delegated` (eth_getCode), `get_account_nonce` (eth_call `nonce()`), `bootstrap_delegation` (delegate + self-call `setAddrPrivilege`), and `submit_batch` (one-shot bootstrap + sign + submit). `WalletState` gained `active_signer`/`active_rpc_url` for flows that compose outside the built-in send path. Tested end-to-end in `vaughan-tui/tests/aa_send_view.rs` against a *forked* testnet (the real AmbireAccount impl): a 2-transfer batch lands both payments on-chain and the account ends permanently delegated.
 - [ ] Railgun / privacy pools (FR-3.4) — deferred with FR-3.1 (derivation incompatibility)
 
@@ -598,20 +613,66 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [ ] Mock relayer + EIP-712 vectors + Anvil permit acceptance test
 - Note: EIP-712 signing already done (software / Ledger / Trezor) — this is mostly the relayer client
 
-### Parked — RAILGUN shielded balances
+### RAILGUN via railgun-rust (FR-3.4)
 
-> **Parked** 2026-10-02. Multi-month effort, not a phase: ZKX ships ~51 MB of
-> circuit artifacts + a ~6.4 MB prover, and the Rust-only rule means
-> reimplementing the proving stack (no mature Rust RAILGUN SDK). Also
-> **not deployed on PulseChain** (Ethereum / Arbitrum / BNB / Polygon only), so
-> it does not serve the PulseChain-privacy goal. ERC-5564 stealth (already
-> shipped) remains the in-core privacy path. Resume only with an explicit
-> decision + dependency approval. Reference: `docs/zkx-borrowed-ideas-plan.md` §4.
+> Un-parked 2026-10-02: upstream `triamazikamno/railgun-rust` (MIT) matches the
+> official engine's derivation, so no from-scratch rewrite is needed. Pinned
+> git dependency, opt-in `railgun` feature, only in `vaughan-railgun`. Not on
+> PulseChain; Sepolia first. Full record: `docs/railgun-go-no-go.md`.
+> **Release blocker:** `wasmer-compiler-singlepass` is BUSL-1.1 (see doc).
 
-- [ ] (on resume) Crate inventory (babyjubjub / Poseidon / Groth16): audits, licences, maintenance
-- [ ] (on resume) Scratch derivation matching official RAILGUN vectors (`m/44'/1984'`, `m/420'/1984'`, babyjubjub seed)
-- [ ] (on resume) `docs/railgun-go-no-go.md`; update `kohaku-go-no-go.md` + FR-3.4
-- [ ] (on resume, if GO) keys, merkle sync, shield / transfer / unshield, POI, Sepolia first; broadcasters for gas by default
+#### Phase 0 — groundwork (branch `railgun/phase-0`)
+
+- [x] Pin `railgun-wallet` / `broadcaster-core` @ `b61fca7e2476dc3e5f89463fcef97f53661890e6` (workspace deps)
+- [x] Re-pin `railgun-wallet` / `broadcaster-core` / `merkletree`: `b61fca7e2476dc3e5f89463fcef97f53661890e6` -> `95e05b0cc06bb6ee6d0d44d5112540b26da947c3` (2026-11-09, roadmap S1)
+  - Privacy fix: merges upstream PR #2 (`MEMO_SENDER_RANDOM_NULL` replaced with random `sender_random` in note ciphertexts, eliminating sender master public key leak).
+  - Built-in Sepolia chain config (`RailgunDeployment::for_chain(11_155_111)`).
+  - Optional `relay_adapt_contract: Option<Address>` upstream handling.
+  - Patch compatibility against `95e05b0`:
+    - `01-optional-singlepass.patch`: applies cleanly (not upstream).
+    - `02-zeroize-spending-key.patch`: applies cleanly (not upstream).
+    - `03-license-metadata.patch`: applies cleanly (not upstream).
+    - `07-shield-npk-check.patch`: applies cleanly (not upstream).
+- [x] `vaughan-railgun` stub crate; railgun-rust optional behind `enabled`; `railgun` feature in `vaughan-tui` / `vaughan-cli`
+- [x] Default `--workspace` build compiles no railgun-rust (`cargo tree` check, also in CI)
+- [x] Upstream parity + suites under Vaughan's lockfile: 148 passed (`scripts/railgun-parity.sh`)
+- [x] `cargo audit` + licence scan + transitive git deps (`rs-poseidon`) recorded
+- [x] Sepolia proxy / implementation / RelayAdapt verified on-chain; scan start block 5784774
+- [x] CI job `railgun` (leak check, clippy, tests, parity)
+- [x] `docs/railgun-go-no-go.md`; `kohaku-go-no-go.md` + FR-3.4 updated
+- [x] **Gate 0 (user):** CLAUDE.md allowlist rows for `railgun-wallet` / `broadcaster-core` approved 2026-10-02
+- [x] Upstream contributions drafted and tested: 3 patches + 3 issue texts in `docs/railgun-upstream/`
+- [ ] Send upstream PRs / issues (user posts them; Singlepass is the release blocker)
+- [ ] After the Singlepass PR lands (or via fork): bump the pin and set `default-features = false` on `railgun-wallet`
+
+#### Phase 1 — read-only (after Gate 0)
+
+- [x] `AccountManager::with_hd_seed` zeroizing closure (HD-only) + tests
+- [x] `keys` module: all-chains 0zk address, zeroize newtype; official-engine parity vectors in `test-vectors/railgun/`
+- [x] `deployment` table (Sepolia + mainnets, `is_supported`, `receive_enabled`)
+- [x] `eth_getLogs` scanner + timestamps + checkpoint; balances; RPC history probe + fallback
+- [x] Encrypted cache (Argon2id over the viewing key + AES-256-GCM, see go/no-go doc)
+- [x] TUI: Receive → `0` read-only Private panel (no POI calls); 0zk receive on Sepolia only; hidden on unsupported chains
+- [x] Tests: offline shield + nullifier round trip; mock-RPC scanner tests; ignored live Sepolia in `live-smoke.yml`
+- [x] Quick-sync (squid) opt-in for mainnet-sized scans: `f` in the Private panel runs one indexer sync (Ethereum, BNB, Polygon, Arbitrum; none for Sepolia), then an RPC tail scan; off by default, never automatic
+- [x] Gate 1 manual TUI run (2026-10-02, test mnemonic profile): `0zk1qy4v02p5…6e9mp` + 0.648375 WETH on Sepolia, matching the official-engine vector and the independent scan
+- [x] Railway cross-check (2026-10-02, Railway 5.24.21, test mnemonic): same `0zk1qy4v02p5…6e9mp` address. Railway derives with the same paths (`m/44'/1984'/0'/0'/N'`, `m/420'/1984'/0'/0'/N'`) and no BIP-39 passphrase. A hand-pasted phrase can silently derive another wallet, so check the public `0x9858EfFD…Eda94` first.
+- [x] **Gate 1 (user):** approved 2026-10-02
+
+#### Later phases (re-plan at each gate)
+
+- [ ] Phase 2: Sepolia-only shield (`RAILGUN_SHIELD` sig on card, protocol fee shown); POI-on-Sepolia check — Gate 2
+  - [x] Humanizer `railgun.rs` (2026-10-02): shield (token, amount, encrypted recipient, fee note) and transact (unshield amount + public recipient, wrong-chain proof, self-broadcast linkage note); RAILGUN contracts labelled/known; checked against railgun-rust calldata and deployment table
+  - [x] Card row "Recipient: your RAILGUN wallet (verified)" by recomputing the npk in `vaughan-railgun` (2026-10-03): `verify` module decrypts each shield note with the active wallet's viewing key and recomputes `npk`; dApp card and MCP proposal card (TUI, `railgun` feature); forged-npk / foreign / mixed-batch tests
+  - [x] Scanner: drop shield notes whose `npk` doesn't recompute (2026-10-03): `ScanState::apply` filter (RPC + quick-sync), cache format v2 forces one rescan; upstream patch `docs/railgun-upstream/07-shield-npk-check.patch` (tested at the pin)
+  - [x] ERC-20 shield, Sepolia only (2026-10-03): `vaughan-railgun::shield` (shield key = keccak of the wallet's `RAILGUN_SHIELD` signature, matches upstream; `shieldFee()` read, 25 bp; plan with exact-amount approve, self-verified recipient); TUI Private panel `s`: form → `RAILGUN_SHIELD` card → approve card (only if allowance short) → shield card (fee, net, verified recipient, gas); offline card walk-through test + live fee read
+  - [x] Native ETH shield (wrap-and-shield via RelayAdapt) (2026-11-04): atomic multicall `wrapBase` + `shield` to RelayAdapt (`0x7e3d…`), `is_shield_call` & recipient npk verification inside multicall calldata, humanizer card, TUI shield form accepts "ETH" / native and skips token approval; unit tests
+  - [ ] Manual Sepolia run: shield test WETH → confirm → `r` rescan shows the new note (Gate 2 evidence)
+  - [ ] POI aggregator serves Sepolia (Gate 2)
+- [ ] Phase 3: Merkle-root verification, prover (private module cache dir), POI, two-step send/unshield, linkage warning — Gate 3 (+ licence blocker cleared) before mainnet
+  - [x] Foundations (2026-11-04): on-chain Merkle root history verification (`verify_merkle_root`), owner-only prover cache dir (`0700`), proofless UTXO selection and preview (`preview_unshield`), ephemeral `SpendingAccount` (zeroized on drop), proposal generation (`create_unshield_proposal`), two-step unshield flow in TUI (`UnshieldFlow`, `u` key in Private panel) adhering strictly to CLAUDE.md Rule 5; unit tests
+  - [ ] Measure Cranelift compile time / memory for the 13×13 POI witness (the Singlepass replacement)
+- [ ] Phase 4: Waku broadcasters — separate go/no-go
 
 ## Later — DeFi AI king / Coinbase compete (deferred)
 

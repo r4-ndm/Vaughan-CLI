@@ -31,4 +31,7 @@ pub enum AgentError {
 
     #[error("Security violation: {0}")]
     SecurityViolation(String),
+
+    #[error("{0}")]
+    SpendGuard(String),
 }

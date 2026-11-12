@@ -10,6 +10,11 @@ repository = "https://github.com/r4-ndm/Vaughan-CLI"
 name = "vaughan"
 path = "src/main.rs"
 
+[features]
+default = []
+# Opt-in RAILGUN shielded balances (see docs/railgun-go-no-go.md).
+railgun = ["vaughan-tui/railgun"]
+
 [dependencies]
 vaughan-core = { path = "../vaughan-core" }
 vaughan-tui = { path = "../vaughan-tui" }
@@ -25,6 +30,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

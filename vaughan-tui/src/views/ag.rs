@@ -13,6 +13,7 @@ use ratatui::{
 };
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use vaughan_core::chains::Balance;
 use vaughan_core::chains::EvmTransaction;
@@ -122,6 +123,9 @@ enum Busy {
     Swapping,
 }
 
+/// Maximum allowable age for an aggregator quote before re-quoting is required.
+pub const QUOTE_MAX_AGE: Duration = Duration::from_secs(60);
+
 pub struct AgView {
     stage: Stage,
     focus: Focus,
@@ -140,6 +144,7 @@ pub struct AgView {
     tick: u64,
     status: String,
     quote: Option<AggQuote>,
+    pub(crate) quote_time: Option<Instant>,
     /// Last parallel compare pass (every live venue).
     compare: Vec<AggQuoteOutcome>,
     /// Indices into [`Self::compare`] with ok quotes, best `amount_out` first.
@@ -174,6 +179,7 @@ impl Default for AgView {
             tick: 0,
             status: String::new(),
             quote: None,
+            quote_time: None,
             compare: Vec::new(),
             compare_ranked: Vec::new(),
             compare_pick: 0,
@@ -240,6 +246,7 @@ impl AgView {
 
     fn clear_quotes(&mut self) {
         self.quote = None;
+        self.quote_time = None;
         self.compare.clear();
         self.compare_ranked.clear();
         self.compare_pick = 0;
@@ -253,6 +260,7 @@ impl AgView {
         if let Some(&idx) = self.compare_ranked.get(pick) {
             if let Ok(q) = &self.compare[idx].result {
                 self.quote = Some(q.clone());
+                self.quote_time = Some(Instant::now());
                 self.venue_choice = VenueChoice::Single(q.venue);
             }
         }
@@ -300,6 +308,7 @@ impl AgView {
             UiJobResult::AggQuote(Ok(quote)) => {
                 self.busy = Busy::Idle;
                 self.quote = Some(quote);
+                self.quote_time = Some(Instant::now());
                 self.enter_confirm();
             }
             UiJobResult::AggQuote(Err(e)) => {
@@ -680,7 +689,7 @@ impl AgView {
                     self.clear_quotes();
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet),
+                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet).acted(),
                 _ => KeyOutcome::Consumed,
             },
             Stage::ComparePick => match key.code {
@@ -999,6 +1008,12 @@ impl AgView {
             self.stage = Stage::Input;
             return KeyOutcome::Consumed;
         };
+        if self.quote_time.is_none_or(|t| t.elapsed() > QUOTE_MAX_AGE) {
+            self.stage = Stage::Input;
+            self.clear_quotes();
+            self.status = "quote expired (>60s) — re-quote required".into();
+            return KeyOutcome::Consumed;
+        }
         if q.preview_only {
             self.status = format!(
                 "{} quote is price-only — Enter again to fetch executable calldata",
@@ -1110,5 +1125,78 @@ mod tests {
             parse_swap_amount("1000000000000000000wei", "amount", 18).unwrap(),
             wei
         );
+    }
+
+    fn test_unlocked_wallet() -> WalletState {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = WalletState::load(dir.path().join("w.json")).unwrap();
+        let mnemonic = vaughan_core::security::hd_wallet::validate_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let password = secrecy::SecretString::from("CorrectHorse9!BatteryStaple".to_string());
+        w.create(&password, mnemonic).unwrap();
+        w
+    }
+
+    fn sample_exec_quote() -> AggQuote {
+        use alloy::primitives::{address, Bytes};
+        use vaughan_core::core::AggExecTx;
+        let squirrel_router = address!("0xDa8953Fc615d6E816b9647Afd5536123dcE70B78");
+        AggQuote {
+            venue: AggVenue::SquirrelSwap,
+            amount_in: U256::from(1_000_000_000_000_000_000u64),
+            amount_out: U256::from(15_683_509_506_112u64),
+            gas_estimate: None,
+            tx: AggExecTx {
+                to: squirrel_router,
+                data: Bytes::from(vec![0xc5, 0x63, 0xdc, 0xec]),
+                value: U256::from(1_000_000_000_000_000_000u64),
+            },
+            spender: squirrel_router,
+            preview_only: false,
+        }
+    }
+
+    #[test]
+    fn stale_quote_on_confirm_refuses_broadcast_and_resets() {
+        let w = test_unlocked_wallet();
+        let mut v = AgView {
+            chain_id: 369,
+            quote: Some(sample_exec_quote()),
+            quote_time: Some(Instant::now().checked_sub(Duration::from_secs(61)).unwrap()),
+            stage: Stage::Confirm(ConfirmStep::Swap),
+            ..Default::default()
+        };
+
+        let outcome = v.confirm_step(ConfirmStep::Swap, &w);
+        assert!(matches!(outcome, KeyOutcome::Consumed));
+        assert!(
+            v.status.contains("quote expired (>60s)"),
+            "status was: {}",
+            v.status
+        );
+        assert!(matches!(v.stage, Stage::Input));
+        assert!(v.quote.is_none());
+        assert!(v.quote_time.is_none());
+    }
+
+    #[test]
+    fn fresh_quote_on_confirm_proceeds_to_estimate_fee() {
+        let w = test_unlocked_wallet();
+        let mut v = AgView {
+            chain_id: 369,
+            quote: Some(sample_exec_quote()),
+            quote_time: Some(Instant::now()),
+            stage: Stage::Confirm(ConfirmStep::Swap),
+            ..Default::default()
+        };
+
+        let outcome = v.confirm_step(ConfirmStep::Swap, &w);
+        assert!(matches!(
+            outcome,
+            KeyOutcome::StartJob(UiJob::EstimateEvmFee { .. })
+        ));
+        assert_eq!(v.status, "estimating fee…");
     }
 }

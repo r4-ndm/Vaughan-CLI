@@ -17,6 +17,7 @@ mod erc20;
 mod hex_stake;
 mod labels;
 mod permit;
+mod railgun;
 mod uniswap_v2;
 mod weth;
 
@@ -25,6 +26,7 @@ use alloy::primitives::{Address, U256};
 use crate::core::proposal_verify::VerifyRow;
 
 pub use labels::label_address;
+pub use railgun::railgun_contracts;
 
 /// A typed, user-facing warning about a transaction.
 ///
@@ -141,6 +143,7 @@ fn modules() -> Vec<Box<dyn HumanizerModule>> {
     vec![
         Box::new(permit::Permit),
         Box::new(hex_stake::HexStake),
+        Box::new(railgun::Railgun),
         Box::new(uniswap_v2::UniswapV2),
         Box::new(weth::Weth),
         Box::new(erc20::Erc20),

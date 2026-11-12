@@ -1,0 +1,33 @@
+{
+  "name": "@vaughan/mcp",
+  "version": "0.2.1",
+  "description": "Vaughan wallet MCP server — a bounded, self-custody wallet for autonomous agents. Keys never leave the vault; the agent gets an allowance, not the key.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "vaughan-mcp": "bin/vaughan-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "wallet",
+    "agent",
+    "crypto",
+    "pulsechain"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/r4-ndm/Vaughan-CLI.git"
+  },
+  "scripts": {
+    "test": "node test/resolve.test.js && node test/exec.test.js"
+  }
+}

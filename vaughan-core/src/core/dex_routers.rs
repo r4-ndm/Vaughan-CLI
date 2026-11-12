@@ -30,9 +30,93 @@ fn routers_for_chain(chain_id: u64) -> &'static HashSet<[u8; 20]> {
     }
 }
 
+fn v2_routers_for_chain(chain_id: u64) -> &'static HashSet<[u8; 20]> {
+    static MAIN: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static TEST: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static ANVIL: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static ETHW: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static EMPTY: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+
+    let build = |cid: u64| {
+        super::dex_catalog::v2_swap_routers(cid)
+            .map(|a| a.into_array())
+            .collect()
+    };
+
+    match chain_id {
+        369 => MAIN.get_or_init(|| build(369)),
+        943 => TEST.get_or_init(|| build(943)),
+        31337 => ANVIL.get_or_init(|| build(369)),
+        10_001 => ETHW.get_or_init(|| build(10_001)),
+        _ => EMPTY.get_or_init(HashSet::new),
+    }
+}
+
+fn v3_routers_for_chain(chain_id: u64) -> &'static HashSet<[u8; 20]> {
+    static MAIN: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static TEST: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static ANVIL: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static ETHW: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+    static EMPTY: OnceLock<HashSet<[u8; 20]>> = OnceLock::new();
+
+    let build = |cid: u64| {
+        super::dex_catalog::v3_swap_routers(cid)
+            .map(|a| a.into_array())
+            .collect()
+    };
+
+    match chain_id {
+        369 => MAIN.get_or_init(|| build(369)),
+        943 => TEST.get_or_init(|| build(943)),
+        31337 => ANVIL.get_or_init(|| build(369)),
+        10_001 => ETHW.get_or_init(|| build(10_001)),
+        _ => EMPTY.get_or_init(HashSet::new),
+    }
+}
+
 /// True when `router` is a catalogued DEX SwapRouter or PositionManager for `chain_id`.
 pub fn is_allowed_dex_router(chain_id: u64, router: Address) -> bool {
     routers_for_chain(chain_id).contains(&router.into_array())
+}
+
+/// True when `router` is a catalogued Uni V2 swap router for `chain_id`.
+pub fn is_allowed_dex_v2_router(chain_id: u64, router: Address) -> bool {
+    v2_routers_for_chain(chain_id).contains(&router.into_array())
+}
+
+/// Canonical Uniswap V2 router swap function selectors:
+/// - `0x38ed1739`: `swapExactTokensForTokens`
+/// - `0x7ff36ab5`: `swapExactETHForTokens`
+/// - `0x18cbafe5`: `swapExactTokensForETH`
+/// - `0xfb3bdb41`: `swapETHForExactTokens`
+/// - `0x8803dbee`: `swapTokensForExactTokens`
+/// - `0x4a25e94a`: `swapTokensForExactETH`
+/// - `0x5c11d795`: `swapExactTokensForTokensSupportingFeeOnTransferTokens`
+/// - `0xb6f9de95`: `swapExactETHForTokensSupportingFeeOnTransferTokens`
+/// - `0x791ac947`: `swapExactTokensForETHSupportingFeeOnTransferTokens`
+pub const V2_SWAP_SELECTORS: &[[u8; 4]] = &[
+    [0x38, 0xed, 0x17, 0x39],
+    [0x7f, 0xf3, 0x6a, 0xb5],
+    [0x18, 0xcb, 0xaf, 0xe5],
+    [0xfb, 0x3b, 0xdb, 0x41],
+    [0x88, 0x03, 0xdb, 0xee],
+    [0x4a, 0x25, 0xe9, 0x4a],
+    [0x5c, 0x11, 0xd7, 0x95],
+    [0xb6, 0xf9, 0xde, 0x95],
+    [0x79, 0x1a, 0xc9, 0x47],
+];
+
+/// True when `calldata` starts with an audited Uniswap V2 swap function selector.
+pub fn is_v2_swap_selector(calldata: &[u8]) -> bool {
+    if calldata.len() < 4 {
+        return false;
+    }
+    V2_SWAP_SELECTORS.iter().any(|s| s == &calldata[..4])
+}
+
+/// True when `router` is a catalogued Uni/Pancake V3 SwapRouter for `chain_id`.
+pub fn is_allowed_dex_v3_router(chain_id: u64, router: Address) -> bool {
+    v3_routers_for_chain(chain_id).contains(&router.into_array())
 }
 
 /// PulseX V2 mainnet — convenient Anvil plant / test target.
@@ -86,7 +170,14 @@ mod tests {
         let r = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
         assert!(is_allowed_dex_router(369, r));
         assert!(is_allowed_dex_router(31337, r));
+        assert!(is_allowed_dex_v2_router(369, r));
+        assert!(is_allowed_dex_v2_router(31337, r));
+        assert!(!is_allowed_dex_v3_router(369, r));
         assert!(!is_allowed_dex_router(
+            369,
+            address!("0x1111111111111111111111111111111111111111")
+        ));
+        assert!(!is_allowed_dex_v2_router(
             369,
             address!("0x1111111111111111111111111111111111111111")
         ));
@@ -97,6 +188,9 @@ mod tests {
         let r = address!("0xfC656c95eCd418536844FeeaA46949bb9365BEaF");
         assert!(is_allowed_dex_router(943, r));
         assert!(!is_allowed_dex_router(369, r));
+        assert!(is_allowed_dex_v3_router(943, r));
+        assert!(!is_allowed_dex_v2_router(943, r));
+        assert!(!is_allowed_dex_v3_router(369, r));
     }
 
     #[test]

@@ -359,7 +359,7 @@ impl HistoryView {
                 Pane::Broadcasts => {
                     if self.broadcasts.is_empty() {
                         self.refresh_status();
-                        return KeyOutcome::Consumed;
+                        return KeyOutcome::Handled;
                     }
                     self.loading = true;
                     self.status = "refreshing statuses…".into();
@@ -369,14 +369,14 @@ impl HistoryView {
                 }
             },
             KeyCode::Char('c') | KeyCode::Char('C') if self.pane == Pane::Broadcasts => {
-                self.begin_replace(ReplaceKind::Cancel)
+                self.begin_replace(ReplaceKind::Cancel).acted()
             }
             KeyCode::Char('u') | KeyCode::Char('U') if self.pane == Pane::Broadcasts => {
-                self.begin_replace(ReplaceKind::SpeedUp)
+                self.begin_replace(ReplaceKind::SpeedUp).acted()
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let len = match self.pane {
@@ -386,7 +386,7 @@ impl HistoryView {
                 if len > 0 {
                     self.selected = (self.selected + 1).min(len - 1);
                 }
-                KeyOutcome::Consumed
+                KeyOutcome::Handled
             }
             _ => KeyOutcome::NotHandled,
         }

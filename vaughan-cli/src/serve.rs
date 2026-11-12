@@ -249,6 +249,22 @@ impl McpHostBackend for ServeMcpBackend {
                         .eq_ignore_ascii_case(stealth_address)
                 })
                 .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
+
+            let dir = vaughan_agent::paths::profile_dir(w.path());
+            let policy = vaughan_agent::sentient::load_policy(&dir).map_err(|e| e.to_string())?;
+            let asset = format!("{}:native", w.networks().active().chain_id);
+            let key = format!("sweep_{stealth_address}");
+            vaughan_agent::sentient::SpendLedger::reserve(
+                &dir,
+                &key,
+                &asset,
+                note.balance_wei,
+                note.balance_wei,
+                100, // recovery, not spend: note is its own budget
+                policy.enforcement,
+            )
+            .map_err(|e| e.to_string())?;
+
             self.handle
                 .block_on(w.sweep_stealth_note(&note))
                 .map(|h| h.to_string())

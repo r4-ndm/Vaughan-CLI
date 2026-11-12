@@ -1,7 +1,12 @@
 # CLAUDE.md
 
-Guidance for AI agents working in this repository. Read this first; it is
-authoritative for how work gets done here.
+Guidance for AI agents working in this repository. `AGENTS.md` is authoritative; this
+file expands its rules for Claude Code sessions and loses any disagreement.
+
+**Portable entry point:** `AGENTS.md` at the repo root carries the same rules in the
+cross-agent format (Codex, Cursor, Antigravity, …). Auditing, and the invariants that
+must not be broken on money paths, are in `docs/audit-playbook.md`; the mechanical half
+of any audit is `scripts/audit.sh`.
 
 ## What this repo is
 
@@ -27,18 +32,9 @@ This is a Rust-only repository.
 
 ## Non-negotiable rules
 
-1. **Rust only.** Pure Rust, no Node runtime. Edition 2021.
-2. **Never write secrets unencrypted.** Mnemonic/keys are encrypted (Argon2id +
-   AES-256-GCM) before touching disk, and zeroized in memory after use. Never log,
-   print, or commit a mnemonic, private key, password, or `.env`.
-3. **No telemetry / analytics / data collection** of any kind.
-4. **Testnet-first.** Any feature that moves funds is exercised on testnet before
-   mainnet. Never hardcode a mainnet-only path for a new flow.
-5. **Signing always requires explicit user approval.** No auto-sign anywhere.
-6. **Never push, deploy, or run destructive/irreversible commands** unless the user
-   explicitly asks. `git push` requires an explicit request.
-7. **Match existing conventions.** Follow rustfmt + clippy; `unsafe` is forbidden.
-   Keep the `vaughan-core` module layering (chains / core / security / error / logging).
+The canonical list is **`AGENTS.md` → "Rules (single source of truth)"** — read it, it is
+short and it wins any disagreement with this file. This document expands it: the security
+and engineering sections below add detail, they do not add exceptions.
 
 ## Security & crypto guardrails
 
@@ -124,7 +120,8 @@ They are **not** the same stack, and neither implements the other:
 | Piece | Role in Vaughan |
 |---|---|
 | **Ambire** (`vaughan-aa`) | EIP-7702 smart accounts + atomic batched sends. On-chain `AmbireAccount` ABI/interop only. |
-| **Kohaku** | Deferred as a crate. ERC-5564 stealth shipped **spec-first** in `vaughan-core::security::stealth` instead (Kohaku's random spend/view keys didn't fit HD vault restore). RAILGUN stays NO-GO — see `docs/kohaku-go-no-go.md`. |
+| **Kohaku** | Deferred as a crate. ERC-5564 stealth shipped **spec-first** in `vaughan-core::security::stealth` instead (Kohaku's random spend/view keys didn't fit HD vault restore). See `docs/kohaku-go-no-go.md`. |
+| **RAILGUN** (`vaughan-railgun`) | Opt-in `railgun` feature only. Pinned upstream `railgun-rust` git dependency (never copied in). Sepolia first; not on PulseChain. See `docs/railgun-go-no-go.md`. |
 
 Ambire does not unblock Kohaku/RAILGUN, and Kohaku is not required for Ambire.
 Keeping Ambire while replacing Kohaku-for-stealth with in-core ERC-5564 is
@@ -171,6 +168,7 @@ listed here requires approval before it is added.
 | Uniswap V3 tick/swap math (via `wiz4rd-math`) | `uniswap-v3-sdk` (=7.0.0, pinned) |
 | V3 pool address + swap/LP tx builders | `wiz4rd-sdk`, `wiz4rd-math` (workspace path crates) |
 | Privacy / stealth (Phase 3) | `vaughan-core::security::stealth` (not Kohaku) |
+| RAILGUN shielded balances (FR-3.4) | `railgun-wallet`, `broadcaster-core`, `merkletree` (opt-in quick-sync client, approved 2026-10-02) from `triamazikamno/railgun-rust` (MIT), git dep pinned by exact `rev`. **Only** in `vaughan-railgun` behind its `enabled` feature (frontends: `railgun`). Bump only via the procedure in `docs/railgun-go-no-go.md`. No release build with `railgun` while `wasmer-compiler-singlepass` (BUSL-1.1) is in the graph. |
 | Test temp dirs (dev only) | `tempfile` |
 
 ## Build, test, lint
@@ -197,6 +195,7 @@ vaughan-core/src/
   security/                    # hd_wallet (BIP-39/32/44), encryption (Argon2id + AES-256-GCM)
   error.rs                     # WalletError + retry helper
   logging.rs                   # tracing setup
+vaughan-railgun/src/           # opt-in RAILGUN (feature `enabled`; wraps pinned railgun-rust)
 vaughan-tui/src/               # ratatui app: onboarding, unlock, dashboard, send, receive, settings
 vaughan-agent/skills/          # agent playbooks (any MCP host) — start at skills/INDEX.md
 REQUIREMENTS.md  PLAN.md  TASKS.md   # requirements / plan / task backlog
@@ -205,7 +204,7 @@ REQUIREMENTS.md  PLAN.md  TASKS.md   # requirements / plan / task backlog
 Key external references (do not edit unless asked; these are separate repos):
 
 - `r4-ndm/Vaughan-Dioxus` — reference guide only (layering ideas, Ambire AA approach); never a code source
-- `r4-ndm/Kohaku-rs` — privacy SDK reference only; **not** a Vaughan dependency (stealth is in-core; RAILGUN deferred)
+- `r4-ndm/Kohaku-rs` — privacy SDK reference only; **not** a Vaughan dependency (stealth is in-core; RAILGUN goes through pinned `railgun-rust`, see `docs/railgun-go-no-go.md`)
 - `solardev-xyz/freedom-browser` — dApp browser bridge target (**parked** until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges; see `docs/freedom-browser-status.md`)
 - MetaMask / ethers / Alloy — approved **algorithm** references for EIP convenience UX (fees, EIP-1193); reimplement on Alloy, do not vendor their UI
 ## Workflow

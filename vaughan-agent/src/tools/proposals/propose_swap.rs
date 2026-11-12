@@ -10,7 +10,7 @@ use std::str::FromStr;
 use url::Url;
 
 use crate::error::AgentError;
-use crate::proposal::{ProposalType, TxProposal};
+use crate::proposal::{DexSwapKind, ProposalType, TxProposal};
 use crate::tools::proposals::attach_estimated_fee;
 use crate::tools::{Tool, ToolContext};
 
@@ -104,12 +104,12 @@ impl Tool for ProposeSwapTool {
         let router = Address::from_str(router_str)
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid router address: {e}")))?;
 
-        // Only audited catalog routers — an arbitrary "router" contract would
-        // make the swap calldata unsizeable and bypass the sentient gate's
-        // fresh-quote slippage floor.
-        if !vaughan_core::core::is_allowed_dex_router(context.chain_id, router) {
+        // Only audited catalog V2 routers — an arbitrary "router" contract or
+        // V3/NPM contract would bypass the sentient gate's fresh-quote slippage floor
+        // or build a proposal for a call the target does not implement.
+        if !vaughan_core::core::is_allowed_dex_v2_router(context.chain_id, router) {
             return Err(AgentError::InvalidToolCall(format!(
-                "router {router} is not on the audited DEX allowlist for chain {}",
+                "router {router} is not on the audited V2 DEX allowlist for chain {}",
                 context.chain_id
             )));
         }
@@ -143,6 +143,11 @@ impl Tool for ProposeSwapTool {
             .ok_or_else(|| AgentError::InvalidToolCall("Missing 'amount_in'".to_string()))?;
         let amount_in = U256::from_str(amount_in_str)
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid amount_in: {e}")))?;
+        if amount_in.is_zero() {
+            return Err(AgentError::InvalidToolCall(
+                "amount_in must be greater than zero".to_string(),
+            ));
+        }
 
         let min_amount_out_str = args
             .get("min_amount_out")
@@ -150,6 +155,11 @@ impl Tool for ProposeSwapTool {
             .ok_or_else(|| AgentError::InvalidToolCall("Missing 'min_amount_out'".to_string()))?;
         let min_amount_out = U256::from_str(min_amount_out_str)
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid min_amount_out: {e}")))?;
+        if min_amount_out.is_zero() {
+            return Err(AgentError::InvalidToolCall(
+                "min_amount_out must be greater than zero".to_string(),
+            ));
+        }
 
         let is_native_in = args
             .get("is_native_in")
@@ -210,6 +220,7 @@ impl Tool for ProposeSwapTool {
                     path,
                     amount_in,
                     min_amount_out,
+                    dex_kind: DexSwapKind::V2,
                 },
                 router,
                 value_wei,
@@ -224,5 +235,72 @@ impl Tool for ProposeSwapTool {
         .await;
 
         Ok(serde_json::to_value(&proposal)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn propose_swap_rejects_v3_router() {
+        let tool = ProposeSwapTool::new();
+        let ctx = ToolContext {
+            rpc_url: "http://127.0.0.1:8545".into(),
+            chain_id: 943,
+            active_address: Some(address!("0x1111111111111111111111111111111111111111")),
+            profile_dir: None,
+        };
+
+        // SWAP_ROUTER_943 is a V3 router
+        let args = json!({
+            "router_address": "0xfC656c95eCd418536844FeeaA46949bb9365BEaF",
+            "path": [
+                "0x70499adEBB11Efd915E3b69E700c331778628707",
+                "0x29bab93456c0E97EE931C1554c7C215480aa7766"
+            ],
+            "amount_in": "1000",
+            "min_amount_out": "900",
+            "explanation": "test"
+        });
+
+        let err = tool.execute(args, &ctx).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not on the audited V2 DEX allowlist"),
+            "expected V2 allowlist error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn propose_swap_rejects_zero_min_amount_out() {
+        let tool = ProposeSwapTool::new();
+        let ctx = ToolContext {
+            rpc_url: "http://127.0.0.1:8545".into(),
+            chain_id: 943,
+            active_address: Some(address!("0x1111111111111111111111111111111111111111")),
+            profile_dir: None,
+        };
+
+        // PulseX V2 on 943
+        let args = json!({
+            "router_address": "0xDaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7",
+            "path": [
+                "0x70499adEBB11Efd915E3b69E700c331778628707",
+                "0x29bab93456c0E97EE931C1554c7C215480aa7766"
+            ],
+            "amount_in": "1000",
+            "min_amount_out": "0",
+            "explanation": "test"
+        });
+
+        let err = tool.execute(args, &ctx).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("min_amount_out must be greater than zero"),
+            "expected min_amount_out error, got: {err}"
+        );
     }
 }

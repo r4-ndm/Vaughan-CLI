@@ -1,0 +1,51 @@
+[package]
+name = "vaughan-railgun"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Opt-in RAILGUN shielded balances for Vaughan (wraps pinned railgun-rust)."
+
+[features]
+default = []
+# Pulls in railgun-rust. Without it this crate is an empty stub, so
+# `cargo build --workspace` never compiles the RAILGUN stack.
+enabled = [
+    "dep:railgun-wallet",
+    "dep:broadcaster-core",
+    "dep:merkletree",
+    "dep:alloy",
+    "dep:aes-gcm",
+    "dep:argon2",
+    "dep:hex",
+    "dep:rand",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:url",
+    "dep:zeroize",
+]
+
+[dependencies]
+vaughan-core = { workspace = true }
+railgun-wallet = { workspace = true, optional = true }
+broadcaster-core = { workspace = true, optional = true }
+merkletree = { workspace = true, optional = true }
+alloy = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
+argon2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+secrecy = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

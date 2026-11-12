@@ -1,0 +1,30 @@
+# Build & targets
+/target
+
+# Runtime state, trade execution logs & cached candles (NEVER commit live keys or trading data)
+/data/candles/
+/data/charts/
+/data/*.json
+/data/*.jsonl
+/data/*.keystore
+/data/hl_agent_keystore.json*
+agent-vault.json
+hl-state.json
+approve_agent.json
+revoke_agent.json
+
+# Environment & secrets
+*.env
+.env*
+
+# Proprietary strategies: gitignored by default to protect trader IP
+# Only public reference examples are published
+/strategies/*.toml
+!/strategies/example_strategy.toml
+!/strategies/example_*.toml
+!/strategies/README.md
+/strategies_archive/
+
+# Internal developer session notes
+SESSION_NOTES.md
+NEXT_SESSION.md

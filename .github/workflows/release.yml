@@ -17,6 +17,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.2.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -53,20 +59,20 @@ jobs:
           mkdir -p dist
           cp target/release/vaughan dist/
           tar -czf "vaughan-${{ matrix.target }}.tar.gz" -C dist vaughan
-          sha256sum "vaughan-${{ matrix.target }}.tar.gz" >> SHA256SUMS.partial
+          sha256sum "vaughan-${{ matrix.target }}.tar.gz" >> "SHA256SUMS.${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: vaughan-${{ matrix.target }}
           path: |
             vaughan-${{ matrix.target }}.tar.gz
-            SHA256SUMS.partial
+            SHA256SUMS.${{ matrix.target }}
 
   release:
     name: publish release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -74,14 +80,56 @@ jobs:
           merge-multiple: true
 
       - name: Assemble checksum file
+        env:
+          EXPECTED_ASSETS: |
+            vaughan-linux-x86_64.tar.gz
+            vaughan-linux-aarch64.tar.gz
+            vaughan-macos-aarch64.tar.gz
         run: |
-          find artifacts -name 'SHA256SUMS.partial' -exec cat {} \; | sort -u > SHA256SUMS
+          echo "Matched checksum partials:"
+          find artifacts -name 'SHA256SUMS.*' -print
+          find artifacts -name 'SHA256SUMS.*' -exec cat {} + | sort -u > SHA256SUMS
           find artifacts -name 'vaughan-*.tar.gz' -exec cp {} . \;
+
+          expected_list=$(echo "$EXPECTED_ASSETS" | sed '/^[[:space:]]*$/d')
+          expected_count=$(echo "$expected_list" | wc -l | tr -d '[:space:]')
+
+          line_count=$(wc -l < SHA256SUMS | tr -d '[:space:]')
+          if [ "$line_count" -ne "$expected_count" ]; then
+            echo "ERROR: SHA256SUMS has $line_count lines; expected exactly $expected_count" >&2
+            exit 1
+          fi
+
+          tarball_count=0
+          for f in vaughan-*.tar.gz; do
+            [ -e "$f" ] || continue
+            tarball_count=$((tarball_count + 1))
+          done
+          if [ "$tarball_count" -ne "$expected_count" ]; then
+            echo "ERROR: Expected $expected_count tarballs in working directory, found $tarball_count" >&2
+            exit 1
+          fi
+
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            if [ ! -f "$asset" ]; then
+              echo "ERROR: Expected asset $asset not found in working directory" >&2
+              exit 1
+            fi
+            if ! grep -q "[[:space:]]${asset}$" SHA256SUMS; then
+              echo "ERROR: Expected asset $asset has no matching entry in SHA256SUMS" >&2
+              exit 1
+            fi
+          done <<< "$expected_list"
+
+          sha256sum -c SHA256SUMS
+
           cat SHA256SUMS
           ls -la vaughan-*.tar.gz
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             vaughan-*.tar.gz

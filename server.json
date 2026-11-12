@@ -1,0 +1,40 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.r4-ndm/vaughan",
+  "description": "Self-custody wallet for autonomous agents. Keys stay in a local Rust vault; the agent gets an allowance (per-asset 24h cap + destination allowlist) instead of a key. Read-only quotes, proposals, swaps, transfers and DCA under policy; every money path is charged against a persisted spend ledger.",
+  "version": "0.2.0",
+  "repository": {
+    "url": "https://github.com/r4-ndm/Vaughan-CLI",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@vaughan/mcp",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "VAUGHAN_PROFILE",
+          "description": "Profile to expose. Use 'default' (adviser: agent proposes, human approves) or 'sentient' (agent's own wallet, auto-executes under policy).",
+          "isRequired": false,
+          "default": "default"
+        },
+        {
+          "name": "VAUGHAN_BIN",
+          "description": "Path to an existing vaughan binary. When unset the package downloads the pinned release for this platform and verifies its SHA256.",
+          "isRequired": false
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "runtime_requirement": "A running `vaughan serve --password-env <VAR>` (or an unlocked TUI) on the same machine. The MCP process only proposes; it never holds an unlocked vault.",
+      "safety": "No approval card is required in sentient mode by design. Losses are bounded by the spend ledger: daily_cap_pct (default 20% per asset per 24h) and allow_transfer_to (default empty = all transfers refused)."
+    }
+  }
+}

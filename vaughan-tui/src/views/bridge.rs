@@ -13,8 +13,9 @@ use ratatui::{
     Frame,
 };
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
-use vaughan_core::chains::EvmTransaction;
+use vaughan_core::chains::{EvmTransaction, Fee};
 use vaughan_core::core::{
     format_base_units, is_whitelisted_router, parse_native_amount, BridgeChainPreset, BridgeQuote,
     WalletState, BRIDGE_CHAIN_PRESETS,
@@ -32,7 +33,7 @@ use crate::views::swap_form::{
 };
 use crate::views::{body_areas, status_paragraph};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ConfirmStep {
     Approve,
     Bridge,
@@ -61,10 +62,14 @@ enum Focus {
     Amount,
 }
 
+/// Maximum allowable age for a bridge quote before re-quoting is required.
+pub const QUOTE_MAX_AGE: Duration = Duration::from_secs(60);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Busy {
     Idle,
     Quoting,
+    EstimatingFee,
     Approving,
     Bridging,
 }
@@ -95,9 +100,13 @@ pub struct BridgeView {
     tick: u64,
     status: String,
     quote: Option<BridgeQuote>,
+    pub(crate) quote_time: Option<Instant>,
     confirm_lines: Vec<String>,
     tx_hash: Option<String>,
     approve_hash: Option<String>,
+    pending_tx: Option<EvmTransaction>,
+    pending_step: Option<ConfirmStep>,
+    base_fee: Option<Fee>,
 }
 
 impl Default for BridgeView {
@@ -112,9 +121,13 @@ impl Default for BridgeView {
             tick: 0,
             status: String::new(),
             quote: None,
+            quote_time: None,
             confirm_lines: Vec::new(),
             tx_hash: None,
             approve_hash: None,
+            pending_tx: None,
+            pending_step: None,
+            base_fee: None,
         }
     }
 }
@@ -159,6 +172,7 @@ impl BridgeView {
                 Ok(quote) => {
                     self.busy = Busy::Idle;
                     self.quote = Some(quote);
+                    self.quote_time = Some(Instant::now());
                     self.enter_confirm();
                 }
                 Err(e) => {
@@ -167,12 +181,29 @@ impl BridgeView {
                     self.stage = Stage::Input;
                 }
             },
+            UiJobResult::Fee(Ok(fee)) => {
+                self.busy = Busy::Idle;
+                let step = self.pending_step.unwrap_or(ConfirmStep::Bridge).label();
+                self.status = format!("Fee {} {} · Enter to {step}", fee.total, fee.currency);
+                self.base_fee = Some(fee);
+            }
+            UiJobResult::Fee(Err(e)) => {
+                self.busy = Busy::Idle;
+                self.pending_tx = None;
+                self.pending_step = None;
+                self.base_fee = None;
+                self.status = e.user_message();
+                self.stage = Stage::Input;
+            }
             UiJobResult::Send(Ok(receipt)) => match self.busy {
                 Busy::Approving => {
                     let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.approve_hash = Some(hash.clone());
-                    self.status = format!("Approve sent ({hash}). Confirm bridge next.");
+                    self.pending_tx = None;
+                    self.pending_step = None;
+                    self.base_fee = None;
+                    self.status = format!("Approve sent ({hash}). Enter to estimate bridge fee.");
                     self.stage = Stage::Confirm(ConfirmStep::Bridge);
                     self.rebuild_confirm_lines(ConfirmStep::Bridge);
                 }
@@ -180,6 +211,9 @@ impl BridgeView {
                     let hash = receipt.hash;
                     self.busy = Busy::Idle;
                     self.tx_hash = Some(hash);
+                    self.pending_tx = None;
+                    self.pending_step = None;
+                    self.base_fee = None;
                     self.stage = Stage::Done;
                     self.status =
                         "Source tx broadcast. Check destination when Liberty settles (minutes)."
@@ -189,6 +223,9 @@ impl BridgeView {
             },
             UiJobResult::Send(Err(e)) => {
                 self.busy = Busy::Idle;
+                self.pending_tx = None;
+                self.pending_step = None;
+                self.base_fee = None;
                 self.status = e.user_message();
                 self.stage = Stage::Input;
             }
@@ -205,6 +242,7 @@ impl BridgeView {
         }
         let status_text = match self.busy {
             Busy::Quoting => format!("{} quoting LibertySwap…", spinner_frame(self.tick)),
+            Busy::EstimatingFee => format!("{} estimating fee…", spinner_frame(self.tick)),
             Busy::Approving => format!("{} approving…", spinner_frame(self.tick)),
             Busy::Bridging => format!("{} bridging (source)…", spinner_frame(self.tick)),
             Busy::Idle => self.status.clone(),
@@ -366,9 +404,13 @@ impl BridgeView {
                 KeyCode::Esc => {
                     self.stage = Stage::Input;
                     self.quote = None;
+                    self.quote_time = None;
+                    self.pending_tx = None;
+                    self.pending_step = None;
+                    self.base_fee = None;
                     KeyOutcome::Consumed
                 }
-                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet),
+                KeyCode::Enter | KeyCode::Char('y') => self.confirm_step(step, wallet).acted(),
                 _ => KeyOutcome::Consumed,
             },
             Stage::Input => self.handle_input_key(key, wallet),
@@ -512,23 +554,24 @@ impl BridgeView {
     }
 
     fn enter_confirm(&mut self) {
-        let Some(q) = self.quote.as_ref() else {
-            return;
+        let (step, out_h, symbol) = {
+            let Some(q) = self.quote.as_ref() else {
+                return;
+            };
+            let step = if q.approval.is_some() {
+                ConfirmStep::Approve
+            } else {
+                ConfirmStep::Bridge
+            };
+            let out_h = format_base_units(&q.dest_amount.to_string(), q.dest_token.decimals);
+            (step, out_h, q.dest_token.symbol.clone())
         };
-        let step = if q.approval.is_some() {
-            ConfirmStep::Approve
-        } else {
-            ConfirmStep::Bridge
-        };
-        let status = format!(
-            "LibertySwap · out≈{} {} · Enter to {}",
-            format_base_units(&q.dest_amount.to_string(), q.dest_token.decimals),
-            q.dest_token.symbol,
-            step.label()
-        );
+        self.pending_tx = None;
+        self.pending_step = None;
+        self.base_fee = None;
         self.rebuild_confirm_lines(step);
         self.stage = Stage::Confirm(step);
-        self.status = status;
+        self.status = format!("LibertySwap — receive ≈{out_h} {symbol} · Enter to estimate fee");
     }
 
     fn rebuild_confirm_lines(&mut self, step: ConfirmStep) {
@@ -560,7 +603,7 @@ impl BridgeView {
             format!("Router: {:#x}", q.to),
             format!("Calldata: {} bytes", q.tx.data.len()),
             "Broadcasts on SOURCE chain only — dest arrives later.".into(),
-            "Enter signs this step · Esc cancel.".into(),
+            "Enter to estimate fee · Esc cancel.".into(),
         ];
     }
 
@@ -569,6 +612,18 @@ impl BridgeView {
             self.stage = Stage::Input;
             return KeyOutcome::Consumed;
         };
+
+        if self.quote_time.is_none_or(|t| t.elapsed() > QUOTE_MAX_AGE) {
+            self.stage = Stage::Input;
+            self.quote = None;
+            self.quote_time = None;
+            self.pending_tx = None;
+            self.pending_step = None;
+            self.base_fee = None;
+            self.status = "quote expired (>60s) — re-quote required".into();
+            return KeyOutcome::Consumed;
+        }
+
         let from = match wallet.active_address() {
             Ok(a) => a.to_string(),
             Err(e) => {
@@ -577,7 +632,20 @@ impl BridgeView {
             }
         };
         let chain_id = wallet.networks().active().chain_id;
-        match step {
+
+        // Second Enter: broadcast with the fee the user already saw.
+        if let (Some(fee), Some(tx)) = (self.base_fee.take(), self.pending_tx.take()) {
+            self.pending_step = None;
+            self.busy = match step {
+                ConfirmStep::Approve => Busy::Approving,
+                ConfirmStep::Bridge => Busy::Bridging,
+            };
+            self.status.clear();
+            return KeyOutcome::StartJob(UiJob::SendEvmWithFee { tx, fee });
+        }
+
+        // First Enter: build tx and estimate fee before broadcast.
+        let tx = match step {
             ConfirmStep::Approve => {
                 let Some(ap) = q.approval.clone() else {
                     self.stage = Stage::Confirm(ConfirmStep::Bridge);
@@ -592,9 +660,7 @@ impl BridgeView {
                     self.stage = Stage::Input;
                     return KeyOutcome::Consumed;
                 }
-                let tx = build_approve_tx(ap.token, ap.spender, ap.amount, &from, chain_id);
-                self.busy = Busy::Approving;
-                KeyOutcome::StartJob(UiJob::SendEvm { tx })
+                build_approve_tx(ap.token, ap.spender, ap.amount, &from, chain_id)
             }
             ConfirmStep::Bridge => {
                 if !is_whitelisted_router(q.tx.to) {
@@ -604,7 +670,7 @@ impl BridgeView {
                     return KeyOutcome::Consumed;
                 }
                 let data_hex = format!("0x{}", hex::encode(q.tx.data.as_ref()));
-                let tx = EvmTransaction {
+                EvmTransaction {
                     from,
                     to: format!("{:#x}", q.tx.to),
                     value: q.tx.value.to_string(),
@@ -615,10 +681,128 @@ impl BridgeView {
                     max_priority_fee_per_gas: None,
                     nonce: None,
                     chain_id,
-                };
-                self.busy = Busy::Bridging;
-                KeyOutcome::StartJob(UiJob::SendEvm { tx })
+                }
             }
+        };
+        self.pending_tx = Some(tx.clone());
+        self.pending_step = Some(step);
+        self.base_fee = None;
+        self.busy = Busy::EstimatingFee;
+        self.status = "estimating fee…".into();
+        KeyOutcome::StartJob(UiJob::EstimateEvmFee { tx })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{address, Bytes};
+    use vaughan_core::chains::FeeDetails;
+    use vaughan_core::core::{BridgeExecTx, BridgeFee, BridgeTokenInfo};
+
+    fn test_unlocked_wallet() -> WalletState {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = WalletState::load(dir.path().join("w.json")).unwrap();
+        let mnemonic = vaughan_core::security::hd_wallet::validate_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .unwrap();
+        let password = secrecy::SecretString::from("CorrectHorse9!BatteryStaple".to_string());
+        w.create(&password, mnemonic).unwrap();
+        w
+    }
+
+    fn sample_bridge_quote() -> BridgeQuote {
+        let router = address!("0x78f63fe16C83728c16C0aE44b0c19D7dD105c215");
+        BridgeQuote {
+            to: router,
+            src_token: BridgeTokenInfo {
+                address: address!("0x15D38573d2feeb82e7ad5187aB8c1D52810B1f07"),
+                symbol: "USDC".into(),
+                decimals: 6,
+                chain_id: 369,
+            },
+            dest_token: BridgeTokenInfo {
+                address: address!("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+                symbol: "USDC".into(),
+                decimals: 6,
+                chain_id: 8453,
+            },
+            src_amount: U256::from(100_000_000u64),
+            dest_amount: U256::from(99_500_000u64),
+            fee: BridgeFee {
+                percentage: 0.5,
+                amount: U256::from(500_000u64),
+            },
+            approval: None,
+            tx: BridgeExecTx {
+                to: router,
+                data: Bytes::from(vec![0x12, 0x34]),
+                value: U256::ZERO,
+            },
         }
+    }
+
+    fn sample_fee() -> Fee {
+        Fee {
+            total: "0.005 PLS".into(),
+            currency: "PLS".into(),
+            details: FeeDetails::Evm {
+                gas_limit: 200_000,
+                max_fee_per_gas: Some("1000000000".into()),
+                max_priority_fee_per_gas: Some("1000000000".into()),
+            },
+        }
+    }
+
+    #[test]
+    fn stale_quote_on_confirm_refuses_broadcast_and_resets() {
+        let w = test_unlocked_wallet();
+        let mut v = BridgeView::for_wallet_chain(369);
+        v.quote = Some(sample_bridge_quote());
+        v.quote_time = Some(Instant::now().checked_sub(Duration::from_secs(61)).unwrap());
+        v.stage = Stage::Confirm(ConfirmStep::Bridge);
+
+        let outcome = v.confirm_step(ConfirmStep::Bridge, &w);
+        assert!(matches!(outcome, KeyOutcome::Consumed));
+        assert!(
+            v.status.contains("quote expired (>60s)"),
+            "status was: {}",
+            v.status
+        );
+        assert!(matches!(v.stage, Stage::Input));
+        assert!(v.quote.is_none());
+        assert!(v.quote_time.is_none());
+    }
+
+    #[test]
+    fn fresh_quote_two_step_confirm_estimates_fee_then_broadcasts_with_fee() {
+        let w = test_unlocked_wallet();
+        let mut v = BridgeView::for_wallet_chain(369);
+        v.quote = Some(sample_bridge_quote());
+        v.quote_time = Some(Instant::now());
+        v.stage = Stage::Confirm(ConfirmStep::Bridge);
+
+        // Step 1: First Enter dispatches fee estimate
+        let outcome1 = v.confirm_step(ConfirmStep::Bridge, &w);
+        assert!(matches!(
+            outcome1,
+            KeyOutcome::StartJob(UiJob::EstimateEvmFee { .. })
+        ));
+        assert_eq!(v.status, "estimating fee…");
+        assert!(v.pending_tx.is_some());
+        assert_eq!(v.pending_step, Some(ConfirmStep::Bridge));
+
+        // Step 2: Fee arrives from background job
+        v.apply_job_result(UiJobResult::Fee(Ok(sample_fee())));
+        assert!(v.base_fee.is_some());
+        assert!(v.status.contains("Fee 0.005 PLS"));
+
+        // Step 3: Second Enter broadcasts with SendEvmWithFee carrying approved fee
+        let outcome2 = v.confirm_step(ConfirmStep::Bridge, &w);
+        assert!(matches!(
+            outcome2,
+            KeyOutcome::StartJob(UiJob::SendEvmWithFee { ref fee, .. }) if fee.total == "0.005 PLS"
+        ));
     }
 }

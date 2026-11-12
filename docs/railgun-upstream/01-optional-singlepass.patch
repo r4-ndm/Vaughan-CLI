@@ -1,0 +1,100 @@
+From b78136ee58e7ea439d2041cc88dc2b91b108a5d4 Mon Sep 17 00:00:00 2001
+From: Vaughan contributors <noreply@example.invalid>
+Date: Fri, 2 Oct 2026 17:35:26 +0100
+Subject: [PATCH] railgun-wallet: make Wasmer Singlepass an optional (default)
+ feature
+
+wasmer-compiler-singlepass 6.x is licensed BUSL-1.1, so downstream apps
+that can't accept it for production use had no way to opt out. Gate it
+behind a `singlepass` feature (enabled by default, so behaviour is
+unchanged); with --no-default-features the 13x13 POI witness falls back
+to the default Cranelift compiler (MIT) and Singlepass/dynasm drop out
+of the dependency graph.
+---
+ crates/railgun-wallet/Cargo.toml    | 11 +++++++++--
+ crates/railgun-wallet/src/prover.rs | 15 ++++++++++++++-
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/crates/railgun-wallet/Cargo.toml b/crates/railgun-wallet/Cargo.toml
+index fc3e875..c413e9d 100644
+--- a/crates/railgun-wallet/Cargo.toml
++++ b/crates/railgun-wallet/Cargo.toml
+@@ -3,6 +3,13 @@ name = "railgun-wallet"
+ version = "0.1.0"
+ edition = "2024"
+ 
++[features]
++default = ["singlepass"]
++# Compile the 13x13 POI witness with Wasmer Singlepass. Singlepass 6.x is
++# licensed BUSL-1.1 (production use requires a Wasmer sponsorship); without this
++# feature every witness uses the default Cranelift compiler (MIT).
++singlepass = ["wasmer/singlepass", "dep:wasmer-compiler-singlepass"]
++
+ [dependencies]
+ alloy = { workspace = true, features = ["serde"] }
+ alloy-rpc-types-eth = { workspace = true }
+@@ -40,8 +47,8 @@ sha2 = { workspace = true }
+ thiserror = { workspace = true }
+ url = { workspace = true }
+ byteorder = { workspace = true }
+-wasmer = { version = "6.1", features = ["singlepass"] }
+-wasmer-compiler-singlepass = "6.1"
++wasmer = "6.1"
++wasmer-compiler-singlepass = { version = "6.1", optional = true }
+ tokio = { workspace = true, features = ["sync"] }
+ rayon = { workspace = true }
+ 
+diff --git a/crates/railgun-wallet/src/prover.rs b/crates/railgun-wallet/src/prover.rs
+index 49121a6..4e0521e 100644
+--- a/crates/railgun-wallet/src/prover.rs
++++ b/crates/railgun-wallet/src/prover.rs
+@@ -1189,11 +1189,14 @@ const fn poi_circuit_size(inputs: &PoiProofInputs) -> (usize, usize) {
+ }
+ 
+ fn poi_witness_store(max_inputs: usize, max_outputs: usize) -> Store {
++    #[cfg(feature = "singlepass")]
+     if use_singlepass_poi_witness(max_inputs, max_outputs) {
+         return Store::new(wasmer::sys::EngineBuilder::new(
+             wasmer_compiler_singlepass::Singlepass::default(),
+         ));
+     }
++    #[cfg(not(feature = "singlepass"))]
++    let _ = (max_inputs, max_outputs);
+     Store::default()
+ }
+ 
+@@ -1205,8 +1208,10 @@ const fn poi_witness_compiler_name(max_inputs: usize, max_outputs: usize) -> &'s
+     }
+ }
+ 
++/// Singlepass is only used for the large 13x13 POI circuit, and only when the
++/// `singlepass` feature is enabled; otherwise Cranelift compiles every witness.
+ const fn use_singlepass_poi_witness(max_inputs: usize, max_outputs: usize) -> bool {
+-    max_inputs == 13 && max_outputs == 13
++    cfg!(feature = "singlepass") && max_inputs == 13 && max_outputs == 13
+ }
+ 
+ fn ark_proof_to_sol(proof: &Proof<Bn254>) -> SnarkProof {
+@@ -1316,11 +1321,19 @@ mod tests {
+     }
+ 
+     #[test]
++    #[cfg(feature = "singlepass")]
+     fn poi_witness_uses_singlepass_for_large_recovery_circuit() {
+         assert_eq!(poi_witness_compiler_name(13, 13), "singlepass");
+         assert_eq!(poi_witness_compiler_name(3, 3), "default");
+     }
+ 
++    #[test]
++    #[cfg(not(feature = "singlepass"))]
++    fn poi_witness_uses_default_compiler_without_singlepass() {
++        assert_eq!(poi_witness_compiler_name(13, 13), "default");
++        assert_eq!(poi_witness_compiler_name(3, 3), "default");
++    }
++
+     #[test]
+     fn eager_cache_selection_limits_railgun_shapes_and_keeps_poi_variants() {
+         let source = ArtifactSource::default();
+-- 
+2.55.0
+

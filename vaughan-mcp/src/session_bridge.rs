@@ -78,6 +78,11 @@ pub fn session_bridge_tool_definitions() -> Vec<Value> {
                 "required": ["stealth_address"]
             }),
         ),
+        tool(
+            "budget_status",
+            "Autonomous spend budget status, daily caps, remaining allowances, and allowlists under Sentient mode.",
+            empty_object_schema(),
+        ),
     ]
 }
 
@@ -93,6 +98,7 @@ pub fn session_bridge_tool_names() -> &'static [&'static str] {
         "get_stealth_uri",
         "scan_stealth_notes",
         "sweep_stealth_note",
+        "budget_status",
     ]
 }
 

@@ -235,11 +235,6 @@ pub fn browser_tool_definitions() -> Vec<Value> {
             }),
         }),
         json!({
-            "name": "browser_submit_swap",
-            "description": "Click the quote/swap CTA (Switch.win: Switch Now; others: Swap). Use after tokens + amount are set. Never signs.",
-            "inputSchema": empty_object_schema(),
-        }),
-        json!({
             "name": "browser_connect_wallet",
             "description": "Open Connect Wallet modal and select Vaughan/Injected (all frames + shadow DOM). Never signs — approve in TUI.",
             "inputSchema": empty_object_schema(),
@@ -284,7 +279,6 @@ pub fn browser_tool_names() -> &'static [&'static str] {
         "browser_type",
         "browser_select_token",
         "browser_setup_swap",
-        "browser_submit_swap",
         "browser_connect_wallet",
         "browser_press",
         "browser_wait",
@@ -1131,15 +1125,11 @@ pub async fn browser_connect_wallet(_args: Value, ctx: &McpContext) -> Result<Va
     Ok(json!({ "status": "connect_wallet", "result": result }))
 }
 
-pub async fn browser_submit_swap(_args: Value, ctx: &McpContext) -> Result<Value, String> {
-    let cdp_url = require_cdp_session_mut(ctx).await?;
-    let result = vb_cdp::cdp_click_swap_submit(&cdp_url)
-        .await
-        .map_err(wallet_err)?;
-    Ok(json!({
-        "status": "submitted",
-        "result": result,
-    }))
+pub async fn browser_submit_swap(_args: Value, _ctx: &McpContext) -> Result<Value, String> {
+    Err(
+        "browser_submit_disabled: automated browser swap submission is disabled; use propose_swap instead for human-approved or policy-governed execution."
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1155,5 +1145,43 @@ mod tests {
     fn require_agent_control_blocks_when_off() {
         std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
         assert!(require_agent_browser_control("nonexistent-profile-toggle-off-test").is_err());
+    }
+
+    #[test]
+    fn browser_tool_definitions_omits_submit_swap() {
+        let defs = browser_tool_definitions();
+        assert!(
+            !defs
+                .iter()
+                .any(|d| d.get("name").and_then(|n| n.as_str()) == Some("browser_submit_swap")),
+            "browser_submit_swap must not be exposed in tool definitions"
+        );
+        assert!(
+            !browser_tool_names().contains(&"browser_submit_swap"),
+            "browser_submit_swap must not be in browser_tool_names"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_submit_swap_always_refuses() {
+        std::env::remove_var("VAUGHAN_DAPP_BROWSER_CDP_PORT");
+        let ctx = McpContext {
+            profile: "test".to_string(),
+            rpc_url: "http://127.0.0.1:8545".to_string(),
+            chain_id: 943,
+            network_id: "testnet".to_string(),
+            is_testnet: true,
+            active_address: None,
+            source: "test".to_string(),
+        };
+        let err = browser_submit_swap(json!({}), &ctx).await.unwrap_err();
+        assert!(
+            err.starts_with("browser_submit_disabled:"),
+            "expected error starting with browser_submit_disabled:, got: {err}"
+        );
+        assert!(
+            err.contains("propose_swap"),
+            "expected error naming propose_swap, got: {err}"
+        );
     }
 }

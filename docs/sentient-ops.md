@@ -41,6 +41,11 @@ Details:
 
 ## Recommended sentient stack
 
+### Sentient spend guard
+Sentient mode bounds money movement across all autonomous sinks:
+- **Spend caps**: New policies default to 10% per trade and 20% per 24h per asset. The ledger file is `profiles/<name>/sentient-spend.json` (0600), surviving restarts. Failed broadcasts still consume reserved budget.
+- **Allowlist & exemptions**: `allow_transfer_to` defaults empty (refuses all transfers). Stealth sends (`propose_stealth_send`) bind freshly minted one-time addresses to `<profile_dir>/stealth-pending.json` (0600) and are accepted only when the destination matches an entry (consumed on gate); LP deploy steps (`LpDeployStep`) are refused until sized. Residual risk: a process running as the same UID can append to `stealth-pending.json`, separating MCP callers from note flow, not the host UID from itself. Pre-change binaries will refuse new policy files (`deny_unknown_fields`).
+
 1. Create / fund profile: `vaughan --profile sentient create` (or restore).
 2. Apply a preset: `vaughan --profile sentient preset apply balanced`.
 3. Put the unlock password in a **0600** env file (never commit it):

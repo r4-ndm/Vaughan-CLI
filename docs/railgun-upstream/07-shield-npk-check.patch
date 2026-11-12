@@ -1,0 +1,83 @@
+From e4977dca1698b14309a649f07c279b53da2dc4c7 Mon Sep 17 00:00:00 2001
+From: Vaughan contributors <noreply@example.invalid>
+Date: Sat, 3 Oct 2026 17:58:58 +0100
+Subject: [PATCH] railgun-wallet: only accept shield notes whose npk matches
+ our master public key
+
+---
+ crates/railgun-wallet/src/scan.rs | 53 ++++++++++++++++++++++++++++++-
+ 1 file changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/crates/railgun-wallet/src/scan.rs b/crates/railgun-wallet/src/scan.rs
+index 1ed9b2d..e813a18 100644
+--- a/crates/railgun-wallet/src/scan.rs
++++ b/crates/railgun-wallet/src/scan.rs
+@@ -728,8 +728,14 @@ fn scan_shield_commitment(
+     let shared_key =
+         shared_symmetric_key(&keys.viewing_private_key, &ciphertext.shieldKey.0).ok()?;
+     let random = decrypt_shield_random(&ciphertext.encryptedBundle, &shared_key).ok()?;
++    // Decrypting only proves the random was encrypted to us; the note is ours
++    // only if its npk was built from our master public key.
++    let note = preimage.note_with_random(random);
++    if note.npk != Note::npk_for(keys.master_public_key, random) {
++        return None;
++    }
+     Some(Utxo::new(
+-        preimage.note_with_random(random),
++        note,
+         tree,
+         position,
+         source,
+@@ -825,4 +831,49 @@ mod tests {
+         assert_eq!(row.source.block_number, 105);
+         assert_eq!(row.source.block_timestamp, 1_700_000_105);
+     }
++
++    #[test]
++    fn shield_with_foreign_npk_is_not_ours() {
++        use broadcaster_core::contracts::railgun::TokenData;
++        use broadcaster_core::contracts::shield::build_shield_request;
++        use broadcaster_core::utxo::UtxoSource;
++
++        use crate::keys::WalletKeys;
++
++        let me = WalletKeys::from_seed(&[1u8; 64], 0).expect("keys").viewing;
++        let other = WalletKeys::from_seed(&[1u8; 64], 1).expect("keys").viewing;
++        let shield = |to: &super::WalletScanKeys| {
++            build_shield_request(
++                to.master_public_key,
++                &to.viewing_public_key,
++                TokenData::erc20(Address::from([0x7a; 20])),
++                alloy::primitives::Uint::from(1_000u64),
++                &[7u8; 32],
++            )
++            .expect("shield request")
++        };
++        let source = UtxoSource {
++            tx_hash: FixedBytes::ZERO,
++            block_number: 1,
++            block_timestamp: 1,
++        };
++        let scan = |request: &broadcaster_core::contracts::railgun::ShieldRequest| {
++            super::scan_shield_commitment(
++                0,
++                0,
++                &request.preimage,
++                &request.ciphertext,
++                source.clone(),
++                &me,
++            )
++        };
++
++        let mine = shield(&me);
++        assert!(scan(&mine).is_some());
++
++        // Random encrypted to us, npk built from another master public key.
++        let mut forged = mine;
++        forged.preimage.npk = shield(&other).preimage.npk;
++        assert!(scan(&forged).is_none());
++    }
+ }
+-- 
+2.55.0
+

@@ -1,0 +1,24 @@
+{
+  "engine": "@railgun-community/engine@9.8.0",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "accounts": [
+    {
+      "index": 0,
+      "address": "0zk1qy4v02p5zkq0zfpaxhz79j5tslrv8c44d80d8jr2fuecrtxlp8lemrv7j6fe3z53ll0jm7u592n0hr8elesd0xzv6y9jpdvsyln80m95jcxhvnmagfqg5p6e9mp",
+      "masterPublicKey": "2ac7a8341580f1243d35c5e2ca8b87c6c3e2b569ded3c86a4f3381acdf09ff9d",
+      "viewingPublicKey": "df2dfb942aa6fb8cf9fe60d7984cd10b20b59027e677ecb4960d764f7d42408a"
+    },
+    {
+      "index": 1,
+      "address": "0zk1qyshnlgrjhycpzkj7zum9tdx6xump9p40y6ky2gq4qwsuflj7c5j4rv7j6fe3z53lu4vzeqppnnkaqfsv0w4rjlpgmvcc8zyjgmwx6gnamztknd94ah52jp72g9",
+      "masterPublicKey": "2179fd0395c9808ad2f0b9b2ada6d1b9b094357935622900a81d0e27f2f6292a",
+      "viewingPublicKey": "2ac164010ce76e813063dd51cbe146d98c1c449236e36913eec4bb4da5af6f45"
+    },
+    {
+      "index": 7,
+      "address": "0zk1qyst3wd434xcc7hyfwq68hg589lx7600l70xfn6xxrhsarhwyy7ghrv7j6fe3z53l7ft9ezqa4cwwqq0v0pc8wclmfu399w0lw5vypup93du5h5ptj3hsdz8cu8",
+      "masterPublicKey": "20b8b9b58d4d8c7ae44b81a3dd14397e6f69efff9e64cf4630ef0e8eee213c8b",
+      "viewingPublicKey": "92b2e440ed70e7000f63c383bb1fda791295cffba8c207812c5bca5e815ca378"
+    }
+  ]
+}

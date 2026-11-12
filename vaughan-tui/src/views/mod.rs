@@ -29,9 +29,15 @@ pub mod placeholder;
 pub mod receive;
 pub mod send;
 pub mod settings;
+#[cfg(feature = "railgun")]
+pub mod shield_flow;
+#[cfg(feature = "railgun")]
+pub mod shielded;
 pub mod swap_form;
 pub mod token_launch;
 pub mod unlock;
+#[cfg(feature = "railgun")]
+pub mod unshield_flow;
 pub mod wrap;
 
 pub use aa_send::AaSendView;
@@ -89,6 +95,7 @@ pub(crate) fn is_footer_shortcut(key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Char('x') | KeyCode::Char('X') => !ctrl,
+        KeyCode::Char('1') | KeyCode::Char('0') => !ctrl,
         KeyCode::Char(c) if c.is_ascii_alphabetic() => {
             matches!(
                 c.to_ascii_lowercase(),
@@ -706,7 +713,7 @@ fn render_action_footer(frame: &mut Frame, area: Rect, _app: &App) {
     let keys: &[(&str, &str)] = &[
         ("v", "Recv"),
         ("a", "Assets"),
-        ("h", "Home"),
+        ("1", "Trader"),
         ("s", "Send"),
         ("b", "Batch"),
         ("q", "Web"),
