@@ -41,6 +41,11 @@ jobs:
       - name: Verify anvil on PATH
         run: anvil --version
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
       # One gate, same as the one developers run locally: fmt, clippy, tests,
       # tracked-file hygiene, secrets scan, and the default-build railgun leak
       # check. Railgun clippy lives in the dedicated job below, which is the only
