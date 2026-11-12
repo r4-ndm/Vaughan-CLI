@@ -187,18 +187,23 @@ enum Command {
     },
     /// Isolated signer daemon: peer-UID-gated Unix domain socket for typed intents.
     Signerd {
+        #[command(subcommand)]
+        action: Option<SignerdCmd>,
         /// Store directory containing wallet.json, sentient-policy.toml, and spend ledger.
         #[arg(long)]
-        store: PathBuf,
+        store: Option<PathBuf>,
         /// Unix domain socket path.
         #[arg(long)]
-        socket: PathBuf,
+        socket: Option<PathBuf>,
         /// Peer UID permitted to connect (repeatable; default: invoking UID).
         #[arg(long = "allow-uid")]
         allow_uid: Vec<u32>,
         /// Env var holding the vault password (non-interactive).
         #[arg(long)]
         password_env: Option<String>,
+        /// Explicit old profile directory override (tests).
+        #[arg(long)]
+        old_profile_dir: Option<PathBuf>,
     },
     /// Install a sentient skill+policy preset into the active profile.
     Preset {
@@ -373,6 +378,22 @@ enum AgentAutonomyCmd {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum SignerdCmd {
+    /// Migrate an existing profile into the signer-owned store.
+    Migrate {
+        /// Profile name to migrate (default: sentient).
+        #[arg(long, default_value = "sentient")]
+        profile: String,
+        /// Explicit target store root (default: /var/lib/vaughan/<profile>).
+        #[arg(long)]
+        store_root: Option<PathBuf>,
+        /// Explicit old profile directory override (tests).
+        #[arg(long)]
+        old_profile_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum PresetCmd {
     /// List bundled preset ids.
     List,
@@ -433,26 +454,50 @@ fn main() {
             }
         }
         Some(Command::Signerd {
+            action,
             store,
             socket,
             allow_uid,
             password_env,
-        }) => {
-            vaughan_core::logging::init_logging();
-            match prompt_password(password_env.as_deref()) {
-                Err(e) => Err(e),
-                Ok(password) => {
-                    if let Some(var) = password_env.as_deref() {
-                        std::env::remove_var(var);
+            old_profile_dir,
+        }) => match action {
+            Some(SignerdCmd::Migrate {
+                profile: migrate_profile,
+                store_root,
+                old_profile_dir: migrate_old_dir,
+            }) => signerd::migrate::run_migrate(
+                &migrate_profile,
+                store_root.as_deref(),
+                migrate_old_dir.as_deref(),
+            ),
+            None => match (store, socket) {
+                (Some(store), Some(socket)) => {
+                    vaughan_core::logging::init_logging();
+                    match prompt_password(password_env.as_deref()) {
+                        Err(e) => Err(e),
+                        Ok(password) => {
+                            if let Some(var) = password_env.as_deref() {
+                                std::env::remove_var(var);
+                            }
+                            let runtime =
+                                tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+                            runtime
+                                .block_on(signerd::run_signerd(
+                                    store,
+                                    socket,
+                                    allow_uid,
+                                    password,
+                                    old_profile_dir,
+                                ))
+                                .map_err(|e| anyhow::anyhow!("{e}"))
+                        }
                     }
-                    let runtime =
-                        tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-                    runtime
-                        .block_on(signerd::run_signerd(store, socket, allow_uid, password))
-                        .map_err(|e| anyhow::anyhow!("{e}"))
                 }
-            }
-        }
+                _ => Err(anyhow::anyhow!(
+                    "--store and --socket are required to run signerd daemon (or run `vaughan signerd migrate`)"
+                )),
+            },
+        },
         Some(Command::Preset { action }) => run_preset(profile, json, action),
         Some(Command::Config { action }) => run_config(profile, json, action),
         Some(command) => {

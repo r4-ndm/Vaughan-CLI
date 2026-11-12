@@ -12,7 +12,12 @@
 
 pub mod broadcaster;
 pub mod intents;
+pub mod migrate;
 pub mod quoter;
+
+pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
+pub use migrate::{check_legacy_policy_absent, run_migrate};
+pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,9 +30,6 @@ use tokio::io::AsyncWriteExt;
 use vaughan_agent::sentient::policy::EnforcementMode;
 use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::{OperatingMode, SignerIntent, SwapFamily, WalletState};
-
-pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
-pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
 
 /// Check if a peer UID retrieved from `SO_PEERCRED` is in the allowlist.
 pub fn is_peer_uid_allowed(peer_uid: u32, allowlist: &[u32]) -> bool {
@@ -847,7 +849,10 @@ pub async fn run_signerd(
     socket: PathBuf,
     allow_uid: Vec<u32>,
     password: SecretString,
+    old_profile_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    check_legacy_policy_absent(&store, old_profile_dir.as_deref())?;
+
     #[cfg(unix)]
     let allow_uid = if allow_uid.is_empty() {
         vec![rustix::process::getuid().as_raw()]

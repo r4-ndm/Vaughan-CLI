@@ -14,7 +14,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI8, Ordering};
 
 use crate::error::AgentError;
 
@@ -24,28 +23,35 @@ pub const ENV_SIGNER_STORE: &str = "VAUGHAN_SIGNER_STORE";
 /// Environment variable enabling signer mode (`1`, `true`, `yes`, `on`).
 pub const ENV_SIGNER_MODE: &str = "VAUGHAN_SIGNER_MODE";
 
-/// Internal override for testing signer mode in-process without env var race conditions.
-/// -1 = unset (use env vars), 0 = force false, 1 = force true.
-static SIGNER_MODE_OVERRIDE: AtomicI8 = AtomicI8::new(-1);
+thread_local! {
+    static SIGNER_MODE_OVERRIDE: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
+    static SIGNER_STORE_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
 
-/// Set or clear in-process override for signer mode (useful for unit tests).
+/// Set or clear in-process override for signer mode on the current thread (useful for unit tests).
 pub fn set_signer_mode_override(mode: Option<bool>) {
     let val = match mode {
         Some(true) => 1,
         Some(false) => 0,
         None => -1,
     };
-    SIGNER_MODE_OVERRIDE.store(val, Ordering::SeqCst);
+    SIGNER_MODE_OVERRIDE.with(|cell| cell.set(val));
+}
+
+/// Set or clear in-process override for signer store path on the current thread (useful for unit tests).
+pub fn set_signer_store_override(store: Option<PathBuf>) {
+    SIGNER_STORE_OVERRIDE.with(|cell| *cell.borrow_mut() = store);
 }
 
 /// Check whether isolated signer mode is currently active.
 ///
 /// Returns true if:
-/// 1. An in-process override is set to true.
+/// 1. An in-process override is set to true on the current thread.
 /// 2. `VAUGHAN_SIGNER_MODE` is set to "1", "true", "yes", or "on".
 /// 3. `VAUGHAN_SIGNER_STORE` is set and non-empty.
+/// 4. An in-process store override is set on the current thread.
 pub fn is_signer_mode_active() -> bool {
-    let override_val = SIGNER_MODE_OVERRIDE.load(Ordering::SeqCst);
+    let override_val = SIGNER_MODE_OVERRIDE.with(|cell| cell.get());
     if override_val == 1 {
         return true;
     }
@@ -64,7 +70,7 @@ pub fn is_signer_mode_active() -> bool {
             return true;
         }
     }
-    false
+    SIGNER_STORE_OVERRIDE.with(|cell| cell.borrow().is_some())
 }
 
 /// Directory that contains `wallet.json` for a profile.
@@ -199,6 +205,9 @@ impl SignerStore {
     ) -> Result<Option<Self>, SignerStoreError> {
         if let Some(explicit) = store_root {
             return Self::open_with_expected_uid(explicit, expected_uid).map(Some);
+        }
+        if let Some(store) = SIGNER_STORE_OVERRIDE.with(|cell| cell.borrow().clone()) {
+            return Self::open_with_expected_uid(&store, expected_uid).map(Some);
         }
         if let Ok(env_val) = std::env::var(ENV_SIGNER_STORE) {
             let trimmed = env_val.trim();
@@ -478,17 +487,17 @@ mod tests {
         let resolved = SignerStore::resolve(None).unwrap();
         assert!(resolved.is_none());
 
-        // Explicit store_root takes precedence over env var
-        std::env::set_var(ENV_SIGNER_STORE, store_b.to_str().unwrap());
+        // Explicit store_root takes precedence over store override
+        set_signer_store_override(Some(store_b.clone()));
         let resolved = SignerStore::resolve(Some(&store_a)).unwrap().unwrap();
         assert_eq!(resolved.root(), store_a.as_path());
 
-        // Env var used when explicit is None
+        // Store override used when explicit is None
         let resolved = SignerStore::resolve(None).unwrap().unwrap();
         assert_eq!(resolved.root(), store_b.as_path());
 
-        // Cleanup env
-        std::env::remove_var(ENV_SIGNER_STORE);
+        // Cleanup
+        set_signer_store_override(None);
         set_signer_mode_override(None);
     }
 
@@ -547,16 +556,13 @@ mod tests {
 
         // Signer mode ON, but store is missing: write fails closed with signer_store_unavailable
         set_signer_mode_override(Some(true));
-        std::env::set_var(
-            ENV_SIGNER_STORE,
-            dir.path().join("missing_store").to_str().unwrap(),
-        );
+        set_signer_store_override(Some(dir.path().join("missing_store")));
 
         let err = assert_signer_store_writable(&old_profile).unwrap_err();
         assert!(err.to_string().contains("signer_store_unavailable"));
 
         // Signer mode ON, store unconfigured: write fails closed with signer_store_unavailable
-        std::env::remove_var(ENV_SIGNER_STORE);
+        set_signer_store_override(None);
         let err = assert_signer_store_writable(&old_profile).unwrap_err();
         assert!(err.to_string().contains("signer_store_unavailable"));
         assert!(err.to_string().contains("unconfigured"));
@@ -569,7 +575,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&valid_store, fs::Permissions::from_mode(0o700)).unwrap();
         }
-        std::env::set_var(ENV_SIGNER_STORE, valid_store.to_str().unwrap());
+        set_signer_store_override(Some(valid_store.clone()));
 
         let err = assert_signer_store_writable(&old_profile).unwrap_err();
         assert!(err.to_string().contains("signer_store_unavailable"));
@@ -579,7 +585,7 @@ mod tests {
         assert!(assert_signer_store_writable(&valid_store).is_ok());
 
         // Cleanup
-        std::env::remove_var(ENV_SIGNER_STORE);
+        set_signer_store_override(None);
         set_signer_mode_override(None);
 
         // Signer mode OFF: old profile directory write check succeeds
