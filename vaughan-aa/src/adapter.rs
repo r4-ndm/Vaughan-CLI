@@ -46,8 +46,11 @@ const BOOTSTRAP_GAS_LIMIT: u64 = 250_000;
 /// delegated, callers can pass a tighter limit.
 pub const DEFAULT_BATCH_GAS_LIMIT: u64 = 1_000_000;
 
-/// The deployed `AmbireAccount` implementation address — present on both
-/// PulseChain testnet (943) and mainnet (369) at the same address.
+/// The deployed `AmbireAccount` implementation address — present on bytecode
+/// level on both PulseChain testnet (943) and mainnet (369) at the same address,
+/// but EIP-7702 (type-0x04) delegation is currently blocked on both chains
+/// because `go-pulse` activates no fork past Shanghai/Capella. The contract is
+/// proven and usable under a Prague hardfork.
 pub const AMBIRE_IMPLEMENTATION: Address = Address::new([
     0x2a, 0x2b, 0x85, 0xeb, 0x10, 0x54, 0xd6, 0xf0, 0xc6, 0xc2, 0xe3, 0x7d, 0xa0, 0x5e, 0xd3, 0xe5,
     0xfe, 0xa6, 0x84, 0xef,

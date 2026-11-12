@@ -119,20 +119,22 @@ and consume it as a git dependency (the established kohaku-rs pattern).
 
 ## 7. Decision: ERC-4337 vs EIP-7702 self-pay (recorded 2026-08)
 
-**Decision: self-pay EIP-7702 is the broadcast route for the testnet-first phase;
-ERC-4337 `UserOperation` assembly stays deferred.** This is recorded now so the
-choice doesn't get re-litigated — the reasoning and the trigger conditions for
+**Decision: EIP-7702 self-pay is implemented and proven against a Prague fork,
+but blocked on both shipped chains (369 and 943 reject type-0x04); ERC-4337
+`UserOperation` assembly stays deferred.** This is recorded now so the choice
+doesn't get re-litigated — the reasoning and the trigger conditions for
 revisiting are below.
 
 ### Why self-pay 7702 wins for now
 
-- **Proven locally against Prague, NOT runnable on PulseChain.** `tests/self_pay_e2e.rs`
+- **Proven locally against Prague, NOT runnable on PulseChain.** `vaughan-aa/tests/self_pay_e2e.rs`
   runs the full flow against `anvil --hardfork prague` forking PulseChain testnet (943)
   with Ambire's *real* deployed implementation
   (`0x2A2b85EB1054d6f0c6c2E37dA05eD3E5feA684EF`, present on both testnet and
   mainnet): bootstrap the key privilege, sign the batch, broadcast, and the batch
-  executes on-chain. However, PulseChain runs Shanghai+Capella, so a type-0x04 tx is
-  rejected at the txpool on 369 and 943; `vaughan-aa` is a Pectra-chain library.
+  executes on-chain. However, PulseChain runs Shanghai+Capella (`go-pulse` activates
+  no fork past Shanghai/Capella), so a type-0x04 tx is rejected at the txpool on
+  369 and 943; `vaughan-aa` is a Pectra-chain library.
   The correctness chain (digest → signature → calldata → envelope) is additionally
   pinned byte-for-byte by the differential harness.
 - **No new infrastructure.** Self-pay needs only the account EOA's own PLS for
@@ -158,6 +160,8 @@ recorded rationale.
 
 ### TUI path (today)
 
-Dashboard **`b`** (AA batched send) uses **EIP-7702 self-pay** only: compose native
-transfers, confirm once, broadcast via `submit_batch`. No EntryPoint/bundler in the
-default Browserless Pulse flow.
+Dashboard **`b`** (AA batched send) is wired for **EIP-7702 self-pay**: compose native
+transfers, confirm once, broadcast via `submit_batch`. Note that broadcast is currently
+blocked on PulseChain (369/943 reject type-0x04 transactions because `go-pulse` activates
+no fork past Shanghai/Capella; the flow is proven against a Prague-forked testnet). No
+EntryPoint/bundler in the default Browserless Pulse flow.
