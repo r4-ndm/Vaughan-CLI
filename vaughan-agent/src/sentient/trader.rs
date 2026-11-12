@@ -406,36 +406,52 @@ impl SentientTrader {
             policy.enforcement,
         )?;
 
-        let nonce = provider
-            .get_transaction_count(self.address())
-            .await
-            .map_err(|e| AgentError::ProviderError(format!("Failed to get nonce: {e}")))?;
+        let send_res = async {
+            let nonce = provider
+                .get_transaction_count(self.address())
+                .await
+                .map_err(|e| AgentError::ProviderError(format!("Failed to get nonce: {e}")))?;
 
-        let mut tx = TransactionRequest::default()
-            .from(self.address())
-            .to(router)
-            .input(calldata.into())
-            .value(value_wei);
+            let mut tx = TransactionRequest::default()
+                .from(self.address())
+                .to(router)
+                .input(calldata.into())
+                .value(value_wei);
 
-        tx.nonce = Some(nonce);
-        tx.gas = Some(gas_limit);
-        tx.max_fee_per_gas = Some(max_fee_per_gas);
-        tx.max_priority_fee_per_gas = Some(max_priority_fee_per_gas);
-        tx.chain_id = Some(self.chain_id);
+            tx.nonce = Some(nonce);
+            tx.gas = Some(gas_limit);
+            tx.max_fee_per_gas = Some(max_fee_per_gas);
+            tx.max_priority_fee_per_gas = Some(max_priority_fee_per_gas);
+            tx.chain_id = Some(self.chain_id);
 
-        let wallet = EthereumWallet::from(self.signer.clone());
-        let signed_tx = tx.build(&wallet).await.map_err(|e| {
-            AgentError::SecurityViolation(format!("Failed to sign autonomous tx: {e}"))
-        })?;
+            let wallet = EthereumWallet::from(self.signer.clone());
+            let signed_tx = tx.build(&wallet).await.map_err(|e| {
+                AgentError::SecurityViolation(format!("Failed to sign autonomous tx: {e}"))
+            })?;
 
-        let raw_tx = signed_tx.encoded_2718();
-        let pending_tx = provider.send_raw_transaction(&raw_tx).await.map_err(|e| {
-            self.circuit_breaker
-                .record_failure(&format!("Broadcast failed: {e}"));
-            AgentError::ProviderError(format!("Broadcast failed: {e}"))
-        })?;
+            let raw_tx = signed_tx.encoded_2718();
+            let pending_tx = provider.send_raw_transaction(&raw_tx).await.map_err(|e| {
+                self.circuit_breaker
+                    .record_failure(&format!("Broadcast failed: {e}"));
+                AgentError::ProviderError(format!("Broadcast failed: {e}"))
+            })?;
 
-        let tx_hash = *pending_tx.tx_hash();
+            Ok(*pending_tx.tx_hash())
+        }
+        .await;
+
+        let tx_hash = match send_res {
+            Ok(h) => h,
+            Err(e) => {
+                if let Err(re) = crate::sentient::release_legs(dir, reserve_key) {
+                    tracing::warn!(
+                        target: "vaughan_agent::sentient",
+                        "failed to release spend reservation for {reserve_key}: {re}"
+                    );
+                }
+                return Err(e);
+            }
+        };
 
         self.circuit_breaker.record_success(gas_budget)?;
 

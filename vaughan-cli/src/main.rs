@@ -637,10 +637,10 @@ async fn run_cli(
             if !yes && !confirm_broadcast()? {
                 anyhow::bail!("aborted: transaction not confirmed");
             }
-            if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+            let reserve_info = if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
                 let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
                 let bal = wallet.balance().await?;
-                gate_and_reserve_sentient_send(
+                let key = gate_and_reserve_sentient_send(
                     &profile_dir,
                     net.chain_id,
                     &evm.to,
@@ -648,8 +648,24 @@ async fn run_cli(
                     &bal.raw,
                     evm.data.as_deref(),
                 )?;
-            }
-            let hash = wallet.send_transaction(evm).await?;
+                Some((profile_dir, key))
+            } else {
+                None
+            };
+            let hash = match wallet.send_transaction(evm).await {
+                Ok(h) => h,
+                Err(e) => {
+                    if let Some((dir, key)) = reserve_info {
+                        if let Err(re) = vaughan_agent::sentient::release_legs(&dir, &key) {
+                            tracing::warn!(
+                                target: "vaughan_cli",
+                                "failed to release spend reservation for {key}: {re}"
+                            );
+                        }
+                    }
+                    return Err(e.into());
+                }
+            };
             println!("{hash}");
         }
         Command::SignTypedData {
@@ -1426,7 +1442,7 @@ fn gate_and_reserve_sentient_send(
     val_str: &str,
     bal_raw: &str,
     data: Option<&str>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     if let Some(d) = data {
         let clean = d.trim().strip_prefix("0x").unwrap_or(d.trim());
         if !clean.is_empty() {
@@ -1463,7 +1479,7 @@ fn gate_and_reserve_sentient_send(
         policy.enforcement,
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(())
+    Ok(key)
 }
 
 /// `y/N` gate before broadcasting. Fails closed: EOF (piped/closed stdin)
@@ -1581,5 +1597,36 @@ mod tests {
         assert!(vaughan_core::core::is_sentient_profile("degen"));
         assert!(!vaughan_core::core::is_sentient_profile("adviser"));
         assert!(!vaughan_core::core::is_sentient_profile("default"));
+    }
+
+    #[test]
+    fn test_gate_and_reserve_sentient_send_returns_key_and_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_to = "0x1111111111111111111111111111111111111111";
+        let policy = vaughan_agent::sentient::AgentSessionPolicy {
+            allow_transfer_to: vec![valid_to.into()],
+            daily_cap_pct: 20,
+            enforcement: vaughan_agent::sentient::EnforcementMode::Enforced,
+            ..Default::default()
+        };
+        vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+
+        let key =
+            gate_and_reserve_sentient_send(dir.path(), 369, valid_to, "100", "1000", None).unwrap();
+        assert!(key.starts_with("cli_send_"));
+
+        let snap = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(
+            snap.assets.get("369:native").unwrap().spent,
+            alloy::primitives::U256::from(100)
+        );
+
+        // When release_legs is called (e.g. send_transaction failed), spent is refunded
+        vaughan_agent::sentient::release_legs(dir.path(), &key).unwrap();
+        let snap2 = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(
+            snap2.assets.get("369:native").unwrap().spent,
+            alloy::primitives::U256::ZERO
+        );
     }
 }

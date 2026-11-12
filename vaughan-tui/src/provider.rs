@@ -1419,7 +1419,9 @@ pub async fn execute_approval_with_fee(
             let adapter = wallet.active_adapter().await.map_err(map_wallet_error)?;
             let mined_ok = wait_for_receipt_success(&adapter, &receipt.hash, is_lp_deploy)
                 .await
-                .map_err(map_wallet_error)?;
+                .map_err(|e| {
+                    ProviderError::Internal(format!("receipt check: {}", e.user_message()))
+                })?;
             if !mined_ok {
                 return Err(ProviderError::InvalidParams(
                     "transaction reverted on-chain — LP Brew step not applied; \

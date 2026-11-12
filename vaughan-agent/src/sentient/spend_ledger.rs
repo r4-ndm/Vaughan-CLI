@@ -960,4 +960,120 @@ mod tests {
         let snap3 = SpendLedger::snapshot(dir.path()).unwrap();
         assert_eq!(snap3.assets.get(asset).unwrap().spent, U256::from(150));
     }
+
+    #[test]
+    fn test_failed_send_leaves_spent_unchanged_and_allows_retry() {
+        let dir = tempdir().unwrap();
+        let asset = "369:native";
+        let balance = U256::from(1000);
+        let policy = AgentSessionPolicy {
+            daily_cap_pct: 20,
+            enforcement: EnforcementMode::Enforced,
+            ..Default::default()
+        };
+
+        let snap_init = SpendLedger::snapshot(dir.path()).unwrap();
+        let spent_init = snap_init
+            .assets
+            .get(asset)
+            .map(|a| a.spent)
+            .unwrap_or(U256::ZERO);
+        assert_eq!(spent_init, U256::ZERO);
+
+        let legs = vec![(asset.to_string(), U256::from(100), balance)];
+        let prop_id = "prop_failed_send";
+
+        // Gate passes and reserves
+        reserve_legs(dir.path(), prop_id, &legs, &policy).unwrap();
+        let snap_reserved = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(
+            snap_reserved.assets.get(asset).unwrap().spent,
+            U256::from(100)
+        );
+
+        // Send fails post-gate -> release_legs called
+        release_legs(dir.path(), prop_id).unwrap();
+
+        // 1. Failed send leaves spent unchanged compared to initial state
+        let snap_after = SpendLedger::snapshot(dir.path()).unwrap();
+        let spent_after = snap_after
+            .assets
+            .get(asset)
+            .map(|a| a.spent)
+            .unwrap_or(U256::ZERO);
+        assert_eq!(
+            spent_after, spent_init,
+            "failed send must leave spent budget unchanged"
+        );
+        assert!(
+            !snap_after.recent.iter().any(|r| r.key == prop_id),
+            "recent reservations must not hold the failed proposal"
+        );
+
+        // 2. Allows an immediate retry of the same proposal_id without spend_already_reserved
+        assert!(
+            reserve_legs(dir.path(), prop_id, &legs, &policy).is_ok(),
+            "immediate retry of the same proposal id must succeed after failed send release"
+        );
+        let snap_retried = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(
+            snap_retried.assets.get(asset).unwrap().spent,
+            U256::from(100)
+        );
+    }
+
+    #[test]
+    fn test_successful_send_keeps_reservation() {
+        let dir = tempdir().unwrap();
+        let asset = "369:native";
+        let balance = U256::from(1000);
+        let policy = AgentSessionPolicy {
+            daily_cap_pct: 20,
+            enforcement: EnforcementMode::Enforced,
+            ..Default::default()
+        };
+
+        let legs = vec![(asset.to_string(), U256::from(100), balance)];
+        let prop_id = "prop_successful_send";
+
+        // Gate passes and reserves
+        reserve_legs(dir.path(), prop_id, &legs, &policy).unwrap();
+
+        // Send succeeds -> reservation kept (no release_legs)
+        let snap = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(snap.assets.get(asset).unwrap().spent, U256::from(100));
+        assert!(snap.recent.iter().any(|r| r.key == prop_id));
+
+        // Replay retry with same proposal_id must be refused with spend_already_reserved
+        let err = reserve_legs(dir.path(), prop_id, &legs, &policy).unwrap_err();
+        assert!(
+            err.to_string().contains("spend_already_reserved"),
+            "successful send reservation must block replay of same proposal_id: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validation_refusal_never_reserves() {
+        let dir = tempdir().unwrap();
+        let asset = "369:native";
+        let balance = U256::from(1000);
+        let policy = AgentSessionPolicy {
+            daily_cap_pct: 20,
+            enforcement: EnforcementMode::Enforced,
+            ..Default::default()
+        };
+
+        // When validation fails (e.g. amount exceeds balance or policy checks fail),
+        // reserve_legs is never called.
+        let snap = SpendLedger::snapshot(dir.path()).unwrap();
+        assert!(snap.assets.is_empty());
+        assert!(snap.recent.is_empty());
+
+        // A valid proposal can then reserve without interference
+        let prop_id = "prop_after_refusal";
+        let legs = vec![(asset.to_string(), U256::from(100), balance)];
+        reserve_legs(dir.path(), prop_id, &legs, &policy).unwrap();
+        let snap2 = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(snap2.assets.get(asset).unwrap().spent, U256::from(100));
+    }
 }

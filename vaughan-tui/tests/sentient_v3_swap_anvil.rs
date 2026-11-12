@@ -607,6 +607,151 @@ fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
         tx_hash.starts_with("0x") && tx_hash.len() == 66,
         "expected valid tx hash, got {tx_hash}"
     );
+
+    // Successful send keeps the reservation in the spend ledger
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+    let snap_after_success = SpendLedger::snapshot(&profile_dir).unwrap();
+    assert!(
+        snap_after_success
+            .recent
+            .iter()
+            .any(|r| r.key == "v3_swap_reproduce"),
+        "successful send must retain reservation in ledger"
+    );
+
+    // Retrying the same proposal_id is refused as replay
+    let replay_err = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind).unwrap_err();
+    assert!(
+        replay_err.to_string().contains("spend_already_reserved"),
+        "replay of successful broadcast must be refused with spend_already_reserved: {replay_err}"
+    );
+}
+
+#[test]
+fn test_failed_send_releases_reservation_and_allows_retry() {
+    let anvil = Anvil::start();
+    let (mut wallet, _dir) = setup_sentient_wallet(&anvil);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+
+    let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
+    let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707");
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let amount_in = U256::from(500_000_000_000_000_000u64);
+    let recipient = Address::from_str(wallet.active_address().unwrap()).unwrap();
+
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+    plant_factory_pool(&anvil, pool);
+    plant_v3_pool(&anvil, pool, sqrt, liquidity, false);
+    // Plant REVERT bytecode at router so resimulation will revert during send
+    plant_code(&anvil, router, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+
+    let (p, expected_out) = rt
+        .block_on(vaughan_core::core::quote_v3_pool_exact_in(
+            &anvil.url(),
+            943,
+            token_in,
+            token_out,
+            500,
+            amount_in,
+        ))
+        .unwrap();
+    assert_eq!(p, pool);
+
+    let min_amount_out = expected_out * U256::from(9900) / U256::from(10000);
+    let calldata = encode_exact_input_single_calldata(
+        token_in,
+        token_out,
+        500,
+        recipient,
+        amount_in,
+        min_amount_out,
+    );
+
+    let prop_id = "v3_swap_failing_send";
+    let mut proposal = TxProposal::new(
+        prop_id,
+        ProposalType::DexSwap {
+            router,
+            path: vec![token_in, token_out],
+            amount_in,
+            min_amount_out,
+            dex_kind: DexSwapKind::V3 {
+                pool,
+                fee: 500,
+                quote: expected_out,
+            },
+        },
+        router,
+        amount_in,
+        calldata,
+        350_000,
+        true,
+        "failing sentient swap",
+    )
+    .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+    let evm = vaughan_core::core::apply_proposal(&wallet, &proposal).unwrap();
+    let est = rt.block_on(wallet.estimate_transaction_fee(evm)).unwrap();
+    proposal.estimated_fee_wei = est.total_wei_evm();
+
+    let kind = ApprovalKind::McpProposal {
+        proposal_id: proposal.proposal_id.clone(),
+        source: "agent".into(),
+        proposal: Box::new(proposal.clone()),
+    };
+
+    let snap_before = SpendLedger::snapshot(&profile_dir).unwrap();
+    let spent_before = snap_before
+        .assets
+        .get("943:native")
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+
+    // auto_exec_mcp_proposal passes gate (reserves legs), but execute_approval_sync
+    // fails during resimulation because the router contract reverts!
+    let result = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind);
+    assert!(
+        result.is_err(),
+        "expected send/simulation to fail: {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("simulation reverted"),
+        "expected simulation reverted error, got: {err_msg}"
+    );
+
+    // The reservation must have been released on send failure!
+    let snap_after = SpendLedger::snapshot(&profile_dir).unwrap();
+    let spent_after = snap_after
+        .assets
+        .get("943:native")
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+    assert_eq!(
+        spent_before, spent_after,
+        "failed send must release reservation so spent budget remains unchanged"
+    );
+    assert!(
+        !snap_after.recent.iter().any(|r| r.key == prop_id),
+        "recent reservations must not retain the failed proposal id"
+    );
+
+    // Retrying with the exact same proposal_id MUST NOT fail with spend_already_reserved
+    let retry_res = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind);
+    assert!(retry_res.is_err());
+    let retry_err = retry_res.unwrap_err().to_string();
+    assert!(
+        !retry_err.contains("spend_already_reserved"),
+        "retry must not be blocked by spend_already_reserved, got: {retry_err}"
+    );
+    assert!(
+        retry_err.contains("simulation reverted"),
+        "retry should reach simulation again, got: {retry_err}"
+    );
 }
 
 #[test]

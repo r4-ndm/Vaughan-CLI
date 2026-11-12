@@ -265,10 +265,20 @@ impl McpHostBackend for ServeMcpBackend {
             )
             .map_err(|e| e.to_string())?;
 
-            self.handle
+            let sweep_res = self
+                .handle
                 .block_on(w.sweep_stealth_note(&note))
                 .map(|h| h.to_string())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string());
+            if sweep_res.is_err() {
+                if let Err(re) = vaughan_agent::sentient::release_legs(&dir, &key) {
+                    tracing::warn!(
+                        target: "vaughan_cli::serve",
+                        "failed to release spend reservation for {key}: {re}"
+                    );
+                }
+            }
+            sweep_res
         });
         match &result {
             Ok(_) => {

@@ -710,6 +710,16 @@ fn unparseable(raw: &str) -> ProviderError {
     ProviderError::Internal(format!("unparseable balance string (fail-closed): {raw:?}"))
 }
 
+/// Returns true if the error occurred after broadcast (e.g. receipt poll timeout or on-chain revert).
+/// In those cases, the signed transaction was already accepted by the network, so the spend
+/// reservation must NOT be released.
+pub(crate) fn is_post_broadcast_error(err: &ProviderError) -> bool {
+    let msg = err.to_string();
+    msg.contains("timed out waiting for transaction receipt")
+        || msg.contains("transaction reverted on-chain")
+        || msg.contains("receipt check")
+}
+
 /// Re-sim, policy gate, sign, and broadcast without showing an approval card.
 ///
 /// Records the outcome on the session breaker: the **fresh** fee estimate
@@ -734,7 +744,21 @@ pub fn auto_exec_mcp_proposal(
                 tracing::warn!(target: "vaughan_tui::mcp", "breaker tripped after broadcast: {e}");
             }
         }
-        Err(e) => breaker.record_failure(&e.to_string()),
+        Err(e) => {
+            breaker.record_failure(&e.to_string());
+            if !is_post_broadcast_error(e) {
+                let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+                if let Err(re) =
+                    vaughan_agent::sentient::release_legs(&profile_dir, &proposal.proposal_id)
+                {
+                    tracing::warn!(
+                        target: "vaughan_tui::mcp",
+                        "failed to release spend reservation for {}: {re}",
+                        proposal.proposal_id
+                    );
+                }
+            }
+        }
     }
     result
 }
@@ -795,7 +819,15 @@ pub fn auto_exec_stealth_sweep(
         Ok(_) => {
             let _ = breaker.record_success(U256::ZERO);
         }
-        Err(e) => breaker.record_failure(&e.to_string()),
+        Err(e) => {
+            breaker.record_failure(&e.to_string());
+            if let Err(re) = vaughan_agent::sentient::release_legs(&profile_dir, &key) {
+                tracing::warn!(
+                    target: "vaughan_tui::mcp",
+                    "failed to release spend reservation for {key}: {re}"
+                );
+            }
+        }
     }
     result
 }
@@ -1254,5 +1286,35 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("spend_cap_exceeded"));
+    }
+
+    #[test]
+    fn test_is_post_broadcast_error_distinguishes_post_and_pre_broadcast() {
+        // Post-broadcast errors (receipt timeout, on-chain revert, receipt RPC error)
+        let err_timeout =
+            ProviderError::Internal("timed out waiting for transaction receipt".into());
+        let err_revert_chain = ProviderError::InvalidParams(
+            "transaction reverted on-chain — LP Brew step not applied; check gas and token balances, then re-propose".into(),
+        );
+        let err_receipt_rpc = ProviderError::Internal("receipt check: connection reset".into());
+        assert!(is_post_broadcast_error(&err_timeout));
+        assert!(is_post_broadcast_error(&err_revert_chain));
+        assert!(is_post_broadcast_error(&err_receipt_rpc));
+
+        // Pre-broadcast errors (simulation revert, fee spike, network rejection at broadcast time)
+        let err_sim_revert = ProviderError::InvalidParams(
+            "simulation reverted: execution reverted: ERC20: transfer amount exceeds balance"
+                .into(),
+        );
+        let err_fee_spike = ProviderError::InvalidParams(
+            "network fee is unverified or increased more than 10% since the agent proposal — deny and ask the agent to re-propose".into(),
+        );
+        let err_net_reject =
+            ProviderError::Internal("network rejected the signed tx: nonce too low".into());
+        let err_unauthorized = ProviderError::Unauthorized("wallet is locked".into());
+        assert!(!is_post_broadcast_error(&err_sim_revert));
+        assert!(!is_post_broadcast_error(&err_fee_spike));
+        assert!(!is_post_broadcast_error(&err_net_reject));
+        assert!(!is_post_broadcast_error(&err_unauthorized));
     }
 }
