@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// @vaughan/mcp — fetch the pinned Vaughan release binary once, verify its checksum,
+// vaughan-mcp — fetch the pinned Vaughan release binary once, verify its checksum,
 // then exec `vaughan mcp <args...>`.
 //
 // Why a wrapper instead of shipping the binary in the package: the binary is ~15 MB
@@ -168,7 +168,7 @@ async function main() {
       ? path.join(CACHE_ROOT, VERSION.replace(/^v/, ''), 'vaughan')
       : '(not downloaded yet)';
     process.stdout.write(
-      `@vaughan/mcp ${VERSION}\nplatform ${process.platform}-${process.arch}\ncached binary: ${binary}\n`
+      `vaughan-mcp ${VERSION}\nplatform ${process.platform}-${process.arch}\ncached binary: ${binary}\n`
     );
     return 0;
   }

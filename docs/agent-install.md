@@ -35,7 +35,7 @@ dates is the usual cause of "the feature is in the repo but not in my binary".
   "mcpServers": {
     "vaughan": {
       "command": "npx",
-      "args": ["-y", "@vaughan/mcp"],
+      "args": ["-y", "vaughan-mcp"],
       "env": { "VAUGHAN_PROFILE": "default" }
     }
   }

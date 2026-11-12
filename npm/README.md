@@ -1,4 +1,4 @@
-# @vaughan/mcp
+# vaughan-mcp
 
 A self-custody wallet for autonomous agents, as an MCP server.
 
@@ -17,7 +17,7 @@ release binary for this platform and verifies its SHA256.
   "mcpServers": {
     "vaughan": {
       "command": "npx",
-      "args": ["-y", "@vaughan/mcp"],
+      "args": ["-y", "vaughan-mcp"],
       "env": { "VAUGHAN_PROFILE": "default" }
     }
   }
