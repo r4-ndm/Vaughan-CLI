@@ -53,14 +53,14 @@ jobs:
           mkdir -p dist
           cp target/release/vaughan dist/
           tar -czf "vaughan-${{ matrix.target }}.tar.gz" -C dist vaughan
-          sha256sum "vaughan-${{ matrix.target }}.tar.gz" >> SHA256SUMS.partial
+          sha256sum "vaughan-${{ matrix.target }}.tar.gz" >> "SHA256SUMS.${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: vaughan-${{ matrix.target }}
           path: |
             vaughan-${{ matrix.target }}.tar.gz
-            SHA256SUMS.partial
+            SHA256SUMS.${{ matrix.target }}
 
   release:
     name: publish release
@@ -75,10 +75,32 @@ jobs:
 
       - name: Assemble checksum file
         run: |
-          find artifacts -name 'SHA256SUMS.partial' -exec cat {} \; | sort -u > SHA256SUMS
+          find artifacts -name 'SHA256SUMS.*' -exec cat {} \; | sort -u > SHA256SUMS
           find artifacts -name 'vaughan-*.tar.gz' -exec cp {} . \;
           cat SHA256SUMS
           ls -la vaughan-*.tar.gz
+
+          line_count=$(wc -l < SHA256SUMS | tr -d '[:space:]')
+          if [ "$line_count" -ne 3 ]; then
+            echo "ERROR: SHA256SUMS has $line_count lines; expected exactly 3" >&2
+            exit 1
+          fi
+
+          tarball_count=0
+          for f in vaughan-*.tar.gz; do
+            [ -e "$f" ] || continue
+            tarball_count=$((tarball_count + 1))
+            if ! grep -q "[[:space:]]${f}$" SHA256SUMS; then
+              echo "ERROR: Tarball $f has no matching entry in SHA256SUMS" >&2
+              exit 1
+            fi
+          done
+          if [ "$tarball_count" -ne 3 ]; then
+            echo "ERROR: Expected 3 tarballs, found $tarball_count" >&2
+            exit 1
+          fi
+
+          sha256sum -c SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:
