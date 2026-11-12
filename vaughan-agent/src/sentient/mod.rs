@@ -15,7 +15,7 @@ pub use policy::{
 };
 pub use quorum::{QuorumReserves, QuorumValidator};
 pub use spend_ledger::{
-    check_destination_allowed, reserve_legs, LedgerView, ReserveOutcome, SpendLedger,
+    check_destination_allowed, release_legs, reserve_legs, LedgerView, ReserveOutcome, SpendLedger,
 };
 pub use stealth_pending::{
     consume_stealth_pending, record_stealth_pending, StealthPendingFile, STEALTH_PENDING_FILE,

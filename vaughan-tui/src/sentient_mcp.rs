@@ -224,10 +224,6 @@ pub fn gate_sentient_proposal(
             .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
     }
 
-    // Cumulative 24h spend ledger reservation across sized legs
-    vaughan_agent::sentient::reserve_legs(&profile_dir, &proposal.proposal_id, &legs, &policy)
-        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
-
     // DexSwap: audited router allowlist + slippage floor per swap family.
     // V2: fresh on-chain quote via quote_v2_exact_in capped by max_slippage_bps.
     // V3: propose-time V3 quote capped by max_slippage_bps (no V2 quoter call).
@@ -343,6 +339,12 @@ pub fn gate_sentient_proposal(
     }
     breaker
         .check_gas_budget(fresh_wei)
+        .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
+
+    // Cumulative 24h spend ledger reservation across sized legs.
+    // Kept strictly after all family/allowlist/floor/gas checks so refusals
+    // never burn budget or proposal_id, and strictly before returning Ok for broadcast.
+    vaughan_agent::sentient::reserve_legs(&profile_dir, &proposal.proposal_id, &legs, &policy)
         .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
 
     if breaker.config().enforcement == EnforcementMode::Disabled {

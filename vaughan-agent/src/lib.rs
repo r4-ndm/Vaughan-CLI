@@ -24,10 +24,10 @@ pub use presets::{apply_preset, presets_root, BUNDLED_PRESET_IDS};
 pub use proposal::{DexSwapKind, ProposalType, TxProposal};
 pub use sentient::{
     breaker_config_for_session, build_policy_proposal, check_destination_allowed,
-    consume_stealth_pending, dry_run_from_env, load_policy, record_stealth_pending, reserve_legs,
-    save_policy, AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, EnforcementMode,
-    LedgerView, PolicyProposal, QuorumReserves, QuorumValidator, ReserveOutcome, SentientTrader,
-    SpendLedger, SwapExecution, LEGACY_DEGEN_POLICY_TOML, SENTIENT_POLICY_TOML,
+    consume_stealth_pending, dry_run_from_env, load_policy, record_stealth_pending, release_legs,
+    reserve_legs, save_policy, AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig,
+    EnforcementMode, LedgerView, PolicyProposal, QuorumReserves, QuorumValidator, ReserveOutcome,
+    SentientTrader, SpendLedger, SwapExecution, LEGACY_DEGEN_POLICY_TOML, SENTIENT_POLICY_TOML,
 };
 pub use tools::{
     commit_policy_proposal, default_assist_registry, default_assist_registry_for,

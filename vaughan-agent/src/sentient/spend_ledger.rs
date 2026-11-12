@@ -411,6 +411,112 @@ impl SpendLedger {
         }
         Ok(parsed)
     }
+
+    /// Release all spend reservations matching `key` or `{key}:*`.
+    ///
+    /// Subtracts the spent amounts from their respective asset tallies and
+    /// removes the entries from recent spends, allowing retries without replay errors.
+    pub fn release(dir: &Path, key: &str) -> Result<(), AgentError> {
+        Self::release_at(dir, key, current_unix())
+    }
+
+    /// Internal release allowing time injection for tests.
+    pub fn release_at(dir: &Path, key: &str, now: u64) -> Result<(), AgentError> {
+        let file_path = dir.join(SPEND_LEDGER_FILE);
+        if !file_path.exists() {
+            return Ok(());
+        }
+
+        let _guard = acquire_lock(dir, now)?;
+        let raw = fs::read_to_string(&file_path).map_err(|e| {
+            AgentError::SpendGuard(format!(
+                "spend_ledger_unreadable: failed to read {}: {e}",
+                file_path.display()
+            ))
+        })?;
+        let mut ledger: LedgerView = serde_json::from_str(&raw).map_err(|e| {
+            AgentError::SpendGuard(format!(
+                "spend_ledger_unreadable: JSON parse failed in {}: {e}",
+                file_path.display()
+            ))
+        })?;
+        if ledger.version != 1 {
+            return Err(AgentError::SpendGuard(format!(
+                "spend_ledger_unreadable: unsupported ledger version {}",
+                ledger.version
+            )));
+        }
+
+        let mut released = false;
+        let mut i = 0;
+        while i < ledger.recent.len() {
+            let entry = &ledger.recent[i];
+            let matches = entry.key == key || entry.key.starts_with(&format!("{key}:"));
+            if matches {
+                let amount = entry.amount;
+                let asset = entry.asset.clone();
+                if let Some(asset_entry) = ledger.assets.get_mut(&asset) {
+                    asset_entry.spent = asset_entry.spent.saturating_sub(amount);
+                }
+                ledger.recent.remove(i);
+                released = true;
+            } else {
+                i += 1;
+            }
+        }
+
+        if !released {
+            return Ok(());
+        }
+
+        let body = serde_json::to_string_pretty(&ledger).map_err(|e| {
+            AgentError::SpendGuard(format!("spend_ledger_disk: serialization error: {e}"))
+        })?;
+
+        let tmp_path = dir.join(format!(".{SPEND_LEDGER_FILE}.tmp.{}", std::process::id()));
+        {
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp_path).map_err(|e| {
+                AgentError::SpendGuard(format!(
+                    "spend_ledger_disk: open tmp {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+            f.write_all(body.as_bytes()).map_err(|e| {
+                AgentError::SpendGuard(format!(
+                    "spend_ledger_disk: write tmp {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+            f.sync_all().map_err(|e| {
+                AgentError::SpendGuard(format!(
+                    "spend_ledger_disk: sync tmp {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+        }
+
+        fs::rename(&tmp_path, &file_path).map_err(|e| {
+            AgentError::SpendGuard(format!(
+                "spend_ledger_disk: rename {} -> {}: {e}",
+                tmp_path.display(),
+                file_path.display()
+            ))
+        })?;
+
+        Ok(())
+    }
+}
+
+/// Helper to release multiple legs reserved under `key` (and any `{key}:{idx}`).
+pub fn release_legs(dir: &Path, key: &str) -> Result<(), AgentError> {
+    SpendLedger::release(dir, key)
 }
 
 /// Helper to reserve multiple legs for a single proposal or batch operation.
@@ -818,5 +924,40 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn test_release_legs_refunds_spend_and_allows_retry() {
+        let dir = tempdir().unwrap();
+        let asset = "369:native";
+        let balance = U256::from(1000);
+        let policy = AgentSessionPolicy {
+            daily_cap_pct: 20,
+            enforcement: EnforcementMode::Enforced,
+            ..Default::default()
+        };
+
+        let legs = vec![(asset.to_string(), U256::from(150), balance)];
+        reserve_legs(dir.path(), "prop_1", &legs, &policy).unwrap();
+
+        let snap1 = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(snap1.assets.get(asset).unwrap().spent, U256::from(150));
+        assert_eq!(snap1.recent.len(), 1);
+
+        // A second reservation of 100 exceeds the 200 cap (150 + 100 > 200)
+        let legs2 = vec![(asset.to_string(), U256::from(100), balance)];
+        assert!(reserve_legs(dir.path(), "prop_2", &legs2, &policy).is_err());
+
+        // Release prop_1
+        release_legs(dir.path(), "prop_1").unwrap();
+
+        let snap2 = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(snap2.assets.get(asset).unwrap().spent, U256::ZERO);
+        assert!(snap2.recent.is_empty());
+
+        // Now prop_1 can be retried without spend_already_reserved
+        reserve_legs(dir.path(), "prop_1", &legs, &policy).unwrap();
+        let snap3 = SpendLedger::snapshot(dir.path()).unwrap();
+        assert_eq!(snap3.assets.get(asset).unwrap().spent, U256::from(150));
     }
 }

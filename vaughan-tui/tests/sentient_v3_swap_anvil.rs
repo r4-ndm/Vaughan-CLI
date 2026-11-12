@@ -16,7 +16,7 @@ use common::mock_evm::plant_code;
 use common::{Anvil, PASSWORD};
 use secrecy::SecretString;
 use vaughan_agent::sentient::{
-    AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, EnforcementMode,
+    AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, EnforcementMode, SpendLedger,
 };
 use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{OperatingMode, WalletState};
@@ -411,4 +411,74 @@ fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
         tx_hash.starts_with("0x") && tx_hash.len() == 66,
         "expected valid tx hash, got {tx_hash}"
     );
+}
+
+#[test]
+fn test_refused_swap_leaves_spent_unchanged_and_allows_retry() {
+    let anvil = Anvil::start();
+    let (wallet, _dir) = setup_sentient_wallet(&anvil);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+
+    let router = address!("DaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707");
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let amount_in = U256::from(500_000_000_000_000_000u64);
+
+    let prop_id = "prop_refused_retryable";
+
+    // Proposal with invalid calldata selector will be refused by the V2 gate
+    let bad_prop = TxProposal::new(
+        prop_id,
+        ProposalType::DexSwap {
+            router,
+            path: vec![token_in, token_out],
+            amount_in,
+            min_amount_out: U256::from(100),
+            dex_kind: DexSwapKind::V2,
+        },
+        router,
+        amount_in,
+        Bytes::from(vec![0x12, 0x34, 0x56, 0x78]),
+        250_000,
+        true,
+        "refused swap",
+    )
+    .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+    let snap_before = SpendLedger::snapshot(&profile_dir).unwrap();
+    let spent_before = snap_before
+        .assets
+        .get("943:native")
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+
+    let err = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &bad_prop).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("does not belong to the audited V2 swap family"));
+
+    // Spent MUST remain unchanged after refusal
+    let snap_after = SpendLedger::snapshot(&profile_dir).unwrap();
+    let spent_after = snap_after
+        .assets
+        .get("943:native")
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+    assert_eq!(
+        spent_before, spent_after,
+        "refused swap must not consume spend cap"
+    );
+    assert!(!snap_after.recent.iter().any(|r| r.key == prop_id));
+
+    // Retrying with the same proposal_id MUST NOT fail with spend_already_reserved
+    let err_retry = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &bad_prop).unwrap_err();
+    assert!(
+        err_retry
+            .to_string()
+            .contains("does not belong to the audited V2 swap family"),
+        "retry should fail with the policy error, not spend_already_reserved: {err_retry}"
+    );
+    assert!(!err_retry.to_string().contains("spend_already_reserved"));
 }
