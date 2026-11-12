@@ -2550,14 +2550,14 @@ impl App {
         )
     }
 
-    /// True when the burn gate is off or this vault has unlocked tools (any F3 burner).
+    /// True when no entitlement gate is on, or this vault holds/burned enough WZRD.
     ///
-    /// Cache-only unlocks still count when the original burner was removed from F3.
+    /// Live check: holding is re-read from the chain, so a sold position re-locks.
     pub fn power_features_ok(&self) -> bool {
         use vaughan_core::core::{
-            assist_burn_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
+            assist_any_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
         };
-        if !assist_burn_gate_enabled() {
+        if !assist_any_gate_enabled() {
             return true;
         }
         let Some(chain_id) = entitlement_chain_id() else {
@@ -2580,7 +2580,7 @@ impl App {
     }
 
     fn flash_tools_locked(&mut self) {
-        self.set_flash("Tools locked: burn ≥13 WZRD from any wallet — press w");
+        self.set_flash("Tools locked: hold ≥13 WZRD (or legacy burn) — press w");
     }
 
     fn mount_screen(&mut self, screen: Screen) {

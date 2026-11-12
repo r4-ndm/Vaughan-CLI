@@ -319,18 +319,18 @@ impl McpDispatcher {
         }
     }
 
-    /// When the burn gate is on, refuse power tools without a qualifying WZRD burn.
+    /// When an entitlement gate is on, refuse power tools without a qualifying
+    /// WZRD holding (preferred) or legacy burn.
     async fn require_power_unlocked(&self, ctx: &McpContext) -> Result<(), String> {
         use vaughan_core::core::{
-            assist_burn_gate_enabled, entitlement_chain_id, require_power_features,
+            assist_any_gate_enabled, entitlement_chain_id, require_power_features,
         };
-        if !assist_burn_gate_enabled() {
+        if !assist_any_gate_enabled() {
             return Ok(());
         }
         let Some(chain_id) = entitlement_chain_id() else {
             return Err(
-                "assist_locked: WZRD entitlement chain unavailable — burn gate cannot unlock"
-                    .into(),
+                "assist_locked: WZRD entitlement chain unavailable — the gate cannot unlock".into(),
             );
         };
         // Vault-wide: positive cache for this chain unlocks every account. Cold

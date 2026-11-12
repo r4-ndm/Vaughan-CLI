@@ -201,7 +201,7 @@ impl SettingsView {
                         Style::default().fg(Color::DarkGray),
                     ),
                 };
-                let burn_on = vaughan_core::core::assist_burn_gate_enabled();
+                let burn_on = vaughan_core::core::assist_any_gate_enabled();
                 let tools_unlocked = if burn_on {
                     let dir = vaughan_agent::paths::profile_dir(wallet.path());
                     vaughan_core::core::assist_unlock_cached(&dir)
@@ -230,12 +230,12 @@ impl SettingsView {
                 if burn_on {
                     let (tools_line, tools_style) = if tools_unlocked {
                         (
-                            "   Tools: unlocked (burn recorded) — Dex/Ag/LP free",
+                            "   Tools: unlocked (holding or burn) — Dex/Ag/LP free",
                             Style::default().fg(Color::DarkGray),
                         )
                     } else {
                         (
-                            "   Tools: burn ≥13 WZRD (w) — Dex/Ag/LP free",
+                            "   Tools: hold ≥13 WZRD (w) — Dex/Ag/LP free",
                             Style::default().fg(Color::Yellow),
                         )
                     };
@@ -713,7 +713,7 @@ impl SettingsView {
                     KeyOutcome::AssistBurn
                 } else {
                     self.status =
-                        "Tools burn gate disabled — unset VAUGHAN_ASSIST_BURN_GATE or remove =0."
+                        "Tools gates disabled — unset VAUGHAN_ASSIST_HOLD_GATE / VAUGHAN_ASSIST_BURN_GATE or remove =0."
                             .into();
                     KeyOutcome::Handled
                 }

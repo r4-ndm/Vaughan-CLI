@@ -425,7 +425,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Optional faint tools-burn footnote under the chips (gate on + still locked).
     let status_h = 3u16;
     let footer_h = 12u16;
-    let burn_hint = vaughan_core::core::assist_burn_gate_enabled() && !app.tools_unlock_cached();
+    let burn_hint = vaughan_core::core::assist_any_gate_enabled() && !app.tools_unlock_cached();
     let hint_h = u16::from(burn_hint);
 
     let flash_h = app.chrome_flash_height(area.width);
@@ -699,7 +699,7 @@ fn render_tools_burn_hint(frame: &mut Frame, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Burn ≥13 WZRD (any acct) for AI · tools — Dex/Ag/LP free · press w",
+            "Hold ≥13 WZRD (any acct) for AI · tools — legacy burn also works · press w",
             Style::default().fg(Color::DarkGray),
         )))
         .alignment(Alignment::Center),

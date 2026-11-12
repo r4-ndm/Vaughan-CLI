@@ -53,12 +53,15 @@ pub use aggregator::{
     OFFICIAL_AGG_ROUTERS,
 };
 pub use assist_entitlement::{
-    address_has_assist_burn, address_has_assist_burn_with_retry, assist_burn_amount_u256,
-    assist_burn_gate_enabled, assist_unlock_bypass, assist_unlock_cached, build_assist_burn_evm,
-    burn_sink_hex, entitlement_chain_id, entitlement_wzrd, power_features_unlocked_blocking,
-    require_assist_entitlement, require_power_features, vault_has_assist_burn,
-    vault_has_assist_burn_with_retry, wzrd_token_hex, ASSIST_BURN_AMOUNT_HUMAN,
-    ASSIST_BURN_AMOUNT_WEI, ASSIST_BURN_GATE_ENV, BURN_SINK,
+    address_has_assist_burn, address_has_assist_burn_with_retry, address_holds_wzrd,
+    assist_any_gate_enabled, assist_burn_amount_u256, assist_burn_gate_enabled,
+    assist_hold_amount_u256, assist_hold_gate_enabled, assist_unlock_bypass, assist_unlock_cached,
+    build_assist_burn_evm, burn_sink_hex, entitlement_chain_id, entitlement_wzrd,
+    power_features_unlocked_blocking, require_assist_entitlement, require_power_features,
+    vault_has_assist_burn, vault_has_assist_burn_with_retry, vault_has_power_entitlement,
+    vault_holds_wzrd, wzrd_token_hex, ASSIST_BURN_AMOUNT_HUMAN, ASSIST_BURN_AMOUNT_WEI,
+    ASSIST_BURN_GATE_ENV, ASSIST_HOLD_AMOUNT_ENV, ASSIST_HOLD_AMOUNT_HUMAN, ASSIST_HOLD_AMOUNT_WEI,
+    ASSIST_HOLD_GATE_ENV, BURN_SINK,
 };
 pub use bridge::{
     assert_bridge_exec_targets, is_whitelisted_router, BridgeApproval, BridgeAsset,

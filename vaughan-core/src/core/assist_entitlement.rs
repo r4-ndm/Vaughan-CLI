@@ -46,6 +46,22 @@ pub const ASSIST_BURN_AMOUNT_WEI: u128 = 13_000_000_000_000_000_000;
 /// Human amount string for UX defaults.
 pub const ASSIST_BURN_AMOUNT_HUMAN: &str = "13";
 
+/// Minimum **holding** in wei (13 WZRD, 18 decimals) for the preferred gate.
+///
+/// Holding is reversible: the entitlement is checked live against the token
+/// balance, so selling the position loses the unlock immediately. The burn gate
+/// is kept as a legacy alternative for wallets that already burned.
+pub const ASSIST_HOLD_AMOUNT_WEI: u128 = 13_000_000_000_000_000_000;
+
+/// Human amount string for holding UX defaults.
+pub const ASSIST_HOLD_AMOUNT_HUMAN: &str = "13";
+
+/// Env flag: set to `0` / `false` / `no` / `off` to disable the holding gate (default **on**).
+pub const ASSIST_HOLD_GATE_ENV: &str = "VAUGHAN_ASSIST_HOLD_GATE";
+
+/// Env var: holding threshold as a decimal WZRD string (default `13`).
+pub const ASSIST_HOLD_AMOUNT_ENV: &str = "VAUGHAN_ASSIST_HOLD_AMOUNT";
+
 /// Env flag: set to `0` / `false` / `no` / `off` to disable the burn gate (default **on**).
 pub const ASSIST_BURN_GATE_ENV: &str = "VAUGHAN_ASSIST_BURN_GATE";
 
@@ -90,6 +106,40 @@ fn env_flag_default_on(name: &str) -> bool {
 /// Minimum burn as [`U256`].
 pub fn assist_burn_amount_u256() -> U256 {
     U256::from(ASSIST_BURN_AMOUNT_WEI)
+}
+
+/// True when the holding gate should run (default **on**).
+pub fn assist_hold_gate_enabled() -> bool {
+    env_flag_default_on(ASSIST_HOLD_GATE_ENV)
+}
+
+/// True when **either** entitlement gate is enabled.
+///
+/// Callers that used to short-circuit on [`assist_burn_gate_enabled`] must use
+/// this instead, otherwise disabling the burn gate silently skips the holding
+/// gate too.
+pub fn assist_any_gate_enabled() -> bool {
+    assist_hold_gate_enabled() || assist_burn_gate_enabled()
+}
+
+/// Holding threshold as [`U256`] (env override `VAUGHAN_ASSIST_HOLD_AMOUNT`, default 13 WZRD).
+///
+/// A malformed override falls back to the default rather than unlocking: a bad
+/// config must never make the gate easier to pass.
+pub fn assist_hold_amount_u256() -> U256 {
+    use alloy::primitives::utils::parse_units;
+    match std::env::var(ASSIST_HOLD_AMOUNT_ENV) {
+        Ok(v) => {
+            let s = v.trim();
+            if s.is_empty() {
+                return U256::from(ASSIST_HOLD_AMOUNT_WEI);
+            }
+            parse_units(s, 18)
+                .map(|u| u.into())
+                .unwrap_or_else(|_| U256::from(ASSIST_HOLD_AMOUNT_WEI))
+        }
+        Err(_) => U256::from(ASSIST_HOLD_AMOUNT_WEI),
+    }
 }
 
 /// Burn sink as checksummed hex.
@@ -187,6 +237,59 @@ pub async fn vault_has_assist_burn(
     Ok(false)
 }
 
+/// Whether a single address **holds** at least the threshold of WZRD on `chain_id`.
+///
+/// One `eth_call` to `balanceOf`; no log scan and **no cache** — a position that
+/// is sold must lose the entitlement on the next check.
+pub async fn address_holds_wzrd(chain_id: u64, wallet: Address) -> Result<bool, WalletError> {
+    let Some(cfg) = entitlement_wzrd(chain_id) else {
+        return Ok(false);
+    };
+    let adapter = EvmAdapter::new(cfg.rpc_url, cfg.chain_id, cfg.network_name, &[]).await?;
+    let balance = adapter.erc20_balance_of(cfg.token, wallet).await?;
+    Ok(balance >= assist_hold_amount_u256())
+}
+
+/// True when any account in `wallets` holds the threshold (fail-closed: an RPC
+/// error propagates, it never unlocks).
+pub async fn vault_holds_wzrd(
+    _profile_dir: Option<&Path>,
+    chain_id: u64,
+    wallets: &[Address],
+) -> Result<bool, WalletError> {
+    let mut seen = std::collections::HashSet::new();
+    for &wallet in wallets {
+        if !seen.insert(wallet) {
+            continue;
+        }
+        if address_holds_wzrd(chain_id, wallet).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Holding **or** legacy burn — the single answer every gate should use.
+pub async fn vault_has_power_entitlement(
+    profile_dir: Option<&Path>,
+    chain_id: u64,
+    wallets: &[Address],
+) -> Result<bool, WalletError> {
+    if !assist_any_gate_enabled() {
+        return Ok(true);
+    }
+    if assist_unlock_bypass() {
+        return Ok(true);
+    }
+    if assist_hold_gate_enabled() && vault_holds_wzrd(profile_dir, chain_id, wallets).await? {
+        return Ok(true);
+    }
+    if assist_burn_gate_enabled() && vault_has_assist_burn(profile_dir, chain_id, wallets).await? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Scan + short retries (post-burn receipt race).
 pub async fn address_has_assist_burn_with_retry(
     profile_dir: Option<&Path>,
@@ -230,31 +333,34 @@ pub async fn require_power_features(
     chain_id: u64,
     wallets: &[Address],
 ) -> Result<(), WalletError> {
-    if vault_has_assist_burn(profile_dir, chain_id, wallets).await? {
+    if vault_has_power_entitlement(profile_dir, chain_id, wallets).await? {
         return Ok(());
     }
-    Err(WalletError::Other(
-        "assist_locked: burn at least 13 WZRD to the dead address from any account in this wallet \
-         (Settings → Unlock tools / w), then retry"
-            .into(),
-    ))
+    let threshold = assist_hold_amount_u256();
+    Err(WalletError::Other(format!(
+        "assist_locked: hold at least {threshold} wei WZRD (default {ASSIST_HOLD_AMOUNT_HUMAN} WZRD) \
+         in any account of this wallet, or burn {ASSIST_BURN_AMOUNT_HUMAN} WZRD to the dead address, \
+         then retry — the holding check is live, so selling the position re-locks power features"
+    )))
 }
 
-/// Sync helper for TUI: gate off / bypass / positive cache / live scan.
+/// Sync helper for TUI: gate off / bypass / live holding check / legacy burn.
 pub fn power_features_unlocked_blocking(
     rt: &tokio::runtime::Handle,
     profile_dir: Option<&Path>,
     chain_id: u64,
     wallets: &[Address],
 ) -> bool {
-    rt.block_on(vault_has_assist_burn(profile_dir, chain_id, wallets))
+    rt.block_on(vault_has_power_entitlement(profile_dir, chain_id, wallets))
         .unwrap_or(false)
 }
 
-/// Disk-only check (no RPC): gate off, bypass, or shared `assist-unlock.json` hit.
+/// Disk-only check (no RPC): burn cache or gate off.
 ///
-/// Used for chrome footnotes / Settings copy so a prior burn stops nagging even
-/// when the burner address was later removed from the vault.
+/// This is the **legacy burn** fast path used by chrome/settings copy so a prior
+/// burn stops nagging. It deliberately does not know about holding: a holding
+/// entitlement is checked live at the action, never cached, because a sold
+/// position must re-lock. Do not use this to authorise a write.
 pub fn assist_unlock_cached(profile_dir: &Path) -> bool {
     if !assist_burn_gate_enabled() || assist_unlock_bypass() {
         return true;
@@ -516,6 +622,65 @@ mod tests {
             assist_burn_amount_u256(),
             U256::from_str("13000000000000000000").unwrap()
         );
+    }
+
+    #[test]
+    fn hold_amount_defaults_and_parses_env() {
+        std::env::remove_var(ASSIST_HOLD_AMOUNT_ENV);
+        assert_eq!(
+            assist_hold_amount_u256(),
+            U256::from(ASSIST_HOLD_AMOUNT_WEI)
+        );
+        std::env::set_var(ASSIST_HOLD_AMOUNT_ENV, "5");
+        assert_eq!(
+            assist_hold_amount_u256(),
+            U256::from_str("5000000000000000000").unwrap()
+        );
+        // A malformed override must not make the gate easier to pass.
+        std::env::set_var(ASSIST_HOLD_AMOUNT_ENV, "not-a-number");
+        assert_eq!(
+            assist_hold_amount_u256(),
+            U256::from(ASSIST_HOLD_AMOUNT_WEI)
+        );
+        std::env::remove_var(ASSIST_HOLD_AMOUNT_ENV);
+    }
+
+    #[test]
+    fn hold_gate_defaults_on_and_any_gate_covers_both() {
+        std::env::remove_var(ASSIST_HOLD_GATE_ENV);
+        std::env::remove_var(ASSIST_BURN_GATE_ENV);
+        assert!(assist_hold_gate_enabled());
+        assert!(assist_any_gate_enabled());
+
+        std::env::set_var(ASSIST_HOLD_GATE_ENV, "0");
+        assert!(!assist_hold_gate_enabled());
+        // Burn gate still on, so the combined gate stays on.
+        assert!(assist_any_gate_enabled());
+
+        std::env::set_var(ASSIST_BURN_GATE_ENV, "0");
+        assert!(!assist_any_gate_enabled());
+        std::env::remove_var(ASSIST_HOLD_GATE_ENV);
+        std::env::remove_var(ASSIST_BURN_GATE_ENV);
+    }
+
+    #[tokio::test]
+    async fn both_gates_disabled_unlocks_without_rpc() {
+        std::env::set_var(ASSIST_HOLD_GATE_ENV, "0");
+        std::env::set_var(ASSIST_BURN_GATE_ENV, "0");
+        let ok = vault_has_power_entitlement(None, 943, &[Address::ZERO])
+            .await
+            .expect("no rpc needed");
+        assert!(ok);
+        std::env::remove_var(ASSIST_HOLD_GATE_ENV);
+        std::env::remove_var(ASSIST_BURN_GATE_ENV);
+    }
+
+    #[tokio::test]
+    async fn holding_on_unknown_chain_is_false_not_error() {
+        // 369 has no WZRD configured, so holding cannot be satisfied there.
+        std::env::remove_var(ASSIST_HOLD_GATE_ENV);
+        let holds = address_holds_wzrd(369, Address::ZERO).await.unwrap();
+        assert!(!holds);
     }
 
     #[test]

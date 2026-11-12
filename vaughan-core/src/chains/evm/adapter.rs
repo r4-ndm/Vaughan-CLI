@@ -453,6 +453,32 @@ impl EvmAdapter {
         self.balance_cache.invalidate_all();
     }
 
+    /// EVM-specific: ERC-20 `balanceOf` (EIP-20) single `eth_call` returning raw [`U256`].
+    pub async fn erc20_balance_of(
+        &self,
+        token: Address,
+        wallet: Address,
+    ) -> Result<U256, WalletError> {
+        let input = IERC20Metadata::balanceOfCall { account: wallet }.abi_encode();
+        let raw = self
+            .with_provider(|provider| {
+                let input = input.clone();
+                async move {
+                    provider
+                        .call(TransactionRequest::default().to(token).input(input.into()))
+                        .await
+                        .map_err(|e| WalletError::RpcError(e.to_string()))
+                }
+            })
+            .await?;
+        if raw.is_empty() {
+            Ok(U256::ZERO)
+        } else {
+            IERC20Metadata::balanceOfCall::abi_decode_returns(&raw)
+                .map_err(|e| WalletError::Other(format!("bad balanceOf return: {e}")))
+        }
+    }
+
     /// EVM-specific: ERC-20 `balanceOf` (EIP-20) for `wallet_address`, with
     /// symbol/decimals resolved on-chain (cached).
     pub async fn get_token_balance(
@@ -466,27 +492,7 @@ impl EvmAdapter {
         }
         let token = parse_address(token_address)?;
         let wallet = parse_address(wallet_address)?;
-        let input = IERC20Metadata::balanceOfCall { account: wallet }.abi_encode();
-        let raw = self
-            .with_provider(|provider| {
-                let input = input.clone();
-                async move {
-                    provider
-                        .call(TransactionRequest::default().to(token).input(input.into()))
-                        .await
-                        .map_err(|e| WalletError::RpcError(e.to_string()))
-                }
-            })
-            .await?;
-        // An address with no code (token not deployed on this chain) returns
-        // `0x` as a *successful* call — treat that as a zero balance rather
-        // than failing the whole read.
-        let raw_balance = if raw.is_empty() {
-            U256::ZERO
-        } else {
-            IERC20Metadata::balanceOfCall::abi_decode_returns(&raw)
-                .map_err(|e| WalletError::Other(format!("bad balanceOf return: {e}")))?
-        };
+        let raw_balance = self.erc20_balance_of(token, wallet).await?;
         let (symbol, name, decimals) = self.get_token_metadata(token_address).await?;
         let formatted = format_units(raw_balance, decimals).unwrap_or_else(|_| "0.0".to_string());
         let bal = Balance {

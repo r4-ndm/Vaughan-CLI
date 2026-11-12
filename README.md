@@ -107,7 +107,7 @@ supported but real money — treat mistakes as permanent.
 | `m` | History | Recent token transfers |
 | `c` | Keys › Hardware | Hardware hub — Ledger / Trezor setup |
 | `n` | Settings | Network, account, password, theme |
-| `w` | Dashboard (burn gate) | Prefill a ≥13 WZRD burn-unlock send |
+| `w` | Dashboard (tools gate) | Prefill the legacy WZRD burn-unlock send (holding ≥13 WZRD is the default unlock) |
 | `q` | Web (optional) | Optional VB / Freedom fallback (Freedom parked — see docs) |
 | `1` | Auto-Trader | Launch the Hyperliquid auto-trader dashboard |
 
