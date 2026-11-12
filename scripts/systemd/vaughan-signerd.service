@@ -1,0 +1,26 @@
+[Unit]
+Description=Vaughan Isolated Signer Daemon (vaughan signerd)
+Documentation=https://github.com/r4-ndm/Vaughan-CLI
+After=network.target
+
+[Service]
+Type=simple
+User=vaughan-signer
+Group=vaughan-signer
+EnvironmentFile=-/etc/vaughan/sentient.env
+ExecStart=/usr/local/bin/vaughan signerd --store /var/lib/vaughan/sentient --socket /run/vaughan/signerd.sock --allow-uid @OWNER_UID@
+RuntimeDirectory=vaughan
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=3
+
+# Hardening directives (plan §7 S3)
+ProtectSystem=strict
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/vaughan
+
+[Install]
+WantedBy=multi-user.target
