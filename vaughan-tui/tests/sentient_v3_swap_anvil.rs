@@ -163,7 +163,7 @@ fn test_v2_proposal_still_calls_fresh_v2_quoter() {
         },
         router,
         amount_in,
-        Bytes::new(),
+        Bytes::from(vec![0x7f, 0xf3, 0x6a, 0xb5, 0x00]),
         250_000,
         true,
         "v2 swap",
@@ -179,6 +179,48 @@ fn test_v2_proposal_still_calls_fresh_v2_quoter() {
             );
         }
         other => panic!("expected ProviderError::Internal from quoter, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_v2_proposal_with_invalid_calldata_selector_is_refused() {
+    let anvil = Anvil::start();
+    let (wallet, _dir) = setup_sentient_wallet(&anvil);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+
+    let router = address!("DaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707");
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let amount_in = U256::from(500_000_000_000_000_000u64);
+
+    let v2_prop = TxProposal::new(
+        "prop_v2_bad_sel",
+        ProposalType::DexSwap {
+            router,
+            path: vec![token_in, token_out],
+            amount_in,
+            min_amount_out: U256::from(100),
+            dex_kind: DexSwapKind::V2,
+        },
+        router,
+        amount_in,
+        Bytes::from(vec![0x12, 0x34, 0x56, 0x78]),
+        250_000,
+        true,
+        "v2 bad sel",
+    )
+    .with_chain(943, Some("pulsechain-testnet-v4".into()));
+
+    let err = gate_sentient_proposal(&wallet, rt.handle(), &breaker, &v2_prop).unwrap_err();
+    match err {
+        ProviderError::InvalidParams(msg) => {
+            assert!(
+                msg.contains("does not belong to the audited V2 swap family"),
+                "expected V2 selector error, got: {msg}"
+            );
+        }
+        other => panic!("expected ProviderError::InvalidParams, got {other:?}"),
     }
 }
 

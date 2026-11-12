@@ -84,6 +84,36 @@ pub fn is_allowed_dex_v2_router(chain_id: u64, router: Address) -> bool {
     v2_routers_for_chain(chain_id).contains(&router.into_array())
 }
 
+/// Canonical Uniswap V2 router swap function selectors:
+/// - `0x38ed1739`: `swapExactTokensForTokens`
+/// - `0x7ff36ab5`: `swapExactETHForTokens`
+/// - `0x18cbafe5`: `swapExactTokensForETH`
+/// - `0xfb3bdb41`: `swapETHForExactTokens`
+/// - `0x8803dbee`: `swapTokensForExactTokens`
+/// - `0x4a25e94a`: `swapTokensForExactETH`
+/// - `0x5c11d795`: `swapExactTokensForTokensSupportingFeeOnTransferTokens`
+/// - `0xb6f9de95`: `swapExactETHForTokensSupportingFeeOnTransferTokens`
+/// - `0x791ac947`: `swapExactTokensForETHSupportingFeeOnTransferTokens`
+pub const V2_SWAP_SELECTORS: &[[u8; 4]] = &[
+    [0x38, 0xed, 0x17, 0x39],
+    [0x7f, 0xf3, 0x6a, 0xb5],
+    [0x18, 0xcb, 0xaf, 0xe5],
+    [0xfb, 0x3b, 0xdb, 0x41],
+    [0x88, 0x03, 0xdb, 0xee],
+    [0x4a, 0x25, 0xe9, 0x4a],
+    [0x5c, 0x11, 0xd7, 0x95],
+    [0xb6, 0xf9, 0xde, 0x95],
+    [0x79, 0x1a, 0xc9, 0x47],
+];
+
+/// True when `calldata` starts with an audited Uniswap V2 swap function selector.
+pub fn is_v2_swap_selector(calldata: &[u8]) -> bool {
+    if calldata.len() < 4 {
+        return false;
+    }
+    V2_SWAP_SELECTORS.iter().any(|s| s == &calldata[..4])
+}
+
 /// True when `router` is a catalogued Uni/Pancake V3 SwapRouter for `chain_id`.
 pub fn is_allowed_dex_v3_router(chain_id: u64, router: Address) -> bool {
     v3_routers_for_chain(chain_id).contains(&router.into_array())

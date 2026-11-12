@@ -13,7 +13,7 @@ use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{
     apply_proposal, fee_spike_exceeds_threshold, guard_mainnet_write,
     is_allowed_agg_router_on_chain, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
-    quote_v2_exact_in, OperatingMode, WalletState,
+    is_v2_swap_selector, quote_v2_exact_in, OperatingMode, WalletState,
 };
 use vaughan_provider::ProviderError;
 
@@ -272,6 +272,16 @@ pub fn gate_sentient_proposal(
                         net.chain_id
                     )));
                 }
+                if proposal.calldata.len() < 4 || !is_v2_swap_selector(&proposal.calldata) {
+                    let sel = if proposal.calldata.len() >= 4 {
+                        format!("0x{}", hex::encode(&proposal.calldata[..4]))
+                    } else {
+                        format!("0x{}", hex::encode(&proposal.calldata))
+                    };
+                    return Err(ProviderError::InvalidParams(format!(
+                        "calldata selector {sel} does not belong to the audited V2 swap family"
+                    )));
+                }
                 let quote = handle
                     .block_on(quote_v2_exact_in(&net.rpc_url, *router, *amount_in, path))
                     .map_err(|e| {
@@ -280,6 +290,11 @@ pub fn gate_sentient_proposal(
                             e.user_message()
                         ))
                     })?;
+                if quote.amount_out.is_zero() || min_amount_out.is_zero() {
+                    return Err(ProviderError::InvalidParams(
+                        "quote or min_amount_out is zero: auto-exec refuses unbounded swap with no minimum output protection".into(),
+                    ));
+                }
                 let max_bps = u64::from(breaker.config().max_slippage_bps.min(10_000));
                 let floor =
                     quote.amount_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);

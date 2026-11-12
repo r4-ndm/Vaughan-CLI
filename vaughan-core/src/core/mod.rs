@@ -103,7 +103,7 @@ pub use dex_quote::{
 };
 pub use dex_routers::{
     dex_routers_labeled, is_allowed_dex_router, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
-    venue_wrapped_native, wpls_for_chain, PULSEX_V2_MAINNET,
+    is_v2_swap_selector, venue_wrapped_native, wpls_for_chain, PULSEX_V2_MAINNET,
 };
 pub use dexscreener::{
     catalog_chain_id_for_dex_slug, resolve_dex_chain, DexScreenerClient, DEFAULT_DEXSCREENER_CHAIN,
