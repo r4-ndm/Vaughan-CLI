@@ -19,7 +19,10 @@ pub use dca::{
     DcaPlanProposal, DcaStatus, DcaTrigger, DcaVenue, MIN_INTERVAL_SECS,
 };
 pub use error::AgentError;
-pub use paths::profile_dir;
+pub use paths::{
+    assert_signer_store_writable, is_signer_mode_active, profile_dir, set_signer_mode_override,
+    SignerStore, SignerStoreError, ENV_SIGNER_MODE, ENV_SIGNER_STORE,
+};
 pub use presets::{apply_preset, presets_root, BUNDLED_PRESET_IDS};
 pub use proposal::{DexSwapKind, ProposalType, TxProposal};
 pub use sentient::{

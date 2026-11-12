@@ -28,6 +28,7 @@ pub struct StealthPendingFile {
 
 /// Append a freshly minted stealth destination address to `<profile_dir>/stealth-pending.json`.
 pub fn record_stealth_pending(dir: &Path, address: Address) -> Result<(), AgentError> {
+    crate::paths::assert_signer_store_writable(dir)?;
     let file_path = dir.join(STEALTH_PENDING_FILE);
     let mut file_data = if file_path.exists() {
         let raw = fs::read_to_string(&file_path)

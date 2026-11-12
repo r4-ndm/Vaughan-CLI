@@ -24,6 +24,7 @@ pub fn presets_root() -> PathBuf {
 
 /// Copy a bundled preset’s `SKILL.md` + `policy.toml` into a profile directory.
 pub fn apply_preset(preset_id: &str, profile_dir: &Path) -> Result<PathBuf, AgentError> {
+    crate::paths::assert_signer_store_writable(profile_dir)?;
     if !BUNDLED_PRESET_IDS.contains(&preset_id) {
         return Err(AgentError::InvalidToolCall(format!(
             "unknown preset `{preset_id}` — try: {}",

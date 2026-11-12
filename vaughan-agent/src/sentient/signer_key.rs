@@ -33,6 +33,7 @@ pub fn derive_sentient_queue_key(signer_key: &[u8]) -> [u8; 32] {
 /// If `signer.key` does not exist, generates 32 cryptographically secure random bytes
 /// and writes them as hex. Ensures mode 0600 and process UID ownership.
 pub fn init_signer_key(profile_dir: &Path) -> Result<PathBuf, AgentError> {
+    crate::paths::assert_signer_store_writable(profile_dir)?;
     fs::create_dir_all(profile_dir)
         .map_err(|e| AgentError::ProviderError(format!("create profile dir: {e}")))?;
     let path = profile_dir.join(SIGNER_KEY_FILE);

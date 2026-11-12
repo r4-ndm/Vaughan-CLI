@@ -34,4 +34,7 @@ pub enum AgentError {
 
     #[error("{0}")]
     SpendGuard(String),
+
+    #[error("{0}")]
+    SignerStoreUnavailable(#[from] crate::paths::SignerStoreError),
 }

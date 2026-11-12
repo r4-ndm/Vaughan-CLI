@@ -33,6 +33,7 @@ pub fn load_plans(dir: &Path) -> Result<DcaPlanFile, AgentError> {
 
 /// Atomically replace `dca-plans.json` (tmp + rename, 0600 on Unix).
 pub fn save_plans(dir: &Path, file: &DcaPlanFile) -> Result<(), AgentError> {
+    crate::paths::assert_signer_store_writable(dir)?;
     fs::create_dir_all(dir).map_err(|e| {
         AgentError::ProviderError(format!("failed to create {}: {e}", dir.display()))
     })?;

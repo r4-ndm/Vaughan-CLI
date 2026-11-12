@@ -222,6 +222,8 @@ impl SpendLedger {
             });
         }
 
+        crate::paths::assert_signer_store_writable(dir)?;
+
         fs::create_dir_all(dir).map_err(|e| {
             AgentError::SpendGuard(format!("spend_ledger_disk: create profile dir: {e}"))
         })?;

@@ -410,6 +410,7 @@ pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
 /// Atomically write `sentient-policy.toml` after validation (0600 — the file
 /// is a fund-safety control, not casual config).
 pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentError> {
+    crate::paths::assert_signer_store_writable(dir)?;
     policy.validate()?;
     fs::create_dir_all(dir).map_err(|e| {
         AgentError::ProviderError(format!("failed to create {}: {e}", dir.display()))
