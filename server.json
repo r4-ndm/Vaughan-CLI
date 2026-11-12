@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.r4-ndm/vaughan",
   "description": "Self-custody wallet for autonomous agents. Keys stay in a local Rust vault; the agent gets an allowance (per-asset 24h cap + destination allowlist) instead of a key. Read-only quotes, proposals, swaps, transfers and DCA under policy; every money path is charged against a persisted spend ledger.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "repository": {
     "url": "https://github.com/r4-ndm/Vaughan-CLI",
     "source": "github"
@@ -12,7 +12,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "vaughan-mcp",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "transport": {
         "type": "stdio"
       },
