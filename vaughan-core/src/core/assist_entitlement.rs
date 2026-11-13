@@ -674,6 +674,8 @@ mod tests {
         std::env::remove_var(ASSIST_BURN_GATE_ENV);
     }
 
+    // Holding the env lock across await is the point: the mutations stay serialised.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn both_gates_disabled_unlocks_without_rpc() {
         let _env = env_guard();
@@ -687,6 +689,8 @@ mod tests {
         std::env::remove_var(ASSIST_BURN_GATE_ENV);
     }
 
+    // Holding the env lock across await is the point: the mutations stay serialised.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn holding_on_unknown_chain_is_false_not_error() {
         let _env = env_guard();
@@ -763,6 +767,8 @@ mod tests {
 
     /// Live getLogs against public 943 RPC (manual / CI opt-in).
     #[tokio::test]
+    // Holding the env lock across await is the point: the mutations stay serialised.
+    #[allow(clippy::await_holding_lock)]
     #[ignore = "live 943 RPC — run with --ignored"]
     async fn live_943_zero_address_has_no_assist_burn() {
         let _env = env_guard();
