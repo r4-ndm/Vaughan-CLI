@@ -93,7 +93,11 @@ pub enum SignerIntent {
         chain_id: u64,
         legs: Vec<BatchTransferLeg>,
     },
-    /// DCA order slice execution (scheduled for S2).
+    /// DCA order slice execution.
+    ///
+    /// The signer daemon re-derives a live quote from the pool/pair, classifies
+    /// the venue (V2 pair or V3 pool), enforces caller slippage via `corridor_min_out`
+    /// and budget caps, and constructs the swap calldata internally from typed fields.
     DcaSlice {
         plan_id: String,
         slice_index: u64,
@@ -102,7 +106,11 @@ pub enum SignerIntent {
         amount_in: U256,
         corridor_min_out: U256,
     },
-    /// Stealth note sweep (scheduled for S2).
+    /// Stealth note sweep.
+    ///
+    /// Sweeps an announced ERC-5564 stealth payment note to the active account.
+    /// The signer daemon validates spending limits and constructs the transfer calldata
+    /// internally from typed fields.
     SweepStealth {
         chain_id: u64,
         stealth_address: Address,
