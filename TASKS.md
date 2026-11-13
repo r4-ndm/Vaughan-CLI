@@ -2,19 +2,17 @@
 
 Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
-## Security debt (open)
+## Security debt (closed)
 
-- [ ] **npm publish credential is a bypass-2FA granular token with write on all packages.**
-      It sits in `~/.npmrc` (`//registry.npmjs.org/:_authToken=`) as `r4ndm` and is currently the only
-      way `vaughan-mcp` can be published — npm's account 2FA is security-key (WebAuthn) only, so a CLI
-      publish cannot satisfy it interactively.
-      Exposure: anyone who can read that file (or the fish history entry it was typed into — the token
-      value there has been redacted) can publish any version of any package the account can write.
-      It cannot perform account-identity/governance actions (Aug 2026 rule).
-      Fix: configure **Trusted Publishing** (OIDC from `release.yml`, job `publish-npm`, gated by the
-      `NPM_TRUSTED_PUBLISH` repo variable), cut one release through it, then delete the token at
-      npmjs.com/settings/r4ndm/tokens and remove the `_authToken` line from `~/.npmrc`.
-      Deadline: npm removes direct publish with bypass-2FA tokens in **January 2027**.
+- [x] **npm publish credential was a bypass-2FA granular token with write on all packages.**
+      Retired 2026-11-13. Trusted Publishing is live: `vaughan-mcp` → Settings → Trusted Publisher →
+      GitHub Actions (`r4-ndm/Vaughan-CLI`, `release.yml`, empty environment, direct publish allowed),
+      repo variable `NPM_TRUSTED_PUBLISH=true`, and `publish-npm` published `v0.2.3` over OIDC with a
+      sigstore provenance statement. The token `vaughan-publish-2` was deleted and the `_authToken`
+      line removed from `~/.npmrc` (`npm whoami` now returns 401, which is the desired state).
+      Package access is set to "require two-factor authentication and disallow bypass 2fa tokens".
+      Note for the next person: npm account 2FA is WebAuthn-only (no TOTP), so configuring the package
+      needs a real passkey/security key — the token could publish but could never change settings.
       Owner: r4ndm.
 
 - [ ] **Dependency advisories — 15 → 2 after the lockfile triage; both accepted, both blocked upstream.**
