@@ -14,12 +14,23 @@ RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=3
 
-# Hardening directives (plan §7 S3)
+# Hardening directives (S3 spec)
+ProtectHome=yes
 ProtectSystem=strict
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-MemoryDenyWriteExecute=yes
 NoNewPrivileges=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
 ReadWritePaths=/var/lib/vaughan
 
 [Install]
