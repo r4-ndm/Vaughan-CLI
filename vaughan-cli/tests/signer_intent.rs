@@ -382,3 +382,173 @@ async fn test_batch_transfer_builds_7702_execute() {
     assert_eq!(txns[1].to, dest2);
     assert_eq!(txns[1].value, U256::from(200));
 }
+
+#[tokio::test]
+async fn test_status_op_returns_budget_and_breaker_info() {
+    let (signer, _, _, dir, _) = setup_test_harness(vec![]);
+
+    let req_json = r#"{"op":"status"}"#;
+    let resp_str = signer.handle_line(req_json).await;
+    let resp: SignerResponse = serde_json::from_str(&resp_str).unwrap();
+
+    assert!(resp.ok);
+    assert!(resp.budget.is_some());
+    let budget = resp.budget.unwrap();
+    assert_eq!(budget["profile"], "sentient");
+    assert_eq!(budget["enforcement"], "enforced");
+    assert_eq!(budget["daily_cap_pct"], 100);
+    assert_eq!(budget["circuit_breaker_tripped"], false);
+    assert_eq!(
+        budget["ledger_path"],
+        dir.path().join("sentient-spend.json").display().to_string()
+    );
+}
+
+#[tokio::test]
+async fn test_circuit_breaker_tripped_refuses_sign_and_reports_status() {
+    let allowed_addr = Address::repeat_byte(0x11);
+    let (signer, _, _, _, _) = setup_test_harness(vec![format!("{allowed_addr:#x}")]);
+
+    // Manually trip the circuit breaker inside the signer
+    signer.breaker().trip("emergency stop triggered in test");
+
+    // 1. Status reports breaker tripped
+    let status_resp_str = signer.handle_line(r#"{"op":"status"}"#).await;
+    let status_resp: SignerResponse = serde_json::from_str(&status_resp_str).unwrap();
+    assert!(status_resp.ok);
+    let budget = status_resp.budget.unwrap();
+    assert_eq!(budget["circuit_breaker_tripped"], true);
+    assert!(budget["circuit_breaker_reason"]
+        .as_str()
+        .unwrap()
+        .contains("emergency stop"));
+
+    // 2. Sign intent is refused by breaker
+    let intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: allowed_addr,
+        token: None,
+        amount: U256::from(100),
+    };
+    let req = serde_json::json!({
+        "op": "sign",
+        "intent": intent,
+    });
+    let sign_resp_str = signer.handle_line(&req.to_string()).await;
+    let sign_resp: SignerResponse = serde_json::from_str(&sign_resp_str).unwrap();
+    assert!(!sign_resp.ok);
+    assert_eq!(sign_resp.code, Some("circuit_breaker_tripped".to_string()));
+    assert!(sign_resp
+        .message
+        .unwrap()
+        .contains("emergency stop triggered in test"));
+}
+
+#[tokio::test]
+async fn test_signer_client_over_real_unix_socket() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+    use vaughan_cli::signerd::SignerClient;
+
+    let dest = Address::repeat_byte(0x55);
+    let (signer, _, _, dir, _) = setup_test_harness(vec![format!("{dest:#x}")]);
+    let socket_path = dir.path().join("test_signerd.sock");
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let signer_c = signer.clone();
+
+    // Spawn real socket listener loop
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let signer = signer_c.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut buf = BufReader::new(reader);
+                let mut line = String::new();
+                if buf.read_line(&mut line).await.is_ok() {
+                    let resp = signer.handle_line(&line).await + "\n";
+                    let _ = writer.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    let client = SignerClient::new(&socket_path);
+
+    // 1. Ping
+    assert!(client.ping().await);
+
+    // 2. Status
+    let status = client.status().await.unwrap();
+    assert!(status.ok);
+    assert!(status.budget.is_some());
+
+    // 3. Valid sign intent
+    let valid_intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(500),
+    };
+    let tx_hash = client.execute(&valid_intent).await.unwrap();
+    assert!(!tx_hash.is_empty());
+
+    // 4. Refused sign intent (disallowed destination)
+    let disallowed_dest = Address::repeat_byte(0x99);
+    let invalid_intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: disallowed_dest,
+        token: None,
+        amount: U256::from(500),
+    };
+    let err = client.execute(&invalid_intent).await.unwrap_err();
+    assert!(
+        err.starts_with("destination_not_allowed"),
+        "expected destination_not_allowed prefix, got: {err}"
+    );
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_socket_peer_uid_rejection() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixListener;
+    use vaughan_cli::signerd::SignerClient;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("peer_reject.sock");
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    // Allowlist that does NOT contain our current UID
+    let current_uid = rustix::process::getuid().as_raw();
+    let allowlist = vec![current_uid + 100];
+
+    let server_task = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let allowed = allowlist.clone();
+            tokio::spawn(async move {
+                let cred = stream.peer_cred().unwrap();
+                let peer_uid = cred.uid();
+                if !is_peer_uid_allowed(peer_uid, &allowed) {
+                    let resp = serde_json::to_string(&SignerResponse::error(
+                        "unauthorized",
+                        "peer UID not permitted",
+                    ))
+                    .unwrap()
+                        + "\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    let client = SignerClient::new(&socket_path);
+    let err = client.status().await.unwrap_err();
+    assert!(
+        err.starts_with("unauthorized"),
+        "expected unauthorized error, got: {err}"
+    );
+
+    server_task.abort();
+}

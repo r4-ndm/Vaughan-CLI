@@ -28,6 +28,7 @@ pub mod proposal;
 pub mod proposal_review;
 pub mod proposal_verify;
 pub mod provider_session;
+pub mod signer_client;
 pub mod signer_intent;
 pub mod site_grants;
 pub mod stealth;
@@ -170,6 +171,10 @@ pub use proposal_verify::{
     npm_mint_token_id_for_tx, npm_mint_token_id_from_logs, short_address, short_tx_hash, VerifyRow,
 };
 pub use provider_session::{ProviderSessionToken, PROVIDER_SESSION_FILE};
+pub use signer_client::{
+    resolve_signer_socket_path, SignerClient, SignerRequest, SignerResponse, DEFAULT_SIGNER_SOCKET,
+    ENV_SIGNER_SOCKET,
+};
 pub use signer_intent::{BatchTransferLeg, SignerIntent, SwapFamily};
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};
 pub use token_launch::{

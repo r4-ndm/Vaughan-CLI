@@ -18,6 +18,7 @@ pub mod quoter;
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
+pub use vaughan_core::core::signer_client::{SignerClient, SignerRequest, SignerResponse};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,7 +26,6 @@ use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, U256};
 use secrecy::SecretString;
-use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use vaughan_agent::sentient::policy::EnforcementMode;
 use vaughan_agent::sentient::SpendLedger;
@@ -52,77 +52,6 @@ pub fn find_vaughan_gid() -> Option<u32> {
     None
 }
 
-/// Request sent over the Unix socket.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SignerRequest {
-    #[serde(default)]
-    pub v: Option<u32>,
-    pub op: String,
-    #[serde(default)]
-    pub intent: Option<SignerIntent>,
-}
-
-/// Response returned by the signer daemon.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SignerResponse {
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chain_id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_digest: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tx_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-impl SignerResponse {
-    pub fn status(address: Address, chain_id: u64, store: String, policy_digest: String) -> Self {
-        Self {
-            ok: true,
-            address: Some(format!("{address:#x}")),
-            chain_id: Some(chain_id),
-            store: Some(store),
-            policy_digest: Some(policy_digest),
-            tx_hash: None,
-            code: None,
-            message: None,
-        }
-    }
-
-    pub fn sign_ok(tx_hash: impl Into<String>) -> Self {
-        Self {
-            ok: true,
-            address: None,
-            chain_id: None,
-            store: None,
-            policy_digest: None,
-            tx_hash: Some(tx_hash.into()),
-            code: None,
-            message: None,
-        }
-    }
-
-    pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            address: None,
-            chain_id: None,
-            store: None,
-            policy_digest: None,
-            tx_hash: None,
-            code: Some(code.into()),
-            message: Some(message.into()),
-        }
-    }
-}
-
 struct SignerInner {
     store: PathBuf,
     active_address: Address,
@@ -131,6 +60,7 @@ struct SignerInner {
     quoter: Arc<dyn SwapQuoter>,
     broadcaster: Arc<dyn TransactionBroadcaster>,
     balance_overrides: Mutex<HashMap<Option<Address>, U256>>,
+    breaker: Mutex<vaughan_agent::CircuitBreaker>,
 }
 
 /// Signer engine handling policy checks, ledger reservations, and calldata builds.
@@ -149,6 +79,10 @@ impl Signer {
         quoter: Arc<dyn SwapQuoter>,
         broadcaster: Arc<dyn TransactionBroadcaster>,
     ) -> Self {
+        let rpc_count = 1usize;
+        let config =
+            vaughan_agent::breaker_config_for_session(Some(&store), rpc_count).unwrap_or_default();
+        let breaker = vaughan_agent::CircuitBreaker::new(config);
         Self {
             inner: Arc::new(SignerInner {
                 store,
@@ -158,8 +92,14 @@ impl Signer {
                 quoter,
                 broadcaster,
                 balance_overrides: Mutex::new(HashMap::new()),
+                breaker: Mutex::new(breaker),
             }),
         }
+    }
+
+    /// Access the circuit breaker inside the signer.
+    pub fn breaker(&self) -> vaughan_agent::CircuitBreaker {
+        self.inner.breaker.lock().unwrap().clone()
     }
 
     /// Set a balance override for an asset (token: None for native).
@@ -222,16 +162,92 @@ impl Signer {
                 );
             }
         };
-        SignerResponse::status(
+
+        let view = match vaughan_agent::sentient::SpendLedger::snapshot(&self.inner.store) {
+            Ok(v) => v,
+            Err(e) => {
+                return SignerResponse::error(
+                    "spend_ledger_unreadable",
+                    format!("could not load spend ledger: {e}"),
+                );
+            }
+        };
+
+        let ledger_path = self.inner.store.join("sentient-spend.json");
+        let window_reset_unix = if view.window_start_unix == 0 {
+            0
+        } else {
+            view.window_start_unix.saturating_add(view.window_seconds)
+        };
+
+        let mut assets_out = Vec::new();
+        let mut asset_keys: Vec<_> = view.assets.keys().collect();
+        asset_keys.sort();
+        for key in asset_keys {
+            let item = &view.assets[key];
+            let cap = item
+                .snapshot
+                .saturating_mul(alloy::primitives::U256::from(policy.daily_cap_pct))
+                .checked_div(alloy::primitives::U256::from(100))
+                .unwrap_or(alloy::primitives::U256::ZERO);
+            let remaining = cap.saturating_sub(item.spent);
+            assets_out.push(serde_json::json!({
+                "asset": key,
+                "snapshot": item.snapshot.to_string(),
+                "spent": item.spent.to_string(),
+                "cap": cap.to_string(),
+                "remaining": remaining.to_string(),
+            }));
+        }
+
+        let is_tripped = self.inner.breaker.lock().unwrap().is_tripped();
+        let trip_reason = self.inner.breaker.lock().unwrap().trip_reason();
+
+        let mut budget_json = serde_json::json!({
+            "profile": "sentient",
+            "chain_id": self.inner.chain_id,
+            "enforcement": policy.enforcement.as_str(),
+            "daily_cap_pct": policy.daily_cap_pct,
+            "window_reset_unix": window_reset_unix,
+            "assets": assets_out,
+            "allow_transfer_to": policy.allow_transfer_to,
+            "ledger_path": ledger_path.display().to_string(),
+            "circuit_breaker_tripped": is_tripped,
+        });
+        if let Some(reason) = trip_reason {
+            budget_json["circuit_breaker_reason"] = serde_json::json!(reason);
+        }
+        if view.assets.is_empty() {
+            budget_json["note"] = serde_json::json!("no spend recorded this window");
+        }
+
+        let mut resp = SignerResponse::status(
             self.inner.active_address,
             self.inner.chain_id,
             self.inner.store.display().to_string(),
             policy.digest(),
-        )
+        );
+        resp.budget = Some(budget_json);
+        resp
     }
 
     /// Handle `{"op":"sign","intent":{…}}`.
     pub async fn handle_sign(&self, intent: SignerIntent) -> SignerResponse {
+        // 0. Circuit breaker trip check
+        if self.inner.breaker.lock().unwrap().is_tripped() {
+            let reason = self
+                .inner
+                .breaker
+                .lock()
+                .unwrap()
+                .trip_reason()
+                .unwrap_or_else(|| "halted".into());
+            return SignerResponse::error(
+                "circuit_breaker_tripped",
+                format!("circuit breaker tripped: {reason}"),
+            );
+        }
+
         // 1. Specific refusal for declared but deferred intents (S2)
         match &intent {
             SignerIntent::DcaSlice { .. } => {
@@ -397,8 +413,17 @@ impl Signer {
 
         // Sign and broadcast
         match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
             Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
@@ -579,8 +604,17 @@ impl Signer {
         };
 
         match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
             Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
@@ -677,8 +711,17 @@ impl Signer {
             intents::build_approve_tx(chain_id, self.inner.active_address, token, spender, amount);
 
         match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
             Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
@@ -726,8 +769,17 @@ impl Signer {
         };
 
         match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
             Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
@@ -779,8 +831,17 @@ impl Signer {
         };
 
         match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
             Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
@@ -834,8 +895,17 @@ impl Signer {
         let tx = intents::build_batch_transfer_tx(chain_id, self.inner.active_address, &legs);
 
         match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
             Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
