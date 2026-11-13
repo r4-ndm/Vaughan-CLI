@@ -616,6 +616,15 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
+    /// Serialises the tests that mutate process-global environment variables.
+    /// Without it `gate_defaults_on` can read the `"0"` that `gate_env_can_disable`
+    /// set a moment earlier, which fails intermittently under parallel test threads.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn burn_amount_is_13e18() {
         assert_eq!(
@@ -626,6 +635,7 @@ mod tests {
 
     #[test]
     fn hold_amount_defaults_and_parses_env() {
+        let _env = env_guard();
         std::env::remove_var(ASSIST_HOLD_AMOUNT_ENV);
         assert_eq!(
             assist_hold_amount_u256(),
@@ -647,6 +657,7 @@ mod tests {
 
     #[test]
     fn hold_gate_defaults_on_and_any_gate_covers_both() {
+        let _env = env_guard();
         std::env::remove_var(ASSIST_HOLD_GATE_ENV);
         std::env::remove_var(ASSIST_BURN_GATE_ENV);
         assert!(assist_hold_gate_enabled());
@@ -665,6 +676,7 @@ mod tests {
 
     #[tokio::test]
     async fn both_gates_disabled_unlocks_without_rpc() {
+        let _env = env_guard();
         std::env::set_var(ASSIST_HOLD_GATE_ENV, "0");
         std::env::set_var(ASSIST_BURN_GATE_ENV, "0");
         let ok = vault_has_power_entitlement(None, 943, &[Address::ZERO])
@@ -677,6 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn holding_on_unknown_chain_is_false_not_error() {
+        let _env = env_guard();
         // 369 has no WZRD configured, so holding cannot be satisfied there.
         std::env::remove_var(ASSIST_HOLD_GATE_ENV);
         let holds = address_holds_wzrd(369, Address::ZERO).await.unwrap();
@@ -730,12 +743,14 @@ mod tests {
 
     #[test]
     fn gate_defaults_on() {
+        let _env = env_guard();
         std::env::remove_var(ASSIST_BURN_GATE_ENV);
         assert!(assist_burn_gate_enabled());
     }
 
     #[test]
     fn gate_env_can_disable() {
+        let _env = env_guard();
         std::env::set_var(ASSIST_BURN_GATE_ENV, "0");
         assert!(!assist_burn_gate_enabled());
         std::env::remove_var(ASSIST_BURN_GATE_ENV);
@@ -750,6 +765,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "live 943 RPC — run with --ignored"]
     async fn live_943_zero_address_has_no_assist_burn() {
+        let _env = env_guard();
         std::env::remove_var(ASSIST_UNLOCK_BYPASS_ENV);
         let ok = address_has_assist_burn(None, WIZ4RD_TESTNET_CHAIN_ID, Address::ZERO)
             .await
