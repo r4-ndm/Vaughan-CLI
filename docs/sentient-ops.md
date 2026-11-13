@@ -41,29 +41,26 @@ Details:
 
 ## Recommended sentient stack
 
-### Sentient spend guard
+### Sentient spend guard & UID isolation
 Sentient mode bounds money movement across all autonomous sinks:
-- **Spend caps**: New policies default to 10% per trade and 20% per 24h per asset. The ledger file is `profiles/<name>/sentient-spend.json` (0600), surviving restarts. Failed broadcasts still consume reserved budget.
-- **Allowlist & exemptions**: `allow_transfer_to` defaults empty (refuses all transfers). Stealth sends (`propose_stealth_send`) bind freshly minted one-time addresses to `<profile_dir>/stealth-pending.json` (0600) and are accepted only when the destination matches an entry (consumed on gate); LP deploy steps (`LpDeployStep`) are refused until sized. Residual risk: a process running as the same UID can append to `stealth-pending.json`, separating MCP callers from note flow, not the host UID from itself. Pre-change binaries will refuse new policy files (`deny_unknown_fields`).
+- **Spend caps**: Policies define per-trade and daily caps per asset. The ledger file is stored inside the signer daemon store (`/var/lib/vaughan/sentient/sentient-spend.json`, 0600, owned by `vaughan-signer`), surviving restarts. Failed broadcasts still consume reserved budget.
+- **Allowlist & typed intents**: `allow_transfer_to` defaults empty (refuses transfers outside allowlist). Calldata is constructed inside the signer daemon from typed intents only; untyped calldata is refused without touching the signer.
+- **UID boundary**: The signer daemon runs as dedicated system user `vaughan-signer`. External processes and agents connect via `/run/vaughan/signerd.sock` subject to peer UID authentication (`SO_PEERCRED`), and cannot tamper with policies, spend ledgers, or keys.
 
 1. Create / fund profile: `vaughan --profile sentient create` (or restore).
 2. Apply a preset: `vaughan --profile sentient preset apply balanced`.
-3. Put the unlock password in a **0600** env file (never commit it):
+3. Install and start the isolated signer daemon:
 
 ```bash
-mkdir -p ~/.config/vaughan
-umask 077
-printf 'VAUGHAN_WALLET_PASSWORD=…\n' > ~/.config/vaughan/serve.env
-chmod 600 ~/.config/vaughan/serve.env
+sudo bash scripts/install-signerd.sh
+# Verifies /var/lib/vaughan/sentient ownership, migrates files, and enables vaughan-signerd.service
 ```
 
-4. Run the control plane:
+4. Run the thin serve client (or let MCP connect directly over `/run/vaughan/signerd.sock`):
 
 ```bash
-vaughan --profile sentient serve --password-env VAUGHAN_WALLET_PASSWORD
+vaughan --profile sentient serve
 ```
-
-Or install the example user unit: [`scripts/vaughan-serve.service`](../scripts/vaughan-serve.service).
 
 5. Point MCP at that profile (`vaughan-sentient` in Cursor — see [`mcp.md`](mcp.md)).
 

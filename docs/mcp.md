@@ -64,11 +64,11 @@ Install a behavior pack first: `vaughan --profile sentient preset apply balanced
 Keep `vaughan` and `vaughan-sentient` as two named servers so roles stay clear.
 Legacy on-disk profile name `degen` still triggers the same auto-exec path.
 
-## Architecture (v1)
+## Architecture
 
-- **TUI / Vaughan owns keys** — MCP never unlocks the vault.
-- **Adviser path:** MCP → loopback → TUI approval card → sign.
-- **Sentient path:** MCP → Vaughan sentient session (unlocked) → policy → auto-sign.
+- **Keys stay in signer daemon / Vaughan** — MCP never unlocks or holds vault keys.
+- **Adviser path:** MCP → loopback TCP (`127.0.0.1:8746`) → TUI approval card → human approval.
+- **Sentient path:** MCP → Unix domain socket (`/run/vaughan/signerd.sock`, peer UID authenticated) → isolated `vaughan-signerd` daemon (policy, breaker, typed calldata construction) → broadcast. Untyped tools return `intent_untyped` naming the adviser path. No `mcp.session` token file exists for sentient.
 - **Offline adviser:** MCP writes `proposals/pending/*.json` → open Vaughan later → approve.
 - **Partnership:** human and agent unlock the same seed → same funds, either may act.
 

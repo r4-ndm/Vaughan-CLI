@@ -42,7 +42,7 @@ on-chain contracts.
 | Stale simulation | Re-simulate `eth_call` at approve (default) or pre-broadcast (sentient); **except** `Batch7702` eth_call — Ambire draft uses a placeholder signature, so integrity is abi-decode `execute(txns)` + fee-spike via `estimate_self_pay_fee` + fresh `submit_batch` |
 | Wrong chain | `chain_id` on proposal; reject on mismatch |
 | Queue file tampering | HMAC-SHA256 over proposal bytes + session secret |
-| Local socket hijack | Loopback only (`127.0.0.1:8746`); random session token in `mcp.session` (0600) |
+| Local socket hijack | Adviser: loopback TCP (`127.0.0.1:8746`) with random session token in `mcp.session` (0600) · Sentient: Unix domain socket (`/run/vaughan/signerd.sock`) protected by `SO_PEERCRED` UID allowlist (`vaughan-signerd` daemon under `vaughan-signer` user); no TCP port or `mcp.session` file exists for sentient |
 | MCP exfiltrates keys | MCP process never unlocks vault; banned tools + tests |
 | Agent spends human savings | Use distinct seeds; only share mnemonic for intentional partnership |
 | Sentient batch smuggling | `Batch7702` auto-exec decodes `execute(txns)` legs; every native/ERC-20 transfer leg is sized against its own balance; unsizeable raw calls are refused (human profile required) |
@@ -93,6 +93,10 @@ see [`mcp-transport.md`](mcp-transport.md).
 | Wrong chain | `mcp_dogfood::mcp_chain_mismatch_blocks_sign`, `vaughan-core` `apply_proposal_rejects_network_mismatch` |
 | Queue tampering | `vaughan-core` `proposal_queue_rejects_tampered_hmac` |
 | Local socket hijack | `vaughan-tui/tests/mcp_listener.rs::mcp_loopback_rejects_bad_session_token` |
+| Sentient signer peer UID rejection | `vaughan-cli/tests/signer_intent.rs::test_socket_peer_uid_rejection` |
+| Sentient untyped tool isolation | `vaughan-mcp/tests/sentient_cutover.rs::test_untyped_tools_return_intent_untyped_and_do_not_touch_signer` |
+| Sentient signer policy enforcement | `vaughan-mcp/tests/sentient_cutover.rs::test_signer_refusal_surfaces_unchanged_through_mcp` |
+| Sentient no `mcp.session` written | `vaughan-cli/tests/serve_sentient_gate.rs::test_serve_sentient_creates_no_mcp_session_file` |
 | Mainnet accident | `vaughan-core` `guard_mainnet_write_gates` |
 | Approval flooding | `proposal_queue_rejects_when_full` + `check_enqueue_rate` in enqueue |
 | Fee spike at approve | `mcp_fee_spike_blocks_sign` + `fee_spike_threshold` |
@@ -123,22 +127,26 @@ MCP stdio wire format (initialize / tools/list / tools/call envelopes): see
 ```
 ┌─────────────────────────────────────────┐
 │  UNTRUSTED: Cursor / agent / MCP process │
-│  - Read + write tools (propose or auto)  │
-│  - Never holds vault password or keys    │
+│  - Runs as host UID (e.g. uid 1000)     │
+│  - Communicates via Unix domain socket  │
+│  - Typed intents only (untyped refused) │
+│  - Never holds keys, passwords, or caps │
 └──────────────────┬──────────────────────┘
-                   │ loopback socket / file queue
+                   │ Unix socket (/run/vaughan/signerd.sock, SO_PEERCRED)
                    ▼
 ┌─────────────────────────────────────────┐
-│  TRUSTED: Vaughan (unlocked profile)     │
-│  - Owns WalletState + signing            │
-│  - adviser (default): human approval     │
-│  - sentient: policy auto-sign            │
+│  TRUSTED: vaughan-signerd daemon        │
+│  - Runs as dedicated vaughan-signer UID │
+│  - Owns store at /var/lib/vaughan/      │
+│  - Enforces policy, breaker, & caps     │
+│  - Builds verified calldata & broadcasts│
 └─────────────────────────────────────────┘
 ```
 
-## v2 note
+## Sentient UID isolation & residual risk
 
-A `vaughan serve` daemon moves the trusted boundary to a long-running
-unlocked process (password via `--password-env`). MCP stdio remains unprivileged.
-v1 IPC types (`ProposalQueue`, session token, HMAC) become the daemon wire
-protocol — no throwaway work.
+For sentient profiles, all private keys (`wallet.json`, `signer.key`), policy configuration (`sentient-policy.toml`), and spend ledger records (`sentient-spend.json`) reside in `/var/lib/vaughan/sentient` owned exclusively by the `vaughan-signer` system user (mode 0700/0600). The agent process runs under the normal host UID and communicates with `vaughan-signerd` strictly via `/run/vaughan/signerd.sock`.
+
+The daemon validates peer credentials on every connection via `SO_PEERCRED` against `allow_uid`. The agent process cannot read or alter private keys, policy limits, or spend ledgers, and cannot submit arbitrary calldata (untyped tools return `intent_untyped` and never reach the signer socket).
+
+Adviser profiles retain the loopback TCP / `mcp.session` token path where explicit human approval on screen is the security control.

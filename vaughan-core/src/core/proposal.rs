@@ -737,6 +737,16 @@ impl McpSessionToken {
     }
 
     pub fn write(&self, profile_dir: &Path) -> Result<(), WalletError> {
+        let profile_name = profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if crate::core::is_sentient_profile(profile_name) {
+            return Err(WalletError::InvalidTransaction(
+                "mcp.session must never be written for sentient profiles (uses signerd socket)"
+                    .into(),
+            ));
+        }
         fs::create_dir_all(profile_dir).map_err(|e| WalletError::Io(e.to_string()))?;
         let path = profile_dir.join("mcp.session");
         write_atomic(&path, self.token.as_bytes()).map_err(|e| WalletError::Io(e.to_string()))?;
@@ -749,6 +759,13 @@ impl McpSessionToken {
     }
 
     pub fn read(profile_dir: &Path) -> Result<Option<String>, WalletError> {
+        let profile_name = profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if crate::core::is_sentient_profile(profile_name) {
+            return Ok(None);
+        }
         let path = profile_dir.join("mcp.session");
         match fs::read_to_string(&path) {
             Ok(s) if !s.trim().is_empty() => Ok(Some(s.trim().to_string())),
