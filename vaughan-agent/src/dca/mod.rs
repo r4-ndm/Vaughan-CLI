@@ -16,7 +16,10 @@ pub mod trigger;
 pub mod types;
 
 pub use build::{build_plan, build_proposal};
-pub use engine::{fire_plan, next_due_plan_id, now_unix, poll_due_id, DcaFireResult};
+pub use engine::{
+    fire_plan, next_due_plan_id, now_unix, poll_due_id, resolve_plan_pair_and_corridor,
+    DcaFireResult,
+};
 pub use store::{add_plan, cancel_plan, load_plans, save_plans, set_paused};
 pub use trigger::{advance_schedule, due_indices, is_due};
 pub use types::{

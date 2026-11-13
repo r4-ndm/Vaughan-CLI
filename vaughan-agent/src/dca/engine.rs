@@ -224,6 +224,165 @@ async fn prepare_slice(
     }
 }
 
+fn resolve_wrapped(chain_id: u64) -> Result<Address, AgentError> {
+    if let Some(addr) = vaughan_core::core::wpls_for_chain(chain_id) {
+        return Ok(addr);
+    }
+    match chain_id {
+        1 | 31337 => "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+            .parse()
+            .map_err(|e| AgentError::InvalidToolCall(format!("{e}"))),
+        11155111 => "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9"
+            .parse()
+            .map_err(|e| AgentError::InvalidToolCall(format!("{e}"))),
+        other => Err(AgentError::InvalidToolCall(format!(
+            "no wrapped native configured for chain {other}"
+        ))),
+    }
+}
+
+/// Resolve the pool/pair address and slippage-derived corridor minimum output for a DCA plan.
+pub async fn resolve_plan_pair_and_corridor(
+    rpc_url: &str,
+    chain_id: u64,
+    plan: &DcaPlan,
+) -> Result<(Address, U256), AgentError> {
+    let token_out = plan
+        .token_out_address()
+        .map_err(AgentError::InvalidToolCall)?;
+    let amount_in = plan
+        .slice_amount_u256()
+        .map_err(AgentError::InvalidToolCall)?;
+
+    let (pair, quote_out) = if let Some(pair) = plan.pair_address() {
+        if pair.is_zero() {
+            return Err(AgentError::InvalidToolCall(
+                "dca plan pair is zero address".into(),
+            ));
+        }
+        let wrapped = resolve_wrapped(chain_id)?;
+        let v3_res = vaughan_core::core::quote_v3_pool_exact_in(
+            rpc_url, chain_id, wrapped, token_out, 3000, amount_in,
+        )
+        .await;
+        if let Ok((p, out)) = v3_res {
+            if p == pair && !out.is_zero() {
+                (pair, out)
+            } else {
+                let router = vaughan_core::core::v2_swap_routers(chain_id)
+                    .next()
+                    .ok_or_else(|| {
+                        AgentError::InvalidToolCall(format!(
+                            "no V2 swap router on chain {chain_id}"
+                        ))
+                    })?;
+                let path = vec![wrapped, token_out];
+                let quoted = quote_v2_exact_in(rpc_url, router, amount_in, &path)
+                    .await
+                    .map_err(|e| AgentError::ProviderError(e.to_string()))?;
+                (pair, quoted.amount_out)
+            }
+        } else {
+            let router = vaughan_core::core::v2_swap_routers(chain_id)
+                .next()
+                .ok_or_else(|| {
+                    AgentError::InvalidToolCall(format!("no V2 swap router on chain {chain_id}"))
+                })?;
+            let path = vec![wrapped, token_out];
+            let quoted = quote_v2_exact_in(rpc_url, router, amount_in, &path)
+                .await
+                .map_err(|e| AgentError::ProviderError(e.to_string()))?;
+            (pair, quoted.amount_out)
+        }
+    } else {
+        let route = plan.venue.resolve().map_err(AgentError::InvalidToolCall)?;
+        match route {
+            DcaRouteResolved::Dex { venue, protocol } => {
+                if protocol != DexProtocol::V2 {
+                    return Err(AgentError::InvalidToolCall(
+                        "DCA direct DEX currently supports V2 only (use route=agg for V3 venues)"
+                            .into(),
+                    ));
+                }
+                let router =
+                    venue_swap_router(venue, DexProtocol::V2, chain_id).ok_or_else(|| {
+                        AgentError::InvalidToolCall(format!(
+                            "DEX venue has no V2 swap router on chain {chain_id}"
+                        ))
+                    })?;
+                let wrapped = venue_wrapped_native(venue, chain_id).ok_or_else(|| {
+                    AgentError::InvalidToolCall(format!(
+                        "no wrapped native for {} on chain {chain_id}",
+                        venue.label()
+                    ))
+                })?;
+                let path = vec![wrapped, token_out];
+                let quoted = quote_v2_exact_in(rpc_url, router, amount_in, &path)
+                    .await
+                    .map_err(|e| AgentError::ProviderError(e.to_string()))?;
+                let pair = get_v2_pair_address(rpc_url, venue, chain_id, wrapped, token_out)
+                    .await
+                    .map_err(|e| {
+                        AgentError::ProviderError(format!("could not resolve V2 pair: {e}"))
+                    })?;
+                if pair.is_zero() {
+                    return Err(AgentError::InvalidToolCall(format!(
+                        "pair does not exist on {} for token {token_out:#x}",
+                        venue.label()
+                    )));
+                }
+                (pair, quoted.amount_out)
+            }
+            DcaRouteResolved::Agg(_) => {
+                let wrapped = resolve_wrapped(chain_id)?;
+                let mut found = None;
+                for &venue in vaughan_core::core::DEX_VENUES {
+                    if let Ok(pair) =
+                        get_v2_pair_address(rpc_url, venue, chain_id, wrapped, token_out).await
+                    {
+                        if !pair.is_zero() {
+                            if let Some(router) =
+                                venue_swap_router(venue, DexProtocol::V2, chain_id)
+                            {
+                                let path = vec![wrapped, token_out];
+                                if let Ok(quoted) =
+                                    quote_v2_exact_in(rpc_url, router, amount_in, &path).await
+                                {
+                                    if !quoted.amount_out.is_zero() {
+                                        found = Some((pair, quoted.amount_out));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                found.ok_or_else(|| {
+                    AgentError::InvalidToolCall(format!(
+                        "plan `{}` cannot resolve pair for aggregator venue in sentient mode — pair contract required for sentient DCA",
+                        plan.id
+                    ))
+                })?
+            }
+        }
+    };
+
+    if quote_out.is_zero() {
+        return Err(AgentError::InvalidToolCall(
+            "DEX quote returned zero amount_out — pair may be illiquid or missing".into(),
+        ));
+    }
+
+    let min_out = min_out_after_slippage(quote_out, plan.max_slippage_bps);
+    if min_out.is_zero() {
+        return Err(AgentError::InvalidToolCall(
+            "slippage corridor derived zero minimum output".into(),
+        ));
+    }
+
+    Ok((pair, min_out))
+}
+
 /// Apply a successful or failed fire to the in-memory plan.
 pub fn record_outcome(
     plan: &mut DcaPlan,
@@ -499,6 +658,7 @@ mod tests {
             next_due_at: 0,
             dry_run: true,
             slice_log: vec![],
+            pair: None,
         }
     }
 

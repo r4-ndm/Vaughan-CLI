@@ -15,8 +15,9 @@ pub mod types;
 
 pub use dca::{
     add_plan, agg_picker_labels, build_plan, build_proposal, cancel_plan, dex_picker_slugs,
-    fire_plan, load_plans, now_unix, poll_due_id, set_paused, DcaFireResult, DcaPlan, DcaPlanFile,
-    DcaPlanProposal, DcaStatus, DcaTrigger, DcaVenue, MIN_INTERVAL_SECS,
+    fire_plan, load_plans, now_unix, poll_due_id, resolve_plan_pair_and_corridor, set_paused,
+    DcaFireResult, DcaPlan, DcaPlanFile, DcaPlanProposal, DcaStatus, DcaTrigger, DcaVenue,
+    MIN_INTERVAL_SECS,
 };
 pub use error::AgentError;
 pub use paths::{

@@ -63,6 +63,7 @@ mod tests {
             next_due_at: due,
             dry_run: true,
             slice_log: vec![],
+            pair: None,
         }
     }
 

@@ -92,6 +92,7 @@ pub fn build_plan(
         next_due_at: now, // first slice eligible immediately after approve
         dry_run,
         slice_log: vec![],
+        pair: None,
     })
 }
 

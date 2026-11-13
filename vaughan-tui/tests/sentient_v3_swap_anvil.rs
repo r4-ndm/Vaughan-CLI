@@ -962,8 +962,8 @@ async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim()
             ref msg,
         ))) => {
             assert!(
-                msg.contains("zero_corridor_min_out"),
-                "expected verbatim signerd refusal for dca_slice, got: {msg}"
+                msg.contains("cannot resolve pair"),
+                "expected refusal for dca_slice when pair cannot be resolved, got: {msg}"
             );
         }
         _ => panic!("expected UiJobResult::DcaSlice(Err(WalletError::Other))"),
@@ -979,7 +979,99 @@ async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim()
         .last()
         .unwrap()
         .error
-        .contains("zero_corridor_min_out"));
+        .contains("cannot resolve pair"));
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_sentient_dca_slice_fires_successfully_with_resolved_corridor_on_anvil() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    let anvil = Anvil::start();
+    let (wallet, dir) = setup_sentient_wallet(&anvil);
+    let (wallet_signer, _) = setup_sentient_wallet(&anvil);
+    let rt_handle = tokio::runtime::Handle::current();
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+
+    let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
+    let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707"); // tWPLS on 943
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let amount_in = U256::from(500_000_000_000_000_000u64);
+
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+    plant_factory_pool(&anvil, pool);
+    plant_v3_dca_pool(&anvil, pool, token_out, token_in, 500, sqrt, liquidity);
+    let router_requiring_value = [
+        0x34, 0x15, 0x60, 0x06, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x60, 0x00, 0xfd,
+    ];
+    plant_code(&anvil, router, &router_requiring_value);
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet_signer, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+
+    let venue = vaughan_agent::dca::DcaVenue::Dex {
+        name: "pulsex".into(),
+        protocol: "v2".into(),
+    };
+    let mut plan = vaughan_agent::dca::build_plan(
+        &format!("{token_out:#x}"),
+        &amount_in.to_string(),
+        vaughan_agent::dca::MIN_INTERVAL_SECS,
+        venue,
+        100,
+        5,
+        false,
+        943,
+        Address::from_str(wallet.active_address().unwrap()).unwrap(),
+    )
+    .unwrap();
+    plan.pair = Some(format!("{pool:#x}"));
+    let plan = vaughan_agent::dca::store::add_plan(&profile_dir, plan).unwrap();
+
+    let wallet_mutex = std::sync::Mutex::new(wallet);
+    let plan_id = plan.id.clone();
+    let profile_dir_clone = profile_dir.clone();
+    let job_res = tokio::task::spawn_blocking(move || {
+        vaughan_tui::app::execute_dca_slice_job(
+            &wallet_mutex,
+            &rt_handle,
+            plan_id,
+            profile_dir_clone,
+            breaker,
+        )
+    })
+    .await
+    .unwrap();
+
+    match job_res {
+        vaughan_tui::jobs::UiJobResult::DcaSlice(Ok(fire_res)) => {
+            assert!(fire_res.ok, "DCA slice fire must be marked ok");
+            assert!(
+                fire_res.tx_hash.starts_with("0x") && fire_res.tx_hash.len() == 66,
+                "expected valid 66-char tx hash, got: {}",
+                fire_res.tx_hash
+            );
+        }
+        vaughan_tui::jobs::UiJobResult::DcaSlice(Err(err)) => {
+            panic!("expected UiJobResult::DcaSlice(Ok(..)), got Err: {err:?}");
+        }
+        _ => panic!("expected UiJobResult::DcaSlice"),
+    }
+
+    // Verify plan in store has slices_done incremented, consecutive_failures 0, and tx_hash recorded
+    let file = vaughan_agent::dca::store::load_plans(&profile_dir).unwrap();
+    let updated_plan = file.plans.iter().find(|p| p.id == plan.id).unwrap();
+    assert_eq!(updated_plan.slices_done, 1);
+    assert_eq!(updated_plan.consecutive_failures, 0);
+    assert_eq!(updated_plan.slice_log.len(), 1);
+    assert!(updated_plan.slice_log[0].ok);
+    assert_eq!(updated_plan.slice_log[0].tx_hash.len(), 66);
+    assert_eq!(updated_plan.pair, Some(format!("{pool:#x}")));
 
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
     server_task.abort();

@@ -278,6 +278,7 @@ async fn test_dca_slice_fire_reserves_ledger() {
         next_due_at: now,
         dry_run: false,
         slice_log: vec![],
+        pair: None,
     };
     vaughan_agent::dca::add_plan(dir.path(), plan).unwrap();
 

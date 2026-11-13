@@ -5279,15 +5279,15 @@ pub fn execute_dca_slice_job(
                 "circuit_breaker_tripped: {reason}"
             ))));
         }
-        let chain_id = {
+        let (chain_id, rpc_url) = {
             let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-            w.networks().active().chain_id
+            (w.networks().active().chain_id, w.active_rpc_url())
         };
         let plans_file = match vaughan_agent::dca::store::load_plans(&profile_dir) {
             Ok(f) => f,
             Err(e) => return UiJobResult::DcaSlice(Err(WalletError::Other(e.to_string()))),
         };
-        let plan = match plans_file.plans.into_iter().find(|p| p.id == plan_id) {
+        let mut plan = match plans_file.plans.into_iter().find(|p| p.id == plan_id) {
             Some(p) => p,
             None => {
                 return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
@@ -5311,13 +5311,51 @@ pub fn execute_dca_slice_job(
             Ok(a) => a,
             Err(e) => return UiJobResult::DcaSlice(Err(WalletError::Other(e))),
         };
+        let (pair, corridor_min_out) = match handle.block_on(
+            vaughan_agent::resolve_plan_pair_and_corridor(&rpc_url, chain_id, &plan),
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                let msg = e.to_string();
+                let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
+                    p.consecutive_failures = p.consecutive_failures.saturating_add(1);
+                    if p.consecutive_failures >= vaughan_agent::dca::MAX_CONSECUTIVE_FAILURES {
+                        p.status = vaughan_agent::dca::DcaStatus::Paused;
+                    }
+                    vaughan_agent::dca::advance_schedule(p, now);
+                    p.slice_log.push(vaughan_agent::dca::SliceLog {
+                        at: now,
+                        ok: false,
+                        tx_hash: String::new(),
+                        dry_run: plan.dry_run,
+                        error: msg.clone(),
+                        amount_in_wei: amount_in.to_string(),
+                    });
+                    if p.slice_log.len() > 32 {
+                        let drop_n = p.slice_log.len() - 32;
+                        p.slice_log.drain(0..drop_n);
+                    }
+                    Ok(())
+                });
+                return UiJobResult::DcaSlice(Err(WalletError::Other(msg)));
+            }
+        };
+
+        if plan.pair.as_deref() != Some(&format!("{pair:#x}")) {
+            let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
+                p.pair = Some(format!("{pair:#x}"));
+                Ok(())
+            });
+            plan.pair = Some(format!("{pair:#x}"));
+        }
+
         let intent = SignerIntent::DcaSlice {
             plan_id: plan.id.clone(),
             slice_index: plan.slices_done as u64,
             chain_id,
-            pair: alloy::primitives::Address::ZERO,
+            pair,
             amount_in,
-            corridor_min_out: alloy::primitives::U256::ZERO,
+            corridor_min_out,
         };
         let client = SignerClient::default();
         let exec_res = handle.block_on(client.execute(&intent));

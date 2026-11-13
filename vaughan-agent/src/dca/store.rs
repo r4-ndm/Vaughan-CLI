@@ -162,6 +162,7 @@ mod tests {
             next_due_at: 1_700_000_000,
             dry_run: true,
             slice_log: vec![],
+            pair: None,
         }
     }
 

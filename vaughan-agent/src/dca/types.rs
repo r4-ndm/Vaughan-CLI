@@ -266,6 +266,9 @@ pub struct DcaPlan {
     pub dry_run: bool,
     #[serde(default)]
     pub slice_log: Vec<SliceLog>,
+    /// Pair or pool contract address (0x…) if resolved or configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<String>,
 }
 
 fn zero_wei() -> String {
@@ -278,6 +281,11 @@ impl DcaPlan {
         self.token_out
             .parse()
             .map_err(|e| format!("bad token_out: {e}"))
+    }
+
+    /// Parsed pair/pool address if present and valid.
+    pub fn pair_address(&self) -> Option<Address> {
+        self.pair.as_deref().and_then(|p| p.parse().ok())
     }
 
     /// Parsed bound account address.
