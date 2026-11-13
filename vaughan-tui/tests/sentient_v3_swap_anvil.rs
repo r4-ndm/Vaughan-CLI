@@ -16,16 +16,23 @@ use common::lp_anvil_fixtures::{plant_factory_pool, plant_v3_pool};
 use common::mock_evm::plant_code;
 use common::{Anvil, PASSWORD};
 use secrecy::SecretString;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixListener;
 use vaughan_agent::sentient::{
     AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, EnforcementMode, SpendLedger,
 };
+use vaughan_cli::signerd::{LiveSwapQuoter, Signer, WalletBroadcaster};
 use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
-use vaughan_core::core::{OperatingMode, WalletState};
+use vaughan_core::core::{OperatingMode, SignerClient, SignerIntent, SwapFamily, WalletState};
 use vaughan_core::security::hd_wallet::validate_mnemonic;
 use vaughan_provider::ProviderError;
 use vaughan_tui::provider::ApprovalKind;
 use vaughan_tui::sentient_mcp::{auto_exec_mcp_proposal, gate_sentient_proposal};
+
+static TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn encode_exact_input_single_calldata(
     token_in: Address,
@@ -72,6 +79,46 @@ fn setup_sentient_wallet(anvil: &Anvil) -> (WalletState, tempfile::TempDir) {
     vaughan_agent::sentient::save_policy(&profile_dir, &policy).unwrap();
 
     (wallet, dir)
+}
+
+fn spawn_test_signerd(
+    store: &Path,
+    wallet: WalletState,
+    rpc_url: String,
+) -> (PathBuf, tokio::task::JoinHandle<()>) {
+    let socket_path = store.join("test_signerd.sock");
+    let active_address = wallet.active_address().unwrap().parse::<Address>().unwrap();
+    let chain_id = 943;
+
+    let wallet_arc = Arc::new(tokio::sync::Mutex::new(wallet));
+    let broadcaster = Arc::new(WalletBroadcaster::new(wallet_arc));
+    let quoter = Arc::new(LiveSwapQuoter);
+    let signer = Signer::new(
+        store.to_path_buf(),
+        active_address,
+        chain_id,
+        rpc_url,
+        quoter,
+        broadcaster,
+    );
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let handle = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let signer = signer.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut buf = BufReader::new(reader);
+                let mut line = String::new();
+                if buf.read_line(&mut line).await.is_ok() {
+                    let resp = signer.handle_line(&line).await + "\n";
+                    let _ = writer.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    (socket_path, handle)
 }
 
 #[test]
@@ -516,22 +563,17 @@ fn test_router_allowlist_cross_checks() {
     }
 }
 
-#[test]
-fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
+#[tokio::test]
+async fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
+    let _guard = TEST_MUTEX.lock().await;
     let anvil = Anvil::start();
-    let (mut wallet, _dir) = setup_sentient_wallet(&anvil);
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
-        max_slippage_bps: 100, // 100 bps = 1%
-        ..Default::default()
-    });
+    let (wallet, dir) = setup_sentient_wallet(&anvil);
 
     let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
     let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
     let token_in = address!("70499adebb11efd915e3b69e700c331778628707"); // PLS/WPLS
     let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
     let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 tPLS
-    let recipient = Address::from_str(wallet.active_address().unwrap()).unwrap();
 
     // Plant mock pool, factory, and router code at SWAP_ROUTER_943 so gate & broadcast succeed on Anvil
     let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
@@ -540,100 +582,185 @@ fn test_reproduce_negative_test_proving_old_failure_shape_is_gone() {
     plant_v3_pool(&anvil, pool, sqrt, liquidity, false);
     plant_code(&anvil, router, &[0x00]);
 
-    let (p, expected_out) = rt
-        .block_on(vaughan_core::core::quote_v3_pool_exact_in(
-            &anvil.url(),
-            943,
-            token_in,
-            token_out,
-            500,
-            amount_in,
-        ))
-        .unwrap();
-    assert_eq!(p, pool);
-
-    let min_amount_out = expected_out * U256::from(9900) / U256::from(10000); // 100 bps slippage
-    let calldata = encode_exact_input_single_calldata(
+    let (p, expected_out) = vaughan_core::core::quote_v3_pool_exact_in(
+        &anvil.url(),
+        943,
         token_in,
         token_out,
         500,
-        recipient,
+        amount_in,
+    )
+    .await
+    .unwrap();
+    assert_eq!(p, pool);
+
+    let min_amount_out = expected_out * U256::from(9900) / U256::from(10000); // 100 bps slippage
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+
+    let client = SignerClient::new(&socket_path);
+
+    let intent = SignerIntent::Swap {
+        chain_id: 943,
+        family: SwapFamily::V3,
+        router,
+        path: vec![token_in, token_out],
         amount_in,
         min_amount_out,
-    );
-
-    let mut proposal = TxProposal::new(
-        "v3_swap_reproduce",
-        ProposalType::DexSwap {
-            router,
-            path: vec![token_in, token_out],
-            amount_in,
-            min_amount_out,
-            dex_kind: DexSwapKind::V3 {
-                pool,
-                fee: 500,
-                quote: expected_out,
-            },
-        },
-        router,
-        amount_in, // native-in
-        calldata,
-        350_000,
-        true,
-        "reproduced sentient swap",
-    )
-    .with_chain(943, Some("pulsechain-testnet-v4".into()));
-
-    let evm = vaughan_core::core::apply_proposal(&wallet, &proposal).unwrap();
-    let est = rt.block_on(wallet.estimate_transaction_fee(evm)).unwrap();
-    proposal.estimated_fee_wei = est.total_wei_evm();
-
-    let kind = ApprovalKind::McpProposal {
-        proposal_id: proposal.proposal_id.clone(),
-        source: "agent".into(),
-        proposal: Box::new(proposal),
+        fee: Some(500),
     };
 
-    let result = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind);
+    let result = client.execute(&intent).await;
     // MUST NOT fail with:
     // "internal error: fresh swap quote failed (fail-closed): Could not reach the network. Check your connection and RPC URL."
     // Instead, it must successfully broadcast and return a valid transaction hash!
     assert!(
         result.is_ok(),
-        "sentient V3 swap must not fail with fresh swap quote failed: {result:?}"
+        "sentient V3 swap through signer must not fail with fresh swap quote failed: {result:?}"
     );
     let tx_hash = result.unwrap();
     assert!(
         tx_hash.starts_with("0x") && tx_hash.len() == 66,
-        "expected valid tx hash, got {tx_hash}"
+        "expected valid real tx hash (0x + 64 hex), got {tx_hash}"
     );
 
     // Successful send keeps the reservation in the spend ledger
-    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
-    let snap_after_success = SpendLedger::snapshot(&profile_dir).unwrap();
+    let snap_after_success = SpendLedger::snapshot(dir.path()).unwrap();
     assert!(
         snap_after_success
             .recent
             .iter()
-            .any(|r| r.key == "v3_swap_reproduce"),
+            .any(|r| r.key == intent.idempotency_key()),
         "successful send must retain reservation in ledger"
     );
 
-    // Retrying the same proposal_id is refused as replay
-    let replay_err = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind).unwrap_err();
+    // Retrying the same intent is refused as replay
+    let replay_err = client.execute(&intent).await.unwrap_err();
     assert!(
-        replay_err.to_string().contains("spend_already_reserved"),
+        replay_err.contains("spend_already_reserved"),
         "replay of successful broadcast must be refused with spend_already_reserved: {replay_err}"
     );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_failed_send_releases_reservation_and_allows_retry() {
+    let _guard = TEST_MUTEX.lock().await;
+    let anvil = Anvil::start();
+    let (wallet, dir) = setup_sentient_wallet(&anvil);
+
+    let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
+    let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707");
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let amount_in = U256::from(500_000_000_000_000_000u64);
+
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+    plant_factory_pool(&anvil, pool);
+    plant_v3_pool(&anvil, pool, sqrt, liquidity, false);
+    // Plant REVERT bytecode at router so resimulation will revert during send
+    plant_code(&anvil, router, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+
+    let (p, expected_out) = vaughan_core::core::quote_v3_pool_exact_in(
+        &anvil.url(),
+        943,
+        token_in,
+        token_out,
+        500,
+        amount_in,
+    )
+    .await
+    .unwrap();
+    assert_eq!(p, pool);
+
+    let min_amount_out = expected_out * U256::from(9900) / U256::from(10000);
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+
+    let client = SignerClient::new(&socket_path);
+
+    let intent = SignerIntent::Swap {
+        chain_id: 943,
+        family: SwapFamily::V3,
+        router,
+        path: vec![token_in, token_out],
+        amount_in,
+        min_amount_out,
+        fee: Some(500),
+    };
+
+    let asset_key = format!("943:{token_in:#x}");
+    let snap_before = SpendLedger::snapshot(dir.path()).unwrap();
+    let spent_before = snap_before
+        .assets
+        .get(&asset_key)
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+
+    // Signer passes gate (reserves legs), but broadcast fails
+    // because the router contract reverts!
+    let result = client.execute(&intent).await;
+    assert!(
+        result.is_err(),
+        "expected send/simulation to fail: {result:?}"
+    );
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("broadcast_failed")
+            || err_msg.contains("revert")
+            || err_msg.contains("simulation reverted"),
+        "expected broadcast / simulation failure error, got: {err_msg}"
+    );
+
+    // The reservation must have been released on send failure inside signer ledger!
+    let snap_after = SpendLedger::snapshot(dir.path()).unwrap();
+    let spent_after = snap_after
+        .assets
+        .get(&asset_key)
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+    assert_eq!(
+        spent_before, spent_after,
+        "failed send must release reservation so spent budget remains unchanged"
+    );
+    assert!(
+        !snap_after
+            .recent
+            .iter()
+            .any(|r| r.key == intent.idempotency_key()),
+        "recent reservations must not retain the failed proposal id"
+    );
+
+    // Retrying with the exact same intent MUST NOT fail with spend_already_reserved
+    let retry_res = client.execute(&intent).await;
+    assert!(retry_res.is_err());
+    let retry_err = retry_res.unwrap_err();
+    assert!(
+        !retry_err.contains("spend_already_reserved"),
+        "retry must not be blocked by spend_already_reserved, got: {retry_err}"
+    );
+    assert!(
+        retry_err.contains("broadcast_failed")
+            || retry_err.contains("revert")
+            || retry_err.contains("simulation reverted"),
+        "retry should reach simulation again, got: {retry_err}"
+    );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
 }
 
 #[test]
-fn test_failed_send_releases_reservation_and_allows_retry() {
+fn test_sentient_local_signing_disabled_refuses_auto_exec_mcp_proposal() {
     let anvil = Anvil::start();
     let (mut wallet, _dir) = setup_sentient_wallet(&anvil);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
-    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
 
     let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
     let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
@@ -646,8 +773,7 @@ fn test_failed_send_releases_reservation_and_allows_retry() {
     let liquidity = 10u128.pow(22);
     plant_factory_pool(&anvil, pool);
     plant_v3_pool(&anvil, pool, sqrt, liquidity, false);
-    // Plant REVERT bytecode at router so resimulation will revert during send
-    plant_code(&anvil, router, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+    plant_code(&anvil, router, &[0x00]);
 
     let (p, expected_out) = rt
         .block_on(vaughan_core::core::quote_v3_pool_exact_in(
@@ -671,9 +797,8 @@ fn test_failed_send_releases_reservation_and_allows_retry() {
         min_amount_out,
     );
 
-    let prop_id = "v3_swap_failing_send";
     let mut proposal = TxProposal::new(
-        prop_id,
+        "v3_swap_refused_locally",
         ProposalType::DexSwap {
             router,
             path: vec![token_in, token_out],
@@ -690,7 +815,7 @@ fn test_failed_send_releases_reservation_and_allows_retry() {
         calldata,
         350_000,
         true,
-        "failing sentient swap",
+        "refused local auto exec",
     )
     .with_chain(943, Some("pulsechain-testnet-v4".into()));
 
@@ -701,56 +826,17 @@ fn test_failed_send_releases_reservation_and_allows_retry() {
     let kind = ApprovalKind::McpProposal {
         proposal_id: proposal.proposal_id.clone(),
         source: "agent".into(),
-        proposal: Box::new(proposal.clone()),
+        proposal: Box::new(proposal),
     };
 
-    let snap_before = SpendLedger::snapshot(&profile_dir).unwrap();
-    let spent_before = snap_before
-        .assets
-        .get("943:native")
-        .map(|a| a.spent)
-        .unwrap_or(U256::ZERO);
-
-    // auto_exec_mcp_proposal passes gate (reserves legs), but execute_approval_sync
-    // fails during resimulation because the router contract reverts!
     let result = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind);
     assert!(
-        result.is_err(),
-        "expected send/simulation to fail: {result:?}"
-    );
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("simulation reverted"),
-        "expected simulation reverted error, got: {err_msg}"
-    );
-
-    // The reservation must have been released on send failure!
-    let snap_after = SpendLedger::snapshot(&profile_dir).unwrap();
-    let spent_after = snap_after
-        .assets
-        .get("943:native")
-        .map(|a| a.spent)
-        .unwrap_or(U256::ZERO);
-    assert_eq!(
-        spent_before, spent_after,
-        "failed send must release reservation so spent budget remains unchanged"
-    );
-    assert!(
-        !snap_after.recent.iter().any(|r| r.key == prop_id),
-        "recent reservations must not retain the failed proposal id"
-    );
-
-    // Retrying with the exact same proposal_id MUST NOT fail with spend_already_reserved
-    let retry_res = auto_exec_mcp_proposal(&mut wallet, rt.handle(), &breaker, &kind);
-    assert!(retry_res.is_err());
-    let retry_err = retry_res.unwrap_err().to_string();
-    assert!(
-        !retry_err.contains("spend_already_reserved"),
-        "retry must not be blocked by spend_already_reserved, got: {retry_err}"
-    );
-    assert!(
-        retry_err.contains("simulation reverted"),
-        "retry should reach simulation again, got: {retry_err}"
+        matches!(
+            result,
+            Err(ProviderError::Unauthorized(ref msg))
+                if msg.contains("sentient_local_signing_disabled")
+        ),
+        "in-process execution for sentient profile must be refused by sentient_local_signing_disabled: {result:?}"
     );
 }
 

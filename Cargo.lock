@@ -8571,6 +8571,7 @@ dependencies = [
  "url",
  "vaughan-aa",
  "vaughan-agent",
+ "vaughan-cli",
  "vaughan-core",
  "vaughan-provider",
  "vaughan-railgun",

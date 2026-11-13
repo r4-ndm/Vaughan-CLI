@@ -30,6 +30,7 @@ zeroize = { workspace = true }
 dirs = { workspace = true }
 
 [dev-dependencies]
+vaughan-cli = { path = "../vaughan-cli" }
 tempfile = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
