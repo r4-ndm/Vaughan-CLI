@@ -49,7 +49,7 @@ on-chain contracts.
 | Sentient sandwich / zero min-out | Gate-time fresh quote; `min_amount_out` must be within `max_slippage_bps` of it |
 | Sentient rogue router | Audited DEX router allowlist checked both at `propose_swap` and again at the auto-exec gate |
 | Sentient gas drain | Fresh fee estimate (fail-closed) + pre-broadcast `check_gas_budget` against the session ceiling; fee-spike >10% rejected |
-| Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced` |
+| Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced`; live edits require `policy_update` over socket with Argon2id vault-password step-up, `expected_digest` CAS, two-step `acknowledge_unsafe` before `disabled`, per-UID rate limiting, and `policy-audit.jsonl` logging |
 | Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes; re-checked at the sentient gate |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
 | Runaway sentient agent | Profile policy + circuit breakers + **Ctrl+K** kill-switch (TUI) |
@@ -94,6 +94,7 @@ see [`mcp-transport.md`](mcp-transport.md).
 | Queue tampering | `vaughan-core` `proposal_queue_rejects_tampered_hmac` |
 | Local socket hijack | `vaughan-tui/tests/mcp_listener.rs::mcp_loopback_rejects_bad_session_token` |
 | Sentient signer peer UID rejection | `vaughan-cli/tests/signer_intent.rs::test_socket_peer_uid_rejection` |
+| Sentient policy password step-up & audit | `vaughan-cli/tests/signer_intent.rs::test_policy_update_*` |
 | Sentient untyped tool isolation | `vaughan-mcp/tests/sentient_cutover.rs::test_untyped_tools_return_intent_untyped_and_do_not_touch_signer` |
 | Sentient signer policy enforcement | `vaughan-mcp/tests/sentient_cutover.rs::test_signer_refusal_surfaces_unchanged_through_mcp` |
 | Sentient no `mcp.session` written | `vaughan-cli/tests/serve_sentient_gate.rs::test_serve_sentient_creates_no_mcp_session_file` |
@@ -145,8 +146,10 @@ MCP stdio wire format (initialize / tools/list / tools/call envelopes): see
 
 ## Sentient UID isolation & residual risk
 
-For sentient profiles, all private keys (`wallet.json`, `signer.key`), policy configuration (`sentient-policy.toml`), and spend ledger records (`sentient-spend.json`) reside in `/var/lib/vaughan/sentient` owned exclusively by the `vaughan-signer` system user (mode 0700/0600). The agent process runs under the normal host UID and communicates with `vaughan-signerd` strictly via `/run/vaughan/signerd.sock`.
+For sentient profiles, all private keys (`wallet.json`, `signer.key`), policy configuration (`sentient-policy.toml`), spend ledger records (`sentient-spend.json`), and policy audit entries (`policy-audit.jsonl`) reside in `/var/lib/vaughan/sentient` owned exclusively by the `vaughan-signer` system user (mode 0700/0600). The agent process runs under the normal host UID and communicates with `vaughan-signerd` strictly via `/run/vaughan/signerd.sock`.
 
 The daemon validates peer credentials on every connection via `SO_PEERCRED` against `allow_uid`. The agent process cannot read or alter private keys, policy limits, or spend ledgers, and cannot submit arbitrary calldata (untyped tools return `intent_untyped` and never reach the signer socket).
+
+Live policy updates (`policy_update` socket op via `vaughan --profile sentient policy set|confirm-unsafe` or the TUI policy screen) verify the vault password inside `vaughan-signerd` (Argon2id against `wallet.json`, redacting `Debug`, zeroizing input buffers, rate-limiting 5 failed attempts per 60s per UID, rejecting stale `expected_digest`, and appending field diffs without passwords to `policy-audit.jsonl`). Socket step-up defends against passive observers, other local processes without control of the client binary, and autonomous agent tool calls. It does **not** defend against a compromised client binary or process running as the agent UID capturing the password at input time; out-of-band `systemd-ask-password` confirmation is left as a future follow-up.
 
 Adviser profiles retain the loopback TCP / `mcp.session` token path where explicit human approval on screen is the security control.

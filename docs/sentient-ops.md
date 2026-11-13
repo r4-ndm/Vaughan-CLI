@@ -64,7 +64,19 @@ vaughan --profile sentient serve
 
 5. Point MCP at that profile (`vaughan-sentient` in Cursor — see [`mcp.md`](mcp.md)).
 
-6. Agent loop pattern:
+6. Inspect or update live sentient policy through `vaughan-signerd` (no manual root edits to `/var/lib/vaughan/sentient`):
+
+```bash
+vaughan --profile sentient policy show
+vaughan --profile sentient policy set --daily-cap-pct 50 --max-slippage-bps 250
+# Enabling enforcement=disabled requires a two-step confirmation:
+vaughan --profile sentient policy confirm-unsafe
+vaughan --profile sentient policy set --enforcement disabled
+```
+
+Mutating commands require an interactive TTY (piped/non-TTY stdin is refused so an agent shell cannot pipe a cached password into them), read the vault password with echo suppressed, verify it against `wallet.json` inside `vaughan-signerd`, reload the daemon's active `CircuitBreaker` atomically, and log `{ts, field_changes, source}` to `policy-audit.jsonl` (never the password). Press `y` in the TUI **Settings** view on a sentient profile to view/edit the same policy over the socket.
+
+7. Agent loop pattern:
 
 ```
 get_control_plane_status  →  require ready_for_writes

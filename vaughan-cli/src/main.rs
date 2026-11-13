@@ -220,6 +220,11 @@ enum Command {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// View or update sentient session policy over the signer socket.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCmd,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -404,6 +409,48 @@ enum PresetCmd {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum PolicyCmd {
+    /// Print the current sentient policy and digest from vaughan-signerd (`op:"policy"`).
+    Show,
+    /// Update sentient policy fields with interactive vault password step-up (`op:"policy_update"`).
+    Set {
+        #[arg(long)]
+        enforcement: Option<String>,
+        #[arg(long)]
+        acknowledge_unsafe: Option<bool>,
+        #[arg(long)]
+        max_position_pct: Option<u8>,
+        #[arg(long)]
+        max_approve_pct: Option<u8>,
+        #[arg(long)]
+        daily_cap_pct: Option<u8>,
+        #[arg(long, value_delimiter = ',')]
+        allow_transfer_to: Option<Vec<String>>,
+        #[arg(long)]
+        clear_allow_transfer_to: bool,
+        #[arg(long)]
+        max_slippage_bps: Option<u32>,
+        #[arg(long)]
+        max_session_gas_wei: Option<String>,
+        #[arg(long)]
+        max_consecutive_errors: Option<u32>,
+        #[arg(long)]
+        required_rpc_quorum: Option<usize>,
+        #[arg(long)]
+        expected_digest: Option<String>,
+        /// Optional key for `policy set <key> <value>` syntax.
+        key: Option<String>,
+        /// Optional value for `policy set <key> <value>` syntax.
+        value: Option<String>,
+    },
+    /// Step 1 of disabling enforcement: set acknowledge_unsafe = true with password step-up.
+    ConfirmUnsafe {
+        #[arg(long)]
+        expected_digest: Option<String>,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let Cli {
@@ -508,6 +555,11 @@ fn main() {
         },
         Some(Command::Preset { action }) => run_preset(profile, json, action),
         Some(Command::Config { action }) => run_config(profile, json, action),
+        Some(Command::Policy { action }) => {
+            vaughan_core::logging::init_logging();
+            let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            runtime.block_on(run_policy_cli(json, action))
+        }
         Some(command) => {
             vaughan_core::logging::init_logging();
             let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -970,6 +1022,7 @@ async fn run_cli(
         Command::Signerd { .. } => unreachable!("signerd handled in main"),
         Command::Preset { .. } => unreachable!("preset handled in main"),
         Command::Config { .. } => unreachable!("config handled in main"),
+        Command::Policy { .. } => unreachable!("policy handled in main"),
         Command::Propose { action } => {
             if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
                 anyhow::bail!(
@@ -1459,6 +1512,181 @@ fn run_preset(profile: String, json_mode: bool, action: PresetCmd) -> anyhow::Re
                     "  policy: {}",
                     prof.join(vaughan_agent::SENTIENT_POLICY_TOML).display()
                 );
+            });
+        }
+    }
+    Ok(())
+}
+
+async fn run_policy_cli(json_mode: bool, action: PolicyCmd) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let client = vaughan_core::core::SignerClient::default();
+
+    match action {
+        PolicyCmd::Show => {
+            let resp = client.policy().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let policy_val = resp
+                .policy
+                .ok_or_else(|| anyhow::anyhow!("missing policy in signer response"))?;
+            let digest = resp.policy_digest.unwrap_or_default();
+            let data = json!({
+                "policy": policy_val,
+                "policy_digest": digest,
+            });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("policy_digest: {digest}");
+                if let Ok(policy) = serde_json::from_value::<
+                    vaughan_agent::sentient::AgentSessionPolicy,
+                >(policy_val.clone())
+                {
+                    if let Ok(toml_str) = toml::to_string_pretty(&policy) {
+                        print!("{toml_str}");
+                        return;
+                    }
+                }
+                if let Ok(pretty) = serde_json::to_string_pretty(&policy_val) {
+                    println!("{pretty}");
+                }
+            });
+        }
+        PolicyCmd::Set {
+            enforcement,
+            acknowledge_unsafe,
+            max_position_pct,
+            max_approve_pct,
+            daily_cap_pct,
+            allow_transfer_to,
+            clear_allow_transfer_to,
+            max_slippage_bps,
+            max_session_gas_wei,
+            max_consecutive_errors,
+            required_rpc_quorum,
+            expected_digest,
+            key,
+            value,
+        } => {
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!("policy update requires an interactive TTY for vault password entry");
+            }
+
+            let resp = client.policy().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let current_digest = resp.policy_digest;
+            let policy_val = resp
+                .policy
+                .ok_or_else(|| anyhow::anyhow!("missing policy in signer response"))?;
+            let mut policy: vaughan_agent::sentient::AgentSessionPolicy =
+                serde_json::from_value(policy_val)
+                    .map_err(|e| anyhow::anyhow!("invalid policy from signer: {e}"))?;
+
+            let mut changed = false;
+            if let Some(mode) = enforcement {
+                policy
+                    .set_field("enforcement", &mode)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                changed = true;
+            }
+            if let Some(ack) = acknowledge_unsafe {
+                policy.acknowledge_unsafe = ack;
+                changed = true;
+            }
+            if let Some(pct) = max_position_pct {
+                policy.max_position_pct = pct;
+                changed = true;
+            }
+            if let Some(pct) = max_approve_pct {
+                policy.max_approve_pct = Some(pct);
+                changed = true;
+            }
+            if let Some(pct) = daily_cap_pct {
+                policy.daily_cap_pct = pct;
+                changed = true;
+            }
+            if let Some(list) = allow_transfer_to {
+                policy.allow_transfer_to = list
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                changed = true;
+            }
+            if clear_allow_transfer_to {
+                policy.allow_transfer_to.clear();
+                changed = true;
+            }
+            if let Some(bps) = max_slippage_bps {
+                policy.max_slippage_bps = bps;
+                changed = true;
+            }
+            if let Some(gas) = max_session_gas_wei {
+                policy.max_session_gas_wei = gas;
+                changed = true;
+            }
+            if let Some(errs) = max_consecutive_errors {
+                policy.max_consecutive_errors = errs;
+                changed = true;
+            }
+            if let Some(quorum) = required_rpc_quorum {
+                policy.required_rpc_quorum = quorum;
+                changed = true;
+            }
+            match (key, value) {
+                (Some(k), Some(v)) => {
+                    policy
+                        .set_field(&k, &v)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    changed = true;
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    anyhow::bail!("usage: policy set <key> <value> (or use --daily-cap-pct, …)");
+                }
+                (None, None) => {}
+            }
+            if !changed {
+                anyhow::bail!(
+                    "no policy fields specified — pass flags like --daily-cap-pct 10 or <key> <value>"
+                );
+            }
+
+            let password = SecretString::from(rpassword::prompt_password("vault password: ")?);
+            let new_val = serde_json::to_value(&policy)?;
+            let update_resp = client
+                .policy_update(password, new_val, expected_digest.or(current_digest))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let new_digest = update_resp.policy_digest.unwrap_or_default();
+            let data = json!({ "policy_digest": new_digest });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("policy_digest: {new_digest}");
+            });
+        }
+        PolicyCmd::ConfirmUnsafe { expected_digest } => {
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!("policy update requires an interactive TTY for vault password entry");
+            }
+            let resp = client.policy().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let current_digest = resp.policy_digest;
+            let policy_val = resp
+                .policy
+                .ok_or_else(|| anyhow::anyhow!("missing policy in signer response"))?;
+            let mut policy: vaughan_agent::sentient::AgentSessionPolicy =
+                serde_json::from_value(policy_val)
+                    .map_err(|e| anyhow::anyhow!("invalid policy from signer: {e}"))?;
+            policy.acknowledge_unsafe = true;
+
+            let password = SecretString::from(rpassword::prompt_password("vault password: ")?);
+            let new_val = serde_json::to_value(&policy)?;
+            let update_resp = client
+                .policy_update(password, new_val, expected_digest.or(current_digest))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let new_digest = update_resp.policy_digest.unwrap_or_default();
+            let data = json!({
+                "acknowledge_unsafe": true,
+                "policy_digest": new_digest,
+            });
+            json_out::print_json_value(json_mode, &data, || {
+                println!("acknowledge_unsafe: true");
+                println!("policy_digest: {new_digest}");
             });
         }
     }

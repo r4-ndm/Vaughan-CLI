@@ -1,12 +1,13 @@
 //! Settings / Net: switch networks; add, edit, or remove custom EVM networks;
 //! Agent CDP / autonomy toggles; manage F3 wallets (remove hardware / imports);
-//! change vault password.
+//! change vault password; edit Sentient daemon policy via password step-up.
 //!
 //! Footer `n` / `i` both land here. Built-ins are fixed; customs persist in the vault.
 //! Built-in RPC: **`r`**. Custom chains: **`a`** add · **`e`** edit · **`d`** delete.
 //! Agent box (below networks): Enter toggles CDP / autonomy.
 //! Wallets: **`u`** list · **`d`** delete (confirm; imports need vault password).
 //! Password: **`p`** change vault password (current → new → confirm).
+//! Sentient policy: **`y`** view/update session policy via signer daemon.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -18,7 +19,10 @@ use ratatui::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use tokio::runtime::Handle;
-use vaughan_core::core::{AgentAutonomyTier, OperatingMode, WalletState};
+use vaughan_agent::sentient::{AgentSessionPolicy, EnforcementMode};
+use vaughan_core::core::{
+    is_sentient_profile, AgentAutonomyTier, OperatingMode, SignerClient, WalletState,
+};
 use vaughan_core::security::encryption::validate_password_policy;
 use vaughan_core::security::AccountKind;
 use vaughan_provider::{EventBus, ProviderEvent};
@@ -50,7 +54,27 @@ enum Stage {
     ChangePasswordNew,
     /// Change vault password — confirm new password.
     ChangePasswordConfirm,
+    /// Sentient session policy editor (backed by `vaughan signerd`).
+    Policy,
+    /// Vault password prompt for sentient `policy_update` (never cached or pre-filled).
+    PolicyPassword,
 }
+
+const POLICY_FIELDS: &[(&str, &str)] = &[
+    (
+        "enforcement",
+        "enforced | warn-only | disabled (Space toggles)",
+    ),
+    ("max_position_pct", "integer 1..=100"),
+    ("max_approve_pct", "integer 1..=100 or none"),
+    ("daily_cap_pct", "integer 1..=100"),
+    ("max_slippage_bps", "integer 1..=9999 (< 100%)"),
+    ("max_session_gas_wei", "wei integer"),
+    ("max_consecutive_errors", "integer >= 1"),
+    ("required_rpc_quorum", "integer >= 1"),
+    ("allow_transfer_to", "comma-separated 0x addresses"),
+    ("acknowledge_unsafe", "true | false (Space toggles)"),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum FormMode {
@@ -90,6 +114,11 @@ pub struct SettingsView {
     /// Held while collecting the new password (cleared on cancel / success).
     pending_current_password: Option<SecretString>,
     pending_new_password: Option<SecretString>,
+    /// Sentient daemon policy draft and digest for optimistic concurrency (`expected_digest`).
+    policy_draft: Option<AgentSessionPolicy>,
+    policy_digest: String,
+    policy_focus: usize,
+    policy_value: Input,
     status: String,
 }
 
@@ -119,6 +148,10 @@ impl SettingsView {
             account_password: Input::new(true, "vault password"),
             pending_current_password: None,
             pending_new_password: None,
+            policy_draft: None,
+            policy_digest: String::new(),
+            policy_focus: 0,
+            policy_value: Input::new(false, "value"),
             status: String::new(),
         }
     }
@@ -248,9 +281,14 @@ impl SettingsView {
                     footer_area,
                     Some(brand::fade_line(" Shortcuts ")),
                 );
+                let shortcuts = if is_sentient_wallet(wallet) {
+                    "↑↓ move · Enter select · a add · e edit · r RPC · d delete · u wallets · p password · y policy · h udev · k Keys · Esc"
+                } else {
+                    "↑↓ move · Enter select · a add · e edit · r RPC · d delete · u wallets · p password · h udev · k Keys · Esc"
+                };
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        "↑↓ move · Enter select · a add · e edit · r RPC · d delete · u wallets · p password · h udev · k Keys · Esc",
+                        shortcuts,
                         Style::default().fg(Color::DarkGray),
                     ))),
                     footer_inner,
@@ -547,6 +585,101 @@ impl SettingsView {
                 );
                 render_labeled_input(frame, pw, label, &self.account_password, true);
             }
+            Stage::Policy => {
+                let [hdr_area, list_area, edit_area] = Layout::vertical([
+                    Constraint::Length(4),
+                    Constraint::Min(6),
+                    Constraint::Length(3),
+                ])
+                .areas(content);
+                let digest_short = if self.policy_digest.len() > 12 {
+                    &self.policy_digest[..12]
+                } else {
+                    &self.policy_digest
+                };
+                let hdr_inner = brand::render_faded_box(
+                    frame,
+                    hdr_area,
+                    Some(brand::fade_line(" Sentient policy (signerd) ")),
+                );
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(format!("Digest: {digest_short}")),
+                        Line::from(Span::styled(
+                            "↑↓ select · edit value · Space toggle · Enter apply (vault password) · Esc back",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ]),
+                    hdr_inner,
+                );
+
+                let items: Vec<ListItem> = match &self.policy_draft {
+                    Some(policy) => POLICY_FIELDS
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, _hint))| {
+                            let val = policy_field_display(policy, i);
+                            let line_text = if val.is_empty() {
+                                format!("  {name:<24} (empty)")
+                            } else {
+                                format!("  {name:<24} {val}")
+                            };
+                            let style = if i == self.policy_focus {
+                                Style::default().fg(Color::Black).bg(Color::Cyan)
+                            } else {
+                                Style::default()
+                            };
+                            ListItem::new(Line::from(Span::styled(line_text, style)))
+                        })
+                        .collect(),
+                    None => vec![ListItem::new(Line::from("  No policy loaded"))],
+                };
+                let list_inner = brand::render_faded_box(frame, list_area, None);
+                frame.render_widget(List::new(items), list_inner);
+
+                let (field_name, field_hint) =
+                    POLICY_FIELDS[self.policy_focus.min(POLICY_FIELDS.len() - 1)];
+                let label = format!("{field_name} ({field_hint})");
+                render_labeled_input(frame, edit_area, &label, &self.policy_value, true);
+            }
+            Stage::PolicyPassword => {
+                let [msg, pw] =
+                    Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(content);
+                let msg_inner = brand::render_faded_box(
+                    frame,
+                    msg,
+                    Some(brand::fade_line(" Confirm policy update (step-up) ")),
+                );
+                let summary = self
+                    .policy_draft
+                    .as_ref()
+                    .map(|p| {
+                        format!(
+                            "enforcement={}  max_position={}  daily_cap={}  slippage={}bps  unsafe={}",
+                            p.enforcement.as_str(),
+                            p.max_position_pct,
+                            p.daily_cap_pct,
+                            p.max_slippage_bps,
+                            p.acknowledge_unsafe,
+                        )
+                    })
+                    .unwrap_or_default();
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(summary),
+                        Line::from(
+                            "Enter vault password to authorize signer daemon policy_update (never cached).",
+                        ),
+                        Line::from(Span::styled(
+                            "Enter submit · Esc cancel back to policy fields",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ])
+                    .wrap(Wrap { trim: false }),
+                    msg_inner,
+                );
+                render_labeled_input(frame, pw, "Vault password", &self.account_password, true);
+            }
         }
 
         frame.render_widget(status_paragraph(&self.status), status_area);
@@ -560,11 +693,11 @@ impl SettingsView {
         &mut self,
         key: KeyEvent,
         wallet: &mut WalletState,
-        _handle: &Handle,
+        handle: &Handle,
         events: &EventBus,
     ) -> KeyOutcome {
         match self.stage {
-            Stage::List => self.handle_list_key(key, wallet, events),
+            Stage::List => self.handle_list_key(key, wallet, handle, events),
             Stage::Form => self.handle_form_key(key, wallet, events),
             Stage::HardwareHelp => match key.code {
                 KeyCode::Esc => {
@@ -580,6 +713,8 @@ impl SettingsView {
             Stage::ChangePasswordCurrent
             | Stage::ChangePasswordNew
             | Stage::ChangePasswordConfirm => self.handle_change_password_key(key, wallet),
+            Stage::Policy => self.handle_policy_key(key),
+            Stage::PolicyPassword => self.handle_policy_password_key(key, handle),
         }
     }
 
@@ -684,6 +819,7 @@ impl SettingsView {
         &mut self,
         key: KeyEvent,
         wallet: &mut WalletState,
+        handle: &Handle,
         events: &EventBus,
     ) -> KeyOutcome {
         let net_len = wallet.networks().networks().len();
@@ -697,6 +833,15 @@ impl SettingsView {
                 self.stage = Stage::HardwareHelp;
                 self.status.clear();
                 KeyOutcome::Consumed
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if is_sentient_wallet(wallet) {
+                    self.open_policy(handle)
+                } else {
+                    self.status =
+                        "Policy step-up is only available on the sentient profile.".into();
+                    KeyOutcome::Consumed
+                }
             }
             KeyCode::Char('u') | KeyCode::Char('U') => {
                 self.account_sel = 0;
@@ -1225,6 +1370,235 @@ impl SettingsView {
         self.symbol.set_value("");
         self.edit_network_id.clear();
         self.edit_chain_id = 0;
+    }
+
+    fn clear_policy_state(&mut self) {
+        let _ = self.account_password.take_secret();
+        self.account_password = Input::new(true, "vault password");
+        self.policy_draft = None;
+        self.policy_digest.clear();
+        self.policy_focus = 0;
+        self.policy_value.set_value("");
+    }
+
+    fn open_policy(&mut self, handle: &Handle) -> KeyOutcome {
+        let client = SignerClient::default();
+        let resp = match block_on_handle(handle, client.policy()) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status = format!("Policy load failed: {e}");
+                return KeyOutcome::Consumed;
+            }
+        };
+        let Some(policy_val) = resp.policy else {
+            self.status = "Signer daemon returned no policy payload.".into();
+            return KeyOutcome::Consumed;
+        };
+        let policy: AgentSessionPolicy = match serde_json::from_value(policy_val) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = format!("Policy decode failed: {e}");
+                return KeyOutcome::Consumed;
+            }
+        };
+        self.policy_digest = resp.policy_digest.unwrap_or_default();
+        self.policy_draft = Some(policy);
+        self.policy_focus = 0;
+        self.sync_policy_input();
+        // Never pre-fill or carry over any previous password input.
+        let _ = self.account_password.take_secret();
+        self.account_password = Input::new(true, "vault password");
+        self.stage = Stage::Policy;
+        self.status.clear();
+        KeyOutcome::Consumed
+    }
+
+    fn sync_policy_input(&mut self) {
+        if let Some(policy) = &self.policy_draft {
+            let val = policy_field_display(policy, self.policy_focus);
+            self.policy_value = Input::new(false, "value");
+            self.policy_value.set_value(&val);
+        }
+    }
+
+    fn commit_policy_field(&mut self) -> Result<(), String> {
+        let Some(draft) = self.policy_draft.as_mut() else {
+            return Err("No policy loaded.".into());
+        };
+        let (key, _) = POLICY_FIELDS[self.policy_focus.min(POLICY_FIELDS.len() - 1)];
+        draft
+            .set_field(key, self.policy_value.value())
+            .map_err(|e| e.to_string())
+    }
+
+    fn move_policy_focus(&mut self, delta: isize) -> KeyOutcome {
+        if let Err(e) = self.commit_policy_field() {
+            self.status = e;
+            return KeyOutcome::Consumed;
+        }
+        let len = POLICY_FIELDS.len() as isize;
+        let next = (self.policy_focus as isize + delta).rem_euclid(len) as usize;
+        self.policy_focus = next;
+        self.sync_policy_input();
+        self.status.clear();
+        KeyOutcome::Consumed
+    }
+
+    fn handle_policy_key(&mut self, key: KeyEvent) -> KeyOutcome {
+        match key.code {
+            KeyCode::Esc => {
+                self.clear_policy_state();
+                self.stage = Stage::List;
+                self.status = "Policy edit cancelled.".into();
+                KeyOutcome::Consumed
+            }
+            KeyCode::Up | KeyCode::BackTab => self.move_policy_focus(-1),
+            KeyCode::Down | KeyCode::Tab => self.move_policy_focus(1),
+            KeyCode::Char(' ') if self.policy_focus == 0 || self.policy_focus == 9 => {
+                if let Some(draft) = self.policy_draft.as_mut() {
+                    if self.policy_focus == 0 {
+                        draft.enforcement = match draft.enforcement {
+                            EnforcementMode::Enforced => EnforcementMode::WarnOnly,
+                            EnforcementMode::WarnOnly => EnforcementMode::Disabled,
+                            EnforcementMode::Disabled => EnforcementMode::Enforced,
+                        };
+                    } else {
+                        draft.acknowledge_unsafe = !draft.acknowledge_unsafe;
+                    }
+                    self.sync_policy_input();
+                    self.status.clear();
+                }
+                KeyOutcome::Consumed
+            }
+            _ => match self.policy_value.handle_key(key) {
+                InputAction::Ignored => KeyOutcome::NotHandled,
+                InputAction::Consumed => KeyOutcome::Consumed,
+                InputAction::Submitted => {
+                    if let Err(e) = self.commit_policy_field() {
+                        self.status = e;
+                        return KeyOutcome::Consumed;
+                    }
+                    if let Some(draft) = &self.policy_draft {
+                        if let Err(e) = draft.validate() {
+                            self.status = e.to_string();
+                            return KeyOutcome::Consumed;
+                        }
+                    }
+                    let _ = self.account_password.take_secret();
+                    self.account_password = Input::new(true, "vault password");
+                    self.stage = Stage::PolicyPassword;
+                    self.status.clear();
+                    KeyOutcome::Consumed
+                }
+            },
+        }
+    }
+
+    fn handle_policy_password_key(&mut self, key: KeyEvent, handle: &Handle) -> KeyOutcome {
+        if key.code == KeyCode::Esc {
+            let _ = self.account_password.take_secret();
+            self.account_password = Input::new(true, "vault password");
+            self.stage = Stage::Policy;
+            self.status = "Password entry cancelled.".into();
+            return KeyOutcome::Consumed;
+        }
+        match self.account_password.handle_key(key) {
+            InputAction::Ignored => KeyOutcome::NotHandled,
+            InputAction::Consumed => KeyOutcome::Consumed,
+            InputAction::Submitted => {
+                let pw = self.account_password.take_secret();
+                // Always reset immediately so the password is never cached or pre-filled.
+                self.account_password = Input::new(true, "vault password");
+                let Some(draft) = self.policy_draft.as_ref() else {
+                    drop(pw);
+                    self.stage = Stage::List;
+                    self.status = "Policy draft lost.".into();
+                    return KeyOutcome::Consumed;
+                };
+                let policy_json = match serde_json::to_value(draft) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        drop(pw);
+                        self.stage = Stage::Policy;
+                        self.status = format!("Policy encode error: {e}");
+                        return KeyOutcome::Consumed;
+                    }
+                };
+                let expected = if self.policy_digest.is_empty() {
+                    None
+                } else {
+                    Some(self.policy_digest.clone())
+                };
+                let client = SignerClient::default();
+                let res = block_on_handle(handle, client.policy_update(pw, policy_json, expected));
+                match res {
+                    Ok(resp) => {
+                        let new_digest = resp.policy_digest.unwrap_or_default();
+                        self.clear_policy_state();
+                        self.stage = Stage::List;
+                        self.status = format!("Policy updated on signerd (digest {new_digest}).");
+                        KeyOutcome::Flash("Sentient policy updated.".into())
+                    }
+                    Err(e) => {
+                        if e.contains("step_up_") {
+                            self.status = e;
+                        } else {
+                            self.stage = Stage::Policy;
+                            self.status = e;
+                        }
+                        KeyOutcome::Consumed
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_sentient_wallet(wallet: &WalletState) -> bool {
+    wallet.operating_mode() == OperatingMode::SentientTrader
+        || wallet
+            .path()
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .is_some_and(is_sentient_profile)
+}
+
+fn policy_field_display(policy: &AgentSessionPolicy, idx: usize) -> String {
+    match idx {
+        0 => policy.enforcement.as_str().to_string(),
+        1 => policy.max_position_pct.to_string(),
+        2 => policy
+            .max_approve_pct
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        3 => policy.daily_cap_pct.to_string(),
+        4 => policy.max_slippage_bps.to_string(),
+        5 => policy.max_session_gas_wei.clone(),
+        6 => policy.max_consecutive_errors.to_string(),
+        7 => policy.required_rpc_quorum.to_string(),
+        8 => policy.allow_transfer_to.join(", "),
+        _ => policy.acknowledge_unsafe.to_string(),
+    }
+}
+
+fn block_on_handle<F, T>(handle: &Handle, fut: F) -> T
+where
+    F: std::future::Future<Output = T> + Send,
+    T: Send,
+{
+    match Handle::try_current() {
+        Ok(cur) => match cur.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(fut))
+            }
+            _ => std::thread::scope(|s| {
+                s.spawn(|| handle.block_on(fut))
+                    .join()
+                    .expect("policy rpc thread panicked")
+            }),
+        },
+        Err(_) => handle.block_on(fut),
     }
 }
 

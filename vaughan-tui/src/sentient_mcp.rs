@@ -139,6 +139,28 @@ pub fn mcp_auto_exec_enabled(profile_name: &str) -> bool {
     vaughan_core::core::sentient_mode_enabled() && is_sentient_profile(profile_name)
 }
 
+fn format_policy_summary(
+    enforcement: EnforcementMode,
+    max_position_pct: u8,
+    max_slippage_bps: u32,
+) -> String {
+    match enforcement {
+        EnforcementMode::Enforced => format!(
+            "policy enforced · max {}%/trade · {:.2}% slippage cap",
+            max_position_pct,
+            max_slippage_bps as f64 / 100.0
+        ),
+        EnforcementMode::WarnOnly => format!(
+            "policy WARN-ONLY · max {}%/trade · {:.2}% slippage cap (breaches allowed)",
+            max_position_pct,
+            max_slippage_bps as f64 / 100.0
+        ),
+        EnforcementMode::Disabled => {
+            "policy DISABLED — agent trades unbounded (Ctrl+K still stops)".to_string()
+        }
+    }
+}
+
 /// One-line policy summary for a sentient session (unlock + settings).
 ///
 /// `None` for non-sentient profiles. Warn-only / disabled enforcement is
@@ -147,24 +169,33 @@ pub fn sentient_policy_line(wallet: &WalletState) -> Option<String> {
     if !mcp_auto_exec_enabled(wallet.profile_name()) {
         return None;
     }
+    if let Ok(handle) = Handle::try_current() {
+        let client = SignerClient::default();
+        if client.socket_path().exists()
+            && handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        {
+            if let Ok(resp) = tokio::task::block_in_place(|| handle.block_on(client.policy())) {
+                if let Some(pol_val) = resp.policy {
+                    if let Ok(policy) = serde_json::from_value::<
+                        vaughan_agent::sentient::AgentSessionPolicy,
+                    >(pol_val)
+                    {
+                        return Some(format_policy_summary(
+                            policy.enforcement,
+                            policy.max_position_pct,
+                            policy.max_slippage_bps,
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let dir = vaughan_agent::paths::profile_dir(wallet.path());
     let rpc_count = 1usize.saturating_add(wallet.networks().active().fallback_rpc_urls.len());
     Some(match breaker_config_for_session(Some(&dir), rpc_count) {
-        Ok(cfg) => match cfg.enforcement {
-            EnforcementMode::Enforced => format!(
-                "policy enforced · max {}%/trade · {:.2}% slippage cap",
-                cfg.max_position_pct,
-                cfg.max_slippage_bps as f64 / 100.0
-            ),
-            EnforcementMode::WarnOnly => format!(
-                "policy WARN-ONLY · max {}%/trade · {:.2}% slippage cap (breaches allowed)",
-                cfg.max_position_pct,
-                cfg.max_slippage_bps as f64 / 100.0
-            ),
-            EnforcementMode::Disabled => {
-                "policy DISABLED — agent trades unbounded (Ctrl+K still stops)".to_string()
-            }
-        },
+        Ok(cfg) => {
+            format_policy_summary(cfg.enforcement, cfg.max_position_pct, cfg.max_slippage_bps)
+        }
         Err(e) => format!("policy unreadable — auto-exec fails closed ({e})"),
     })
 }
