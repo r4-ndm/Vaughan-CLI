@@ -175,10 +175,15 @@ impl AgentSessionPolicy {
         }
         let mut seen = std::collections::HashSet::new();
         for entry in &self.allow_transfer_to {
-            if entry.trim().parse::<Address>().is_err() {
-                return Err(AgentError::InvalidToolCall(format!(
+            let addr = entry.trim().parse::<Address>().map_err(|_| {
+                AgentError::InvalidToolCall(format!(
                     "invalid address in allow_transfer_to: `{entry}`"
-                )));
+                ))
+            })?;
+            if addr == Address::ZERO {
+                return Err(AgentError::InvalidToolCall(
+                    "zero address is not permitted in allow_transfer_to".into(),
+                ));
             }
             let lower = entry.trim().to_ascii_lowercase();
             if !seen.insert(lower) {
@@ -187,9 +192,9 @@ impl AgentSessionPolicy {
                 )));
             }
         }
-        if self.max_slippage_bps > 10_000 {
+        if self.max_slippage_bps == 0 || self.max_slippage_bps >= 10_000 {
             return Err(AgentError::InvalidToolCall(
-                "max_slippage_bps must be ≤ 10000 (100%)".into(),
+                "max_slippage_bps must be 1..=9999 (< 100%)".into(),
             ));
         }
         if self.max_consecutive_errors == 0 {
@@ -228,6 +233,19 @@ impl AgentSessionPolicy {
                 self.max_position_pct = value.parse().map_err(|_| {
                     AgentError::InvalidToolCall("max_position_pct: need integer 1..=100".into())
                 })?;
+            }
+            "max_approve_pct" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                    self.max_approve_pct = None;
+                } else {
+                    let pct: u8 = trimmed.parse().map_err(|_| {
+                        AgentError::InvalidToolCall(
+                            "max_approve_pct: need integer 1..=100 or none".into(),
+                        )
+                    })?;
+                    self.max_approve_pct = Some(pct);
+                }
             }
             "daily_cap_pct" => {
                 self.daily_cap_pct = value.parse().map_err(|_| {
@@ -319,6 +337,10 @@ pub fn build_policy_proposal(
         let old = match key.as_str() {
             "enforcement" => before.enforcement.as_str().to_string(),
             "max_position_pct" => before.max_position_pct.to_string(),
+            "max_approve_pct" => before
+                .max_approve_pct
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".into()),
             "daily_cap_pct" => before.daily_cap_pct.to_string(),
             "allow_transfer_to" => before.allow_transfer_to.join(", "),
             "max_slippage_bps" => before.max_slippage_bps.to_string(),

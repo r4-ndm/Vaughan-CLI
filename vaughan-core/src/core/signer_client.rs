@@ -4,13 +4,18 @@
 //! Callers submit typed [`SignerIntent`] objects and receive [`SignerResponse`].
 //! Raw calldata never crosses the socket.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use secrecy::{ExposeSecret, SecretString};
+use serde::de::{self, Deserializer, Visitor};
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
+use zeroize::Zeroize;
 
 use crate::core::signer_intent::SignerIntent;
 
@@ -35,14 +40,116 @@ pub fn resolve_signer_socket_path() -> PathBuf {
     PathBuf::from(DEFAULT_SIGNER_SOCKET)
 }
 
+mod opt_secret_string {
+    use super::*;
+
+    struct SecretStringVisitor;
+
+    impl<'de> Visitor<'de> for SecretStringVisitor {
+        type Value = SecretString;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a password string")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(SecretString::from(v.to_owned()))
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(SecretString::from(v))
+        }
+    }
+
+    struct OptSecretStringVisitor;
+
+    impl<'de> Visitor<'de> for OptSecretStringVisitor {
+        type Value = Option<SecretString>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an optional password string")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer
+                .deserialize_string(SecretStringVisitor)
+                .map(Some)
+        }
+    }
+
+    pub fn serialize<S>(val: &Option<SecretString>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match val {
+            Some(s) => serializer.serialize_some(s.expose_secret()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SecretString>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_option(OptSecretStringVisitor)
+    }
+}
+
 /// Request sent over the Unix socket to `vaughan signerd`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignerRequest {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u32>,
     pub op: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<SignerIntent>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "opt_secret_string"
+    )]
+    pub password: Option<SecretString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_digest: Option<String>,
+}
+
+impl fmt::Debug for SignerRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignerRequest")
+            .field("v", &self.v)
+            .field("op", &self.op)
+            .field("intent", &self.intent)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("policy", &self.policy)
+            .field("expected_digest", &self.expected_digest)
+            .finish()
+    }
 }
 
 /// Response returned by the signer daemon.
@@ -57,6 +164,8 @@ pub struct SignerResponse {
     pub store: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,6 +189,37 @@ impl SignerResponse {
             chain_id: Some(chain_id),
             store: Some(store),
             policy_digest: Some(policy_digest),
+            policy: None,
+            tx_hash: None,
+            code: None,
+            message: None,
+            budget: None,
+        }
+    }
+
+    pub fn policy_ok(policy: serde_json::Value, policy_digest: String) -> Self {
+        Self {
+            ok: true,
+            address: None,
+            chain_id: None,
+            store: None,
+            policy_digest: Some(policy_digest),
+            policy: Some(policy),
+            tx_hash: None,
+            code: None,
+            message: None,
+            budget: None,
+        }
+    }
+
+    pub fn policy_update_ok(policy_digest: String) -> Self {
+        Self {
+            ok: true,
+            address: None,
+            chain_id: None,
+            store: None,
+            policy_digest: Some(policy_digest),
+            policy: None,
             tx_hash: None,
             code: None,
             message: None,
@@ -94,6 +234,7 @@ impl SignerResponse {
             chain_id: None,
             store: None,
             policy_digest: None,
+            policy: None,
             tx_hash: Some(tx_hash.into()),
             code: None,
             message: None,
@@ -108,6 +249,7 @@ impl SignerResponse {
             chain_id: None,
             store: None,
             policy_digest: None,
+            policy: None,
             tx_hash: None,
             code: Some(code.into()),
             message: Some(message.into()),
@@ -154,6 +296,40 @@ impl SignerClient {
             v: Some(1),
             op: "status".to_string(),
             intent: None,
+            password: None,
+            policy: None,
+            expected_digest: None,
+        };
+        self.send_request(&req).await
+    }
+
+    /// Query current policy and digest from the signer daemon (`{"op":"policy"}`).
+    pub async fn policy(&self) -> Result<SignerResponse, String> {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "policy".to_string(),
+            intent: None,
+            password: None,
+            policy: None,
+            expected_digest: None,
+        };
+        self.send_request(&req).await
+    }
+
+    /// Update the active policy on the signer daemon with vault password step-up (`{"op":"policy_update"}`).
+    pub async fn policy_update(
+        &self,
+        password: SecretString,
+        policy: serde_json::Value,
+        expected_digest: Option<String>,
+    ) -> Result<SignerResponse, String> {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "policy_update".to_string(),
+            intent: None,
+            password: Some(password),
+            policy: Some(policy),
+            expected_digest,
         };
         self.send_request(&req).await
     }
@@ -164,6 +340,9 @@ impl SignerClient {
             v: Some(1),
             op: "sign".to_string(),
             intent: Some(intent.clone()),
+            password: None,
+            policy: None,
+            expected_digest: None,
         };
         self.send_request(&req).await
     }
@@ -198,14 +377,19 @@ impl SignerClient {
         line.push('\n');
 
         let (reader, mut writer) = stream.into_split();
-        writer
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| format!("signer_write_failed: {e}"))?;
-        writer
-            .flush()
-            .await
-            .map_err(|e| format!("signer_write_failed: {e}"))?;
+        let write_res = async {
+            writer
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| format!("signer_write_failed: {e}"))?;
+            writer
+                .flush()
+                .await
+                .map_err(|e| format!("signer_write_failed: {e}"))
+        }
+        .await;
+        line.zeroize();
+        write_res?;
 
         let mut buf = BufReader::new(reader);
         let mut response_line = String::new();

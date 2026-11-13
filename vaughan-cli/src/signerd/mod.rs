@@ -23,13 +23,15 @@ pub use vaughan_core::core::signer_client::{SignerClient, SignerRequest, SignerR
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use alloy::primitives::{Address, U256};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use tokio::io::AsyncWriteExt;
 use vaughan_agent::sentient::policy::EnforcementMode;
 use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::{OperatingMode, SignerIntent, SwapFamily, WalletState};
+use zeroize::Zeroize;
 
 /// Check if a peer UID retrieved from `SO_PEERCRED` is in the allowlist.
 pub fn is_peer_uid_allowed(peer_uid: u32, allowlist: &[u32]) -> bool {
@@ -52,6 +54,9 @@ pub fn find_vaughan_gid() -> Option<u32> {
     None
 }
 
+const STEP_UP_WINDOW: Duration = Duration::from_secs(60);
+const STEP_UP_MAX_ATTEMPTS: usize = 5;
+
 struct SignerInner {
     store: PathBuf,
     active_address: Address,
@@ -61,6 +66,7 @@ struct SignerInner {
     broadcaster: Arc<dyn TransactionBroadcaster>,
     balance_overrides: Mutex<HashMap<Option<Address>, U256>>,
     breaker: Mutex<vaughan_agent::CircuitBreaker>,
+    step_up_limiter: Mutex<HashMap<u32, Vec<Instant>>>,
 }
 
 /// Signer engine handling policy checks, ledger reservations, and calldata builds.
@@ -93,6 +99,7 @@ impl Signer {
                 broadcaster,
                 balance_overrides: Mutex::new(HashMap::new()),
                 breaker: Mutex::new(breaker),
+                step_up_limiter: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -147,7 +154,12 @@ impl Signer {
 
     /// Handle a newline-delimited JSON line and return the JSON response string.
     pub async fn handle_line(&self, line: &str) -> String {
-        let resp = self.handle_line_to_response(line).await;
+        self.handle_line_with_uid(line, 0).await
+    }
+
+    /// Handle a newline-delimited JSON line for an explicit peer UID and return the JSON response string.
+    pub async fn handle_line_with_uid(&self, line: &str, peer_uid: u32) -> String {
+        let resp = self.handle_line_to_response_with_uid(line, peer_uid).await;
         serde_json::to_string(&resp).unwrap_or_else(|e| {
             format!(r#"{{"ok":false,"code":"internal_error","message":"{e}"}}"#)
         })
@@ -155,6 +167,15 @@ impl Signer {
 
     /// Parse and dispatch a single JSON line to `SignerResponse`.
     pub async fn handle_line_to_response(&self, line: &str) -> SignerResponse {
+        self.handle_line_to_response_with_uid(line, 0).await
+    }
+
+    /// Parse and dispatch a single JSON line to `SignerResponse` with explicit peer UID rate limiting.
+    pub async fn handle_line_to_response_with_uid(
+        &self,
+        line: &str,
+        peer_uid: u32,
+    ) -> SignerResponse {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return SignerResponse::error("empty_request", "empty request line");
@@ -168,6 +189,11 @@ impl Signer {
 
         match req.op.as_str() {
             "status" => self.handle_status(),
+            "policy" => self.handle_policy(),
+            "policy_update" => {
+                self.handle_policy_update(req.password, req.policy, req.expected_digest, peer_uid)
+                    .await
+            }
             "sign" => match req.intent {
                 Some(intent) => self.handle_sign(intent).await,
                 None => SignerResponse::error("missing_intent", "op 'sign' requires 'intent'"),
@@ -254,6 +280,160 @@ impl Signer {
         );
         resp.budget = Some(budget_json);
         resp
+    }
+
+    /// Handle `{"op":"policy"}` (read-only, no authentication).
+    pub fn handle_policy(&self) -> SignerResponse {
+        let policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
+            Ok(p) => p,
+            Err(e) => {
+                return SignerResponse::error(
+                    "policy_load_failed",
+                    format!("could not load policy: {e}"),
+                );
+            }
+        };
+        let digest = policy.digest();
+        match serde_json::to_value(&policy) {
+            Ok(val) => SignerResponse::policy_ok(val, digest),
+            Err(e) => {
+                SignerResponse::error("internal_error", format!("could not serialize policy: {e}"))
+            }
+        }
+    }
+
+    /// Handle `{"op":"policy_update","password":"…","policy":{…}}`.
+    ///
+    /// Rules:
+    /// 1. Verify vault password via `spawn_blocking` KDF before touching or accepting any policy.
+    /// 2. Rate-limit step-up attempts per peer UID (5 attempts per 60s window).
+    /// 3. Return indistinguishable `step_up_failed` on wrong password, missing wallet, or corrupt store.
+    /// 4. Enforce `expected_digest` if supplied (`policy_conflict`).
+    /// 5. Refuse `enforcement:"disabled"` unless persisted on-disk policy already has `acknowledge_unsafe: true`.
+    /// 6. Run canonical `AgentSessionPolicy::validate()`.
+    /// 7. Atomically persist via `save_policy` and reload breaker config.
+    pub async fn handle_policy_update(
+        &self,
+        password: Option<SecretString>,
+        policy_val: Option<serde_json::Value>,
+        expected_digest: Option<String>,
+        peer_uid: u32,
+    ) -> SignerResponse {
+        let Some(password) = password else {
+            return SignerResponse::error(
+                "step_up_failed",
+                "vault password is required for policy_update",
+            );
+        };
+        if password.expose_secret().is_empty() {
+            return SignerResponse::error(
+                "step_up_failed",
+                "vault password is required for policy_update",
+            );
+        }
+
+        // Per-peer-UID backoff before running Argon2id in spawn_blocking.
+        {
+            let mut limiter = self.inner.step_up_limiter.lock().unwrap();
+            let now = Instant::now();
+            let entries = limiter.entry(peer_uid).or_default();
+            entries.retain(|t| now.duration_since(*t) < STEP_UP_WINDOW);
+            if entries.len() >= STEP_UP_MAX_ATTEMPTS {
+                return SignerResponse::error(
+                    "step_up_rate_limited",
+                    "rate limit exceeded: max 5 step-up attempts per minute",
+                );
+            }
+            entries.push(now);
+        }
+
+        let wallet_path = self.inner.store.join("wallet.json");
+        let verify_res = tokio::task::spawn_blocking(move || {
+            let mut wallet = WalletState::load_with_session(
+                wallet_path,
+                OperatingMode::SentientTrader,
+                "sentient",
+            )
+            .map_err(|_| ())?;
+            wallet.unlock(&password).map_err(|_| ())?;
+            Ok::<(), ()>(())
+        })
+        .await;
+
+        match verify_res {
+            Ok(Ok(())) => {
+                let mut limiter = self.inner.step_up_limiter.lock().unwrap();
+                if let Some(entries) = limiter.get_mut(&peer_uid) {
+                    entries.pop();
+                }
+            }
+            _ => {
+                return SignerResponse::error(
+                    "step_up_failed",
+                    "vault password verification failed",
+                );
+            }
+        }
+
+        let old_policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
+            Ok(p) => p,
+            Err(e) => {
+                return SignerResponse::error(
+                    "policy_load_failed",
+                    format!("could not load current policy: {e}"),
+                );
+            }
+        };
+
+        if let Some(expected) = expected_digest {
+            let current_digest = old_policy.digest();
+            if expected != current_digest {
+                return SignerResponse::error(
+                    "policy_conflict",
+                    format!(
+                        "policy digest mismatch: expected {expected}, current is {current_digest}"
+                    ),
+                );
+            }
+        }
+
+        let Some(val) = policy_val else {
+            return SignerResponse::error("policy_invalid", "missing 'policy' object");
+        };
+
+        let new_policy: vaughan_agent::sentient::AgentSessionPolicy =
+            match serde_json::from_value(val) {
+                Ok(p) => p,
+                Err(e) => {
+                    return SignerResponse::error(
+                        "policy_invalid",
+                        format!("invalid policy payload: {e}"),
+                    );
+                }
+            };
+
+        if new_policy.enforcement == EnforcementMode::Disabled
+            && (!old_policy.acknowledge_unsafe || !new_policy.acknowledge_unsafe)
+        {
+            return SignerResponse::error(
+                "policy_refused",
+                "enforcement=disabled requires acknowledge_unsafe=true already persisted on disk (two-step confirm-unsafe required)",
+            );
+        }
+
+        if let Err(e) = new_policy.validate() {
+            return SignerResponse::error("policy_invalid", e.to_string());
+        }
+
+        if let Err(e) = vaughan_agent::sentient::save_policy(&self.inner.store, &new_policy) {
+            return SignerResponse::error("policy_save_failed", e.to_string());
+        }
+
+        if let Ok(cfg) = vaughan_agent::breaker_config_for_session(Some(&self.inner.store), 1) {
+            self.inner.breaker.lock().unwrap().replace_config(cfg);
+        }
+
+        SignerResponse::policy_update_ok(new_policy.digest())
     }
 
     /// Handle `{"op":"sign","intent":{…}}`.
@@ -1369,35 +1549,36 @@ pub async fn run_signerd(
 
         tokio::spawn(async move {
             #[cfg(unix)]
-            {
-                match stream.peer_cred() {
-                    Ok(cred) => {
-                        let peer_uid = cred.uid();
-                        if !is_peer_uid_allowed(peer_uid, &allowed) {
-                            tracing::warn!("peer UID {peer_uid} rejected by allowlist {allowed:?}");
-                            let resp = serde_json::to_string(&SignerResponse::error(
-                                "unauthorized",
-                                "peer UID not permitted",
-                            ))
-                            .unwrap_or_default()
-                                + "\n";
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("could not read SO_PEERCRED: {e}");
+            let peer_uid = match stream.peer_cred() {
+                Ok(cred) => {
+                    let uid = cred.uid();
+                    if !is_peer_uid_allowed(uid, &allowed) {
+                        tracing::warn!("peer UID {uid} rejected by allowlist {allowed:?}");
                         let resp = serde_json::to_string(&SignerResponse::error(
                             "unauthorized",
-                            "could not verify peer credentials",
+                            "peer UID not permitted",
                         ))
                         .unwrap_or_default()
                             + "\n";
                         let _ = stream.write_all(resp.as_bytes()).await;
                         return;
                     }
+                    uid
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("could not read SO_PEERCRED: {e}");
+                    let resp = serde_json::to_string(&SignerResponse::error(
+                        "unauthorized",
+                        "could not verify peer credentials",
+                    ))
+                    .unwrap_or_default()
+                        + "\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    return;
+                }
+            };
+            #[cfg(not(unix))]
+            let peer_uid: u32 = 0;
 
             let mut reader = tokio::io::BufReader::new(&mut stream);
             let mut line = String::new();
@@ -1405,6 +1586,7 @@ pub async fn run_signerd(
             match reader.read_line(&mut line).await {
                 Ok(0) => return,
                 Ok(n) if n > 65536 => {
+                    line.zeroize();
                     let resp = serde_json::to_string(&SignerResponse::error(
                         "line_too_long",
                         "request line exceeded 64 KiB limit",
@@ -1416,12 +1598,14 @@ pub async fn run_signerd(
                 }
                 Ok(_) => {}
                 Err(e) => {
+                    line.zeroize();
                     tracing::error!("socket read error: {e}");
                     return;
                 }
             }
 
-            let response_str = signer.handle_line(&line).await + "\n";
+            let response_str = signer.handle_line_with_uid(&line, peer_uid).await + "\n";
+            line.zeroize();
             let _ = stream.write_all(response_str.as_bytes()).await;
         });
     }

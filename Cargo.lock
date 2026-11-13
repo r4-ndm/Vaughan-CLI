@@ -8413,6 +8413,7 @@ dependencies = [
  "vaughan-core",
  "vaughan-mcp",
  "vaughan-tui",
+ "zeroize",
 ]
 
 [[package]]
