@@ -5381,19 +5381,26 @@ pub fn execute_dca_slice_job(
         };
         UiJobResult::DcaSlice(result)
     } else {
-        let (signer, rpcs, chain_id) = {
+        let (signer, rpcs, chain_id, profile_name) = {
             let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
             let signer = w.active_signer().map_err(|e| e.to_string());
             let mut rpcs = vec![w.active_rpc_url()];
             rpcs.extend(w.networks().active().fallback_rpc_urls.iter().cloned());
             let chain_id = w.networks().active().chain_id;
-            (signer, rpcs, chain_id)
+            let profile_name = w.profile_name().to_string();
+            (signer, rpcs, chain_id, profile_name)
         };
         let result = (|| {
             let signer = signer.map_err(WalletError::Other)?;
-            let trader =
-                vaughan_agent::SentientTrader::with_breaker(signer, rpcs, chain_id, breaker)
-                    .with_profile_dir(&profile_dir);
+            let trader = vaughan_agent::SentientTrader::with_breaker(
+                &profile_name,
+                signer,
+                rpcs,
+                chain_id,
+                breaker,
+            )
+            .map_err(|e| WalletError::Other(e.to_string()))?
+            .with_profile_dir(&profile_dir);
             let now = vaughan_agent::now_unix();
             handle
                 .block_on(vaughan_agent::fire_plan(

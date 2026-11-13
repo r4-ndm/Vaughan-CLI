@@ -168,6 +168,7 @@ async fn test_sentient_mode_circuit_breaker_soft_rejects_slippage() {
             .unwrap();
 
     let trader = SentientTrader::new(
+        "test",
         burner,
         vec![rpc_url],
         31337,
@@ -179,7 +180,8 @@ async fn test_sentient_mode_circuit_breaker_soft_rejects_slippage() {
             required_rpc_quorum: 1,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
 
     // Slippage 2% > 1% → soft reject; session stays open
     let target = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");

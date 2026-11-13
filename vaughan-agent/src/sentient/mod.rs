@@ -27,4 +27,4 @@ pub use spend_ledger::{
 pub use stealth_pending::{
     consume_stealth_pending, record_stealth_pending, StealthPendingFile, STEALTH_PENDING_FILE,
 };
-pub use trader::{dry_run_from_env, SentientTrader, SwapExecution};
+pub use trader::{dry_run_from_env, ensure_local_signing_allowed, SentientTrader, SwapExecution};

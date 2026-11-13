@@ -28,6 +28,23 @@ pub struct SwapExecution {
     pub dry_run: bool,
 }
 
+/// Ensure local in-process signing is allowed for the given profile.
+///
+/// Refuses any sentient profile (e.g. "sentient", "degen") to guarantee that
+/// no sentient code path can construct an in-process signer or broadcast transactions locally.
+pub fn ensure_local_signing_allowed(profile: &str) -> Result<(), AgentError> {
+    let lower = profile.trim().to_ascii_lowercase();
+    if vaughan_core::core::is_sentient_profile(profile)
+        || vaughan_core::core::is_sentient_profile(&lower)
+    {
+        return Err(AgentError::SecurityViolation(
+            "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Autonomous trader running inside an isolated burner wallet profile.
 #[derive(Clone)]
 pub struct SentientTrader {
@@ -42,12 +59,14 @@ pub struct SentientTrader {
 
 impl SentientTrader {
     pub fn new(
+        profile: &str,
         signer: PrivateKeySigner,
         rpc_urls: Vec<String>,
         chain_id: u64,
         breaker_config: CircuitBreakerConfig,
-    ) -> Self {
+    ) -> Result<Self, AgentError> {
         Self::with_breaker(
+            profile,
             signer,
             rpc_urls,
             chain_id,
@@ -57,19 +76,21 @@ impl SentientTrader {
 
     /// Bind to an existing session breaker (shared trip / gas counters).
     pub fn with_breaker(
+        profile: &str,
         signer: PrivateKeySigner,
         rpc_urls: Vec<String>,
         chain_id: u64,
         circuit_breaker: CircuitBreaker,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, AgentError> {
+        ensure_local_signing_allowed(profile)?;
+        Ok(Self {
             signer,
             circuit_breaker,
             rpc_urls,
             chain_id,
             dry_run: dry_run_from_env(),
             profile_dir: None,
-        }
+        })
     }
 
     /// Set the profile directory for spend ledger accounting.
@@ -497,4 +518,68 @@ pub fn dry_run_from_env() -> bool {
         }
     }
     truthy("VAUGHAN_SENTIENT_DRY_RUN") || truthy("VAUGHAN_DEGEN_DRY_RUN")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_signer() -> PrivateKeySigner {
+        "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn ensure_local_signing_allowed_rejects_sentient_and_degen() {
+        assert!(ensure_local_signing_allowed("sentient").is_err());
+        assert!(ensure_local_signing_allowed("degen").is_err());
+        assert!(ensure_local_signing_allowed("SENTIENT").is_err());
+        assert!(ensure_local_signing_allowed("DEGEN").is_err());
+
+        let err = ensure_local_signing_allowed("sentient").unwrap_err();
+        assert!(err.to_string().contains("sentient_local_signing_disabled"));
+
+        assert!(ensure_local_signing_allowed("default").is_ok());
+        assert!(ensure_local_signing_allowed("bot1").is_ok());
+        assert!(ensure_local_signing_allowed("test").is_ok());
+    }
+
+    #[test]
+    fn sentient_trader_constructors_refuse_sentient_profiles() {
+        let res = SentientTrader::new(
+            "sentient",
+            test_signer(),
+            vec!["http://127.0.0.1:8545".into()],
+            31337,
+            CircuitBreakerConfig::default(),
+        );
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("expected sentient profile to be rejected"),
+        };
+        assert!(err.to_string().contains("sentient_local_signing_disabled"));
+
+        let res2 = SentientTrader::with_breaker(
+            "degen",
+            test_signer(),
+            vec!["http://127.0.0.1:8545".into()],
+            31337,
+            CircuitBreaker::new(CircuitBreakerConfig::default()),
+        );
+        let err2 = match res2 {
+            Err(e) => e,
+            Ok(_) => panic!("expected degen profile to be rejected"),
+        };
+        assert!(err2.to_string().contains("sentient_local_signing_disabled"));
+
+        assert!(SentientTrader::new(
+            "test",
+            test_signer(),
+            vec!["http://127.0.0.1:8545".into()],
+            31337,
+            CircuitBreakerConfig::default(),
+        )
+        .is_ok());
+    }
 }

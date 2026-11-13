@@ -48,6 +48,7 @@ fn trader_for(rpc_url: String) -> SentientTrader {
             .parse()
             .unwrap();
     SentientTrader::new(
+        "test",
         burner_signer,
         vec![rpc_url],
         31337,
@@ -60,6 +61,7 @@ fn trader_for(rpc_url: String) -> SentientTrader {
             ..Default::default()
         },
     )
+    .unwrap()
 }
 
 const TARGET: Address = address!("0x165C3410fC91EF562C50559f7d2289fEbed552d9");
@@ -236,6 +238,7 @@ async fn test_dca_slice_fire_reserves_ledger() {
             .parse()
             .unwrap();
     let trader = SentientTrader::new(
+        "test",
         burner_signer.clone(),
         vec![rpc_url],
         369,
@@ -247,7 +250,8 @@ async fn test_dca_slice_fire_reserves_ledger() {
             required_rpc_quorum: 1,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
 
     let plan_id = "dca_test_plan";
     let now = 1_700_000_000u64;

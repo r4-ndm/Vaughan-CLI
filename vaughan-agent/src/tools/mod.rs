@@ -202,12 +202,16 @@ mod tests {
             "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
                 .parse()
                 .unwrap();
-        let trader = Arc::new(SentientTrader::new(
-            signer,
-            vec!["http://127.0.0.1:8545".into()],
-            31337,
-            CircuitBreakerConfig::default(),
-        ));
+        let trader = Arc::new(
+            SentientTrader::new(
+                "test",
+                signer,
+                vec!["http://127.0.0.1:8545".into()],
+                31337,
+                CircuitBreakerConfig::default(),
+            )
+            .unwrap(),
+        );
         let registry = default_sentient_registry(trader, Path::new("/tmp/vaughan-sentient-test"));
         let names: Vec<_> = registry.definitions().into_iter().map(|d| d.name).collect();
         assert!(names.iter().any(|n| n == "execute_sentient_swap"));
@@ -225,15 +229,54 @@ mod tests {
             "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
                 .parse()
                 .unwrap();
-        let trader = Arc::new(SentientTrader::new(
-            signer,
-            vec!["http://127.0.0.1:8545".into()],
-            31337,
-            CircuitBreakerConfig::default(),
-        ));
+        let trader = Arc::new(
+            SentientTrader::new(
+                "test",
+                signer,
+                vec!["http://127.0.0.1:8545".into()],
+                31337,
+                CircuitBreakerConfig::default(),
+            )
+            .unwrap(),
+        );
         let registry = default_sentient_registry(trader, Path::new("/tmp/vaughan-sentient-test"));
         assert!(registry.get("propose_policy").is_none());
         let names: Vec<_> = registry.definitions().into_iter().map(|d| d.name).collect();
         assert!(!names.contains(&"propose_policy".to_string()));
+    }
+
+    #[test]
+    fn sentient_trader_construction_refuses_sentient_profiles() {
+        let signer: PrivateKeySigner =
+            "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+                .parse()
+                .unwrap();
+        let res = SentientTrader::new(
+            "sentient",
+            signer.clone(),
+            vec!["http://127.0.0.1:8545".into()],
+            31337,
+            CircuitBreakerConfig::default(),
+        );
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("expected sentient to be rejected"),
+        };
+        assert!(err.to_string().contains("sentient_local_signing_disabled"));
+
+        let res_degen = SentientTrader::new(
+            "degen",
+            signer,
+            vec!["http://127.0.0.1:8545".into()],
+            31337,
+            CircuitBreakerConfig::default(),
+        );
+        let err_degen = match res_degen {
+            Err(e) => e,
+            Ok(_) => panic!("expected degen to be rejected"),
+        };
+        assert!(err_degen
+            .to_string()
+            .contains("sentient_local_signing_disabled"));
     }
 }
