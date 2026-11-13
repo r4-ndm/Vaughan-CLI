@@ -260,42 +260,192 @@ async fn test_approve_with_u256_max_is_refused() {
 }
 
 #[tokio::test]
-async fn test_dca_slice_and_sweep_stealth_return_intent_not_implemented_naming_s2() {
-    let (signer, _, _, _dir, _) = setup_test_harness(vec![]);
+async fn test_dca_slice_refusals_and_execution() {
+    let (signer, broadcaster, quoter, dir, active_addr) = setup_test_harness(vec![]);
+    let pair = Address::repeat_byte(0x44);
+    let amount_in = U256::from(100_000);
 
-    // DCA slice
-    let dca_intent = SignerIntent::DcaSlice {
+    // 1. Refusal on zero corridor_min_out
+    let intent_zero_corridor = SignerIntent::DcaSlice {
         plan_id: "plan_1".into(),
         slice_index: 0,
         chain_id: TEST_CHAIN_ID,
-        pair: Address::repeat_byte(0x44),
-        amount_in: U256::from(100),
-        corridor_min_out: U256::from(95),
+        pair,
+        amount_in,
+        corridor_min_out: U256::ZERO,
     };
-    let req_dca = serde_json::json!({
-        "op": "sign",
-        "intent": dca_intent,
-    });
-    let resp_str = signer.handle_line(&req_dca.to_string()).await;
-    let resp: SignerResponse = serde_json::from_str(&resp_str).unwrap();
+    let req = serde_json::json!({ "op": "sign", "intent": intent_zero_corridor });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
     assert!(!resp.ok);
-    assert_eq!(resp.code, Some("intent_not_implemented".to_string()));
-    assert!(resp.message.unwrap().contains("S2"));
+    assert_eq!(resp.code, Some("zero_corridor_min_out".to_string()));
 
-    // Sweep stealth
-    let sweep_intent = SignerIntent::SweepStealth {
+    // 2. Refusal on unknown swap kind (e.g. mock quoter returns unknown)
+    quoter.set_force_kind(vaughan_core::core::proposal::DexSwapKind::Unknown);
+    let intent_unknown = SignerIntent::DcaSlice {
+        plan_id: "plan_1".into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair,
+        amount_in,
+        corridor_min_out: U256::from(50_000),
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_unknown });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(!resp.ok);
+    assert_eq!(resp.code, Some("unknown_swap_kind".to_string()));
+
+    // 3. Refusal on zero quote
+    quoter.set_v3(pair, U256::ZERO);
+    quoter.set_force_kind(vaughan_core::core::proposal::DexSwapKind::V3 {
+        pool: pair,
+        fee: 3000,
+        quote: U256::ZERO,
+    });
+    let intent_zero_quote = SignerIntent::DcaSlice {
+        plan_id: "plan_1".into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair,
+        amount_in,
+        corridor_min_out: U256::from(50_000),
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_zero_quote });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(!resp.ok);
+    assert_eq!(resp.code, Some("zero_quote".to_string()));
+
+    // 4. Refusal when quote is below corridor (naming both numbers)
+    let fresh_quote = U256::from(80_000);
+    let corridor_min = U256::from(95_000);
+    quoter.set_v3(pair, fresh_quote);
+    quoter.set_force_kind(vaughan_core::core::proposal::DexSwapKind::V3 {
+        pool: pair,
+        fee: 3000,
+        quote: fresh_quote,
+    });
+    let intent_below = SignerIntent::DcaSlice {
+        plan_id: "plan_1".into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair,
+        amount_in,
+        corridor_min_out: corridor_min,
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_below });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(!resp.ok);
+    assert_eq!(resp.code, Some("quote_below_corridor".to_string()));
+    let msg = resp.message.unwrap();
+    assert!(
+        msg.contains("80000") && msg.contains("95000"),
+        "expected both numbers in error: {msg}"
+    );
+
+    // 5. Valid DCA slice: builds calldata with exact amountOutMinimum matching corridor value
+    let valid_quote = U256::from(100_000);
+    let valid_corridor = U256::from(95_000);
+    let token_in = Address::repeat_byte(0x22);
+    let token_out = Address::repeat_byte(0x33);
+    quoter.set_v3(pair, valid_quote);
+    quoter.set_dca_tokens(token_in, token_out);
+    let intent_valid = SignerIntent::DcaSlice {
+        plan_id: "plan_valid".into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair,
+        amount_in,
+        corridor_min_out: valid_corridor,
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_valid });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(resp.ok);
+    assert!(resp.tx_hash.is_some());
+
+    let tx = broadcaster.get_last_tx().expect("tx broadcast");
+    let calldata_bytes = hex::decode(tx.data.unwrap().trim_start_matches("0x")).unwrap();
+    let decoded = decode_v3_swap_calldata(&calldata_bytes).unwrap();
+    assert_eq!(decoded.recipient, active_addr);
+    assert_eq!(decoded.amount_in, amount_in);
+    assert_eq!(decoded.amount_out_min, valid_corridor);
+
+    // 6. Replay prevention: submitting same intent again is refused with spend_already_reserved
+    let resp_replay: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(!resp_replay.ok);
+    assert_eq!(resp_replay.code, Some("spend_already_reserved".to_string()));
+
+    // 7. Failure release: failing broadcast releases ledger reservation
+    broadcaster.set_fail(true);
+    let intent_fail = SignerIntent::DcaSlice {
+        plan_id: "plan_fail".into(),
+        slice_index: 1,
+        chain_id: TEST_CHAIN_ID,
+        pair,
+        amount_in,
+        corridor_min_out: valid_corridor,
+    };
+    let req_fail = serde_json::json!({ "op": "sign", "intent": intent_fail });
+    let resp_fail: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req_fail.to_string()).await).unwrap();
+    assert!(!resp_fail.ok);
+    assert_eq!(resp_fail.code, Some("broadcast_failed".to_string()));
+
+    // Check that reservation was released from recent
+    let ledger = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+    assert!(!ledger
+        .recent
+        .iter()
+        .any(|r| r.key == intent_fail.idempotency_key()));
+
+    // Retry reaches broadcast again
+    broadcaster.set_fail(false);
+    let resp_retry: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req_fail.to_string()).await).unwrap();
+    assert!(resp_retry.ok);
+
+    // 8. Restart durability: drop signer and rebuild from same store; spend/recent unchanged
+    let snap_before = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+    drop(signer);
+    let signer2 = Signer::new(
+        dir.path().to_path_buf(),
+        active_addr,
+        TEST_CHAIN_ID,
+        "http://127.0.0.1:8545".to_string(),
+        quoter.clone(),
+        broadcaster.clone(),
+    );
+    let snap_after = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+    assert_eq!(snap_before.assets, snap_after.assets);
+    assert_eq!(snap_before.recent, snap_after.recent);
+
+    // Replay on rebuilt signer is still refused with spend_already_reserved
+    let resp_rebuilt_replay: SignerResponse =
+        serde_json::from_str(&signer2.handle_line(&req_fail.to_string()).await).unwrap();
+    assert!(!resp_rebuilt_replay.ok);
+    assert_eq!(
+        resp_rebuilt_replay.code,
+        Some("spend_already_reserved".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_sweep_stealth_returns_intent_not_implemented_naming_s2() {
+    let (signer, _, _, _, _) = setup_test_harness(vec![]);
+    let intent = SignerIntent::SweepStealth {
         chain_id: TEST_CHAIN_ID,
         stealth_address: Address::repeat_byte(0x55),
     };
-    let req_sweep = serde_json::json!({
-        "op": "sign",
-        "intent": sweep_intent,
-    });
-    let resp_str = signer.handle_line(&req_sweep.to_string()).await;
-    let resp: SignerResponse = serde_json::from_str(&resp_str).unwrap();
+    let req = serde_json::json!({ "op": "sign", "intent": intent });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
     assert!(!resp.ok);
     assert_eq!(resp.code, Some("intent_not_implemented".to_string()));
-    assert!(resp.message.unwrap().contains("S2"));
+    assert!(resp.message.unwrap().contains("scheduled for S2"));
 }
 
 #[tokio::test]

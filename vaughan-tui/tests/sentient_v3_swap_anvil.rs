@@ -87,6 +87,7 @@ fn spawn_test_signerd(
     rpc_url: String,
 ) -> (PathBuf, tokio::task::JoinHandle<()>) {
     let socket_path = store.join("test_signerd.sock");
+    let _ = std::fs::remove_file(&socket_path);
     let active_address = wallet.active_address().unwrap().parse::<Address>().unwrap();
     let chain_id = wallet.networks().active().chain_id;
 
@@ -961,7 +962,7 @@ async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim()
             ref msg,
         ))) => {
             assert!(
-                msg.contains("intent_not_implemented") && msg.contains("dca_slice"),
+                msg.contains("zero_corridor_min_out"),
                 "expected verbatim signerd refusal for dca_slice, got: {msg}"
             );
         }
@@ -978,7 +979,7 @@ async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim()
         .last()
         .unwrap()
         .error
-        .contains("intent_not_implemented"));
+        .contains("zero_corridor_min_out"));
 
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
     server_task.abort();
@@ -1046,4 +1047,201 @@ async fn test_sentient_stealth_sweep_routes_to_signer_and_reports_refusal() {
 
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
     server_task.abort();
+}
+
+fn plant_v3_dca_pool(
+    anvil: &Anvil,
+    pool: Address,
+    token0: Address,
+    token1: Address,
+    fee: u32,
+    sqrt: alloy::primitives::aliases::U160,
+    liquidity: u128,
+) {
+    use alloy::primitives::aliases::I24;
+    use alloy::sol_types::SolCall;
+    use common::mock_evm::{assemble_dispatcher, plant_code, ret_address, ret_u256};
+    use wiz4rd_sdk::abi::IPancakeV3Pool;
+
+    let slot0_ret = IPancakeV3Pool::slot0Return {
+        sqrtPriceX96: sqrt,
+        tick: I24::ZERO,
+        observationIndex: 0,
+        observationCardinality: 10,
+        observationCardinalityNext: 10,
+        feeProtocol: 0,
+        unlocked: true,
+    };
+    let slot0_bytes = IPancakeV3Pool::slot0Call::abi_encode_returns(&slot0_ret);
+    let liq_bytes = IPancakeV3Pool::liquidityCall::abi_encode_returns(&liquidity);
+
+    let routes = vec![
+        (IPancakeV3Pool::feeCall::SELECTOR, ret_u256(fee as u64)),
+        (IPancakeV3Pool::token0Call::SELECTOR, ret_address(token0)),
+        (IPancakeV3Pool::token1Call::SELECTOR, ret_address(token1)),
+        (IPancakeV3Pool::slot0Call::SELECTOR, slot0_bytes),
+        (IPancakeV3Pool::liquidityCall::SELECTOR, liq_bytes),
+    ];
+    plant_code(anvil, pool, &assemble_dispatcher(&routes));
+}
+
+#[tokio::test]
+async fn test_sentient_dca_slice_anvil_replay_revert_refusals_and_durability() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    let anvil = Anvil::start();
+    let (wallet, dir) = setup_sentient_wallet(&anvil);
+
+    let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
+    let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707"); // tWPLS
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766"); // WZRD
+    let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 PLS
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+
+    plant_factory_pool(&anvil, pool);
+    plant_v3_dca_pool(&anvil, pool, token_out, token_in, 500, sqrt, liquidity);
+    plant_code(&anvil, router, &[0x00]);
+
+    let (_, expected_out) = vaughan_core::core::quote_v3_pool_exact_in(
+        &anvil.url(),
+        943,
+        token_in,
+        token_out,
+        500,
+        amount_in,
+    )
+    .await
+    .unwrap();
+    assert!(expected_out > U256::ZERO);
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+    let client = SignerClient::new(&socket_path);
+
+    // 1. Refusal: zero corridor_min_out
+    let intent_zero_corridor = SignerIntent::DcaSlice {
+        plan_id: "plan_anvil_1".into(),
+        slice_index: 0,
+        chain_id: 943,
+        pair: pool,
+        amount_in,
+        corridor_min_out: U256::ZERO,
+    };
+    let err_zero = client.execute(&intent_zero_corridor).await.unwrap_err();
+    assert!(err_zero.contains("zero_corridor_min_out"));
+
+    // 2. Refusal: quote below corridor (naming both numbers)
+    let intent_below = SignerIntent::DcaSlice {
+        plan_id: "plan_anvil_1".into(),
+        slice_index: 0,
+        chain_id: 943,
+        pair: pool,
+        amount_in,
+        corridor_min_out: expected_out + U256::from(100),
+    };
+    let err_below = client.execute(&intent_below).await.unwrap_err();
+    assert!(err_below.contains("quote_below_corridor"));
+    assert!(err_below.contains(&expected_out.to_string()));
+    assert!(err_below.contains(&(expected_out + U256::from(100)).to_string()));
+
+    // 3. Refusal: unknown pair (fails closed)
+    let intent_unknown = SignerIntent::DcaSlice {
+        plan_id: "plan_anvil_1".into(),
+        slice_index: 0,
+        chain_id: 943,
+        pair: Address::repeat_byte(0x88),
+        amount_in,
+        corridor_min_out: U256::from(1),
+    };
+    let err_unknown = client.execute(&intent_unknown).await.unwrap_err();
+    assert!(err_unknown.contains("unknown_swap_kind"));
+
+    // 4. Valid execution: broadcast real 66-char tx hash
+    let valid_corridor = expected_out * U256::from(99) / U256::from(100);
+    let intent_valid = SignerIntent::DcaSlice {
+        plan_id: "plan_anvil_1".into(),
+        slice_index: 1,
+        chain_id: 943,
+        pair: pool,
+        amount_in,
+        corridor_min_out: valid_corridor,
+    };
+    let tx_hash = client.execute(&intent_valid).await.unwrap();
+    assert!(
+        tx_hash.starts_with("0x") && tx_hash.len() == 66,
+        "expected 66-char tx hash, got {tx_hash}"
+    );
+
+    // Ledger keeps exactly 1 entry for key
+    let snap = SpendLedger::snapshot(dir.path()).unwrap();
+    let key = intent_valid.idempotency_key();
+    assert_eq!(snap.recent.iter().filter(|r| r.key == key).count(), 1);
+
+    // 5. Replay: second submission refused with spend_already_reserved
+    let replay_err = client.execute(&intent_valid).await.unwrap_err();
+    assert!(replay_err.contains("spend_already_reserved"));
+    let snap2 = SpendLedger::snapshot(dir.path()).unwrap();
+    assert_eq!(snap2.recent.iter().filter(|r| r.key == key).count(), 1);
+
+    // 6. Restart durability: drop signer, rebuild from same store; spend/recent unchanged
+    server_task.abort();
+    let snap_before_restart = SpendLedger::snapshot(dir.path()).unwrap();
+
+    let (wallet2, _) = setup_sentient_wallet(&anvil);
+    let (socket_path2, server_task2) = spawn_test_signerd(dir.path(), wallet2, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path2);
+    let client2 = SignerClient::new(&socket_path2);
+
+    let snap_after_restart = SpendLedger::snapshot(dir.path()).unwrap();
+    assert_eq!(snap_before_restart.assets, snap_after_restart.assets);
+    assert_eq!(snap_before_restart.recent, snap_after_restart.recent);
+
+    // Replay on restarted signer still refused with spend_already_reserved
+    let replay_err2 = client2.execute(&intent_valid).await.unwrap_err();
+    assert!(replay_err2.contains("spend_already_reserved"));
+
+    // 7. Failure release: send reverts -> reservation released, retry allowed
+    plant_code(&anvil, router, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+
+    let intent_fail = SignerIntent::DcaSlice {
+        plan_id: "plan_anvil_1".into(),
+        slice_index: 2,
+        chain_id: 943,
+        pair: pool,
+        amount_in,
+        corridor_min_out: valid_corridor,
+    };
+    let spent_before_fail = snap_after_restart
+        .assets
+        .get("943:native")
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+
+    let fail_err = client2.execute(&intent_fail).await.unwrap_err();
+    assert!(fail_err.contains("broadcast_failed") || fail_err.contains("revert"));
+
+    let snap_fail = SpendLedger::snapshot(dir.path()).unwrap();
+    let spent_after_fail = snap_fail
+        .assets
+        .get("943:native")
+        .map(|a| a.spent)
+        .unwrap_or(U256::ZERO);
+    assert_eq!(spent_before_fail, spent_after_fail);
+    assert!(!snap_fail
+        .recent
+        .iter()
+        .any(|r| r.key == intent_fail.idempotency_key()));
+
+    // Restore router and retry reaches broadcast again
+    plant_code(&anvil, router, &[0x00]);
+    let retry_hash = client2.execute(&intent_fail).await.unwrap();
+    assert!(
+        retry_hash.starts_with("0x") && retry_hash.len() == 66,
+        "retry after failure should succeed with 66-char tx hash, got {retry_hash}"
+    );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task2.abort();
 }

@@ -120,6 +120,31 @@ impl Signer {
         U256::from(10_000_000_000_000_000_000u128)
     }
 
+    /// Query the balance of an on-chain address via RPC (or check balance overrides).
+    pub async fn get_onchain_balance(&self, address: Address) -> Result<U256, String> {
+        if let Some(b) = self
+            .inner
+            .balance_overrides
+            .lock()
+            .unwrap()
+            .get(&Some(address))
+        {
+            return Ok(*b);
+        }
+        let url: alloy::transports::http::reqwest::Url = self
+            .inner
+            .rpc_url
+            .parse()
+            .map_err(|e| format!("invalid rpc_url: {e}"))?;
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url);
+        use alloy::providers::Provider;
+        let balance = provider
+            .get_balance(address)
+            .await
+            .map_err(|e| format!("eth_getBalance failed: {e}"))?;
+        Ok(balance)
+    }
+
     /// Handle a newline-delimited JSON line and return the JSON response string.
     pub async fn handle_line(&self, line: &str) -> String {
         let resp = self.handle_line_to_response(line).await;
@@ -249,20 +274,11 @@ impl Signer {
         }
 
         // 1. Specific refusal for declared but deferred intents (S2)
-        match &intent {
-            SignerIntent::DcaSlice { .. } => {
-                return SignerResponse::error(
-                    "intent_not_implemented",
-                    "dca_slice is not implemented in S1 (scheduled for S2)",
-                );
-            }
-            SignerIntent::SweepStealth { .. } => {
-                return SignerResponse::error(
-                    "intent_not_implemented",
-                    "sweep_stealth is not implemented in S1 (scheduled for S2)",
-                );
-            }
-            _ => {}
+        if matches!(&intent, SignerIntent::SweepStealth { .. }) {
+            return SignerResponse::error(
+                "intent_not_implemented",
+                "sweep_stealth is not implemented in S1 (scheduled for S2)",
+            );
         }
 
         // 2. Chain ID match
@@ -277,7 +293,7 @@ impl Signer {
             );
         }
 
-        // 3. Load active policy
+        // 2. Load active policy
         let policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
             Ok(p) => p,
             Err(e) => {
@@ -288,7 +304,7 @@ impl Signer {
             }
         };
 
-        // 4. Dispatch by intent variant
+        // 3. Dispatch by intent variant
         match intent {
             SignerIntent::Transfer {
                 chain_id,
@@ -345,7 +361,29 @@ impl Signer {
                 self.handle_batch_transfer(chain_id, legs, &policy).await
             }
 
-            SignerIntent::DcaSlice { .. } | SignerIntent::SweepStealth { .. } => unreachable!(),
+            SignerIntent::DcaSlice {
+                plan_id,
+                slice_index,
+                chain_id,
+                pair,
+                amount_in,
+                corridor_min_out,
+            } => {
+                self.handle_dca_slice(
+                    plan_id,
+                    slice_index,
+                    chain_id,
+                    pair,
+                    amount_in,
+                    corridor_min_out,
+                    &policy,
+                )
+                .await
+            }
+
+            SignerIntent::SweepStealth { .. } => {
+                unreachable!("sweep_stealth is refused in step 1 until S2 lands")
+            }
         }
     }
 
@@ -893,6 +931,153 @@ impl Signer {
         }
 
         let tx = intents::build_batch_transfer_tx(chain_id, self.inner.active_address, &legs);
+
+        match self.inner.broadcaster.broadcast(tx).await {
+            Ok(tx_hash) => {
+                let _ = self
+                    .inner
+                    .breaker
+                    .lock()
+                    .unwrap()
+                    .record_success(U256::ZERO);
+                SignerResponse::sign_ok(tx_hash)
+            }
+            Err(err) => {
+                self.inner.breaker.lock().unwrap().record_failure(&err);
+                let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
+                SignerResponse::error("broadcast_failed", err)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_dca_slice(
+        &self,
+        plan_id: String,
+        slice_index: u64,
+        chain_id: u64,
+        pair: Address,
+        amount_in: U256,
+        corridor_min_out: U256,
+        policy: &vaughan_agent::sentient::AgentSessionPolicy,
+    ) -> SignerResponse {
+        if corridor_min_out.is_zero() {
+            return SignerResponse::error(
+                "zero_corridor_min_out",
+                "corridor_min_out is zero — auto-exec refuses unbounded swap with no minimum output protection",
+            );
+        }
+
+        if pair == Address::ZERO {
+            return SignerResponse::error(
+                "unknown_swap_kind",
+                "dca_slice pair is zero address (fail-closed)",
+            );
+        }
+
+        // Re-derive quote live from pool state; DexSwapKind rules apply
+        let dca_quote = match self
+            .inner
+            .quoter
+            .quote_dca(&self.inner.rpc_url, chain_id, pair, amount_in)
+            .await
+        {
+            Ok(q) => q,
+            Err(e) => {
+                return SignerResponse::error(
+                    "quote_failed",
+                    format!("fresh DCA quote failed: {e}"),
+                );
+            }
+        };
+
+        if dca_quote.kind == vaughan_core::core::proposal::DexSwapKind::Unknown {
+            return SignerResponse::error(
+                "unknown_swap_kind",
+                "unknown swap kind: pair is neither a V2 pair nor V3 pool (fail-closed)",
+            );
+        }
+
+        if dca_quote.expected_out.is_zero() {
+            return SignerResponse::error(
+                "zero_quote",
+                "re-derived swap quote is zero — auto-exec refuses unbounded swap",
+            );
+        }
+
+        if dca_quote.expected_out < corridor_min_out {
+            return SignerResponse::error(
+                "quote_below_corridor",
+                format!(
+                    "re-derived quote {} is below corridor_min_out {}",
+                    dca_quote.expected_out, corridor_min_out
+                ),
+            );
+        }
+
+        let asset = format!("{chain_id}:native");
+        let balance = self.get_balance(None).await;
+        let intent = SignerIntent::DcaSlice {
+            plan_id,
+            slice_index,
+            chain_id,
+            pair,
+            amount_in,
+            corridor_min_out,
+        };
+        let key = intent.idempotency_key();
+
+        match SpendLedger::reserve(
+            &self.inner.store,
+            &key,
+            &asset,
+            amount_in,
+            balance,
+            policy.daily_cap_pct,
+            policy.enforcement,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                let code = if msg.contains("spend_already_reserved") {
+                    "spend_already_reserved"
+                } else {
+                    "spend_guard"
+                };
+                return SignerResponse::error(code, msg);
+            }
+        }
+
+        // Build calldata inside signer enforcing encoded amountOutMinimum equals corridor value
+        let tx = match dca_quote.kind {
+            vaughan_core::core::proposal::DexSwapKind::V3 { fee, .. } => intents::build_v3_swap_tx(
+                chain_id,
+                self.inner.active_address,
+                dca_quote.router,
+                dca_quote.token_in,
+                dca_quote.token_out,
+                fee,
+                amount_in,
+                corridor_min_out,
+                self.inner.active_address,
+            ),
+            vaughan_core::core::proposal::DexSwapKind::V2 => intents::build_v2_swap_tx(
+                chain_id,
+                self.inner.active_address,
+                dca_quote.router,
+                dca_quote.path,
+                amount_in,
+                corridor_min_out,
+                self.inner.active_address,
+            ),
+            _ => {
+                let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
+                return SignerResponse::error(
+                    "unknown_swap_kind",
+                    "unexpected swap kind after quote validation (fail-closed)",
+                );
+            }
+        };
 
         match self.inner.broadcaster.broadcast(tx).await {
             Ok(tx_hash) => {
