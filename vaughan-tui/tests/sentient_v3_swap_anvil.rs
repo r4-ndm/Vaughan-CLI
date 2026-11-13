@@ -1335,3 +1335,156 @@ async fn test_sentient_stealth_sweep_anvil_replay_revert_refusals_and_durability
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
     server_task2.abort();
 }
+
+#[tokio::test]
+async fn test_native_in_swap_and_dca_slice_broadcast_with_value_on_anvil() {
+    let _guard = TEST_MUTEX.lock().await;
+    let anvil = Anvil::start();
+    let (wallet, dir) = setup_sentient_wallet(&anvil);
+
+    let router = address!("fc656c95ecd418536844feeaa46949bb9365beaf");
+    let pool = address!("d47e01c1af55a48c11d0e324fb1853cf2501e0dc");
+    let token_in = address!("70499adebb11efd915e3b69e700c331778628707"); // tWPLS on 943
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 tPLS
+
+    // Plant mock pool and factory state on Anvil
+    let sqrt = alloy::primitives::aliases::U160::from(U256::from(1u128) << 96);
+    let liquidity = 10u128.pow(22);
+    plant_factory_pool(&anvil, pool);
+    plant_v3_dca_pool(&anvil, pool, token_out, token_in, 500, sqrt, liquidity);
+
+    // Plant router code that REQUIRES msg.value > 0 (reverts if CALLVALUE == 0)
+    // 0: CALLVALUE (0x34)
+    // 1: ISZERO (0x15)
+    // 2: PUSH1 0x06 (0x60, 0x06)
+    // 4: JUMPI (0x57)
+    // 5: STOP (0x00)
+    // 6: JUMPDEST (0x5b)
+    // 7: PUSH1 0x00 (0x60, 0x00)
+    // 9: PUSH1 0x00 (0x60, 0x00)
+    // 11: REVERT (0xfd)
+    let router_requiring_value = [
+        0x34, 0x15, 0x60, 0x06, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x60, 0x00, 0xfd,
+    ];
+    plant_code(&anvil, router, &router_requiring_value);
+
+    let (p, expected_out) = vaughan_core::core::quote_v3_pool_exact_in(
+        &anvil.url(),
+        943,
+        token_in,
+        token_out,
+        500,
+        amount_in,
+    )
+    .await
+    .unwrap();
+    assert_eq!(p, pool);
+
+    let min_amount_out = expected_out * U256::from(9900) / U256::from(10000); // 100 bps slippage
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+
+    let client = SignerClient::new(&socket_path);
+
+    // 1. Native-in V3 swap through spawned signerd:
+    // With tx.value == amount_in, router's CALLVALUE > 0 check succeeds and tx broadcasts.
+    let intent_v3 = SignerIntent::Swap {
+        chain_id: 943,
+        family: SwapFamily::V3,
+        router,
+        path: vec![token_in, token_out],
+        amount_in,
+        min_amount_out,
+        fee: Some(500),
+    };
+
+    let result_v3 = client.execute(&intent_v3).await;
+    assert!(
+        result_v3.is_ok(),
+        "native-in V3 swap must not revert at router: {result_v3:?}"
+    );
+    let tx_hash_v3 = result_v3.unwrap();
+    assert!(
+        tx_hash_v3.starts_with("0x") && tx_hash_v3.len() == 66,
+        "expected valid 66-char tx hash, got {tx_hash_v3}"
+    );
+
+    // Verify on-chain transaction value in Anvil
+    let tx_obj_v3 = anvil
+        .rpc("eth_getTransactionByHash", serde_json::json!([tx_hash_v3]))
+        .expect("query tx by hash");
+    let val_hex_v3 = tx_obj_v3["value"]
+        .as_str()
+        .expect("value string")
+        .trim_start_matches("0x");
+    let val_v3 = U256::from_str_radix(val_hex_v3, 16).expect("parse value hex");
+    assert_eq!(
+        val_v3, amount_in,
+        "on-chain broadcast transaction must carry amount_in as value"
+    );
+
+    // 2. Native-in DCA slice through spawned signerd:
+    // DCA slice also routes to build_v3_swap_tx and must carry amount_in as value.
+    let valid_corridor = expected_out * U256::from(99) / U256::from(100);
+    let intent_dca = SignerIntent::DcaSlice {
+        plan_id: "plan_native_val".into(),
+        slice_index: 0,
+        chain_id: 943,
+        pair: pool,
+        amount_in,
+        corridor_min_out: valid_corridor,
+    };
+
+    let result_dca = client.execute(&intent_dca).await;
+    assert!(
+        result_dca.is_ok(),
+        "native-in DCA slice must not revert at router: {result_dca:?}"
+    );
+    let tx_hash_dca = result_dca.unwrap();
+    assert!(
+        tx_hash_dca.starts_with("0x") && tx_hash_dca.len() == 66,
+        "expected valid 66-char tx hash, got {tx_hash_dca}"
+    );
+
+    let tx_obj_dca = anvil
+        .rpc("eth_getTransactionByHash", serde_json::json!([tx_hash_dca]))
+        .expect("query dca tx by hash");
+    let val_hex_dca = tx_obj_dca["value"]
+        .as_str()
+        .expect("value string")
+        .trim_start_matches("0x");
+    let val_dca = U256::from_str_radix(val_hex_dca, 16).expect("parse value hex");
+    assert_eq!(
+        val_dca, amount_in,
+        "on-chain broadcast DCA slice must carry amount_in as value"
+    );
+
+    // 3. Negative check: prove that if token_in is an ERC-20 (value == 0),
+    // the router's CALLVALUE check reverts during fee estimation (the exact bug).
+    let erc20_token = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let intent_erc20 = SignerIntent::Swap {
+        chain_id: 943,
+        family: SwapFamily::V3,
+        router,
+        path: vec![erc20_token, token_in],
+        amount_in,
+        min_amount_out,
+        fee: Some(500),
+    };
+
+    let result_erc20 = client.execute(&intent_erc20).await;
+    assert!(
+        result_erc20.is_err(),
+        "zero-value swap on value-requiring router must revert at eth_estimateGas"
+    );
+    let err_msg = result_erc20.unwrap_err();
+    assert!(
+        err_msg.contains("broadcast_failed") || err_msg.contains("estimate the fee"),
+        "expected broadcast_failed / estimate fee error, got: {err_msg}"
+    );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
+}

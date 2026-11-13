@@ -137,7 +137,17 @@ pub fn build_v2_swap_tx(
     amount_in: U256,
     min_amount_out: U256,
     recipient: Address,
-) -> EvmTransaction {
+) -> Result<EvmTransaction, String> {
+    if path.len() < 2 {
+        return Err("swap path must have at least 2 tokens".to_string());
+    }
+    let token_in = path[0];
+    let wrapped = resolve_wrapped_native(chain_id)?;
+    let value = if token_in == wrapped {
+        amount_in
+    } else {
+        U256::ZERO
+    };
     let deadline = default_deadline();
     let calldata = IUniswapV2RouterSwap::swapExactTokensForTokensCall {
         amountIn: amount_in,
@@ -148,7 +158,7 @@ pub fn build_v2_swap_tx(
     }
     .abi_encode();
 
-    evm_tx(chain_id, from, router, U256::ZERO, calldata)
+    Ok(evm_tx(chain_id, from, router, value, calldata))
 }
 
 /// Build an EVM transaction for Uniswap V3 `exactInputSingle`.
@@ -166,7 +176,13 @@ pub fn build_v3_swap_tx(
     amount_in: U256,
     min_amount_out: U256,
     recipient: Address,
-) -> EvmTransaction {
+) -> Result<EvmTransaction, String> {
+    let wrapped = resolve_wrapped_native(chain_id)?;
+    let value = if token_in == wrapped {
+        amount_in
+    } else {
+        U256::ZERO
+    };
     let deadline = default_deadline();
     let sqrt_price_limit = if token_in < token_out {
         MIN_SQRT_RATIO_PLUS_ONE
@@ -186,7 +202,7 @@ pub fn build_v3_swap_tx(
     };
     let calldata = ISwapRouterV3::exactInputSingleCall { params }.abi_encode();
 
-    evm_tx(chain_id, from, router, U256::ZERO, calldata)
+    Ok(evm_tx(chain_id, from, router, value, calldata))
 }
 
 /// Build an EVM transaction for ERC-20 `approve(spender, amount)`.
@@ -266,7 +282,8 @@ mod tests {
             amount_in,
             min_amount_out,
             recipient,
-        );
+        )
+        .unwrap();
 
         assert_eq!(tx.to, format!("{router:#x}"));
         assert_eq!(tx.value, "0");
@@ -278,6 +295,228 @@ mod tests {
         assert_eq!(decoded.amount_in, amount_in);
         assert_eq!(decoded.amount_out_min, min_amount_out);
         assert_eq!(decoded.path, vec![token_in, token_out]);
+    }
+
+    #[test]
+    fn test_v3_native_in_sets_value_to_amount_in() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let wpls_369 = resolve_wrapped_native(369).unwrap();
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(500_000_000_000_000_000u64);
+        let min_amount_out = U256::from(99_000);
+
+        let tx = build_v3_swap_tx(
+            369,
+            from,
+            router,
+            wpls_369,
+            token_out,
+            3000,
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap();
+
+        assert_eq!(tx.to, format!("{router:#x}"));
+        assert_eq!(tx.value, amount_in.to_string());
+    }
+
+    #[test]
+    fn test_v3_erc20_in_sets_value_to_zero() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let token_in = Address::repeat_byte(0x22);
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(100_000);
+        let min_amount_out = U256::from(99_000);
+
+        let tx = build_v3_swap_tx(
+            369,
+            from,
+            router,
+            token_in,
+            token_out,
+            3000,
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap();
+
+        assert_eq!(tx.to, format!("{router:#x}"));
+        assert_eq!(tx.value, "0");
+    }
+
+    #[test]
+    fn test_v3_unknown_wrapped_native_refuses() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let token_in = Address::repeat_byte(0x22);
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(100_000);
+        let min_amount_out = U256::from(99_000);
+
+        let err = build_v3_swap_tx(
+            999_999,
+            from,
+            router,
+            token_in,
+            token_out,
+            3000,
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("no wrapped native configured for chain 999999"));
+    }
+
+    #[test]
+    fn test_v2_native_in_sets_value_to_amount_in() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let wpls_369 = resolve_wrapped_native(369).unwrap();
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(500_000_000_000_000_000u64);
+        let min_amount_out = U256::from(99_000);
+
+        let tx = build_v2_swap_tx(
+            369,
+            from,
+            router,
+            vec![wpls_369, token_out],
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap();
+
+        assert_eq!(tx.to, format!("{router:#x}"));
+        assert_eq!(tx.value, amount_in.to_string());
+    }
+
+    #[test]
+    fn test_v2_erc20_in_sets_value_to_zero() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let token_in = Address::repeat_byte(0x22);
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(100_000);
+        let min_amount_out = U256::from(99_000);
+
+        let tx = build_v2_swap_tx(
+            369,
+            from,
+            router,
+            vec![token_in, token_out],
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap();
+
+        assert_eq!(tx.to, format!("{router:#x}"));
+        assert_eq!(tx.value, "0");
+    }
+
+    #[test]
+    fn test_v2_unknown_wrapped_native_refuses() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let token_in = Address::repeat_byte(0x22);
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(100_000);
+        let min_amount_out = U256::from(99_000);
+
+        let err = build_v2_swap_tx(
+            999_999,
+            from,
+            router,
+            vec![token_in, token_out],
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("no wrapped native configured for chain 999999"));
+    }
+
+    #[test]
+    fn test_v2_swap_empty_or_short_path_refuses() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let recipient = Address::repeat_byte(0x44);
+
+        let err_empty = build_v2_swap_tx(
+            369,
+            from,
+            router,
+            vec![],
+            U256::from(100),
+            U256::from(90),
+            recipient,
+        )
+        .unwrap_err();
+        assert!(err_empty.contains("swap path must have at least 2 tokens"));
+
+        let err_one = build_v2_swap_tx(
+            369,
+            from,
+            router,
+            vec![Address::repeat_byte(0x11)],
+            U256::from(100),
+            U256::from(90),
+            recipient,
+        )
+        .unwrap_err();
+        assert!(err_one.contains("swap path must have at least 2 tokens"));
+    }
+
+    #[test]
+    fn test_native_in_on_chain_943_sets_value() {
+        let from = Address::repeat_byte(0x99);
+        let router = Address::repeat_byte(0x11);
+        let wpls_943 = resolve_wrapped_native(943).unwrap();
+        let token_out = Address::repeat_byte(0x33);
+        let recipient = Address::repeat_byte(0x44);
+        let amount_in = U256::from(500_000_000_000_000_000u64);
+        let min_amount_out = U256::from(99_000);
+
+        let tx_v3 = build_v3_swap_tx(
+            943,
+            from,
+            router,
+            wpls_943,
+            token_out,
+            500,
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap();
+        assert_eq!(tx_v3.value, amount_in.to_string());
+
+        let tx_v2 = build_v2_swap_tx(
+            943,
+            from,
+            router,
+            vec![wpls_943, token_out],
+            amount_in,
+            min_amount_out,
+            recipient,
+        )
+        .unwrap();
+        assert_eq!(tx_v2.value, amount_in.to_string());
     }
 
     #[test]

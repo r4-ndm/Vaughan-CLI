@@ -636,6 +636,13 @@ impl Signer {
                 self.inner.active_address,
             ),
         };
+        let tx = match tx {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
+                return SignerResponse::error("swap_failed", e);
+            }
+        };
 
         match self.inner.broadcaster.broadcast(tx).await {
             Ok(tx_hash) => {
@@ -1045,7 +1052,7 @@ impl Signer {
         }
 
         // Build calldata inside signer enforcing encoded amountOutMinimum equals corridor value
-        let tx = match dca_quote.kind {
+        let tx = match match dca_quote.kind {
             vaughan_core::core::proposal::DexSwapKind::V3 { fee, .. } => intents::build_v3_swap_tx(
                 chain_id,
                 self.inner.active_address,
@@ -1072,6 +1079,12 @@ impl Signer {
                     "unknown_swap_kind",
                     "unexpected swap kind after quote validation (fail-closed)",
                 );
+            }
+        } {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
+                return SignerResponse::error("swap_failed", e);
             }
         };
 

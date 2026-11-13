@@ -781,3 +781,96 @@ async fn test_socket_peer_uid_rejection() {
 
     server_task.abort();
 }
+
+#[tokio::test]
+async fn test_native_in_swap_and_dca_sets_tx_value_and_unknown_chain_refuses() {
+    let (signer, broadcaster, quoter, _dir, active_addr) = setup_test_harness(vec![]);
+
+    let wpls_943 = wpls_for_chain(TEST_CHAIN_ID).unwrap();
+    let token_out = Address::repeat_byte(0x33);
+    let router_v3 = Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap();
+    let router_v2 = Address::from_str("0xDaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7").unwrap();
+    let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 tPLS
+    let floor = U256::from(990_000);
+
+    let pool_addr = Address::repeat_byte(0x88);
+    quoter.set_v3(pool_addr, U256::from(1_000_000));
+    quoter.set_v2(U256::from(1_000_000));
+
+    // 1. Native-in V3 swap must produce tx.value == amount_in
+    let intent_v3_native = SignerIntent::Swap {
+        chain_id: TEST_CHAIN_ID,
+        family: SwapFamily::V3,
+        router: router_v3,
+        path: vec![wpls_943, token_out],
+        amount_in,
+        min_amount_out: floor,
+        fee: Some(3000),
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_v3_native });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(resp.ok);
+    let tx = broadcaster.get_last_tx().expect("tx broadcast");
+    assert_eq!(tx.value, amount_in.to_string());
+
+    // 2. Native-in V2 swap must produce tx.value == amount_in
+    let intent_v2_native = SignerIntent::Swap {
+        chain_id: TEST_CHAIN_ID,
+        family: SwapFamily::V2,
+        router: router_v2,
+        path: vec![wpls_943, token_out],
+        amount_in,
+        min_amount_out: floor,
+        fee: None,
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_v2_native });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(resp.ok);
+    let tx = broadcaster.get_last_tx().expect("tx broadcast");
+    assert_eq!(tx.value, amount_in.to_string());
+
+    // 3. Native-in DCA slice must produce tx.value == amount_in
+    quoter.set_v3(pool_addr, U256::from(100_000));
+    quoter.set_dca_tokens(wpls_943, token_out);
+    let intent_dca_native = SignerIntent::DcaSlice {
+        plan_id: "plan_val_dca".into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair: pool_addr,
+        amount_in,
+        corridor_min_out: U256::from(95_000),
+    };
+    let req = serde_json::json!({ "op": "sign", "intent": intent_dca_native });
+    let resp: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(resp.ok);
+    let tx = broadcaster.get_last_tx().expect("tx broadcast");
+    assert_eq!(tx.value, amount_in.to_string());
+
+    // 4. Refusal when wrapped native cannot be resolved for chain
+    assert!(vaughan_cli::signerd::intents::build_v3_swap_tx(
+        999_999,
+        active_addr,
+        router_v3,
+        wpls_943,
+        token_out,
+        3000,
+        amount_in,
+        floor,
+        active_addr,
+    )
+    .is_err());
+
+    assert!(vaughan_cli::signerd::intents::build_v2_swap_tx(
+        999_999,
+        active_addr,
+        router_v2,
+        vec![wpls_943, token_out],
+        amount_in,
+        floor,
+        active_addr,
+    )
+    .is_err());
+}
