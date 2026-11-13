@@ -21,19 +21,60 @@ use vaughan_core::core::mcp_host::{
 use vaughan_core::core::proposal::{
     guard_mainnet_write, mcp_control_port, McpSessionToken, ProposalQueue, TxProposal,
 };
+use vaughan_core::core::signer_client::SignerClient;
 use vaughan_core::core::{
     is_sentient_profile, reject_deferred_sentient_profile, OperatingMode, StateManager, WalletState,
 };
-use vaughan_tui::provider::ApprovalKind;
 use vaughan_tui::sentient_mcp::{self, mcp_auto_exec_enabled};
 
-/// Run until Ctrl-C. Requires `--password-env` for non-interactive unlock.
+/// Run until Ctrl-C. Requires `--password-env` for non-interactive unlock on adviser profiles.
+///
+/// For sentient profiles, acts as a thin client to `vaughan-signerd`: no TCP listener,
+/// no `mcp.session` token file, no local signing or wallet unlock.
 pub async fn run_serve(profile: String, password: SecretString) -> anyhow::Result<()> {
     reject_deferred_sentient_profile(&profile)
         .map_err(|e| anyhow::anyhow!("{}", e.user_message()))?;
 
     if is_sentient_profile(&profile) {
-        validate_signer_store_env()?;
+        let client = SignerClient::default();
+        let status = client.status().await.map_err(|e| {
+            anyhow::anyhow!(
+                "signer daemon unreachable at {} ({e}) — ensure vaughan-signerd is active",
+                client.socket_path().display()
+            )
+        })?;
+
+        eprintln!(
+            "vaughan serve: profile={profile} connected to signerd at {}",
+            client.socket_path().display()
+        );
+        if let Some(ref addr) = status.address {
+            eprintln!("active address: {addr}");
+        }
+        if let Some(cid) = status.chain_id {
+            eprintln!("chain id: {cid}");
+        }
+        eprintln!("thin client active, monitoring signerd. Ctrl-C to stop");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_c = stop.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            stop_c.store(true, Ordering::SeqCst);
+        });
+
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        while !stop.load(Ordering::SeqCst) {
+            ticker.tick().await;
+            if !client.ping().await && !stop.load(Ordering::SeqCst) {
+                eprintln!(
+                    "warning: vaughan-signerd ping failed at {}",
+                    client.socket_path().display()
+                );
+            }
+        }
+        eprintln!("vaughan serve: stopped");
+        return Ok(());
     }
 
     let path = StateManager::profile_path(&profile)?;
@@ -218,93 +259,25 @@ impl McpHostBackend for ServeMcpBackend {
         Ok(json!({ "notes": rows, "count": rows.len() }))
     }
 
-    async fn stealth_sweep(&self, stealth_address: &str) -> Result<String, String> {
-        if !mcp_auto_exec_enabled(&self.profile_name) {
-            return Err(
-                "tui_required: adviser serve cannot show a sweep card — unlock Vaughan TUI on \
-                 this profile (or use --profile sentient for headless auto-sweep)"
-                    .into(),
-            );
-        }
-        // Sweeps move the full note balance, so they must respect the same
-        // session breaker as proposals: trip state + failure tripwire.
-        let breaker = self
-            .breaker
-            .as_ref()
-            .ok_or_else(|| "sentient circuit breaker unavailable".to_string())?;
-        if breaker.is_tripped() {
-            return Err(format!(
-                "circuit_breaker_tripped: {}",
-                breaker.trip_reason().unwrap_or_else(|| "halted".into())
-            ));
-        }
-        let result = tokio::task::block_in_place(|| {
-            let w = self
-                .wallet
-                .lock()
-                .map_err(|_| "wallet lock poisoned".to_string())?;
-            let notes = self
-                .handle
-                .block_on(w.scan_stealth_notes())
-                .map_err(|e| e.to_string())?;
-            let note = notes
-                .into_iter()
-                .find(|n| {
-                    format!("{:#x}", n.announcement.stealth_address)
-                        .eq_ignore_ascii_case(stealth_address)
-                })
-                .ok_or_else(|| format!("no unswept stealth note for {stealth_address}"))?;
-
-            let dir = vaughan_agent::paths::profile_dir(w.path());
-            let policy = vaughan_agent::sentient::load_policy(&dir).map_err(|e| e.to_string())?;
-            let asset = format!("{}:native", w.networks().active().chain_id);
-            let key = format!("sweep_{stealth_address}");
-            vaughan_agent::sentient::SpendLedger::reserve(
-                &dir,
-                &key,
-                &asset,
-                note.balance_wei,
-                note.balance_wei,
-                100, // recovery, not spend: note is its own budget
-                policy.enforcement,
-            )
-            .map_err(|e| e.to_string())?;
-
-            let sweep_res = self
-                .handle
-                .block_on(w.sweep_stealth_note(&note))
-                .map(|h| h.to_string())
-                .map_err(|e| e.to_string());
-            if sweep_res.is_err() {
-                if let Err(re) = vaughan_agent::sentient::release_legs(&dir, &key) {
-                    tracing::warn!(
-                        target: "vaughan_cli::serve",
-                        "failed to release spend reservation for {key}: {re}"
-                    );
-                }
-            }
-            sweep_res
-        });
-        match &result {
-            Ok(_) => {
-                let _ = breaker.record_success(alloy::primitives::U256::ZERO);
-            }
-            Err(e) => breaker.record_failure(e),
-        }
-        result
+    async fn stealth_sweep(&self, _stealth_address: &str) -> Result<String, String> {
+        Err(
+            "tui_required: adviser serve cannot show a sweep card — unlock Vaughan TUI on \
+             this profile"
+                .into(),
+        )
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn execute_propose(
     wallet: &Arc<Mutex<WalletState>>,
-    handle: &Handle,
+    _handle: &Handle,
     profile_dir: &Path,
     profile_name: &str,
     source: &str,
     proposal: TxProposal,
     session_token: &str,
-    breaker: Option<&vaughan_agent::CircuitBreaker>,
+    _breaker: Option<&vaughan_agent::CircuitBreaker>,
 ) -> Result<McpProposeOutcome, String> {
     {
         let w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
@@ -319,28 +292,16 @@ fn execute_propose(
     }
 
     let proposal_id = proposal.proposal_id.clone();
-    let kind = ApprovalKind::McpProposal {
-        proposal_id: proposal_id.clone(),
-        source: source.to_string(),
-        proposal: Box::new(proposal.clone()),
-    };
 
-    if mcp_auto_exec_enabled(profile_name) {
-        let breaker = breaker.ok_or_else(|| "sentient circuit breaker unavailable".to_string())?;
-        let mut w = wallet.lock().map_err(|_| "wallet lock poisoned")?;
-        let hash = sentient_mcp::auto_exec_mcp_proposal(&mut w, handle, breaker, &kind)
-            .map_err(|e| e.to_string())?;
-        return Ok(McpProposeOutcome::Approved { tx_hash: hash });
+    if is_sentient_profile(profile_name) {
+        return Err(
+            "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                .into(),
+        );
     }
 
     let queue = ProposalQueue::new(profile_dir);
-    let secret = if is_sentient_profile(profile_name) {
-        vaughan_agent::sentient::sentient_queue_hmac_key(profile_dir)
-            .map_err(|e| e.to_string())?
-            .to_vec()
-    } else {
-        session_token.as_bytes().to_vec()
-    };
+    let secret = session_token.as_bytes().to_vec();
     queue
         .enqueue(proposal, source, &secret)
         .map_err(|e| e.to_string())?;
@@ -353,6 +314,7 @@ fn execute_propose(
 /// Validate the `VAUGHAN_SIGNER_STORE` environment variable for sentient serve.
 ///
 /// Refuses to start without `VAUGHAN_SIGNER_STORE`. The directory must exist and have mode 0700.
+#[allow(dead_code)]
 pub fn validate_signer_store_env() -> anyhow::Result<PathBuf> {
     let raw = std::env::var("VAUGHAN_SIGNER_STORE").map_err(|_| {
         anyhow::anyhow!(

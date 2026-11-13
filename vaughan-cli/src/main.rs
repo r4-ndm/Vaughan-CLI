@@ -439,12 +439,20 @@ fn main() {
         },
         Some(Command::Serve { password_env }) => {
             vaughan_core::logging::init_logging();
-            match serve::password_from_env(password_env.as_deref()) {
-                Err(e) => Err(e),
-                Ok(password) => {
+            let password_res = if vaughan_core::core::is_sentient_profile(&profile) {
+                // Sentient serve is a thin client connecting to vaughan-signerd;
+                // in-process wallet unlock is disabled and no password is required.
+                Ok(secrecy::SecretString::from(String::new()))
+            } else {
+                serve::password_from_env(password_env.as_deref()).inspect(|_| {
                     if let Some(var) = password_env.as_deref() {
                         std::env::remove_var(var);
                     }
+                })
+            };
+            match password_res {
+                Err(e) => Err(e),
+                Ok(password) => {
                     let runtime =
                         tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
                     runtime
