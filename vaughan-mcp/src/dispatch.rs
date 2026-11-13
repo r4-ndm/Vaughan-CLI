@@ -1,8 +1,9 @@
 //! Tool dispatch for MCP — maps tool names to `vaughan-agent` registry.
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use serde_json::{json, Value};
 use vaughan_agent::paths::profile_dir;
 use vaughan_agent::tools::{
@@ -10,12 +11,15 @@ use vaughan_agent::tools::{
 };
 use vaughan_agent::AgentError;
 use vaughan_core::chains::evm::adapter::EvmAdapter;
-use vaughan_core::chains::evm::networks::{get_network_by_id, resolve_rpc_endpoints};
+use vaughan_core::chains::evm::networks::{
+    get_network_by_chain_id, get_network_by_id, resolve_rpc_endpoints,
+};
 use vaughan_core::core::persistence::StateManager;
 use vaughan_core::core::proposal::{
     guard_mainnet_write, proposal_status_json, McpSessionToken, ProposalQueue, ProposalType,
     TxProposal,
 };
+use vaughan_core::core::{SignerClient, SignerIntent, SwapFamily};
 
 use crate::browser_bridge::{self, browser_tool_definitions};
 use crate::client::{
@@ -87,6 +91,39 @@ impl McpDispatcher {
         args: Value,
         ctx: &McpContext,
     ) -> Result<Value, String> {
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            match name {
+                "propose_contract_call"
+                | "propose_lp_deploy"
+                | "propose_v3_mint"
+                | "propose_v3_increase"
+                | "propose_v3_decrease"
+                | "propose_v3_collect"
+                | "propose_v3_transfer_position"
+                | "propose_token_launch"
+                | "propose_bridge"
+                | "propose_hex_stake"
+                | "propose_policy"
+                | "get_stealth_uri"
+                | "scan_stealth_notes"
+                | "sweep_stealth_note" => {
+                    return Err(format!(
+                        "intent_untyped: {name} requires human approval via an adviser profile (not available on sentient)"
+                    ));
+                }
+                _ => {}
+            }
+        }
+
         let ctx = self.refresh_context(ctx).await;
         match name {
             "get_proposal_status" => self.get_proposal_status(args, &ctx).await,
@@ -179,6 +216,26 @@ impl McpDispatcher {
                 Ok(out)
             }
             "get_address" => {
+                let profile_name = if ctx.profile.is_empty() {
+                    self.profile_dir
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                } else {
+                    ctx.profile.as_str()
+                };
+                if vaughan_core::core::is_sentient_profile(profile_name) {
+                    let client = SignerClient::default();
+                    let resp = client.status().await?;
+                    let addr_str = resp.address.ok_or_else(|| {
+                        "wallet_locked: signer daemon returned no active address".to_string()
+                    })?;
+                    return Ok(json!({
+                        "address": addr_str,
+                        "account_index": 0,
+                        "account_label": "sentient",
+                    }));
+                }
                 let addr = ctx.active_address.ok_or_else(|| {
                     "wallet_locked: no unlocked vault for this profile — the operator must run `vaughan serve --profile <name> --password-env <VAR>` (headless) or keep the TUI unlocked. Read-only tools also accept `account_address`; write tools do not.".to_string()
                 })?;
@@ -208,6 +265,39 @@ impl McpDispatcher {
     /// Merge live TUI session data (address, network) when the wallet is unlocked.
     pub async fn refresh_context(&self, ctx: &McpContext) -> McpContext {
         let mut out = ctx.clone();
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            let client = SignerClient::default();
+            if let Ok(resp) = client.status().await {
+                if let Some(addr_str) = resp.address {
+                    if let Ok(addr) = Address::from_str(&addr_str) {
+                        out.active_address = Some(addr);
+                    }
+                }
+                if let Some(chain_id) = resp.chain_id {
+                    out.chain_id = chain_id;
+                    if let Some(net) = get_network_by_chain_id(chain_id) {
+                        out.network_id = net.id.clone();
+                        let persisted = StateManager::network_rpc_primary_for_profile(
+                            &ctx.profile,
+                            &out.network_id,
+                        );
+                        let (rpc_url, _) = resolve_rpc_endpoints(&net, persisted.as_deref(), None);
+                        out.rpc_url = rpc_url;
+                        out.is_testnet = net.is_testnet;
+                    }
+                }
+            }
+            return out;
+        }
+
         let Ok(Some(token)) = McpSessionToken::read(&self.profile_dir) else {
             return out;
         };
@@ -286,6 +376,25 @@ impl McpDispatcher {
         guard_mainnet_write(ctx.is_testnet).map_err(|e| e.to_string())?;
         self.require_power_unlocked(ctx).await?;
 
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            let intent = map_sentient_tool_to_intent(name, &args, ctx)?;
+            let client = SignerClient::default();
+            let tx_hash = client.execute(&intent).await?;
+            return Ok(json!({
+                "status": "approved",
+                "tx_hash": tx_hash,
+            }));
+        }
+
         let tool_ctx = ToolContext {
             rpc_url: ctx.rpc_url.clone(),
             chain_id: ctx.chain_id,
@@ -352,6 +461,34 @@ impl McpDispatcher {
         args: Value,
         ctx: &McpContext,
     ) -> Result<Value, String> {
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            let client = SignerClient::default();
+            if !client.ping().await {
+                return Err(
+                    "session_required: signer daemon unreachable — start vaughan-signerd".into(),
+                );
+            }
+            let tool_ctx = ToolContext {
+                rpc_url: ctx.rpc_url.clone(),
+                chain_id: ctx.chain_id,
+                active_address: ctx.active_address,
+                profile_dir: Some(self.profile_dir.clone()),
+            };
+            return self
+                .assist
+                .execute(name, args, &tool_ctx)
+                .await
+                .map_err(agent_err);
+        }
+
         let session = McpSessionToken::read(&self.profile_dir)
             .map_err(|e| e.user_message())?
             .filter(|s| !s.is_empty())
@@ -469,6 +606,44 @@ impl McpDispatcher {
     }
 
     async fn control_plane_status(&self, _ctx: &McpContext) -> Result<Value, String> {
+        let profile_name = self
+            .profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("default");
+        let auto_exec = vaughan_core::core::is_sentient_profile(profile_name);
+        let autonomy = StateManager::agent_autonomy_tier_for_profile(profile_name);
+
+        if auto_exec {
+            let client = SignerClient::default();
+            let (reachable, address) = match client.status().await {
+                Ok(resp) => {
+                    let addr = resp.address.and_then(|s| Address::from_str(&s).ok());
+                    (true, addr)
+                }
+                Err(_) => (false, None),
+            };
+            return Ok(json!({
+                "control_plane_reachable": reachable,
+                "session_file_present": false,
+                "wallet_unlocked": reachable,
+                "agent_browser_control": StateManager::agent_browser_control_for_profile(profile_name),
+                "agent_autonomy_tier": autonomy.as_str(),
+                "operator_auto_connect": autonomy == vaughan_core::core::AgentAutonomyTier::Operator,
+                "active_address": address.map(|a| format!("{a:#x}")),
+                "active_account_index": if reachable { Some(0) } else { None },
+                "active_account_label": if reachable { Some("sentient".to_string()) } else { None },
+                "profile": profile_name,
+                "sentient_auto_exec": true,
+                "ready_for_writes": reachable,
+                "hint": if reachable {
+                    "Sentient profile: proposes auto-exec under signer policy via socket"
+                } else {
+                    "Signer daemon unreachable — run systemctl start vaughan-signerd"
+                },
+            }));
+        }
+
         let session = McpSessionToken::read(&self.profile_dir)
             .map_err(|e| e.user_message())?
             .unwrap_or_default();
@@ -494,13 +669,6 @@ impl McpDispatcher {
         } else {
             (false, false, None, None, None)
         };
-        let profile_name = self
-            .profile_dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("default");
-        let auto_exec = vaughan_core::core::is_sentient_profile(profile_name);
-        let autonomy = StateManager::agent_autonomy_tier_for_profile(profile_name);
         Ok(json!({
             "control_plane_reachable": reachable,
             "session_file_present": has_session_file,
@@ -529,10 +697,6 @@ impl McpDispatcher {
     }
 
     async fn budget_status(&self, ctx: &McpContext) -> Result<Value, String> {
-        // The profile NAME must come from the caller's context: the default profile's
-        // wallet lives at <data>/vaughan-cli/wallet.json (no `profiles/` segment), so
-        // deriving it from the directory basename reports "vaughan-cli" instead of
-        // "default" and makes the response ambiguous for an agent reading it.
         let profile_name = if ctx.profile.is_empty() {
             self.profile_dir
                 .file_name()
@@ -551,58 +715,44 @@ impl McpDispatcher {
             }));
         }
 
-        let policy = vaughan_agent::sentient::load_policy(&self.profile_dir)
-            .map_err(|e| format!("spend_ledger_unreadable: {e}"))?;
-
-        let view = vaughan_agent::sentient::SpendLedger::snapshot(&self.profile_dir)
-            .map_err(|e| e.to_string())?;
-
-        let ledger_path = self.profile_dir.join("sentient-spend.json");
-        let window_reset_unix = if view.window_start_unix == 0 {
-            0
-        } else {
-            view.window_start_unix.saturating_add(view.window_seconds)
-        };
-
-        let mut assets_out = Vec::new();
-        let mut asset_keys: Vec<_> = view.assets.keys().collect();
-        asset_keys.sort();
-        for key in asset_keys {
-            let item = &view.assets[key];
-            let cap = item
-                .snapshot
-                .saturating_mul(alloy::primitives::U256::from(policy.daily_cap_pct))
-                .checked_div(alloy::primitives::U256::from(100))
-                .unwrap_or(alloy::primitives::U256::ZERO);
-            let remaining = cap.saturating_sub(item.spent);
-            assets_out.push(json!({
-                "asset": key,
-                "snapshot": item.snapshot.to_string(),
-                "spent": item.spent.to_string(),
-                "cap": cap.to_string(),
-                "remaining": remaining.to_string(),
-            }));
+        let client = SignerClient::default();
+        let resp = client.status().await?;
+        if let Some(mut budget) = resp.budget {
+            budget["profile"] = json!(profile_name);
+            budget["chain_id"] = json!(ctx.chain_id);
+            return Ok(budget);
         }
 
-        let mut out = json!({
+        let ledger_path = format!(
+            "{}/sentient-spend.json",
+            resp.store.as_deref().unwrap_or("/var/lib/vaughan/sentient")
+        );
+        Ok(json!({
             "profile": profile_name,
-            "chain_id": ctx.chain_id,
-            "enforcement": policy.enforcement.as_str(),
-            "daily_cap_pct": policy.daily_cap_pct,
-            "window_reset_unix": window_reset_unix,
-            "assets": assets_out,
-            "allow_transfer_to": policy.allow_transfer_to,
-            "ledger_path": ledger_path.display().to_string(),
-        });
-
-        if view.assets.is_empty() {
-            out["note"] = json!("no spend recorded this window");
-        }
-
-        Ok(out)
+            "chain_id": resp.chain_id.unwrap_or(ctx.chain_id),
+            "enforcement": "enforced",
+            "daily_cap_pct": 100,
+            "window_reset_unix": 0,
+            "assets": [],
+            "allow_transfer_to": [],
+            "ledger_path": ledger_path,
+            "note": "no spend recorded this window",
+            "active_address": resp.address,
+        }))
     }
 
-    async fn stealth_uri(&self, _ctx: &McpContext) -> Result<Value, String> {
+    async fn stealth_uri(&self, ctx: &McpContext) -> Result<Value, String> {
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            return Err("intent_untyped: get_stealth_uri requires human approval via an adviser profile (not available on sentient)".into());
+        }
         let session = McpSessionToken::read(&self.profile_dir)
             .map_err(|e| e.user_message())?
             .ok_or_else(|| "wallet_locked: unlock Vaughan or run vaughan serve".to_string())?;
@@ -613,7 +763,18 @@ impl McpDispatcher {
         }
     }
 
-    async fn stealth_scan(&self, _ctx: &McpContext) -> Result<Value, String> {
+    async fn stealth_scan(&self, ctx: &McpContext) -> Result<Value, String> {
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            return Err("intent_untyped: scan_stealth_notes requires human approval via an adviser profile (not available on sentient)".into());
+        }
         let session = McpSessionToken::read(&self.profile_dir)
             .map_err(|e| e.user_message())?
             .ok_or_else(|| "wallet_locked: unlock Vaughan or run vaughan serve".to_string())?;
@@ -624,7 +785,18 @@ impl McpDispatcher {
         }
     }
 
-    async fn stealth_sweep(&self, args: Value, _ctx: &McpContext) -> Result<Value, String> {
+    async fn stealth_sweep(&self, args: Value, ctx: &McpContext) -> Result<Value, String> {
+        let profile_name = if ctx.profile.is_empty() {
+            self.profile_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            ctx.profile.as_str()
+        };
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            return Err("intent_untyped: sweep_stealth_note requires human approval via an adviser profile (not available on sentient)".into());
+        }
         let addr = args
             .get("stealth_address")
             .and_then(|v| v.as_str())
@@ -682,4 +854,311 @@ fn extract_proposals(raw: &Value) -> Result<Vec<TxProposal>, String> {
         ));
     }
     Ok(out)
+}
+
+/// Map proposal tool arguments directly to a typed [`SignerIntent`] for sentient profiles.
+///
+/// Untyped tools return `intent_untyped` naming the adviser/human confirmation path
+/// and never construct calldata or communicate with the signer.
+pub fn map_sentient_tool_to_intent(
+    name: &str,
+    args: &Value,
+    ctx: &McpContext,
+) -> Result<SignerIntent, String> {
+    match name {
+        "propose_transfer" => {
+            let recipient_str = args
+                .get("recipient")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'recipient'".to_string())?;
+            let recipient = Address::from_str(recipient_str)
+                .map_err(|e| format!("invalid_tool_call: invalid recipient: {e}"))?;
+            let amount_str = args
+                .get("amount")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount'".to_string())?;
+            let amount = U256::from_str(amount_str)
+                .map_err(|e| format!("invalid_tool_call: invalid amount: {e}"))?;
+            let token = args
+                .get("token_address")
+                .or_else(|| args.get("token"))
+                .and_then(|v| v.as_str())
+                .map(Address::from_str)
+                .transpose()
+                .map_err(|e| format!("invalid_tool_call: invalid token_address: {e}"))?;
+            Ok(SignerIntent::Transfer {
+                chain_id: ctx.chain_id,
+                to: recipient,
+                token,
+                amount,
+            })
+        }
+        "propose_swap" => {
+            let router_str = args
+                .get("router_address")
+                .or_else(|| args.get("router"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'router_address'".to_string())?;
+            let router = Address::from_str(router_str)
+                .map_err(|e| format!("invalid_tool_call: invalid router_address: {e}"))?;
+            let path_arr = args
+                .get("path")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "invalid_tool_call: missing 'path' array".to_string())?;
+            let mut path = Vec::new();
+            for p in path_arr {
+                let s = p
+                    .as_str()
+                    .ok_or_else(|| "invalid_tool_call: path element must be a string".to_string())?;
+                path.push(
+                    Address::from_str(s)
+                        .map_err(|e| format!("invalid_tool_call: invalid path address {s}: {e}"))?,
+                );
+            }
+            let amount_in_str = args
+                .get("amount_in")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount_in'".to_string())?;
+            let amount_in = U256::from_str(amount_in_str)
+                .map_err(|e| format!("invalid_tool_call: invalid amount_in: {e}"))?;
+            let min_out_str = args
+                .get("min_amount_out")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'min_amount_out'".to_string())?;
+            let min_amount_out = U256::from_str(min_out_str)
+                .map_err(|e| format!("invalid_tool_call: invalid min_amount_out: {e}"))?;
+            Ok(SignerIntent::Swap {
+                chain_id: ctx.chain_id,
+                family: SwapFamily::V2,
+                router,
+                path,
+                amount_in,
+                min_amount_out,
+                fee: None,
+            })
+        }
+        "propose_v3_swap" => {
+            let token_in_s = args
+                .get("token_in")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'token_in'".to_string())?;
+            let token_out_s = args
+                .get("token_out")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'token_out'".to_string())?;
+            let token_in = parse_v3_token(token_in_s, ctx.chain_id)?;
+            let token_out = parse_v3_token(token_out_s, ctx.chain_id)?;
+
+            let amount_in_str = args
+                .get("amount_in")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount_in'".to_string())?;
+            let amount_in = U256::from_str(amount_in_str)
+                .map_err(|e| format!("invalid_tool_call: invalid amount_in: {e}"))?;
+
+            let fee = args.get("fee").and_then(|v| v.as_u64()).map(|f| f as u32);
+            let router = if let Some(r_str) = args
+                .get("router")
+                .or_else(|| args.get("router_address"))
+                .and_then(|v| v.as_str())
+            {
+                Address::from_str(r_str)
+                    .map_err(|e| format!("invalid_tool_call: invalid router: {e}"))?
+            } else {
+                let r_str = vaughan_core::core::deployment_for_chain(ctx.chain_id)
+                    .map(|d| d.swap_router)
+                    .ok_or_else(|| {
+                        format!(
+                            "invalid_tool_call: no V3 deployment for chain {}",
+                            ctx.chain_id
+                        )
+                    })?;
+                Address::from_str(r_str)
+                    .map_err(|e| format!("invalid_tool_call: invalid deployment router: {e}"))?
+            };
+
+            let min_amount_out = if let Some(m_str) =
+                args.get("min_amount_out").and_then(|v| v.as_str())
+            {
+                U256::from_str(m_str)
+                    .map_err(|e| format!("invalid_tool_call: invalid min_amount_out: {e}"))?
+            } else {
+                U256::from(1)
+            };
+
+            Ok(SignerIntent::Swap {
+                chain_id: ctx.chain_id,
+                family: SwapFamily::V3,
+                router,
+                path: vec![token_in, token_out],
+                amount_in,
+                min_amount_out,
+                fee,
+            })
+        }
+        "propose_agg_swap" => {
+            let token_in_s = args
+                .get("token_in")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'token_in'".to_string())?;
+            let token_out_s = args
+                .get("token_out")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'token_out'".to_string())?;
+            let token_in = parse_v3_token(token_in_s, ctx.chain_id)?;
+            let token_out = parse_v3_token(token_out_s, ctx.chain_id)?;
+
+            let amount_in_str = args
+                .get("amount_in")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount_in'".to_string())?;
+            let amount_in = U256::from_str(amount_in_str)
+                .map_err(|e| format!("invalid_tool_call: invalid amount_in: {e}"))?;
+
+            let min_amount_out = if let Some(m_str) =
+                args.get("min_amount_out").and_then(|v| v.as_str())
+            {
+                U256::from_str(m_str)
+                    .map_err(|e| format!("invalid_tool_call: invalid min_amount_out: {e}"))?
+            } else {
+                U256::from(1)
+            };
+
+            let router = if let Some(r_str) = args
+                .get("router")
+                .or_else(|| args.get("router_address"))
+                .and_then(|v| v.as_str())
+            {
+                Address::from_str(r_str)
+                    .map_err(|e| format!("invalid_tool_call: invalid router: {e}"))?
+            } else {
+                // Default to Squirrel on PulseChain
+                Address::from_str("0xb5e0c5d63f25c788647087796d74ee176c1dc110")
+                    .map_err(|e| format!("invalid_tool_call: {e}"))?
+            };
+
+            Ok(SignerIntent::Swap {
+                chain_id: ctx.chain_id,
+                family: SwapFamily::Agg,
+                router,
+                path: vec![token_in, token_out],
+                amount_in,
+                min_amount_out,
+                fee: None,
+            })
+        }
+        "propose_approve" => {
+            let token_s = args
+                .get("token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'token'".to_string())?;
+            let token = Address::from_str(token_s)
+                .map_err(|e| format!("invalid_tool_call: invalid token: {e}"))?;
+            let spender_s = args
+                .get("spender")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'spender'".to_string())?;
+            let spender = Address::from_str(spender_s)
+                .map_err(|e| format!("invalid_tool_call: invalid spender: {e}"))?;
+            let amount_s = args
+                .get("amount")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount'".to_string())?;
+            let amount = U256::from_str(amount_s)
+                .map_err(|e| format!("invalid_tool_call: invalid amount: {e}"))?;
+            let expiry = args.get("expiry").and_then(|v| v.as_u64());
+
+            Ok(SignerIntent::Approve {
+                chain_id: ctx.chain_id,
+                token,
+                spender,
+                amount,
+                expiry,
+            })
+        }
+        "propose_wrap" => {
+            let amount_s = args
+                .get("amount")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount'".to_string())?;
+            let amount = U256::from_str(amount_s)
+                .map_err(|e| format!("invalid_tool_call: invalid amount: {e}"))?;
+            Ok(SignerIntent::Wrap {
+                chain_id: ctx.chain_id,
+                amount,
+            })
+        }
+        "propose_unwrap" => {
+            let amount_s = args
+                .get("amount")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "invalid_tool_call: missing 'amount'".to_string())?;
+            let amount = U256::from_str(amount_s)
+                .map_err(|e| format!("invalid_tool_call: invalid amount: {e}"))?;
+            Ok(SignerIntent::Unwrap {
+                chain_id: ctx.chain_id,
+                amount,
+            })
+        }
+        "propose_batch_transfer" | "propose_batch_7702" => {
+            let calls_arr = args
+                .get("calls")
+                .or_else(|| args.get("legs"))
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "invalid_tool_call: missing 'calls' or 'legs'".to_string())?;
+            let mut legs = Vec::new();
+            for c in calls_arr {
+                let to_s = c
+                    .get("to")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "invalid_tool_call: leg missing 'to'".to_string())?;
+                let to = Address::from_str(to_s)
+                    .map_err(|e| format!("invalid_tool_call: invalid leg 'to': {e}"))?;
+                let amt_s = c
+                    .get("value_wei")
+                    .or_else(|| c.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0");
+                let amount = U256::from_str(amt_s)
+                    .map_err(|e| format!("invalid_tool_call: invalid leg amount: {e}"))?;
+                if let Some(d) = c.get("data").and_then(|v| v.as_str()) {
+                    let d_clean = d.trim_start_matches("0x");
+                    if !d_clean.is_empty() {
+                        return Err("intent_untyped: batch leg contains calldata, which is not permitted on sentient profiles; use an adviser profile".to_string());
+                    }
+                }
+                legs.push(vaughan_core::core::BatchTransferLeg { to, amount });
+            }
+            Ok(SignerIntent::BatchTransfer {
+                chain_id: ctx.chain_id,
+                legs,
+            })
+        }
+        // Untyped tools: permanently refused on sentient, naming adviser/human approval
+        _ => Err(format!(
+            "intent_untyped: {name} requires human approval via an adviser profile (not available on sentient)"
+        )),
+    }
+}
+
+fn parse_v3_token(raw: &str, chain_id: u64) -> Result<Address, String> {
+    let s = raw.trim();
+    if s.eq_ignore_ascii_case("native")
+        || s.eq_ignore_ascii_case("pls")
+        || s.eq_ignore_ascii_case("eth")
+    {
+        return vaughan_core::core::dex_routers::wpls_for_chain(chain_id).ok_or_else(|| {
+            format!("invalid_tool_call: no wrapped native token for chain {chain_id}")
+        });
+    }
+    if s.eq_ignore_ascii_case("wpls") || s.eq_ignore_ascii_case("weth") {
+        return vaughan_core::core::dex_routers::wpls_for_chain(chain_id).ok_or_else(|| {
+            format!("invalid_tool_call: no wrapped native token for chain {chain_id}")
+        });
+    }
+    if s.eq_ignore_ascii_case("wzrd") && chain_id == 943 {
+        return Address::from_str(vaughan_core::core::wiz4rd::WZRD_SMOKE_943)
+            .map_err(|e| format!("invalid_tool_call: invalid WZRD address: {e}"));
+    }
+    Address::from_str(s).map_err(|e| format!("invalid_tool_call: invalid token address '{s}': {e}"))
 }

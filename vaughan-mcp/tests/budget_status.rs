@@ -4,6 +4,8 @@ use serde_json::json;
 use tempfile::tempdir;
 use vaughan_mcp::{McpContext, McpDispatcher};
 
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn write_mode_0600(path: &std::path::Path, content: &str) {
     std::fs::write(path, content).unwrap();
     #[cfg(unix)]
@@ -11,6 +13,115 @@ fn write_mode_0600(path: &std::path::Path, content: &str) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
+}
+
+fn handle_mock_status(store: &std::path::Path, _line: &str) -> String {
+    let policy = match vaughan_agent::sentient::load_policy(store) {
+        Ok(p) => p,
+        Err(e) => {
+            return serde_json::to_string(&json!({
+                "ok": false,
+                "code": "policy_load_failed",
+                "message": format!("could not load policy: {e}"),
+            }))
+            .unwrap()
+                + "\n";
+        }
+    };
+
+    let view = match vaughan_agent::sentient::SpendLedger::snapshot(store) {
+        Ok(v) => v,
+        Err(e) => {
+            return serde_json::to_string(&json!({
+                "ok": false,
+                "code": "spend_ledger_unreadable",
+                "message": format!("spend_ledger_unreadable: {e}"),
+            }))
+            .unwrap()
+                + "\n";
+        }
+    };
+
+    let ledger_path = store.join("sentient-spend.json");
+    let window_reset_unix = if view.window_start_unix == 0 {
+        0
+    } else {
+        view.window_start_unix.saturating_add(view.window_seconds)
+    };
+
+    let mut assets_out = Vec::new();
+    let mut asset_keys: Vec<_> = view.assets.keys().collect();
+    asset_keys.sort();
+    for key in asset_keys {
+        let item = &view.assets[key];
+        let cap = item
+            .snapshot
+            .saturating_mul(alloy::primitives::U256::from(policy.daily_cap_pct))
+            .checked_div(alloy::primitives::U256::from(100))
+            .unwrap_or(alloy::primitives::U256::ZERO);
+        let remaining = cap.saturating_sub(item.spent);
+        assets_out.push(json!({
+            "asset": key,
+            "snapshot": item.snapshot.to_string(),
+            "spent": item.spent.to_string(),
+            "cap": cap.to_string(),
+            "remaining": remaining.to_string(),
+        }));
+    }
+
+    let mut budget_json = json!({
+        "profile": "sentient",
+        "chain_id": 369,
+        "enforcement": policy.enforcement.as_str(),
+        "daily_cap_pct": policy.daily_cap_pct,
+        "window_reset_unix": window_reset_unix,
+        "assets": assets_out,
+        "allow_transfer_to": policy.allow_transfer_to,
+        "ledger_path": ledger_path.display().to_string(),
+        "circuit_breaker_tripped": false,
+    });
+    if view.assets.is_empty() {
+        budget_json["note"] = json!("no spend recorded this window");
+    }
+
+    serde_json::to_string(&json!({
+        "ok": true,
+        "address": "0x1111111111111111111111111111111111111111",
+        "chain_id": 369,
+        "store": store.display().to_string(),
+        "policy_digest": policy.digest(),
+        "budget": budget_json,
+    }))
+    .unwrap()
+        + "\n"
+}
+
+async fn spawn_mock_signer(
+    store: &std::path::Path,
+) -> (std::path::PathBuf, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let socket_path = store.join("mock_signerd.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let store_buf = store.to_path_buf();
+
+    let handle = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let store = store_buf.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut buf = BufReader::new(reader);
+                let mut line = String::new();
+                if buf.read_line(&mut line).await.is_ok() {
+                    let resp = handle_mock_status(&store, &line);
+                    let _ = writer.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    (socket_path, handle)
 }
 
 #[tokio::test]
@@ -46,6 +157,7 @@ async fn test_budget_status_adviser_profile_shape() {
 
 #[tokio::test]
 async fn test_budget_status_sentient_values_and_arithmetic() {
+    let _guard = TEST_LOCK.lock().await;
     let dir = tempdir().unwrap();
     let sentient_dir = dir.path().join("sentient");
     std::fs::create_dir_all(&sentient_dir).unwrap();
@@ -72,6 +184,9 @@ allow_transfer_to = ["0x1111111111111111111111111111111111111111"]
   "recent": []
 }"#;
     write_mode_0600(&sentient_dir.join("sentient-spend.json"), ledger_json);
+
+    let (sock_path, server_task) = spawn_mock_signer(&sentient_dir).await;
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &sock_path);
 
     let dispatcher = McpDispatcher::for_profile_dir(sentient_dir.clone());
     let ctx = McpContext {
@@ -114,10 +229,14 @@ allow_transfer_to = ["0x1111111111111111111111111111111111111111"]
         result["allow_transfer_to"],
         json!(["0x1111111111111111111111111111111111111111"])
     );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
 }
 
 #[tokio::test]
 async fn test_budget_status_sentient_empty_ledger() {
+    let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let sentient_dir = dir.path().join("sentient");
     std::fs::create_dir_all(&sentient_dir).unwrap();
@@ -128,6 +247,9 @@ daily_cap_pct = 20
 allow_transfer_to = []
 "#;
     write_mode_0600(&sentient_dir.join("sentient-policy.toml"), policy_toml);
+
+    let (sock_path, server_task) = spawn_mock_signer(&sentient_dir).await;
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &sock_path);
 
     let dispatcher = McpDispatcher::for_profile_dir(sentient_dir);
     let ctx = McpContext {
@@ -148,10 +270,14 @@ allow_transfer_to = []
     assert_eq!(result["profile"], "sentient");
     assert_eq!(result["assets"], json!([]));
     assert_eq!(result["note"], "no spend recorded this window");
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
 }
 
 #[tokio::test]
 async fn test_budget_status_corrupt_ledger_errors() {
+    let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let sentient_dir = dir.path().join("sentient");
     std::fs::create_dir_all(&sentient_dir).unwrap();
@@ -167,6 +293,9 @@ daily_cap_pct = 20
         &sentient_dir.join("sentient-spend.json"),
         "this is not valid json {{{[[",
     );
+
+    let (sock_path, server_task) = spawn_mock_signer(&sentient_dir).await;
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &sock_path);
 
     let dispatcher = McpDispatcher::for_profile_dir(sentient_dir);
     let ctx = McpContext {
@@ -188,4 +317,7 @@ daily_cap_pct = 20
         err.starts_with("spend_ledger_unreadable:"),
         "expected error starting with spend_ledger_unreadable:, got: {err}"
     );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
 }
