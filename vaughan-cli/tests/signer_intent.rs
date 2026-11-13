@@ -1356,8 +1356,10 @@ async fn test_policy_update_audit_rotates_at_200_lines_over_socket() {
 async fn test_policy_update_rate_limits_after_5_wrong_passwords() {
     let (signer, _, _dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
     let baseline = std::fs::read(&policy_path).unwrap();
-    let mut new_policy = vaughan_agent::sentient::AgentSessionPolicy::default();
-    new_policy.daily_cap_pct = 50;
+    let new_policy = vaughan_agent::sentient::AgentSessionPolicy {
+        daily_cap_pct: 50,
+        ..Default::default()
+    };
     let new_val = serde_json::to_value(&new_policy).unwrap();
 
     let wrong_req = serde_json::json!({
