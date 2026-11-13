@@ -1,6 +1,6 @@
 {
   "name": "vaughan-mcp",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Vaughan wallet MCP server — a bounded, self-custody wallet for autonomous agents. Keys never leave the vault; the agent gets an allowance, not the key.",
   "license": "MIT",
   "type": "commonjs",
