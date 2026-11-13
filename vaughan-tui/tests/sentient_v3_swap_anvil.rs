@@ -983,3 +983,67 @@ async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim()
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
     server_task.abort();
 }
+
+#[tokio::test]
+async fn test_sentient_stealth_sweep_routes_to_signer_and_reports_refusal() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    let anvil = Anvil::start();
+    common::plant_announcer(&anvil);
+    let (mut wallet, dir) = setup_sentient_wallet(&anvil);
+    let (wallet_signer, _) = setup_sentient_wallet(&anvil);
+    let rt_handle = tokio::runtime::Handle::current();
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet_signer, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+
+    let uri = wallet.stealth_uri().unwrap();
+    let announcement = wallet.prepare_stealth_payment(&uri).unwrap();
+    wallet
+        .send_stealth(&announcement, "500000000000000000")
+        .await
+        .expect("send stealth");
+
+    let notes = wallet.scan_stealth_notes().await.expect("scan");
+    assert!(!notes.is_empty(), "expected one funded note");
+    let note = &notes[0];
+
+    let kind = ApprovalKind::StealthSweep {
+        stealth_address: format!("{:#x}", note.announcement.stealth_address),
+        balance_display: note.balance_formatted.clone(),
+    };
+
+    let kind_clone = kind.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        vaughan_tui::sentient_mcp::auto_exec_stealth_sweep(
+            &mut wallet,
+            &rt_handle,
+            &breaker,
+            &kind_clone,
+        )
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Err(ProviderError::Unauthorized(ref msg)) => {
+            assert!(
+                msg.contains("sentient_local_signing_disabled")
+                    && msg.contains("sweep_stealth")
+                    && msg.contains("intent_not_implemented"),
+                "expected verbatim signerd refusal over socket, got: {msg}"
+            );
+        }
+        other => panic!("expected ProviderError::Unauthorized with refusal, got: {other:?}"),
+    }
+
+    // Verify spend reservation was released on refusal
+    let ledger = SpendLedger::snapshot(&profile_dir).unwrap();
+    let key = format!("sweep_{:#x}", note.announcement.stealth_address);
+    assert!(!ledger.recent.iter().any(|r| r.key == key));
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
+}

@@ -15,8 +15,8 @@ use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{
     apply_proposal, decode_v3_swap_calldata, fee_spike_exceeds_threshold, guard_mainnet_write,
     is_allowed_agg_router_on_chain, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
-    is_v2_swap_selector, quote_v2_exact_in, quote_v3_pool_exact_in, OperatingMode, SignerIntent,
-    WalletState,
+    is_v2_swap_selector, quote_v2_exact_in, quote_v3_pool_exact_in, OperatingMode, SignerClient,
+    SignerIntent, WalletState,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::ProviderError;
@@ -929,7 +929,16 @@ pub fn auto_exec_stealth_sweep(
     )
     .map_err(|e| ProviderError::InvalidParams(e.to_string()))?;
 
-    let result = provider::execute_approval_sync(kind, wallet, handle);
+    let stealth_addr_parsed = Address::from_str(&stealth_addr)
+        .map_err(|e| ProviderError::InvalidParams(format!("bad stealth_address: {e}")))?;
+    let intent = SignerIntent::SweepStealth {
+        chain_id: net.chain_id,
+        stealth_address: stealth_addr_parsed,
+    };
+    let client = SignerClient::default();
+    let result = handle
+        .block_on(client.execute(&intent))
+        .map_err(|e| ProviderError::Unauthorized(format!("sentient_local_signing_disabled: {e}")));
     match &result {
         Ok(_) => {
             let _ = breaker.record_success(U256::ZERO);
