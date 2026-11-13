@@ -33,6 +33,13 @@ sol! {
             address to,
             uint256 deadline
         ) external returns (uint256[] memory amounts);
+
+        function swapExactETHForTokens(
+            uint256 amountOutMin,
+            address[] calldata path,
+            address to,
+            uint256 deadline
+        ) external payable returns (uint256[] memory amounts);
     }
 
     interface ISwapRouterV3 {
@@ -128,7 +135,13 @@ pub fn build_transfer_tx(
     }
 }
 
-/// Build an EVM transaction for Uniswap V2 `swapExactTokensForTokens`.
+/// Build an EVM transaction for Uniswap V2 router swaps.
+///
+/// When `path[0]` is the wrapped native token for `chain_id`, this encodes
+/// the payable `swapExactETHForTokens(amountOutMin, path, to, deadline)` with
+/// `value = amount_in`. When `path[0]` is an ERC-20, this encodes non-payable
+/// `swapExactTokensForTokens(amountIn, amountOutMin, path, to, deadline)` with
+/// `value = 0`.
 pub fn build_v2_swap_tx(
     chain_id: u64,
     from: Address,
@@ -143,20 +156,27 @@ pub fn build_v2_swap_tx(
     }
     let token_in = path[0];
     let wrapped = resolve_wrapped_native(chain_id)?;
-    let value = if token_in == wrapped {
-        amount_in
-    } else {
-        U256::ZERO
-    };
+    let is_native_in = token_in == wrapped;
+    let value = if is_native_in { amount_in } else { U256::ZERO };
     let deadline = default_deadline();
-    let calldata = IUniswapV2RouterSwap::swapExactTokensForTokensCall {
-        amountIn: amount_in,
-        amountOutMin: min_amount_out,
-        path,
-        to: recipient,
-        deadline,
-    }
-    .abi_encode();
+    let calldata = if is_native_in {
+        IUniswapV2RouterSwap::swapExactETHForTokensCall {
+            amountOutMin: min_amount_out,
+            path,
+            to: recipient,
+            deadline,
+        }
+        .abi_encode()
+    } else {
+        IUniswapV2RouterSwap::swapExactTokensForTokensCall {
+            amountIn: amount_in,
+            amountOutMin: min_amount_out,
+            path,
+            to: recipient,
+            deadline,
+        }
+        .abi_encode()
+    };
 
     Ok(evm_tx(chain_id, from, router, value, calldata))
 }
@@ -400,6 +420,13 @@ mod tests {
 
         assert_eq!(tx.to, format!("{router:#x}"));
         assert_eq!(tx.value, amount_in.to_string());
+        // Must encode payable swapExactETHForTokens (0x7ff36ab5), NOT non-payable swapExactTokensForTokens
+        let data = tx.data.expect("calldata present");
+        let selector = hex::encode(IUniswapV2RouterSwap::swapExactETHForTokensCall::SELECTOR);
+        assert!(
+            data.starts_with(&format!("0x{selector}")),
+            "expected swapExactETHForTokens selector 0x{selector}, got {data}"
+        );
     }
 
     #[test]
@@ -425,6 +452,13 @@ mod tests {
 
         assert_eq!(tx.to, format!("{router:#x}"));
         assert_eq!(tx.value, "0");
+        // Must encode non-payable swapExactTokensForTokens (0x38ed1739)
+        let data = tx.data.expect("calldata present");
+        let selector = hex::encode(IUniswapV2RouterSwap::swapExactTokensForTokensCall::SELECTOR);
+        assert!(
+            data.starts_with(&format!("0x{selector}")),
+            "expected swapExactTokensForTokens selector 0x{selector}, got {data}"
+        );
     }
 
     #[test]
