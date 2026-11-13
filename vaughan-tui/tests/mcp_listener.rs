@@ -139,3 +139,24 @@ async fn mcp_loopback_rejects_bad_session_token() {
 
     svc.on_lock();
 }
+
+#[tokio::test]
+async fn mcp_listener_sentient_profile_never_binds_or_writes_token() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sentient_dir = dir.path().join("sentient");
+    std::fs::create_dir_all(&sentient_dir).unwrap();
+
+    let (tx, _rx) = mpsc::channel(16);
+    let mut svc = McpService::new(&sentient_dir, tx);
+    svc.on_unlock(&tokio::runtime::Handle::current());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(
+        svc.session_secret().is_none(),
+        "sentient profile must not create a session token"
+    );
+    assert!(
+        !sentient_dir.join("mcp.session").exists(),
+        "sentient profile must not write mcp.session file"
+    );
+}

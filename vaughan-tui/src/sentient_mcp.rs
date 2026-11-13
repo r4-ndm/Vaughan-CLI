@@ -5,19 +5,134 @@
 //! and consecutive-error tripwires actually accumulate across proposals.
 
 use alloy::primitives::{Address, U256};
+use alloy::sol;
 use std::str::FromStr;
 use tokio::runtime::Handle;
 use vaughan_agent::{breaker_config_for_session, CircuitBreaker, EnforcementMode};
+use vaughan_core::chains::EvmTransaction;
 use vaughan_core::core::is_sentient_profile;
 use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{
     apply_proposal, decode_v3_swap_calldata, fee_spike_exceeds_threshold, guard_mainnet_write,
     is_allowed_agg_router_on_chain, is_allowed_dex_v2_router, is_allowed_dex_v3_router,
-    is_v2_swap_selector, quote_v2_exact_in, quote_v3_pool_exact_in, OperatingMode, WalletState,
+    is_v2_swap_selector, quote_v2_exact_in, quote_v3_pool_exact_in, OperatingMode, SignerIntent,
+    WalletState,
 };
+use vaughan_core::error::WalletError;
 use vaughan_provider::ProviderError;
 
 use crate::provider::{self, ApprovalKind};
+
+sol! {
+    interface IERC20Approve {
+        function approve(address spender, uint256 amount) external returns (bool);
+    }
+
+    interface IWETH9 {
+        function deposit() external payable;
+        function withdraw(uint256 wad) external;
+    }
+
+    interface IUniswapV2RouterSwap {
+        function swapExactTokensForTokens(
+            uint256 amountIn,
+            uint256 amountOutMin,
+            address[] calldata path,
+            address to,
+            uint256 deadline
+        ) external returns (uint256[] memory amounts);
+    }
+}
+
+/// Convert an EVM transaction into a typed [`SignerIntent`] for sentient profiles.
+///
+/// Untyped or arbitrary calldata returns an error directing the user to human/adviser approval.
+pub fn evm_tx_to_sentient_intent(tx: &EvmTransaction) -> Result<SignerIntent, WalletError> {
+    use alloy::sol_types::SolCall;
+    use vaughan_core::core::SwapFamily;
+
+    let to_addr = Address::from_str(&tx.to).map_err(|e| {
+        WalletError::InvalidTransaction(format!("invalid to address {}: {e}", tx.to))
+    })?;
+    let value = U256::from_str(&tx.value)
+        .map_err(|_| WalletError::InvalidAmount(format!("invalid value: {}", tx.value)))?;
+
+    let data_bytes = match tx.data.as_deref() {
+        Some(s) if !s.is_empty() => {
+            let hex_str = s.strip_prefix("0x").unwrap_or(s);
+            if hex_str.is_empty() {
+                Vec::new()
+            } else {
+                hex::decode(hex_str).map_err(|e| {
+                    WalletError::InvalidTransaction(format!("invalid calldata hex: {e}"))
+                })?
+            }
+        }
+        _ => Vec::new(),
+    };
+
+    if data_bytes.is_empty() {
+        return Ok(SignerIntent::Transfer {
+            chain_id: tx.chain_id,
+            to: to_addr,
+            token: None,
+            amount: value,
+        });
+    }
+
+    if let Ok(call) = IWETH9::withdrawCall::abi_decode(&data_bytes) {
+        return Ok(SignerIntent::Unwrap {
+            chain_id: tx.chain_id,
+            amount: call.wad,
+        });
+    }
+
+    if IWETH9::depositCall::abi_decode(&data_bytes).is_ok() {
+        return Ok(SignerIntent::Wrap {
+            chain_id: tx.chain_id,
+            amount: value,
+        });
+    }
+
+    if let Ok(call) = IERC20Approve::approveCall::abi_decode(&data_bytes) {
+        return Ok(SignerIntent::Approve {
+            chain_id: tx.chain_id,
+            token: to_addr,
+            spender: call.spender,
+            amount: call.amount,
+            expiry: None,
+        });
+    }
+
+    if let Ok(call) = IUniswapV2RouterSwap::swapExactTokensForTokensCall::abi_decode(&data_bytes) {
+        return Ok(SignerIntent::Swap {
+            chain_id: tx.chain_id,
+            family: SwapFamily::V2,
+            router: to_addr,
+            path: call.path,
+            amount_in: call.amountIn,
+            min_amount_out: call.amountOutMin,
+            fee: None,
+        });
+    }
+
+    if let Ok(p) = decode_v3_swap_calldata(&data_bytes) {
+        return Ok(SignerIntent::Swap {
+            chain_id: tx.chain_id,
+            family: SwapFamily::V3,
+            router: to_addr,
+            path: p.path,
+            amount_in: p.amount_in,
+            min_amount_out: p.amount_out_min,
+            fee: None,
+        });
+    }
+
+    Err(WalletError::Other(
+        "intent_untyped: arbitrary calldata requires human approval via an adviser profile (not available on sentient)"
+            .into(),
+    ))
+}
 
 /// True when this vault profile should auto-sign MCP proposals (no human card).
 pub fn mcp_auto_exec_enabled(profile_name: &str) -> bool {
@@ -842,6 +957,107 @@ mod tests {
         assert!(mcp_auto_exec_enabled("degen"));
         assert!(!mcp_auto_exec_enabled("default"));
         assert!(!mcp_auto_exec_enabled("savings"));
+    }
+
+    #[test]
+    fn test_evm_tx_to_sentient_intent_mapping() {
+        use alloy::sol_types::SolCall;
+
+        // 1. Plain transfer
+        let tx = EvmTransaction {
+            from: "0x1111111111111111111111111111111111111111".into(),
+            to: "0x2222222222222222222222222222222222222222".into(),
+            value: "1000000".into(),
+            data: None,
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id: 943,
+        };
+        let intent = evm_tx_to_sentient_intent(&tx).unwrap();
+        assert!(
+            matches!(intent, SignerIntent::Transfer { amount, token: None, .. } if amount == U256::from(1000000))
+        );
+
+        // 2. Wrap
+        let deposit_call = IWETH9::depositCall {};
+        let tx = EvmTransaction {
+            from: "0x1111111111111111111111111111111111111111".into(),
+            to: "0x2222222222222222222222222222222222222222".into(),
+            value: "5000".into(),
+            data: Some(format!("0x{}", hex::encode(deposit_call.abi_encode()))),
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id: 943,
+        };
+        let intent = evm_tx_to_sentient_intent(&tx).unwrap();
+        assert!(matches!(intent, SignerIntent::Wrap { amount, .. } if amount == U256::from(5000)));
+
+        // 3. Unwrap
+        let withdraw_call = IWETH9::withdrawCall {
+            wad: U256::from(3000),
+        };
+        let tx = EvmTransaction {
+            from: "0x1111111111111111111111111111111111111111".into(),
+            to: "0x2222222222222222222222222222222222222222".into(),
+            value: "0".into(),
+            data: Some(format!("0x{}", hex::encode(withdraw_call.abi_encode()))),
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id: 943,
+        };
+        let intent = evm_tx_to_sentient_intent(&tx).unwrap();
+        assert!(
+            matches!(intent, SignerIntent::Unwrap { amount, .. } if amount == U256::from(3000))
+        );
+
+        // 4. Approve
+        let approve_call = IERC20Approve::approveCall {
+            spender: Address::repeat_byte(0x33),
+            amount: U256::from(777),
+        };
+        let tx = EvmTransaction {
+            from: "0x1111111111111111111111111111111111111111".into(),
+            to: "0x2222222222222222222222222222222222222222".into(),
+            value: "0".into(),
+            data: Some(format!("0x{}", hex::encode(approve_call.abi_encode()))),
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id: 943,
+        };
+        let intent = evm_tx_to_sentient_intent(&tx).unwrap();
+        assert!(
+            matches!(intent, SignerIntent::Approve { amount, .. } if amount == U256::from(777))
+        );
+
+        // 5. Arbitrary untyped calldata is refused
+        let tx = EvmTransaction {
+            from: "0x1111111111111111111111111111111111111111".into(),
+            to: "0x2222222222222222222222222222222222222222".into(),
+            value: "0".into(),
+            data: Some("0x12345678abcdef".into()),
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            nonce: None,
+            chain_id: 943,
+        };
+        let err = evm_tx_to_sentient_intent(&tx).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("intent_untyped: arbitrary calldata requires human approval"));
     }
 
     #[test]

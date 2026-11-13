@@ -179,6 +179,14 @@ impl McpService {
         if self.session.is_some() {
             return;
         }
+        let profile_name = self
+            .profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if vaughan_core::core::is_sentient_profile(profile_name) {
+            return;
+        }
         self.listener_bound.store(false, Ordering::SeqCst);
         self.listener_bind_failed.store(false, Ordering::SeqCst);
 
@@ -292,6 +300,14 @@ impl McpService {
     /// Poll file queue and surface the oldest not-yet-shown pending proposal.
     pub fn poll_file_queue(&mut self, pending_on_screen: bool) {
         if pending_on_screen {
+            return;
+        }
+        let profile_name = self
+            .profile_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if vaughan_core::core::is_sentient_profile(profile_name) {
             return;
         }
         let Some(secret) = self.session_secret() else {

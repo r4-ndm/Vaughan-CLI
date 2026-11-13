@@ -1236,6 +1236,12 @@ pub async fn execute_approval_with_fee(
             "wallet is locked; unlock it first".to_string(),
         ));
     }
+    if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+        return Err(ProviderError::Unauthorized(
+            "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                .to_string(),
+        ));
+    }
     match kind {
         ApprovalKind::SignMessage { address, message } => {
             verify_address(address, wallet)?;

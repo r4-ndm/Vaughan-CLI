@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use alloy::primitives::{Address, U256};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
@@ -11,12 +12,13 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
-use vaughan_core::chains::{Balance, ChainAdapter};
+use vaughan_core::chains::{Balance, ChainAdapter, EvmTransaction};
 use vaughan_core::core::proposal::{ProposalQueue, ProposalType};
 use vaughan_core::core::token_launch::TokenLaunchOutcome;
 use vaughan_core::core::{
     mark_replaced, operator_connect_allowed, push_recent, tui_mode_for_profile, AgentAutonomyTier,
-    BroadcastEntry, McpSessionToken, OperatingMode, StateManager, WalletState,
+    BroadcastEntry, BroadcastReceipt, McpSessionToken, OperatingMode, SignerClient, SignerIntent,
+    StateManager, WalletState,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
@@ -1745,26 +1747,42 @@ impl App {
                         proposal,
                     };
 
-                    // Sentient profile: auto re-sim → policy → sign (no card).
+                    // Sentient profile: execute via SignerClient over Unix socket (no local signing, no card).
                     if crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name()) {
                         tracing::info!(
                             target: "vaughan_tui::mcp",
                             source = %source,
-                            "sentient auto-exec MCP proposal"
+                            "sentient auto-exec MCP proposal via signer socket"
                         );
-                        let result = match self.sentient_breaker() {
-                            Ok(breaker) => {
-                                let mut wallet =
-                                    self.wallet.lock().unwrap_or_else(|e| e.into_inner());
-                                crate::sentient_mcp::auto_exec_mcp_proposal(
-                                    &mut wallet,
-                                    &self.handle,
-                                    &breaker,
-                                    &kind,
-                                )
-                            }
-                            Err(e) => Err(e),
-                        };
+                        let result = self.handle.block_on(async {
+                            let ApprovalKind::McpProposal { proposal, .. } = &kind else {
+                                return Err(ProviderError::Internal("expected McpProposal".into()));
+                            };
+                            let client = SignerClient::default();
+                            let from = self
+                                .wallet()
+                                .active_address()
+                                .map(|a| a.to_string())
+                                .unwrap_or_default();
+                            let tx = EvmTransaction {
+                                from,
+                                to: proposal.to.to_string(),
+                                value: proposal.value_wei.to_string(),
+                                data: Some(proposal.calldata.to_string()),
+                                chain_id: proposal.chain_id,
+                                nonce: None,
+                                gas_limit: None,
+                                gas_price: None,
+                                max_fee_per_gas: None,
+                                max_priority_fee_per_gas: None,
+                            };
+                            let intent = crate::sentient_mcp::evm_tx_to_sentient_intent(&tx)
+                                .map_err(|e| ProviderError::Unauthorized(e.to_string()))?;
+                            client
+                                .execute(&intent)
+                                .await
+                                .map_err(ProviderError::Unauthorized)
+                        });
                         if let Some(r) = reply {
                             let _ = r.send(result);
                         }
@@ -2555,10 +2573,35 @@ impl App {
     /// Live check: holding is re-read from the chain, so a sold position re-locks.
     pub fn power_features_ok(&self) -> bool {
         use vaughan_core::core::{
-            assist_any_gate_enabled, entitlement_chain_id, power_features_unlocked_blocking,
+            assist_any_gate_enabled, entitlement_chain_id, is_sentient_profile,
+            power_features_unlocked_blocking,
         };
         if !assist_any_gate_enabled() {
             return true;
+        }
+        let profile_name = self.wallet().profile_name().to_string();
+        if is_sentient_profile(&profile_name) {
+            let client = SignerClient::default();
+            let handle = self.handle.clone();
+            return match tokio::task::block_in_place(|| handle.block_on(client.status())) {
+                Ok(resp) => {
+                    if let Some(addr_str) = resp.address {
+                        if let Ok(addr) = alloy::primitives::Address::from_str(&addr_str) {
+                            if let Some(chain_id) = entitlement_chain_id() {
+                                let dir = profile_dir(self.wallet().path());
+                                return power_features_unlocked_blocking(
+                                    &self.handle,
+                                    Some(&dir),
+                                    chain_id,
+                                    &[addr],
+                                );
+                            }
+                        }
+                    }
+                    true
+                }
+                Err(_) => false,
+            };
         }
         let Some(chain_id) = entitlement_chain_id() else {
             return false;
@@ -3607,46 +3650,77 @@ impl App {
                     })
                 }
                 UiJob::SendWithFee { to, value_wei, fee } => {
-                    let prepared = {
+                    let is_sentient = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.build_native_transfer_with_fee(&to, &value_wei, &fee)?;
-                            let ctx = w.detached_sign_context()?;
-                            Ok::<_, WalletError>((tx, ctx))
-                        })()
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
                     };
-                    UiJobResult::Send(match prepared {
-                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
-                        Err(e) => Err(e),
-                    })
+                    if is_sentient {
+                        execute_sentient_transfer_job(&wallet, &handle, to, value_wei, None, "Send")
+                    } else {
+                        let prepared = {
+                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            (|| {
+                                let tx = w.build_native_transfer_with_fee(&to, &value_wei, &fee)?;
+                                let ctx = w.detached_sign_context()?;
+                                Ok::<_, WalletError>((tx, ctx))
+                            })()
+                        };
+                        UiJobResult::Send(match prepared {
+                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
+                            Err(e) => Err(e),
+                        })
+                    }
                 }
                 UiJob::Send { to, value_wei } => {
-                    let prepared = {
+                    let is_sentient = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.build_native_transfer(&to, &value_wei)?;
-                            let ctx = w.detached_sign_context()?;
-                            Ok::<_, WalletError>((tx, ctx))
-                        })()
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
                     };
-                    UiJobResult::Send(match prepared {
-                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
-                        Err(e) => Err(e),
-                    })
+                    if is_sentient {
+                        execute_sentient_transfer_job(&wallet, &handle, to, value_wei, None, "Send")
+                    } else {
+                        let prepared = {
+                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            (|| {
+                                let tx = w.build_native_transfer(&to, &value_wei)?;
+                                let ctx = w.detached_sign_context()?;
+                                Ok::<_, WalletError>((tx, ctx))
+                            })()
+                        };
+                        UiJobResult::Send(match prepared {
+                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
+                            Err(e) => Err(e),
+                        })
+                    }
                 }
                 UiJob::SendToken { token, to, amount } => {
-                    let prepared = {
+                    let is_sentient = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.build_erc20_transfer(&token, &to, &amount)?;
-                            let ctx = w.detached_sign_context()?;
-                            Ok::<_, WalletError>((tx, ctx))
-                        })()
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
                     };
-                    UiJobResult::Send(match prepared {
-                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
-                        Err(e) => Err(e),
-                    })
+                    if is_sentient {
+                        execute_sentient_transfer_job(
+                            &wallet,
+                            &handle,
+                            to,
+                            amount,
+                            Some(token),
+                            "Token",
+                        )
+                    } else {
+                        let prepared = {
+                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            (|| {
+                                let tx = w.build_erc20_transfer(&token, &to, &amount)?;
+                                let ctx = w.detached_sign_context()?;
+                                Ok::<_, WalletError>((tx, ctx))
+                            })()
+                        };
+                        UiJobResult::Send(match prepared {
+                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
+                            Err(e) => Err(e),
+                        })
+                    }
                 }
                 UiJob::SendTokenWithFee {
                     token,
@@ -3654,37 +3728,71 @@ impl App {
                     amount,
                     fee,
                 } => {
-                    let prepared = {
+                    let is_sentient = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.build_erc20_transfer_with_fee(&token, &to, &amount, &fee)?;
-                            let ctx = w.detached_sign_context()?;
-                            Ok::<_, WalletError>((tx, ctx))
-                        })()
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
                     };
-                    UiJobResult::Send(match prepared {
-                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
-                        Err(e) => Err(e),
-                    })
+                    if is_sentient {
+                        execute_sentient_transfer_job(
+                            &wallet,
+                            &handle,
+                            to,
+                            amount,
+                            Some(token),
+                            "Token",
+                        )
+                    } else {
+                        let prepared = {
+                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            (|| {
+                                let tx =
+                                    w.build_erc20_transfer_with_fee(&token, &to, &amount, &fee)?;
+                                let ctx = w.detached_sign_context()?;
+                                Ok::<_, WalletError>((tx, ctx))
+                            })()
+                        };
+                        UiJobResult::Send(match prepared {
+                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
+                            Err(e) => Err(e),
+                        })
+                    }
                 }
                 UiJob::SendStealth {
                     announcement,
                     value_wei,
                 } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::SendStealth(
-                        handle.block_on(w.send_stealth(&announcement, &value_wei)),
-                    )
+                    let is_sentient = {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
+                    };
+                    if is_sentient {
+                        UiJobResult::SendStealth(Err(WalletError::Other(
+                            "intent_untyped: stealth send requires human approval via an adviser profile (not available on sentient)".into(),
+                        )))
+                    } else {
+                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                        UiJobResult::SendStealth(
+                            handle.block_on(w.send_stealth(&announcement, &value_wei)),
+                        )
+                    }
                 }
                 UiJob::SendEvm { tx } => {
-                    let prepared = {
+                    let is_sentient = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.detached_sign_context().map(|ctx| (tx, ctx))
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
                     };
-                    UiJobResult::Send(match prepared {
-                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
-                        Err(e) => Err(e),
-                    })
+                    if is_sentient {
+                        execute_sentient_evm_job(&handle, tx, "Contract")
+                    } else {
+                        let prepared = {
+                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            w.detached_sign_context().map(|ctx| (tx, ctx))
+                        };
+                        UiJobResult::Send(match prepared {
+                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
+                            Err(e) => Err(e),
+                        })
+                    }
                 }
                 UiJob::AssistBurnVerify => {
                     use vaughan_core::core::{
@@ -3775,18 +3883,26 @@ impl App {
                     UiJobResult::DexAllowanceCheck(parsed)
                 }
                 UiJob::SendEvmWithFee { tx, fee } => {
-                    let prepared = {
+                    let is_sentient = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.apply_fee_to_evm(tx, &fee)?;
-                            let ctx = w.detached_sign_context()?;
-                            Ok::<_, WalletError>((tx, ctx))
-                        })()
+                        vaughan_core::core::is_sentient_profile(w.profile_name())
                     };
-                    UiJobResult::Send(match prepared {
-                        Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
-                        Err(e) => Err(e),
-                    })
+                    if is_sentient {
+                        execute_sentient_evm_job(&handle, tx, "Contract")
+                    } else {
+                        let prepared = {
+                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+                            (|| {
+                                let tx = w.apply_fee_to_evm(tx, &fee)?;
+                                let ctx = w.detached_sign_context()?;
+                                Ok::<_, WalletError>((tx, ctx))
+                            })()
+                        };
+                        UiJobResult::Send(match prepared {
+                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
+                            Err(e) => Err(e),
+                        })
+                    }
                 }
                 UiJob::AggQuote {
                     venue,
@@ -5035,6 +5151,86 @@ fn parse_agg_quote_request(
         slippage_percent: slippage,
         account,
     })
+}
+
+fn execute_sentient_transfer_job(
+    wallet: &Arc<Mutex<WalletState>>,
+    handle: &Handle,
+    to: String,
+    value_wei: String,
+    token: Option<String>,
+    label: &'static str,
+) -> UiJobResult {
+    let (chain_id, from) = {
+        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            w.networks().active().chain_id,
+            w.active_address()
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
+        )
+    };
+    let res = handle.block_on(async {
+        let recipient =
+            Address::from_str(&to).map_err(|e| WalletError::InvalidTransaction(e.to_string()))?;
+        let amount = U256::from_str(&value_wei)
+            .map_err(|_| WalletError::InvalidAmount("bad value".into()))?;
+        let token_addr = token
+            .as_deref()
+            .map(Address::from_str)
+            .transpose()
+            .map_err(|e| WalletError::InvalidTransaction(e.to_string()))?;
+        let intent = SignerIntent::Transfer {
+            chain_id,
+            to: recipient,
+            token: token_addr,
+            amount,
+        };
+        let client = SignerClient::default();
+        let hash = client.execute(&intent).await.map_err(WalletError::Other)?;
+        let tx = EvmTransaction {
+            from,
+            to: if let Some(ref t) = token {
+                t.clone()
+            } else {
+                to
+            },
+            value: if token.is_some() {
+                "0".into()
+            } else {
+                value_wei
+            },
+            data: None,
+            chain_id,
+            nonce: None,
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+        };
+        Ok(BroadcastReceipt {
+            entry: BroadcastEntry::from_prepared(&tx, hash.clone(), label),
+            hash,
+        })
+    });
+    UiJobResult::Send(res)
+}
+
+fn execute_sentient_evm_job(
+    handle: &Handle,
+    tx: EvmTransaction,
+    label: &'static str,
+) -> UiJobResult {
+    let res = handle.block_on(async {
+        let intent = crate::sentient_mcp::evm_tx_to_sentient_intent(&tx)?;
+        let client = SignerClient::default();
+        let hash = client.execute(&intent).await.map_err(WalletError::Other)?;
+        Ok(BroadcastReceipt {
+            entry: BroadcastEntry::from_prepared(&tx, hash.clone(), label),
+            hash,
+        })
+    });
+    UiJobResult::Send(res)
 }
 
 /// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).
