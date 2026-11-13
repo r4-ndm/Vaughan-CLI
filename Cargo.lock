@@ -8351,7 +8351,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vaughan-aa"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "hex",
@@ -8363,7 +8363,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-agent"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
@@ -8392,7 +8392,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-cli"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "anyhow",
@@ -8417,7 +8417,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -8454,7 +8454,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-dapp-browser"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "clap",
  "dirs",
@@ -8495,7 +8495,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-mcp"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "serde",
@@ -8512,7 +8512,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-provider"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -8531,7 +8531,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-railgun"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -8553,7 +8553,7 @@ dependencies = [
 
 [[package]]
 name = "vaughan-tui"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "async-trait",
@@ -9317,7 +9317,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wiz4rd-math"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "serde",
@@ -9327,7 +9327,7 @@ dependencies = [
 
 [[package]]
 name = "wiz4rd-sdk"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alloy",
  "hex",
