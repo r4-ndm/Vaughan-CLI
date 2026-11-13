@@ -733,3 +733,28 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] Dex builders: no `unwrap` after validate (map parse errors to `Result`)
 - [x] Session recent-broadcast list on History; cancel / speed-up pending (EIP-1559); live smoke cron
 - [ ] Stealth announcer CREATE2 on Pulse 369 (ops; needs funded PLS — see Phase 3)
+
+## Distribution — npm as a human install path (scoped 2026-11-13, not started)
+
+> Current state: `vaughan-mcp` on npm is an **agent** wrapper (5 kB, downloads the GitHub release at
+> run time, verifies `SHA256SUMS`, execs `vaughan mcp`). It is not a human CLI: it forces the `mcp`
+> subcommand (`npx vaughan-mcp --version` fails), needs network on first run, and reads as unfinished.
+> GitHub Releases + `scripts/install.sh` remain the documented path for anyone holding funds.
+
+- [ ] Publish a `vaughan` launcher package with the binary as **platform packages**
+      (`vaughan-linux-x64`, `vaughan-linux-arm64`, `vaughan-darwin-arm64`) listed as
+      `optionalDependencies`, esbuild/biome style: npm's integrity metadata pins the artifact, one-step
+      install, no post-install or first-run download. No Windows and no darwin-x64 — print a clear
+      `UNSUPPORTED_PLATFORM` with the tarball URL.
+- [ ] Two bins in the launcher: `vaughan` (TUI/CLI, args passed straight through) and `vaughan-mcp`
+      (stdio server). `--version` must work on both.
+- [ ] Extend the release workflow (`publish-npm`) to publish the platform packages + launcher from the
+      same tag, after the tarballs exist, keeping OIDC trusted publishing and provenance. Fail closed on
+      a missing platform artifact rather than publishing a launcher that cannot install.
+- [ ] Keep GitHub Releases canonical: docs say "checksum-verified tarball" first, npm as convenience,
+      and never as the recommended install for a funded wallet. Also keep the npm version ↔ tag ↔
+      `vaughan --version` guard that already exists.
+- [ ] Reserve the `vaughan` and `vaughan-cli` names (both currently 404 on the registry) so the identity
+      is ours before someone squats it; publish nothing until the real package is ready.
+
+Not a substitute for signer work: S3 (password step-up + hardening) and the DCA replay proof come first.
