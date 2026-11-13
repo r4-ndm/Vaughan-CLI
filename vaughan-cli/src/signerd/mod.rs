@@ -429,6 +429,15 @@ impl Signer {
             return SignerResponse::error("policy_save_failed", e.to_string());
         }
 
+        if let Err(e) = vaughan_agent::sentient::append_policy_audit(
+            &self.inner.store,
+            &old_policy,
+            &new_policy,
+        ) {
+            let _ = vaughan_agent::sentient::save_policy(&self.inner.store, &old_policy);
+            return SignerResponse::error("policy_audit_failed", e.to_string());
+        }
+
         if let Ok(cfg) = vaughan_agent::breaker_config_for_session(Some(&self.inner.store), 1) {
             self.inner.breaker.lock().unwrap().replace_config(cfg);
         }

@@ -20,6 +20,11 @@ pub const SENTIENT_POLICY_TOML: &str = "sentient-policy.toml";
 /// Legacy filename (pre-rename); still loaded when the new file is absent.
 pub const LEGACY_DEGEN_POLICY_TOML: &str = "degen-policy.toml";
 
+/// Append-only audit log for `policy_update` mutations (0600, max 200 lines).
+pub const POLICY_AUDIT_JSONL: &str = "policy-audit.jsonl";
+
+const POLICY_AUDIT_MAX_LINES: usize = 200;
+
 fn policy_file_path(dir: &Path) -> Option<PathBuf> {
     let sentient = dir.join(SENTIENT_POLICY_TOML);
     if sentient.is_file() {
@@ -429,18 +434,13 @@ pub fn load_policy(dir: &Path) -> Result<AgentSessionPolicy, AgentError> {
     Ok(policy)
 }
 
-/// Atomically write `sentient-policy.toml` after validation (0600 — the file
-/// is a fund-safety control, not casual config).
-pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentError> {
+fn write_owner_only_file(dir: &Path, filename: &str, body: &str) -> Result<(), AgentError> {
     crate::paths::assert_signer_store_writable(dir)?;
-    policy.validate()?;
     fs::create_dir_all(dir).map_err(|e| {
         AgentError::ProviderError(format!("failed to create {}: {e}", dir.display()))
     })?;
-    let path = dir.join(SENTIENT_POLICY_TOML);
-    let tmp = dir.join(format!(".{SENTIENT_POLICY_TOML}.tmp"));
-    let body = toml::to_string_pretty(policy)
-        .map_err(|e| AgentError::ProviderError(format!("serialize policy: {e}")))?;
+    let path = dir.join(filename);
+    let tmp = dir.join(format!(".{filename}.tmp"));
     {
         use std::io::Write;
         let mut opts = fs::OpenOptions::new();
@@ -466,6 +466,91 @@ pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentE
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+/// Atomically write `sentient-policy.toml` after validation (0600 — the file
+/// is a fund-safety control, not casual config).
+pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentError> {
+    policy.validate()?;
+    let body = toml::to_string_pretty(policy)
+        .map_err(|e| AgentError::ProviderError(format!("serialize policy: {e}")))?;
+    write_owner_only_file(dir, SENTIENT_POLICY_TOML, &body)
+}
+
+/// Append a field-level diff entry to `<dir>/policy-audit.jsonl` (mode `0600`),
+/// written atomically and rotated to retain at most the most recent 200 lines.
+/// Passwords or secret material are never passed to or written by this helper.
+pub fn append_policy_audit(
+    dir: &Path,
+    old_policy: &AgentSessionPolicy,
+    new_policy: &AgentSessionPolicy,
+) -> Result<(), AgentError> {
+    crate::paths::assert_signer_store_writable(dir)?;
+
+    let old_val = serde_json::to_value(old_policy)
+        .map_err(|e| AgentError::ProviderError(format!("serialize old policy: {e}")))?;
+    let new_val = serde_json::to_value(new_policy)
+        .map_err(|e| AgentError::ProviderError(format!("serialize new policy: {e}")))?;
+
+    let mut field_changes = serde_json::Map::new();
+    if let (Some(old_map), Some(new_map)) = (old_val.as_object(), new_val.as_object()) {
+        for (key, new_v) in new_map {
+            let old_v = old_map.get(key).unwrap_or(&serde_json::Value::Null);
+            if old_v != new_v {
+                field_changes.insert(
+                    key.clone(),
+                    serde_json::json!({
+                        "from": old_v,
+                        "to": new_v,
+                    }),
+                );
+            }
+        }
+        for (key, old_v) in old_map {
+            if !new_map.contains_key(key) {
+                field_changes.insert(
+                    key.clone(),
+                    serde_json::json!({
+                        "from": old_v,
+                        "to": serde_json::Value::Null,
+                    }),
+                );
+            }
+        }
+    }
+
+    let entry = serde_json::json!({
+        "ts": crate::dca::now_unix(),
+        "field_changes": field_changes,
+        "source": "socket",
+    });
+    let line = serde_json::to_string(&entry)
+        .map_err(|e| AgentError::ProviderError(format!("serialize policy audit entry: {e}")))?;
+
+    let path = dir.join(POLICY_AUDIT_JSONL);
+    let mut lines: Vec<String> = match fs::read_to_string(&path) {
+        Ok(existing) => existing
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            return Err(AgentError::ProviderError(format!(
+                "failed to read {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    lines.push(line);
+    if lines.len() > POLICY_AUDIT_MAX_LINES {
+        let excess = lines.len() - POLICY_AUDIT_MAX_LINES;
+        lines.drain(..excess);
+    }
+
+    let mut body = lines.join("\n");
+    body.push('\n');
+    write_owner_only_file(dir, POLICY_AUDIT_JSONL, &body)
 }
 
 /// Resolve breaker config for a session: file policy + available RPC count.
