@@ -89,3 +89,85 @@ async fn test_serve_sentient_creates_no_mcp_session_file() {
 
     server_task.abort();
 }
+
+#[tokio::test]
+async fn test_cli_propose_sentient_fails_closed() {
+    let dir = tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_vaughan");
+    let output = Command::new(bin)
+        .args([
+            "--profile",
+            "sentient",
+            "propose",
+            "transfer",
+            "0x1111111111111111111111111111111111111111",
+            "1",
+        ])
+        .env("HOME", dir.path())
+        .output()
+        .expect("failed to execute vaughan binary");
+
+    assert!(
+        !output.status.success(),
+        "must exit non-zero for sentient profile propose"
+    );
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("sentient_local_signing_disabled"),
+        "expected sentient_local_signing_disabled message, got:\n{combined}"
+    );
+}
+
+#[tokio::test]
+async fn test_cli_proposals_sentient_fails_closed() {
+    let dir = tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_vaughan");
+    let output = Command::new(bin)
+        .args(["--profile", "sentient", "proposals", "list"])
+        .env("HOME", dir.path())
+        .output()
+        .expect("failed to execute vaughan binary");
+
+    assert!(
+        !output.status.success(),
+        "must exit non-zero for sentient profile proposals"
+    );
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("sentient_local_signing_disabled"),
+        "expected sentient_local_signing_disabled message, got:\n{combined}"
+    );
+}
+
+#[tokio::test]
+async fn test_cli_lp_deploy_sentient_fails_closed() {
+    let dir = tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_vaughan");
+    let output = Command::new(bin)
+        .args(["--profile", "sentient", "lp", "deploy"])
+        .env("HOME", dir.path())
+        .output()
+        .expect("failed to execute vaughan binary");
+
+    assert!(
+        !output.status.success(),
+        "must exit non-zero for sentient profile lp deploy"
+    );
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("sentient_local_signing_disabled"),
+        "expected sentient_local_signing_disabled message, got:\n{combined}"
+    );
+}

@@ -803,6 +803,11 @@ async fn run_cli(
                     .map_err(|e| anyhow::anyhow!(e.user_message()))?;
             }
             LpCmd::Deploy { password_env, brew } => {
+                if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+                    anyhow::bail!(
+                        "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                    );
+                }
                 unlock(&mut wallet, password_env.as_deref())?;
                 if let Some(id) = brew.network.as_deref() {
                     wallet.set_active_network(id)?;
@@ -966,6 +971,11 @@ async fn run_cli(
         Command::Preset { .. } => unreachable!("preset handled in main"),
         Command::Config { .. } => unreachable!("config handled in main"),
         Command::Propose { action } => {
+            if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+                anyhow::bail!(
+                    "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                );
+            }
             unlock(&mut wallet, None)?;
             let net = wallet.networks().active();
             let registry = default_assist_registry();
@@ -1066,6 +1076,11 @@ async fn run_cli(
             }
         }
         Command::Proposals { action } => {
+            if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+                anyhow::bail!(
+                    "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                );
+            }
             let prof = profile_dir(wallet.path());
             let secret = vaughan_core::core::McpSessionToken::read(&prof)?.unwrap_or_default();
             let queue = ProposalQueue::new(&prof);

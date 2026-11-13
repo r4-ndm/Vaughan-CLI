@@ -66,6 +66,12 @@ pub async fn run_lp_deploy(
     profile_path: &Path,
     args: LpDeployArgs,
 ) -> Result<(), WalletError> {
+    if vaughan_core::core::is_sentient_profile(wallet.profile_name()) {
+        return Err(WalletError::Other(
+            "sentient_local_signing_disabled: sentient profile must use vaughan-signerd socket"
+                .into(),
+        ));
+    }
     let params = brew_to_params(wallet, &args.brew).await?;
     lp_deploy_preflight(&params).await?;
 
