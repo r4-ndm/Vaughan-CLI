@@ -834,4 +834,68 @@ mod tests {
         );
         assert!(load_policy(dir.path()).is_err());
     }
+
+    #[test]
+    fn validate_rejects_s3_boundary_violations() {
+        let base = AgentSessionPolicy::default();
+
+        let mut cap_101 = base.clone();
+        cap_101.daily_cap_pct = 101;
+        assert!(cap_101.validate().is_err());
+
+        let mut slip_10000 = base.clone();
+        slip_10000.max_slippage_bps = 10_000;
+        assert!(slip_10000.validate().is_err());
+
+        let mut slip_9999 = base.clone();
+        slip_9999.max_slippage_bps = 9_999;
+        assert!(slip_9999.validate().is_ok());
+
+        let mut zero_addr = base;
+        zero_addr.allow_transfer_to = vec!["0x0000000000000000000000000000000000000000".into()];
+        assert!(zero_addr.validate().is_err());
+    }
+
+    #[test]
+    fn policy_audit_logs_diffs_mode_0600_and_rotates_at_200() {
+        let dir = tempdir().unwrap();
+        let mut old = AgentSessionPolicy {
+            daily_cap_pct: 5,
+            ..AgentSessionPolicy::default()
+        };
+        let mut new = old.clone();
+        new.daily_cap_pct = 50;
+
+        append_policy_audit(dir.path(), &old, &new).unwrap();
+        let audit_path = dir.path().join(POLICY_AUDIT_JSONL);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&audit_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let content = std::fs::read_to_string(&audit_path).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["source"], "socket");
+        assert!(entry["ts"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(entry["field_changes"]["daily_cap_pct"]["from"], 5);
+        assert_eq!(entry["field_changes"]["daily_cap_pct"]["to"], 50);
+
+        // Append 205 more entries so total exceeds 200 and verify oldest dropped cleanly.
+        for i in 1u32..=205 {
+            old.max_slippage_bps = i;
+            new.max_slippage_bps = i + 1;
+            append_policy_audit(dir.path(), &old, &new).unwrap();
+        }
+        let all = std::fs::read_to_string(&audit_path).unwrap();
+        let lines: Vec<&str> = all.lines().collect();
+        assert_eq!(lines.len(), 200);
+        let first: serde_json::Value = serde_json::from_str(lines.first().unwrap()).unwrap();
+        let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        // Out of 206 total lines (1 initial + 205 slippage edits), first 6 were trimmed;
+        // oldest retained is i=6 (6 -> 7) and newest is i=205 (205 -> 206).
+        assert_eq!(first["field_changes"]["max_slippage_bps"]["to"], 7);
+        assert_eq!(last["field_changes"]["max_slippage_bps"]["to"], 206);
+    }
 }

@@ -371,3 +371,37 @@ fn settings_view_change_password_esc_cancels() {
     assert!(text.contains("Password change cancelled"));
     assert!(text.contains("PulseChain"));
 }
+
+#[test]
+fn settings_view_sentient_shows_policy_shortcut_and_default_refuses_y() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+
+    // Non-sentient wallet hides `y policy` and refuses `y`.
+    let mut default_wallet = WalletState::load_with_session(
+        dir.path().join("default-wallet.json"),
+        OperatingMode::HumanOnly,
+        "default",
+    )
+    .unwrap();
+    let mut view = SettingsView::new(0);
+    assert!(!render(&view, &default_wallet).contains("y policy"));
+    view.handle_key(
+        key(KeyCode::Char('y')),
+        &mut default_wallet,
+        &handle,
+        &events,
+    );
+    assert!(render(&view, &default_wallet).contains("only available on the sentient profile"));
+
+    // Sentient profile advertises `y policy`.
+    let sentient_wallet = WalletState::load_with_session(
+        dir.path().join("sentient-wallet.json"),
+        OperatingMode::SentientTrader,
+        "sentient",
+    )
+    .unwrap();
+    let sentient_view = SettingsView::new(0);
+    assert!(render(&sentient_view, &sentient_wallet).contains("y policy"));
+}

@@ -874,3 +874,599 @@ async fn test_native_in_swap_and_dca_sets_tx_value_and_unknown_chain_refuses() {
     )
     .is_err());
 }
+
+// ---------------------------------------------------------------------------
+// S3: policy & policy_update password step-up integration tests
+// ---------------------------------------------------------------------------
+
+const S3_TEST_PW: &str = "S3PolicyStepUp!99";
+const S3_TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+fn setup_s3_store(
+    allow_transfer_to: Vec<String>,
+    daily_cap_pct: u8,
+    max_position_pct: u8,
+) -> (
+    Signer,
+    Arc<MockBroadcaster>,
+    tempfile::TempDir,
+    Address,
+    std::path::PathBuf,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let wallet_path = dir.path().join("wallet.json");
+    let mut wallet =
+        WalletState::load_with_session(wallet_path, OperatingMode::SentientTrader, "sentient")
+            .unwrap();
+    let pw = secrecy::SecretString::from(S3_TEST_PW.to_string());
+    wallet.restore(&pw, S3_TEST_MNEMONIC).unwrap();
+    let active_addr: Address = wallet.active_address().unwrap().parse().unwrap();
+
+    let policy = vaughan_agent::sentient::AgentSessionPolicy {
+        allow_transfer_to,
+        daily_cap_pct,
+        max_position_pct,
+        required_rpc_quorum: 1,
+        ..vaughan_agent::sentient::AgentSessionPolicy::default()
+    };
+    vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+
+    let policy_path = dir
+        .path()
+        .join(vaughan_agent::sentient::SENTIENT_POLICY_TOML);
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let quoter = Arc::new(MockSwapQuoter::new());
+    let signer = Signer::new(
+        dir.path().to_path_buf(),
+        active_addr,
+        TEST_CHAIN_ID,
+        "http://127.0.0.1:8545".to_string(),
+        quoter,
+        broadcaster.clone(),
+    );
+    (signer, broadcaster, dir, active_addr, policy_path)
+}
+
+#[cfg(unix)]
+async fn spawn_s3_socket_server(
+    signer: Signer,
+    allow_uid: Vec<u32>,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let sock_dir = tempfile::tempdir().unwrap();
+    let sock_path = sock_dir.path().join("signerd-s3.sock");
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    let task = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let signer = signer.clone();
+            let allow = allow_uid.clone();
+            tokio::spawn(async move {
+                let peer_uid = match stream.peer_cred() {
+                    Ok(cred) => cred.uid(),
+                    Err(_) => return,
+                };
+                if !is_peer_uid_allowed(peer_uid, &allow) {
+                    let resp = serde_json::to_string(&SignerResponse::error(
+                        "unauthorized",
+                        "peer UID not permitted",
+                    ))
+                    .unwrap()
+                        + "\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    return;
+                }
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                    let resp = signer.handle_line_with_uid(line.trim(), peer_uid).await;
+                    let _ = stream.write_all(format!("{resp}\n").as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    (sock_dir, sock_path, task)
+}
+
+#[cfg(unix)]
+async fn send_raw_socket_json(sock_path: &std::path::Path, raw_json: &str) -> SignerResponse {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    let mut stream = UnixStream::connect(sock_path).await.unwrap();
+    stream
+        .write_all(format!("{raw_json}\n").as_bytes())
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut resp_line = String::new();
+    reader.read_line(&mut resp_line).await.unwrap();
+    serde_json::from_str(resp_line.trim()).unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_policy_update_auth_failures_and_corrupt_store_indistinguishable() {
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 5, 50);
+    let baseline = std::fs::read(&policy_path).unwrap();
+    let uid = rustix::process::geteuid().as_raw();
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![uid]).await;
+
+    let client = vaughan_core::core::SignerClient::new(&sock_path);
+    let current = client.policy().await.unwrap();
+    let cur_digest = current.policy_digest.clone();
+    let mut modified = current.policy.unwrap();
+    modified["daily_cap_pct"] = serde_json::json!(90);
+
+    // 1. No password field at all -> step_up_failed, store unchanged, no audit file.
+    let no_pw_req = serde_json::json!({
+        "op": "policy_update",
+        "policy": modified,
+        "expected_digest": cur_digest,
+    });
+    let r_no_pw = send_raw_socket_json(&sock_path, &no_pw_req.to_string()).await;
+    assert!(!r_no_pw.ok);
+    assert_eq!(r_no_pw.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+    assert!(!dir
+        .path()
+        .join(vaughan_agent::sentient::POLICY_AUDIT_JSONL)
+        .exists());
+
+    // 2. Empty password -> step_up_failed, store unchanged.
+    let err_empty = client
+        .policy_update(
+            secrecy::SecretString::from(String::new()),
+            modified.clone(),
+            cur_digest.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err_empty.starts_with("step_up_failed:"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
+    // 3. Wrong password -> step_up_failed with generic verification message.
+    let wrong_pw_req = serde_json::json!({
+        "op": "policy_update",
+        "password": "WrongPassword!999",
+        "policy": modified,
+        "expected_digest": cur_digest,
+    });
+    let r_wrong = send_raw_socket_json(&sock_path, &wrong_pw_req.to_string()).await;
+    assert!(!r_wrong.ok);
+    assert_eq!(r_wrong.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
+    // 4. Corrupt wallet.json -> indistinguishable response from wrong password.
+    let (corrupt_signer, _, corrupt_dir, _, corrupt_policy) = setup_s3_store(vec![], 5, 50);
+    let corrupt_baseline = std::fs::read(&corrupt_policy).unwrap();
+    std::fs::write(corrupt_dir.path().join("wallet.json"), b"{corrupt json").unwrap();
+    let (_sock_dir2, sock_path2, srv2) = spawn_s3_socket_server(corrupt_signer, vec![uid]).await;
+    let right_pw_req = serde_json::json!({
+        "op": "policy_update",
+        "password": S3_TEST_PW,
+        "policy": modified,
+    });
+    let r_corrupt = send_raw_socket_json(&sock_path2, &right_pw_req.to_string()).await;
+    assert!(!r_corrupt.ok);
+    assert_eq!(r_corrupt.code, r_wrong.code);
+    assert_eq!(r_corrupt.message, r_wrong.message);
+    assert_eq!(std::fs::read(&corrupt_policy).unwrap(), corrupt_baseline);
+
+    // 5. Missing wallet.json -> indistinguishable response too.
+    std::fs::remove_file(corrupt_dir.path().join("wallet.json")).unwrap();
+    let r_missing = send_raw_socket_json(&sock_path2, &right_pw_req.to_string()).await;
+    assert_eq!(r_missing.code, r_wrong.code);
+    assert_eq!(r_missing.message, r_wrong.message);
+
+    srv.abort();
+    srv2.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_policy_update_right_password_loopback_takes_effect_on_next_sign() {
+    let dest = Address::from([0x22; 20]);
+    let (signer, broadcaster, dir, _, policy_path) =
+        setup_s3_store(vec![format!("{dest:#x}")], 5, 90);
+    signer.set_balance(None, U256::from(1_000));
+    let uid = rustix::process::geteuid().as_raw();
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![uid]).await;
+
+    let client = vaughan_core::core::SignerClient::new(&sock_path);
+    let intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(100), // 10% of 1000: allowed by max_position_pct=90, blocked by daily_cap_pct=5
+    };
+
+    // 1. Before update: refused by daily_cap_pct = 5% (50 wei).
+    let before_err = client.sign(&intent).await.unwrap_err();
+    assert!(
+        before_err.contains("spend_guard") || before_err.contains("daily cap"),
+        "expected daily cap refusal before step-up, got: {before_err}"
+    );
+    assert!(broadcaster.get_last_tx().is_none());
+
+    // 2. Step-up policy_update raising daily_cap_pct 5 -> 90.
+    let current = client.policy().await.unwrap();
+    let mut new_policy = current.policy.unwrap();
+    new_policy["daily_cap_pct"] = serde_json::json!(90);
+    let update_resp = client
+        .policy_update(
+            secrecy::SecretString::from(S3_TEST_PW.to_string()),
+            new_policy,
+            current.policy_digest,
+        )
+        .await
+        .unwrap();
+    assert!(update_resp.ok);
+    let new_digest = update_resp.policy_digest.clone().unwrap();
+
+    // 3. `op:"policy"` returns new values and matching digest; file on disk matches.
+    let after_read = client.policy().await.unwrap();
+    assert_eq!(
+        after_read.policy_digest.as_deref(),
+        Some(new_digest.as_str())
+    );
+    assert_eq!(after_read.policy.as_ref().unwrap()["daily_cap_pct"], 90);
+    let disk_policy = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    assert_eq!(disk_policy.daily_cap_pct, 90);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&policy_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // 4. Audit log records old/new values and never logs password.
+    let audit_path = dir.path().join(vaughan_agent::sentient::POLICY_AUDIT_JSONL);
+    let audit_text = std::fs::read_to_string(&audit_path).unwrap();
+    assert!(!audit_text.contains(S3_TEST_PW));
+    let audit_line: serde_json::Value = serde_json::from_str(audit_text.trim()).unwrap();
+    assert_eq!(audit_line["source"], "socket");
+    assert_eq!(audit_line["field_changes"]["daily_cap_pct"]["from"], 5);
+    assert_eq!(audit_line["field_changes"]["daily_cap_pct"]["to"], 90);
+
+    // 5. Loopback: very next `sign` on the SAME daemon session succeeds immediately!
+    let sign_resp = client.sign(&intent).await.unwrap();
+    assert!(sign_resp.ok);
+    assert!(sign_resp.tx_hash.is_some());
+    assert!(broadcaster.get_last_tx().is_some());
+
+    srv.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_policy_update_refusals_and_two_step_disable_leave_store_unchanged() {
+    let (signer, _, _dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let uid = rustix::process::geteuid().as_raw();
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![uid]).await;
+    let client = vaughan_core::core::SignerClient::new(&sock_path);
+
+    let baseline_bytes = std::fs::read(&policy_path).unwrap();
+    let current = client.policy().await.unwrap();
+    let cur_digest = current.policy_digest.unwrap();
+    let base_val = current.policy.unwrap();
+
+    // Helper closure assertion via raw socket so we can inspect exact refusal codes & invalid JSON shapes.
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "daily_cap_pct: 101",
+            {
+                let mut p = base_val.clone();
+                p["daily_cap_pct"] = serde_json::json!(101);
+                serde_json::json!({
+                    "op": "policy_update",
+                    "password": S3_TEST_PW,
+                    "policy": p,
+                    "expected_digest": cur_digest,
+                })
+            },
+            "policy_invalid",
+        ),
+        (
+            "max_slippage_bps: 10000",
+            {
+                let mut p = base_val.clone();
+                p["max_slippage_bps"] = serde_json::json!(10_000);
+                serde_json::json!({
+                    "op": "policy_update",
+                    "password": S3_TEST_PW,
+                    "policy": p,
+                    "expected_digest": cur_digest,
+                })
+            },
+            "policy_invalid",
+        ),
+        (
+            "zero address in allow_transfer_to",
+            {
+                let mut p = base_val.clone();
+                p["allow_transfer_to"] =
+                    serde_json::json!(["0x0000000000000000000000000000000000000000"]);
+                serde_json::json!({
+                    "op": "policy_update",
+                    "password": S3_TEST_PW,
+                    "policy": p,
+                    "expected_digest": cur_digest,
+                })
+            },
+            "policy_invalid",
+        ),
+        (
+            "enforcement: disabled without prior acknowledge_unsafe",
+            {
+                let mut p = base_val.clone();
+                p["enforcement"] = serde_json::json!("disabled");
+                p["acknowledge_unsafe"] = serde_json::json!(true);
+                serde_json::json!({
+                    "op": "policy_update",
+                    "password": S3_TEST_PW,
+                    "policy": p,
+                    "expected_digest": cur_digest,
+                })
+            },
+            "policy_refused",
+        ),
+        (
+            "expected_digest mismatch",
+            serde_json::json!({
+                "op": "policy_update",
+                "password": S3_TEST_PW,
+                "policy": base_val,
+                "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            }),
+            "policy_conflict",
+        ),
+        (
+            "unknown top-level request field",
+            serde_json::json!({
+                "op": "policy_update",
+                "password": S3_TEST_PW,
+                "policy": base_val,
+                "evil_extra_request_field": true,
+            }),
+            "invalid_json",
+        ),
+        (
+            "unknown policy field",
+            {
+                let mut p = base_val.clone();
+                p["unknown_policy_key"] = serde_json::json!(42);
+                serde_json::json!({
+                    "op": "policy_update",
+                    "password": S3_TEST_PW,
+                    "policy": p,
+                    "expected_digest": cur_digest,
+                })
+            },
+            "policy_invalid",
+        ),
+    ];
+
+    for (label, req_json, expected_code) in cases {
+        let resp = send_raw_socket_json(&sock_path, &req_json.to_string()).await;
+        assert!(!resp.ok, "{label}: expected refusal, got ok");
+        assert_eq!(
+            resp.code.as_deref(),
+            Some(expected_code),
+            "{label}: unexpected code: {resp:?}"
+        );
+        assert_eq!(
+            std::fs::read(&policy_path).unwrap(),
+            baseline_bytes,
+            "{label}: store must remain unchanged on refusal"
+        );
+    }
+
+    // Two-step disable works once acknowledge_unsafe=true is already persisted on disk.
+    let mut step1 = base_val.clone();
+    step1["acknowledge_unsafe"] = serde_json::json!(true);
+    let r1 = client
+        .policy_update(
+            secrecy::SecretString::from(S3_TEST_PW.to_string()),
+            step1.clone(),
+            Some(cur_digest),
+        )
+        .await
+        .unwrap();
+    assert!(r1.ok);
+    let mut step2 = step1;
+    step2["enforcement"] = serde_json::json!("disabled");
+    let r2 = client
+        .policy_update(
+            secrecy::SecretString::from(S3_TEST_PW.to_string()),
+            step2,
+            r1.policy_digest,
+        )
+        .await
+        .unwrap();
+    assert!(r2.ok);
+
+    srv.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_policy_update_audit_rotates_at_200_lines_over_socket() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (signer, _, dir, _, _) = setup_s3_store(vec![], 10, 10);
+    let audit_path = dir.path().join(vaughan_agent::sentient::POLICY_AUDIT_JSONL);
+    let mut seeded = String::new();
+    for i in 0..200 {
+        seeded.push_str(&format!(
+            "{{\"ts\":{i},\"field_changes\":{{}},\"source\":\"socket\"}}\n"
+        ));
+    }
+    std::fs::write(&audit_path, seeded).unwrap();
+    std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let uid = rustix::process::geteuid().as_raw();
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![uid]).await;
+    let client = vaughan_core::core::SignerClient::new(&sock_path);
+    let current = client.policy().await.unwrap();
+    let mut updated = current.policy.unwrap();
+    updated["daily_cap_pct"] = serde_json::json!(42);
+
+    let resp = client
+        .policy_update(
+            secrecy::SecretString::from(S3_TEST_PW.to_string()),
+            updated,
+            current.policy_digest,
+        )
+        .await
+        .unwrap();
+    assert!(resp.ok);
+
+    let after = std::fs::read_to_string(&audit_path).unwrap();
+    assert!(!after.contains(S3_TEST_PW));
+    let lines: Vec<&str> = after.lines().collect();
+    assert_eq!(lines.len(), 200);
+    let oldest: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(oldest["ts"], 1);
+    let newest: serde_json::Value = serde_json::from_str(lines[199]).unwrap();
+    assert_eq!(newest["field_changes"]["daily_cap_pct"]["from"], 10);
+    assert_eq!(newest["field_changes"]["daily_cap_pct"]["to"], 42);
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn test_policy_update_rate_limits_after_5_wrong_passwords() {
+    let (signer, _, _dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let baseline = std::fs::read(&policy_path).unwrap();
+    let mut new_policy = vaughan_agent::sentient::AgentSessionPolicy::default();
+    new_policy.daily_cap_pct = 50;
+    let new_val = serde_json::to_value(&new_policy).unwrap();
+
+    let wrong_req = serde_json::json!({
+        "op": "policy_update",
+        "password": "BadPassword!123",
+        "policy": new_val,
+    });
+    let uid_a = 1000;
+    for attempt in 1..=5 {
+        let resp: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(&wrong_req.to_string(), uid_a)
+                .await,
+        )
+        .unwrap();
+        assert_eq!(
+            resp.code.as_deref(),
+            Some("step_up_failed"),
+            "attempt {attempt} should fail auth"
+        );
+    }
+
+    // 6th attempt within 60s window MUST be rate-limited even with the RIGHT password!
+    let right_req = serde_json::json!({
+        "op": "policy_update",
+        "password": S3_TEST_PW,
+        "policy": new_val,
+    });
+    let blocked: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&right_req.to_string(), uid_a)
+            .await,
+    )
+    .unwrap();
+    assert!(!blocked.ok);
+    assert_eq!(blocked.code.as_deref(), Some("step_up_rate_limited"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
+    // A different peer UID is tracked independently and is NOT rate-limited.
+    let other_uid_resp: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&wrong_req.to_string(), uid_a + 1)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(other_uid_resp.code.as_deref(), Some("step_up_failed"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_policy_update_peer_uid_outside_allowlist_refused_before_password_check() {
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    // Remove wallet.json on disk: if password check ran, it would return step_up_failed;
+    // because peer UID is checked BEFORE examining the password/request, it must return
+    // `unauthorized` instead (and leave step_up_limiter untouched).
+    std::fs::remove_file(dir.path().join("wallet.json")).unwrap();
+    let baseline = std::fs::read(&policy_path).unwrap();
+
+    let caller_uid = rustix::process::geteuid().as_raw();
+    let other_uid = caller_uid.wrapping_add(42_424);
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![other_uid]).await;
+
+    let req = serde_json::json!({
+        "op": "policy_update",
+        "password": S3_TEST_PW,
+        "policy": { "daily_cap_pct": 88 },
+    });
+    let resp = send_raw_socket_json(&sock_path, &req.to_string()).await;
+    assert!(!resp.ok);
+    assert_eq!(resp.code.as_deref(), Some("unauthorized"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
+    srv.abort();
+}
+
+#[test]
+fn test_cli_policy_set_and_confirm_unsafe_refuse_non_tty_stdin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let unused_sock = tmp.path().join("unused.sock");
+    let bin = env!("CARGO_BIN_EXE_vaughan");
+
+    for args in [
+        vec![
+            "--profile",
+            "sentient",
+            "policy",
+            "set",
+            "--daily-cap-pct",
+            "50",
+        ],
+        vec!["--profile", "sentient", "policy", "confirm-unsafe"],
+    ] {
+        let out = std::process::Command::new(bin)
+            .args(&args)
+            .env("HOME", tmp.path())
+            .env("VAUGHAN_SIGNER_SOCKET", &unused_sock)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{args:?} must refuse non-TTY stdin, got status {:?}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("TTY"),
+            "expected TTY refusal message for {args:?}, got stderr: {stderr}"
+        );
+    }
+}

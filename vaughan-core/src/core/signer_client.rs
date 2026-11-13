@@ -425,3 +425,40 @@ impl SignerClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signer_request_debug_redacts_password() {
+        let secret = "SuperSecretVaultPw!99";
+        let req = SignerRequest {
+            v: Some(1),
+            op: "policy_update".to_string(),
+            intent: None,
+            password: Some(SecretString::from(secret.to_string())),
+            policy: Some(serde_json::json!({ "daily_cap_pct": 50 })),
+            expected_digest: Some("abc123".to_string()),
+        };
+        let rendered = format!("{req:?}");
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "expected [REDACTED] in Debug output: {rendered}"
+        );
+        assert!(
+            !rendered.contains(secret),
+            "plaintext secret leaked into Debug output: {rendered}"
+        );
+    }
+
+    #[test]
+    fn signer_request_rejects_unknown_top_level_fields() {
+        let raw = r#"{"op":"policy","unexpected_field":123}"#;
+        let parsed: Result<SignerRequest, _> = serde_json::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "SignerRequest must reject unknown top-level fields"
+        );
+    }
+}
