@@ -4157,36 +4157,7 @@ impl App {
                     plan_id,
                     profile_dir,
                     breaker,
-                } => {
-                    let (signer, rpcs, chain_id) = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        let signer = w.active_signer().map_err(|e| e.to_string());
-                        let mut rpcs = vec![w.active_rpc_url()];
-                        rpcs.extend(w.networks().active().fallback_rpc_urls.iter().cloned());
-                        let chain_id = w.networks().active().chain_id;
-                        (signer, rpcs, chain_id)
-                    };
-                    let result = (|| {
-                        let signer = signer.map_err(WalletError::Other)?;
-                        let trader = vaughan_agent::SentientTrader::with_breaker(
-                            signer, rpcs, chain_id, breaker,
-                        )
-                        .with_profile_dir(&profile_dir);
-                        let now = vaughan_agent::now_unix();
-                        handle
-                            .block_on(vaughan_agent::fire_plan(
-                                &profile_dir,
-                                &plan_id,
-                                &trader,
-                                chain_id,
-                                Some(profile_dir.as_path()),
-                                None,
-                                now,
-                            ))
-                            .map_err(|e| WalletError::Other(e.to_string()))
-                    })();
-                    UiJobResult::DcaSlice(result)
-                }
+                } => execute_dca_slice_job(&wallet, &handle, plan_id, profile_dir, breaker),
                 UiJob::PollTxStatus { tx_hash } => {
                     // Brief lock for RPC endpoints only — holding WalletState across
                     // eth_getTransactionReceipt freezes the Done screen on "working…".
@@ -5281,6 +5252,163 @@ fn find_vaughan_hl_bin() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("vaughan-hl")
+}
+
+/// Execute a single due DCA slice job.
+///
+/// Under a sentient profile, execution strictly routes via `SignerClient` over
+/// the Unix socket submitting typed [`SignerIntent::DcaSlice`]; local in-process
+/// signing and local `SentientTrader` construction are forbidden.
+pub fn execute_dca_slice_job(
+    wallet: &std::sync::Mutex<WalletState>,
+    handle: &tokio::runtime::Handle,
+    plan_id: String,
+    profile_dir: std::path::PathBuf,
+    breaker: vaughan_agent::CircuitBreaker,
+) -> UiJobResult {
+    let is_sentient = {
+        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+        vaughan_core::core::is_sentient_profile(w.profile_name())
+    };
+    if is_sentient {
+        if breaker.is_tripped() {
+            let reason = breaker
+                .trip_reason()
+                .unwrap_or_else(|| "circuit breaker tripped".into());
+            return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
+                "circuit_breaker_tripped: {reason}"
+            ))));
+        }
+        let chain_id = {
+            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+            w.networks().active().chain_id
+        };
+        let plans_file = match vaughan_agent::dca::store::load_plans(&profile_dir) {
+            Ok(f) => f,
+            Err(e) => return UiJobResult::DcaSlice(Err(WalletError::Other(e.to_string()))),
+        };
+        let plan = match plans_file.plans.into_iter().find(|p| p.id == plan_id) {
+            Some(p) => p,
+            None => {
+                return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
+                    "dca plan `{plan_id}` not found"
+                ))))
+            }
+        };
+        let now = vaughan_agent::now_unix();
+        if !vaughan_agent::dca::is_due(&plan, now) {
+            return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
+                "plan `{plan_id}` is not due yet"
+            ))));
+        }
+        if plan.chain_id != 0 && plan.chain_id != chain_id {
+            return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
+                "plan `{plan_id}` bound to chain {} — active chain is {chain_id}",
+                plan.chain_id
+            ))));
+        }
+        let amount_in = match plan.slice_amount_u256() {
+            Ok(a) => a,
+            Err(e) => return UiJobResult::DcaSlice(Err(WalletError::Other(e))),
+        };
+        let intent = SignerIntent::DcaSlice {
+            plan_id: plan.id.clone(),
+            slice_index: plan.slices_done as u64,
+            chain_id,
+            pair: alloy::primitives::Address::ZERO,
+            amount_in,
+            corridor_min_out: alloy::primitives::U256::ZERO,
+        };
+        let client = SignerClient::default();
+        let exec_res = handle.block_on(client.execute(&intent));
+        let result = match exec_res {
+            Ok(tx_hash) => {
+                let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
+                    p.consecutive_failures = 0;
+                    p.slices_done = p.slices_done.saturating_add(1);
+                    if let Ok(spent) = p.spent_u256() {
+                        p.spent_wei = spent.saturating_add(amount_in).to_string();
+                    }
+                    vaughan_agent::dca::advance_schedule(p, now);
+                    if p.slices_done >= p.max_slices {
+                        p.status = vaughan_agent::dca::DcaStatus::Done;
+                    }
+                    p.slice_log.push(vaughan_agent::dca::SliceLog {
+                        at: now,
+                        ok: true,
+                        tx_hash: tx_hash.clone(),
+                        dry_run: plan.dry_run,
+                        error: String::new(),
+                        amount_in_wei: amount_in.to_string(),
+                    });
+                    if p.slice_log.len() > 32 {
+                        let drop_n = p.slice_log.len() - 32;
+                        p.slice_log.drain(0..drop_n);
+                    }
+                    Ok(())
+                });
+                Ok(vaughan_agent::DcaFireResult {
+                    plan_id: plan.id.clone(),
+                    ok: true,
+                    dry_run: plan.dry_run,
+                    tx_hash,
+                    error: String::new(),
+                })
+            }
+            Err(refusal) => {
+                let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
+                    p.consecutive_failures = p.consecutive_failures.saturating_add(1);
+                    if p.consecutive_failures >= vaughan_agent::dca::MAX_CONSECUTIVE_FAILURES {
+                        p.status = vaughan_agent::dca::DcaStatus::Paused;
+                    }
+                    vaughan_agent::dca::advance_schedule(p, now);
+                    p.slice_log.push(vaughan_agent::dca::SliceLog {
+                        at: now,
+                        ok: false,
+                        tx_hash: String::new(),
+                        dry_run: plan.dry_run,
+                        error: refusal.clone(),
+                        amount_in_wei: amount_in.to_string(),
+                    });
+                    if p.slice_log.len() > 32 {
+                        let drop_n = p.slice_log.len() - 32;
+                        p.slice_log.drain(0..drop_n);
+                    }
+                    Ok(())
+                });
+                Err(WalletError::Other(refusal))
+            }
+        };
+        UiJobResult::DcaSlice(result)
+    } else {
+        let (signer, rpcs, chain_id) = {
+            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+            let signer = w.active_signer().map_err(|e| e.to_string());
+            let mut rpcs = vec![w.active_rpc_url()];
+            rpcs.extend(w.networks().active().fallback_rpc_urls.iter().cloned());
+            let chain_id = w.networks().active().chain_id;
+            (signer, rpcs, chain_id)
+        };
+        let result = (|| {
+            let signer = signer.map_err(WalletError::Other)?;
+            let trader =
+                vaughan_agent::SentientTrader::with_breaker(signer, rpcs, chain_id, breaker)
+                    .with_profile_dir(&profile_dir);
+            let now = vaughan_agent::now_unix();
+            handle
+                .block_on(vaughan_agent::fire_plan(
+                    &profile_dir,
+                    &plan_id,
+                    &trader,
+                    chain_id,
+                    Some(profile_dir.as_path()),
+                    None,
+                    now,
+                ))
+                .map_err(|e| WalletError::Other(e.to_string()))
+        })();
+        UiJobResult::DcaSlice(result)
+    }
 }
 
 #[cfg(test)]

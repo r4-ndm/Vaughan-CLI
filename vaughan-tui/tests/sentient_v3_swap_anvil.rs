@@ -88,7 +88,7 @@ fn spawn_test_signerd(
 ) -> (PathBuf, tokio::task::JoinHandle<()>) {
     let socket_path = store.join("test_signerd.sock");
     let active_address = wallet.active_address().unwrap().parse::<Address>().unwrap();
-    let chain_id = 943;
+    let chain_id = wallet.networks().active().chain_id;
 
     let wallet_arc = Arc::new(tokio::sync::Mutex::new(wallet));
     let broadcaster = Arc::new(WalletBroadcaster::new(wallet_arc));
@@ -908,4 +908,78 @@ fn test_refused_swap_leaves_spent_unchanged_and_allows_retry() {
         "retry should fail with the policy error, not spend_already_reserved: {err_retry}"
     );
     assert!(!err_retry.to_string().contains("spend_already_reserved"));
+}
+
+#[tokio::test]
+async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    let anvil = Anvil::start();
+    let (mut wallet, dir) = setup_sentient_wallet(&anvil);
+    let (mut wallet_signer, _) = setup_sentient_wallet(&anvil);
+    wallet.set_active_network("pulsechain").unwrap();
+    wallet_signer.set_active_network("pulsechain").unwrap();
+    let rt_handle = tokio::runtime::Handle::current();
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    let profile_dir = vaughan_agent::paths::profile_dir(wallet.path());
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet_signer, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+
+    let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    let plan = vaughan_agent::dca::build_plan(
+        &format!("{token_out:#x}"),
+        "100000000000000000",
+        vaughan_agent::dca::MIN_INTERVAL_SECS,
+        vaughan_agent::dca::DcaVenue::default(),
+        100,
+        5,
+        false,
+        369,
+        Address::from_str(wallet.active_address().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let plan = vaughan_agent::dca::store::add_plan(&profile_dir, plan).unwrap();
+
+    let wallet_mutex = std::sync::Mutex::new(wallet);
+    let plan_id = plan.id.clone();
+    let profile_dir_clone = profile_dir.clone();
+    let job_res = tokio::task::spawn_blocking(move || {
+        vaughan_tui::app::execute_dca_slice_job(
+            &wallet_mutex,
+            &rt_handle,
+            plan_id,
+            profile_dir_clone,
+            breaker,
+        )
+    })
+    .await
+    .unwrap();
+
+    match job_res {
+        vaughan_tui::jobs::UiJobResult::DcaSlice(Err(vaughan_core::error::WalletError::Other(
+            ref msg,
+        ))) => {
+            assert!(
+                msg.contains("intent_not_implemented") && msg.contains("dca_slice"),
+                "expected verbatim signerd refusal for dca_slice, got: {msg}"
+            );
+        }
+        _ => panic!("expected UiJobResult::DcaSlice(Err(WalletError::Other))"),
+    }
+
+    // Verify the plan consecutive failure was recorded in dca-plans.json
+    let file = vaughan_agent::dca::store::load_plans(&profile_dir).unwrap();
+    let updated_plan = file.plans.iter().find(|p| p.id == plan.id).unwrap();
+    assert_eq!(updated_plan.consecutive_failures, 1);
+    assert!(!updated_plan.slice_log.is_empty());
+    assert!(updated_plan
+        .slice_log
+        .last()
+        .unwrap()
+        .error
+        .contains("intent_not_implemented"));
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task.abort();
 }
