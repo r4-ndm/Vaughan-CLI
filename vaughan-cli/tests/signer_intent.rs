@@ -434,18 +434,97 @@ async fn test_dca_slice_refusals_and_execution() {
 }
 
 #[tokio::test]
-async fn test_sweep_stealth_returns_intent_not_implemented_naming_s2() {
-    let (signer, _, _, _, _) = setup_test_harness(vec![]);
+async fn test_sweep_stealth_refusals_and_execution() {
+    let (signer, broadcaster, quoter, dir, active_addr) = setup_test_harness(vec![]);
+    let stealth_addr = Address::repeat_byte(0x55);
+
+    // 1. Refusal on unknown stealth note (not in stealth-pending.json)
     let intent = SignerIntent::SweepStealth {
         chain_id: TEST_CHAIN_ID,
-        stealth_address: Address::repeat_byte(0x55),
+        stealth_address: stealth_addr,
     };
     let req = serde_json::json!({ "op": "sign", "intent": intent });
     let resp: SignerResponse =
         serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
     assert!(!resp.ok);
-    assert_eq!(resp.code, Some("intent_not_implemented".to_string()));
-    assert!(resp.message.unwrap().contains("scheduled for S2"));
+    assert_eq!(resp.code, Some("unknown_stealth_note".to_string()));
+
+    // Record stealth address in stealth-pending.json
+    vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth_addr).unwrap();
+
+    // 2. Refusal when amount cannot be determined
+    signer.set_balance(Some(stealth_addr), U256::ZERO);
+    let resp_no_amt: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(!resp_no_amt.ok);
+    assert_eq!(resp_no_amt.code, Some("amount_undetermined".to_string()));
+
+    // 3. Valid sweep with known amount
+    let sweep_amount = U256::from(500_000_000);
+    signer.set_balance(Some(stealth_addr), sweep_amount);
+    let resp_ok: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(resp_ok.ok);
+    assert!(resp_ok.tx_hash.is_some());
+
+    // 4. Replay prevention: submitting same sweep intent again is refused with spend_already_reserved
+    let resp_replay: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
+    assert!(!resp_replay.ok);
+    assert_eq!(resp_replay.code, Some("spend_already_reserved".to_string()));
+
+    // 5. Failure release: failing broadcast releases ledger reservation
+    let stealth_addr2 = Address::repeat_byte(0x66);
+    vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth_addr2).unwrap();
+    signer.set_balance(Some(stealth_addr2), sweep_amount);
+
+    broadcaster.set_fail(true);
+    let intent2 = SignerIntent::SweepStealth {
+        chain_id: TEST_CHAIN_ID,
+        stealth_address: stealth_addr2,
+    };
+    let req2 = serde_json::json!({ "op": "sign", "intent": intent2 });
+    let resp_fail: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req2.to_string()).await).unwrap();
+    assert!(!resp_fail.ok);
+    assert_eq!(resp_fail.code, Some("broadcast_failed".to_string()));
+
+    let ledger = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+    assert!(!ledger
+        .recent
+        .iter()
+        .any(|r| r.key == intent2.idempotency_key()));
+
+    // Retry succeeds once failure is cleared
+    broadcaster.set_fail(false);
+    let resp_retry: SignerResponse =
+        serde_json::from_str(&signer.handle_line(&req2.to_string()).await).unwrap();
+    assert!(resp_retry.ok);
+
+    // 6. Restart durability: drop signer and rebuild from same store; spend/recent unchanged
+    let snap_before = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+    drop(signer);
+    let signer2 = Signer::new(
+        dir.path().to_path_buf(),
+        active_addr,
+        TEST_CHAIN_ID,
+        "http://127.0.0.1:8545".to_string(),
+        quoter.clone(),
+        broadcaster.clone(),
+    );
+    let snap_after = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
+    assert_eq!(snap_before.assets, snap_after.assets);
+    assert_eq!(snap_before.recent, snap_after.recent);
+
+    // Replay on rebuilt signer is still refused with spend_already_reserved
+    signer2.set_balance(Some(stealth_addr2), sweep_amount);
+    let resp_rebuilt_replay: SignerResponse =
+        serde_json::from_str(&signer2.handle_line(&req2.to_string()).await).unwrap();
+    assert!(!resp_rebuilt_replay.ok);
+    assert_eq!(
+        resp_rebuilt_replay.code,
+        Some("spend_already_reserved".to_string())
+    );
 }
 
 #[tokio::test]

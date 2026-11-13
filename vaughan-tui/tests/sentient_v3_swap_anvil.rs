@@ -1032,8 +1032,7 @@ async fn test_sentient_stealth_sweep_routes_to_signer_and_reports_refusal() {
         Err(ProviderError::Unauthorized(ref msg)) => {
             assert!(
                 msg.contains("sentient_local_signing_disabled")
-                    && msg.contains("sweep_stealth")
-                    && msg.contains("intent_not_implemented"),
+                    && msg.contains("unknown_stealth_note"),
                 "expected verbatim signerd refusal over socket, got: {msg}"
             );
         }
@@ -1241,6 +1240,97 @@ async fn test_sentient_dca_slice_anvil_replay_revert_refusals_and_durability() {
         retry_hash.starts_with("0x") && retry_hash.len() == 66,
         "retry after failure should succeed with 66-char tx hash, got {retry_hash}"
     );
+
+    std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
+    server_task2.abort();
+}
+
+#[tokio::test]
+async fn test_sentient_stealth_sweep_anvil_replay_revert_refusals_and_durability() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    let anvil = Anvil::start();
+    common::plant_announcer(&anvil);
+    let (wallet, dir) = setup_sentient_wallet(&anvil);
+    let (wallet_signer, _) = setup_sentient_wallet(&anvil);
+
+    let (socket_path, server_task) = spawn_test_signerd(dir.path(), wallet_signer, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path);
+    let client = SignerClient::new(&socket_path);
+
+    // 1. Refusal: unknown stealth note
+    let unrecorded_addr = Address::repeat_byte(0x77);
+    let intent_unknown = SignerIntent::SweepStealth {
+        chain_id: 943,
+        stealth_address: unrecorded_addr,
+    };
+    let err_unknown = client.execute(&intent_unknown).await.unwrap_err();
+    assert!(err_unknown.contains("unknown_stealth_note"));
+
+    // 2. Refusal: amount undetermined (recorded in pending, but zero balance on chain)
+    let empty_stealth_addr = Address::repeat_byte(0x88);
+    vaughan_agent::sentient::record_stealth_pending(dir.path(), empty_stealth_addr).unwrap();
+    let intent_no_balance = SignerIntent::SweepStealth {
+        chain_id: 943,
+        stealth_address: empty_stealth_addr,
+    };
+    let err_no_amt = client.execute(&intent_no_balance).await.unwrap_err();
+    assert!(err_no_amt.contains("amount_undetermined"));
+
+    // 3. Fund a real stealth note on Anvil
+    let uri = wallet.stealth_uri().unwrap();
+    let announcement = wallet.prepare_stealth_payment(&uri).unwrap();
+    wallet
+        .send_stealth(&announcement, "500000000000000000") // 0.5 PLS
+        .await
+        .expect("send stealth");
+
+    let notes = wallet.scan_stealth_notes().await.expect("scan");
+    assert!(!notes.is_empty(), "expected one funded note");
+    let note = &notes[0];
+    let stealth_address = note.announcement.stealth_address;
+
+    // Record in stealth-pending.json
+    vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth_address).unwrap();
+
+    // 4. Valid execution: real 66-character tx hash
+    let intent_sweep = SignerIntent::SweepStealth {
+        chain_id: 943,
+        stealth_address,
+    };
+    let tx_hash = client.execute(&intent_sweep).await.unwrap();
+    assert!(
+        tx_hash.starts_with("0x") && tx_hash.len() == 66,
+        "expected 66-char tx hash, got {tx_hash}"
+    );
+
+    // Ledger keeps exactly 1 entry for key
+    let snap = SpendLedger::snapshot(dir.path()).unwrap();
+    let key = intent_sweep.idempotency_key();
+    assert_eq!(snap.recent.iter().filter(|r| r.key == key).count(), 1);
+
+    // 5. Replay: second submission refused with spend_already_reserved
+    let replay_err = client.execute(&intent_sweep).await.unwrap_err();
+    assert!(replay_err.contains("spend_already_reserved"));
+    let snap2 = SpendLedger::snapshot(dir.path()).unwrap();
+    assert_eq!(snap2.recent.iter().filter(|r| r.key == key).count(), 1);
+
+    // 6. Restart durability: drop signer, rebuild from same store; spend/recent unchanged
+    server_task.abort();
+    let snap_before_restart = SpendLedger::snapshot(dir.path()).unwrap();
+
+    let (wallet_signer2, _) = setup_sentient_wallet(&anvil);
+    let (socket_path2, server_task2) = spawn_test_signerd(dir.path(), wallet_signer2, anvil.url());
+    std::env::set_var("VAUGHAN_SIGNER_SOCKET", &socket_path2);
+    let client2 = SignerClient::new(&socket_path2);
+
+    let snap_after_restart = SpendLedger::snapshot(dir.path()).unwrap();
+    assert_eq!(snap_before_restart.assets, snap_after_restart.assets);
+    assert_eq!(snap_before_restart.recent, snap_after_restart.recent);
+
+    // Replay on restarted signer still refused with spend_already_reserved
+    let replay_err2 = client2.execute(&intent_sweep).await.unwrap_err();
+    assert!(replay_err2.contains("spend_already_reserved"));
 
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
     server_task2.abort();
