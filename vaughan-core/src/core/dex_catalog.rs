@@ -217,6 +217,14 @@ const CATALOG: &[CatalogEntry] = &[
         role: DexContractRole::SwapRouter,
         address: "0xDaE9dd3d1A52CfCe9d5F2fAC7fDe164D500E50f7",
     },
+    // Verified on-chain 2026-11-14: router.factory() on 943 returns this address.
+    CatalogEntry {
+        venue: DexVenue::PulseX,
+        chain_id: 943,
+        protocol: Some(DexProtocol::V2),
+        role: DexContractRole::V2Factory,
+        address: "0xFf0538782D122d3112F75dc7121F61562261c0f7",
+    },
     CatalogEntry {
         venue: DexVenue::PulseX,
         chain_id: 369,
@@ -965,6 +973,22 @@ mod tests {
             lp_stack_for_chain(369),
             Some(LpStack::V3 {
                 venue: DexVenue::NineInch
+            })
+        ));
+    }
+
+    #[test]
+    fn pulsex_v2_factory_943_catalogued_without_changing_lp_stacks() {
+        assert_eq!(
+            venue_v2_factory(DexVenue::PulseX, 943),
+            Some(address!("0xFf0538782D122d3112F75dc7121F61562261c0f7"))
+        );
+        // The factory is for pair reads only: the 943 LP picker must stay wiz4rd V3.
+        assert_eq!(lp_stacks_for_chain(943).len(), 1);
+        assert!(matches!(
+            lp_stack_for_chain(943),
+            Some(LpStack::V3 {
+                venue: DexVenue::Wiz4rd
             })
         ));
     }
