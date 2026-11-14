@@ -61,9 +61,16 @@ Non-sentient profiles can create/list/pause plans but will **not** auto-fire.
 ## Threat model (plan file)
 
 `dca-plans.json` is not secret key material, but a tampered `token_out`
-redirects buys. Same trust boundary as the MCP session token (same OS user).
-File mode 0600; unknown JSON fields fail closed. Bound `chain_id` / `account`
-limit cross-network and cross-wallet spend if the file is edited in place.
+redirects buys. File mode 0600; unknown JSON fields fail closed. Bound
+`chain_id` / `account` limit cross-network and cross-wallet spend if the file is
+edited in place.
+
+For **sentient**, the trust boundary is the `vaughan-signerd` socket plus the
+`sentient-spend.json` ledger, not the MCP session token: the plan file only says
+*what* to buy — each slice is re-quoted and signed inside the daemon
+(`dca_slice` intent), so a same-UID edit cannot reach keys or bypass the ledger.
+On the **adviser** profile the plan file does sit under the same OS user as the
+loopback MCP session token, and adviser plans never auto-fire.
 
 ## Phase 2 (not built yet) — indicator buys/sells
 

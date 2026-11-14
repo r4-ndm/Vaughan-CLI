@@ -161,28 +161,49 @@ the Chromium extension (MV3 allowlist).
 Minimal headless daemon (same MCP IPC wire as v1):
 
 ```bash
+# Sentient — thin client of vaughan-signerd (no password, no token, no listener)
+vaughan --profile sentient serve
+
+# Adviser — unlocks the vault, writes the loopback session token
 export VAUGHAN_WALLET_PASSWORD='…'   # never commit; use a secret manager
-vaughan --profile sentient serve --password-env VAUGHAN_WALLET_PASSWORD
-# or adviser (queues pending_user; no auto-sign without TUI):
 vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
 ```
 
-- Unlocks the profile vault non-interactively, writes the session token, binds
-  loopback MCP control (`127.0.0.1:8746`).
+**Adviser (`default`) — unlocks the vault**
+
+- Unlocks the profile vault non-interactively, writes the session token
+  (`mcp.session`, 0600), binds loopback MCP control (`127.0.0.1:8746`).
 - Reads the password from `--password-env` once, then **unsets** that env var in
   the process (still prefer a short-lived secret injection; do not leave passwords
   in shell history or shared hosts).
-- **Sentient:** auto-exec under policy (same as unlocked TUI). Treat the
-  host as a **hot wallet** — any same-user process with the session token can spend.
-  Sized approve/unwrap legs are gated like transfers; **unlimited**
-  (`type(uint256).max`) approve is always refused for Sentient auto-exec
-  (use a sized amount or the Advisor profile). Revoke (`approve(…, 0)`) is OK.
-- **Default:** queues `pending_user` for normal proposes — **never auto-signs**.
-  Stealth **sweep** still needs an unlocked TUI on adviser (serve returns
-  `tui_required`).
+- Queues `pending_user` for normal proposes — **never auto-signs**. Stealth
+  **sweep** still needs an unlocked TUI on adviser (serve returns `tui_required`).
+- Ctrl-C stops the daemon and invalidates the session token.
+
+**Sentient (`sentient`) — thin client of the signer daemon**
+
+- Since v0.2.x a sentient profile's keys live in `vaughan signerd` (systemd
+  service, user `vaughan-signer`, socket `/run/vaughan/signerd.sock`, peer-UID
+  allowlist). `vaughan serve` here does **not** unlock the vault, holds no keys,
+  writes no `mcp.session`, opens no TCP port, and takes no password. It attaches
+  to the socket; `vaughan mcp` for the same profile submits typed intents there.
+- Auto-exec under policy (same as unlocked TUI). Spend is bounded by the
+  `sentient-spend.json` ledger in the signer store
+  (`/var/lib/vaughan/sentient`). Sized approve/unwrap legs are gated like
+  transfers; **unlimited** (`type(uint256).max`) approve is always refused for
+  Sentient auto-exec (use a sized amount or the Advisor profile). Revoke
+  (`approve(…, 0)`) is OK.
+- Policy changes need the vault password, verified inside the daemon via
+  `policy_update` — see [`sentient-ops.md`](sentient-ops.md).
+- Residual risk (stated honestly): a same-UID process can still edit the agent's
+  profile files (proposals, DCA plans, config), but signing keys, policy and the
+  spend ledger sit under the `vaughan-signer` uid and are only reachable through
+  daemon policy.
+- Ctrl-C stops this client; the daemon keeps running.
+
+Both profiles:
+
 - Mainnet writes still require `VAUGHAN_MCP_ALLOW_MAINNET=1` (same gate as MCP stdio).
 - EmpX quotes/proposes are PulseChain **mainnet (369) only**.
-- MCP stdio (`vaughan mcp`) remains the agent-facing process; it attaches to the
-  serve/TUI socket.
-
-Ctrl-C stops the daemon and invalidates the session token.
+- MCP stdio (`vaughan mcp`) remains the agent-facing process; adviser attaches to
+  the serve/TUI loopback socket, sentient to `vaughan-signerd`.
