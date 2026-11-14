@@ -1,0 +1,37 @@
+{
+  "name": "vaughan",
+  "version": "0.2.6",
+  "description": "Vaughan CLI — Browserless Pulse terminal wallet (TUI, CLI, and MCP server). Convenience install; use checksum-verified GitHub Releases for funded wallets.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "vaughan": "bin/vaughan.js",
+    "vaughan-mcp": "bin/vaughan-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "vaughan-darwin-arm64": "0.2.6",
+    "vaughan-linux-arm64": "0.2.6",
+    "vaughan-linux-x64": "0.2.6"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "wallet",
+    "pulsechain",
+    "evm",
+    "tui",
+    "cli",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/r4-ndm/Vaughan-CLI.git"
+  }
+}

@@ -741,17 +741,17 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 > subcommand (`npx vaughan-mcp --version` fails), needs network on first run, and reads as unfinished.
 > GitHub Releases + `scripts/install.sh` remain the documented path for anyone holding funds.
 
-- [ ] Publish a `vaughan` launcher package with the binary as **platform packages**
+- [x] Publish a `vaughan` launcher package with the binary as **platform packages**
       (`vaughan-linux-x64`, `vaughan-linux-arm64`, `vaughan-darwin-arm64`) listed as
       `optionalDependencies`, esbuild/biome style: npm's integrity metadata pins the artifact, one-step
       install, no post-install or first-run download. No Windows and no darwin-x64 — print a clear
       `UNSUPPORTED_PLATFORM` with the tarball URL.
-- [ ] Two bins in the launcher: `vaughan` (TUI/CLI, args passed straight through) and `vaughan-mcp`
+- [x] Two bins in the launcher: `vaughan` (TUI/CLI, args passed straight through) and `vaughan-mcp`
       (stdio server). `--version` must work on both.
-- [ ] Extend the release workflow (`publish-npm`) to publish the platform packages + launcher from the
+- [x] Extend the release workflow (`publish-npm`) to publish the platform packages + launcher from the
       same tag, after the tarballs exist, keeping OIDC trusted publishing and provenance. Fail closed on
       a missing platform artifact rather than publishing a launcher that cannot install.
-- [ ] Keep GitHub Releases canonical: docs say "checksum-verified tarball" first, npm as convenience,
+- [x] Keep GitHub Releases canonical: docs say "checksum-verified tarball" first, npm as convenience,
       and never as the recommended install for a funded wallet. Also keep the npm version ↔ tag ↔
       `vaughan --version` guard that already exists.
 - [ ] Reserve the `vaughan` and `vaughan-cli` names (both currently 404 on the registry) so the identity

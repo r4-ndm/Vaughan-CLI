@@ -61,6 +61,16 @@ If no GitHub release exists yet, the install script falls back to `cargo install
 
 Pin a version: `VAUGHAN_VERSION=v0.1.0 curl -fsSL …/install.sh | sh`
 
+**npm** (convenience, **not recommended for a funded wallet** — prefer the checksum-verified tarball above if you hold real funds):
+
+```bash
+npm install -g vaughan
+vaughan --version
+vaughan-mcp --version
+```
+
+Ships the `vaughan` (TUI/CLI) and `vaughan-mcp` (MCP stdio server) bins using npm `optionalDependencies` (`linux-x64`, `linux-arm64`, `darwin-arm64`, no postinstall or runtime download). On unsupported platforms, build from source above.
+
 ## Launch
 
 ```bash

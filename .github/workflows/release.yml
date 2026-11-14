@@ -137,14 +137,24 @@ jobs:
 
   # npm publish via Trusted Publishing (OIDC): no token, no 2FA prompt.
   #
-  # It is OFF until the npm side is configured, because a missing trusted
-  # publisher makes this job fail with a misleading 404. To enable:
-  #   1. npmjs.com -> vaughan-mcp -> Settings -> Trusted Publisher -> GitHub Actions
-  #      repository: r4-ndm/Vaughan-CLI   workflow filename: release.yml
-  #      (casing is validated against the OIDC token; it must match exactly)
-  #   2. GitHub repo -> Settings -> Variables -> Actions -> new variable
-  #      NPM_TRUSTED_PUBLISH = true
-  #   3. then delete any bypass-2FA token from ~/.npmrc and npmjs.com
+  # One-time owner steps before enabling `NPM_TRUSTED_PUBLISH = true`:
+  #   1. Ensure all packages exist on npmjs.com (first manual placeholder or initial
+  #      creation is required before OIDC Trusted Publishers can be attached):
+  #        - vaughan
+  #        - vaughan-linux-x64
+  #        - vaughan-linux-arm64
+  #        - vaughan-darwin-arm64
+  #        - vaughan-mcp (already exists)
+  #   2. On npmjs.com, configure a Trusted Publisher (GitHub Actions) on EACH of
+  #      `vaughan`, `vaughan-linux-x64`, `vaughan-linux-arm64`, `vaughan-darwin-arm64`,
+  #      and `vaughan-mcp` with exact settings:
+  #        - repository: r4-ndm/Vaughan-CLI
+  #        - workflow filename: release.yml
+  #        - environment: (empty)
+  #      (Casing is validated against the OIDC token and must match exactly.)
+  #   3. GitHub repo -> Settings -> Variables -> Actions -> set:
+  #        NPM_TRUSTED_PUBLISH = true
+  #   4. Delete any bypass-2FA token from ~/.npmrc and npmjs.com.
   publish-npm:
     name: publish npm package
     needs: release
@@ -158,6 +168,18 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Assemble and verify release tarballs for npm packaging
+        run: |
+          mkdir -p release-assets
+          find artifacts -name 'SHA256SUMS.*' -exec cat {} + | sort -u > release-assets/SHA256SUMS
+          find artifacts -name 'vaughan-*.tar.gz' -exec cp {} release-assets/ \;
+          (cd release-assets && sha256sum -c SHA256SUMS)
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -167,16 +189,57 @@ jobs:
       - name: Upgrade npm for OIDC publishing
         run: npm install -g npm@^11.15.0
 
-      - name: Verify the package version matches the tag
+      - name: Verify package versions match the release tag
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           want="${tag#v}"
-          have="$(node -p "require('./npm/package.json').version")"
-          if [ "$want" != "$have" ]; then
-            echo "ERROR: tag is $tag but npm/package.json is $have — bump the version before tagging" >&2
+          have_mcp="$(node -p "require('./npm/package.json').version")"
+          have_launcher="$(node -p "require('./npm/launcher/package.json').version")"
+          if [ "$want" != "$have_mcp" ]; then
+            echo "ERROR: tag is $tag but npm/package.json is $have_mcp — bump the version before tagging" >&2
+            exit 1
+          fi
+          if [ "$want" != "$have_launcher" ]; then
+            echo "ERROR: tag is $tag but npm/launcher/package.json is $have_launcher — bump the version before tagging" >&2
             exit 1
           fi
 
-      - name: Publish to npm (trusted publishing)
+      - name: Build verified npm platform and launcher packages
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          node scripts/npm-build-packages.mjs "$tag" release-assets npm/dist
+
+      - name: Verify emitted package versions and executable binaries
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          want="${tag#v}"
+          for pkg in vaughan-linux-x64 vaughan-linux-arm64 vaughan-darwin-arm64; do
+            have="$(node -p "require('./npm/dist/${pkg}/package.json').version")"
+            if [ "$want" != "$have" ]; then
+              echo "ERROR: emitted $pkg version ($have) != tag ($want)" >&2
+              exit 1
+            fi
+            if [ ! -x "./npm/dist/${pkg}/bin/vaughan" ]; then
+              echo "ERROR: missing or non-executable binary in npm/dist/${pkg}/bin/vaughan" >&2
+              exit 1
+            fi
+          done
+          have_launcher="$(node -p "require('./npm/dist/vaughan/package.json').version")"
+          if [ "$want" != "$have_launcher" ]; then
+            echo "ERROR: emitted launcher version ($have_launcher) != tag ($want)" >&2
+            exit 1
+          fi
+
+      - name: Publish platform packages first (trusted publishing with provenance)
+        run: |
+          for pkg in vaughan-linux-x64 vaughan-linux-arm64 vaughan-darwin-arm64; do
+            (cd "npm/dist/${pkg}" && npm publish --provenance --access public)
+          done
+
+      - name: Publish vaughan-mcp to npm (trusted publishing)
         working-directory: npm
-        run: npm publish --access public
+        run: npm publish --provenance --access public
+
+      - name: Publish launcher package last (trusted publishing with provenance)
+        working-directory: npm/dist/vaughan
+        run: npm publish --provenance --access public
