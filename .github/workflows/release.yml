@@ -233,13 +233,11 @@ jobs:
       - name: Publish platform packages first (trusted publishing with provenance)
         run: |
           for pkg in vaughan-linux-x64 vaughan-linux-arm64 vaughan-darwin-arm64; do
-            (cd "npm/dist/${pkg}" && npm publish --provenance --access public)
+            scripts/npm-publish-if-new.sh "npm/dist/${pkg}"
           done
 
       - name: Publish vaughan-mcp to npm (trusted publishing)
-        working-directory: npm
-        run: npm publish --provenance --access public
+        run: scripts/npm-publish-if-new.sh npm
 
       - name: Publish launcher package last (trusted publishing with provenance)
-        working-directory: npm/dist/vaughan
-        run: npm publish --provenance --access public
+        run: scripts/npm-publish-if-new.sh npm/dist/vaughan
