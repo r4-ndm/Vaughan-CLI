@@ -19,8 +19,8 @@ use tokio::net::UnixListener;
 use vaughan_agent::sentient::{load_policy, save_policy, AgentSessionPolicy};
 use vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME;
 use vaughan_cli::signerd::{
-    is_peer_uid_allowed, write_approval, Approval, MockBroadcaster, MockSwapQuoter, Signer,
-    SignerClient, SignerResponse,
+    is_peer_uid_allowed, write_approval, Approval, MockBalanceSource, MockBroadcaster,
+    MockSwapQuoter, Signer, SignerClient, SignerResponse,
 };
 
 struct PolicyCliFixture {
@@ -92,6 +92,7 @@ async fn setup_cli_fixture(daily_cap_pct: u8) -> PolicyCliFixture {
         "http://127.0.0.1:8545".to_string(),
         Arc::new(MockSwapQuoter::new()),
         Arc::new(MockBroadcaster::new()),
+        Arc::new(MockBalanceSource::new()),
     );
     signer.set_expected_approval_uid(uid);
 

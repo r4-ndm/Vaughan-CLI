@@ -8,7 +8,7 @@ use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::signer_client::SignerResponse;
 use vaughan_core::core::SignerIntent;
 
-use crate::signerd::{intents, Signer};
+use crate::signerd::{balance_or_refuse, intents, swap_input_or_refuse, Signer};
 
 impl Signer {
     #[allow(clippy::too_many_arguments)]
@@ -76,8 +76,8 @@ impl Signer {
             );
         }
 
-        let asset = format!("{chain_id}:native");
-        let balance = self.get_balance(None).await;
+        let (balance_token, asset) = swap_input_or_refuse!(chain_id, dca_quote.token_in);
+        let balance = balance_or_refuse!(self, balance_token);
         let intent = SignerIntent::DcaSlice {
             plan_id,
             slice_index,

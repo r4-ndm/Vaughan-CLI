@@ -37,8 +37,7 @@ fn 183 vaughan-agent/src/sentient/spend_ledger.rs::reserve_at#1
 fn 223 vaughan-agent/src/sentient/trader.rs::execute_swap_inner#1
 fn 612 vaughan-cli/src/main.rs::run_cli#1
 fn 151 vaughan-cli/src/signerd/ops/dca.rs::handle_dca_slice#1
-fn 196 vaughan-cli/src/signerd/ops/swap.rs::handle_swap#1
-fn 165 vaughan-cli/src/signerd/ops/sweep.rs::handle_sweep_stealth#1
+fn 188 vaughan-cli/src/signerd/ops/swap.rs::handle_swap#1
 fn 156 vaughan-cli/src/signerd/server.rs::run_signerd#1
 fn 159 vaughan-core/src/chains/evm/adapter.rs::get_assets#1
 fn 150 vaughan-core/src/core/humanizer/erc20.rs::try_humanize#1

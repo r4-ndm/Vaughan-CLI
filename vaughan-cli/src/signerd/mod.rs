@@ -1,6 +1,7 @@
 //! Vaughan isolated signing daemon (`vaughan signerd`).
 //!
-//! Single purpose: module root, `Signer` struct, constructor/balance helpers,
+//! Single purpose: module root, `Signer` struct, constructor, the
+//! `get_balance` fail-closed wrapper around the injected [`balance::BalanceSource`],
 //! line dispatch, and `SO_PEERCRED` peer-UID helpers. Must NOT contain policy
 //! update handlers, `handle_sign`, per-intent `ops` bodies, or the Unix socket
 //! server accept loop (those live in `policy`, `sign`, `ops`, and `server`).
@@ -17,6 +18,7 @@
 //! ledger reside exclusively inside the signer.
 
 pub mod approval;
+pub mod balance;
 pub mod broadcaster;
 pub mod intents;
 pub mod migrate;
@@ -30,6 +32,7 @@ pub use approval::{
     consume_approval, inspect_approval, inspect_approval_at, load_pending_policy,
     stage_pending_policy_with_replace, write_approval, Approval, ApprovalError, ApprovalPresence,
 };
+pub use balance::{BalanceSource, LiveBalanceSource, MockBalanceSource};
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use policy::{STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG};
@@ -77,7 +80,7 @@ pub(super) struct SignerInner {
     pub(super) rpc_url: String,
     pub(super) quoter: Arc<dyn SwapQuoter>,
     pub(super) broadcaster: Arc<dyn TransactionBroadcaster>,
-    pub(super) balance_overrides: Mutex<HashMap<Option<Address>, U256>>,
+    pub(super) balances: Arc<dyn BalanceSource>,
     pub(super) breaker: Mutex<vaughan_agent::CircuitBreaker>,
     pub(super) step_up_limiter: Mutex<HashMap<u32, Vec<Instant>>>,
     pub(super) expected_approval_uid: std::sync::atomic::AtomicU32,
@@ -89,6 +92,32 @@ pub struct Signer {
     pub(super) inner: Arc<SignerInner>,
 }
 
+/// Resolve `$token`'s balance via [`Signer::get_balance`], or `return` the
+/// caller's `balance_unavailable` refusal immediately — one line at each
+/// cap-sizing call site in `ops::*`, instead of a four-line `match`.
+macro_rules! balance_or_refuse {
+    ($self:expr, $token:expr) => {
+        match $self.get_balance($token).await {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        }
+    };
+}
+pub(super) use balance_or_refuse;
+
+/// Resolve what a swap's input leg spends (`(balance token, ledger asset key)`, see
+/// [`intents::swap_input_asset`]), or `return` a `wrapped_native_unconfigured` refusal
+/// before any balance read, reservation or broadcast.
+macro_rules! swap_input_or_refuse {
+    ($chain_id:expr, $token_in:expr) => {
+        match intents::swap_input_asset($chain_id, $token_in) {
+            Ok(v) => v,
+            Err(e) => return SignerResponse::error("wrapped_native_unconfigured", e),
+        }
+    };
+}
+pub(super) use swap_input_or_refuse;
+
 impl Signer {
     /// Create a new Signer instance.
     pub fn new(
@@ -98,6 +127,7 @@ impl Signer {
         rpc_url: String,
         quoter: Arc<dyn SwapQuoter>,
         broadcaster: Arc<dyn TransactionBroadcaster>,
+        balances: Arc<dyn BalanceSource>,
     ) -> Self {
         let rpc_count = 1usize;
         let config =
@@ -111,7 +141,7 @@ impl Signer {
                 rpc_url,
                 quoter,
                 broadcaster,
-                balance_overrides: Mutex::new(HashMap::new()),
+                balances,
                 breaker: Mutex::new(breaker),
                 step_up_limiter: Mutex::new(HashMap::new()),
                 expected_approval_uid: std::sync::atomic::AtomicU32::new(
@@ -133,47 +163,22 @@ impl Signer {
         self.inner.breaker.lock().unwrap().clone()
     }
 
-    /// Set a balance override for an asset (token: None for native).
-    pub fn set_balance(&self, token: Option<Address>, balance: U256) {
+    /// Read the active account's REAL on-chain balance of `token` (native if `None`).
+    ///
+    /// Every spend cap is sized against this value. A read failure fails closed:
+    /// never a cached, default, or zero balance — the caller must refuse the
+    /// intent with `balance_unavailable` rather than reserve or broadcast.
+    pub(super) async fn get_balance(&self, token: Option<Address>) -> Result<U256, SignerResponse> {
         self.inner
-            .balance_overrides
-            .lock()
-            .unwrap()
-            .insert(token, balance);
-    }
-
-    /// Get the current balance of an asset (returns override if set, or default).
-    pub async fn get_balance(&self, token: Option<Address>) -> U256 {
-        if let Some(b) = self.inner.balance_overrides.lock().unwrap().get(&token) {
-            return *b;
-        }
-        // Default generous balance for test harness
-        U256::from(10_000_000_000_000_000_000u128)
-    }
-
-    /// Query the balance of an on-chain address via RPC (or check balance overrides).
-    pub async fn get_onchain_balance(&self, address: Address) -> Result<U256, String> {
-        if let Some(b) = self
-            .inner
-            .balance_overrides
-            .lock()
-            .unwrap()
-            .get(&Some(address))
-        {
-            return Ok(*b);
-        }
-        let url: alloy::transports::http::reqwest::Url = self
-            .inner
-            .rpc_url
-            .parse()
-            .map_err(|e| format!("invalid rpc_url: {e}"))?;
-        let provider = alloy::providers::ProviderBuilder::new().connect_http(url);
-        use alloy::providers::Provider;
-        let balance = provider
-            .get_balance(address)
+            .balances
+            .balance_of(&self.inner.rpc_url, self.inner.active_address, token)
             .await
-            .map_err(|e| format!("eth_getBalance failed: {e}"))?;
-        Ok(balance)
+            .map_err(|e| {
+                SignerResponse::error(
+                    "balance_unavailable",
+                    format!("could not read balance: {e}"),
+                )
+            })
     }
 
     /// Handle a newline-delimited JSON line and return the JSON response string.

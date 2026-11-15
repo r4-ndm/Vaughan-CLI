@@ -85,6 +85,24 @@ pub fn resolve_wrapped_native(chain_id: u64) -> Result<Address, String> {
     }
 }
 
+/// What a swap's input leg actually spends, as `(balance token, spend-ledger asset key)`.
+///
+/// When `token_in` is the chain's wrapped-native token the tx builders send the amount as
+/// `value`, so the NATIVE coin is spent: size the cap from the native balance (`None`) and
+/// charge the `"{chain}:native"` bucket shared with transfers and wraps. Otherwise the
+/// ERC-20 itself is spent. Swap, DCA and the calldata builders must agree on this, so it
+/// has a single definition.
+pub fn swap_input_asset(
+    chain_id: u64,
+    token_in: Address,
+) -> Result<(Option<Address>, String), String> {
+    if token_in == resolve_wrapped_native(chain_id)? {
+        Ok((None, format!("{chain_id}:native")))
+    } else {
+        Ok((Some(token_in), format!("{chain_id}:{token_in:#x}")))
+    }
+}
+
 fn default_deadline() -> U256 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -281,6 +299,25 @@ pub fn build_batch_transfer_tx(
 mod tests {
     use super::*;
     use vaughan_core::core::decode_v3_swap_calldata;
+
+    #[test]
+    fn test_swap_input_asset_follows_what_the_calldata_builders_spend() {
+        let wrapped = resolve_wrapped_native(943).unwrap();
+        let erc20 = Address::repeat_byte(0x22);
+
+        // Wrapped-native input is sent as tx `value`: the native coin and native bucket.
+        assert_eq!(
+            swap_input_asset(943, wrapped).unwrap(),
+            (None, "943:native".to_string())
+        );
+        // Any other input is that ERC-20, with its own bucket.
+        assert_eq!(
+            swap_input_asset(943, erc20).unwrap(),
+            (Some(erc20), format!("943:{erc20:#x}"))
+        );
+        // A chain without a configured wrapped-native token cannot be classified: refuse.
+        assert!(swap_input_asset(424_242, erc20).is_err());
+    }
 
     #[test]
     fn test_v3_calldata_amount_out_matches_min_out() {

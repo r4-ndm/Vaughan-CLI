@@ -8,7 +8,7 @@ use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::signer_client::SignerResponse;
 use vaughan_core::core::SignerIntent;
 
-use crate::signerd::{intents, Signer};
+use crate::signerd::{balance_or_refuse, intents, Signer};
 
 impl Signer {
     pub(crate) async fn handle_wrap(
@@ -18,7 +18,7 @@ impl Signer {
         policy: &vaughan_agent::sentient::AgentSessionPolicy,
     ) -> SignerResponse {
         let asset = format!("{chain_id}:native");
-        let balance = self.get_balance(None).await;
+        let balance = balance_or_refuse!(self, None);
         let intent = SignerIntent::Wrap { chain_id, amount };
         let key = intent.idempotency_key();
 
@@ -80,7 +80,7 @@ impl Signer {
             Err(e) => return SignerResponse::error("unwrap_failed", e),
         };
         let asset = format!("{chain_id}:{weth:#x}");
-        let balance = self.get_balance(Some(weth)).await;
+        let balance = balance_or_refuse!(self, Some(weth));
         let intent = SignerIntent::Unwrap { chain_id, amount };
         let key = intent.idempotency_key();
 

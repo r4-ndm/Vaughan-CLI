@@ -17,7 +17,9 @@ use secrecy::SecretString;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use vaughan_agent::sentient::policy::{AgentSessionPolicy, EnforcementMode};
-use vaughan_cli::signerd::{MockSwapQuoter, Signer, SignerResponse, WalletBroadcaster};
+use vaughan_cli::signerd::{
+    LiveBalanceSource, MockSwapQuoter, Signer, SignerResponse, WalletBroadcaster,
+};
 use vaughan_core::chains::EvmTransaction;
 use vaughan_core::core::dex_routers::wpls_for_chain;
 use vaughan_core::core::{OperatingMode, SignerIntent, SwapFamily, WalletState};
@@ -146,6 +148,8 @@ async fn test_native_in_v2_swap_estimates_and_broadcasts_on_anvil() {
     let anvil = Anvil::start();
     anvil.set_code(ROUTER_943, V2_ROUTER_MOCK_BYTECODE);
 
+    let wpls = wpls_for_chain(TEST_CHAIN_ID).expect("wpls for 943");
+
     let dir = tempfile::tempdir().unwrap();
     let wallet_path = dir.path().join("wallet.json");
     let mut wallet =
@@ -159,7 +163,6 @@ async fn test_native_in_v2_swap_estimates_and_broadcasts_on_anvil() {
     wallet.set_rpc_override(anvil.url());
 
     let active_addr = wallet.active_address().unwrap().parse::<Address>().unwrap();
-    let wpls = wpls_for_chain(TEST_CHAIN_ID).expect("wpls for 943");
     let token_out = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
     let amount_in = U256::from(500_000_000_000_000_000u64); // 0.5 PLS
     let expected_out = U256::from(100_000);
@@ -186,6 +189,7 @@ async fn test_native_in_v2_swap_estimates_and_broadcasts_on_anvil() {
         anvil.url(),
         quoter,
         broadcaster,
+        Arc::new(LiveBalanceSource),
     );
 
     // 1. Submit native-in V2 swap intent to Signer

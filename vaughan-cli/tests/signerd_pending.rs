@@ -21,7 +21,7 @@ use vaughan_cli::signerd::approval::{
 };
 use vaughan_cli::signerd::{
     is_peer_uid_allowed, stage_pending_policy_with_replace, write_approval, Approval,
-    MockBroadcaster, MockSwapQuoter, Signer, SignerClient, SignerResponse,
+    MockBalanceSource, MockBroadcaster, MockSwapQuoter, Signer, SignerClient, SignerResponse,
 };
 use vaughan_core::core::policy_step_up::{apply, poll, stage, StepUpState};
 
@@ -53,6 +53,7 @@ fn setup_fixture(daily_cap_pct: u8) -> TestFixture {
         "http://127.0.0.1:8545".to_string(),
         Arc::new(MockSwapQuoter::new()),
         Arc::new(MockBroadcaster::new()),
+        Arc::new(MockBalanceSource::new()),
     );
     signer.set_expected_approval_uid(uid);
 
