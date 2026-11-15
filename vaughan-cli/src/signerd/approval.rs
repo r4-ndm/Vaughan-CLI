@@ -311,8 +311,24 @@ pub fn stage_pending_policy(
     policy: &AgentSessionPolicy,
     now: u64,
 ) -> Result<(), PendingStageError> {
+    stage_pending_policy_with_replace(store, policy, now, false)
+}
+
+/// Stage `policy-pending.json` (mode `0600`, TTL 10 min).
+///
+/// When an unexpired pending file already exists:
+/// - `allow_replace == false` returns `PendingStageError::AlreadyPending` without touching disk;
+/// - `allow_replace == true` atomically replaces the pending file and removes any existing
+///   `policy-approval.json` so an approval minted for the superseded pending cannot remain.
+pub fn stage_pending_policy_with_replace(
+    store: &Path,
+    policy: &AgentSessionPolicy,
+    now: u64,
+    allow_replace: bool,
+) -> Result<(), PendingStageError> {
     let path = store.join(POLICY_PENDING_FILENAME);
-    if existing_pending_unexpired(&path, now) {
+    let had_unexpired = existing_pending_unexpired(&path, now);
+    if had_unexpired && !allow_replace {
         return Err(PendingStageError::AlreadyPending);
     }
 
@@ -353,6 +369,9 @@ pub fn stage_pending_policy(
 
     fs::rename(&tmp, &path)
         .map_err(|e| PendingStageError::Io(format!("rename to {}: {e}", path.display())))?;
+    if had_unexpired && allow_replace {
+        let _ = fs::remove_file(store.join(POLICY_APPROVAL_FILENAME));
+    }
     Ok(())
 }
 
@@ -424,6 +443,66 @@ fn read_verified_store_file(
     let file = open_nofollow_readonly(path)
         .map_err(|e| anyhow::anyhow!("cannot open {}: {e}", path.display()))?;
     read_verified_open_file(file, path, expected_mode, allowed_uids, max_bytes)
+}
+
+fn inspect_store_trust(store: &Path, effective_euid: u32) -> Result<(Vec<u32>, u32), String> {
+    let store_meta = fs::symlink_metadata(store)
+        .map_err(|e| format!("cannot inspect store {}: {e}", store.display()))?;
+    if !store_meta.is_dir() {
+        return Err(format!("store {} is not a directory", store.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = store_meta.mode() & 0o7777;
+        if (mode & 0o022) != 0 {
+            return Err(format!(
+                "store {} has group/world-writable mode {:04o} (expected 0700 or 0750)",
+                store.display(),
+                mode
+            ));
+        }
+        let mut uids = vec![store_meta.uid(), effective_euid];
+        uids.sort_unstable();
+        uids.dedup();
+        Ok((uids, store_meta.gid()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = effective_euid;
+        Ok((vec![0u32], 0u32))
+    }
+}
+
+/// Read and verify `policy-pending.json` without modifying `policy-approval.json`.
+///
+/// Uses the same trust checks as [`approve_with_io`] (`store` mode without group/world write,
+/// `O_RDONLY | O_NOFOLLOW`, regular file, mode `0600`, `allowed_uids`, bounded read, and
+/// non-expired timestamps).
+pub fn load_pending_policy(store: &Path, now: u64) -> Result<PendingPolicy, ApprovalError> {
+    #[cfg(unix)]
+    let effective_euid = rustix::process::geteuid().as_raw();
+    #[cfg(not(unix))]
+    let effective_euid = 0u32;
+
+    let (allowed_uids, _store_gid) =
+        inspect_store_trust(store, effective_euid).map_err(ApprovalError::Untrusted)?;
+
+    let pending_path = store.join(POLICY_PENDING_FILENAME);
+    let pending_raw =
+        read_verified_store_file(&pending_path, 0o0600, &allowed_uids, MAX_POLICY_FILE_BYTES)
+            .map_err(|e| ApprovalError::Untrusted(format!("no valid staged policy: {e}")))?;
+    let pending: PendingPolicy = serde_json::from_str(&pending_raw)
+        .map_err(|e| ApprovalError::Corrupt(format!("invalid {}: {e}", pending_path.display())))?;
+    if pending.staged_at_unix > pending.expires_at_unix {
+        return Err(ApprovalError::Corrupt(
+            "invalid pending policy timestamps".into(),
+        ));
+    }
+    if now >= pending.expires_at_unix {
+        return Err(ApprovalError::Expired);
+    }
+    Ok(pending)
 }
 
 fn load_current_policy_for_approve(
@@ -519,29 +598,8 @@ pub fn approve_with_io<R: BufRead, W: Write>(
         anyhow::bail!("--ttl-secs must be >= 1");
     }
 
-    let store_meta = fs::symlink_metadata(store)
-        .map_err(|e| anyhow::anyhow!("cannot inspect store {}: {e}", store.display()))?;
-    if !store_meta.is_dir() {
-        anyhow::bail!("store {} is not a directory", store.display());
-    }
-    #[cfg(unix)]
-    let (allowed_uids, store_gid) = {
-        use std::os::unix::fs::MetadataExt;
-        let mode = store_meta.mode() & 0o7777;
-        if (mode & 0o022) != 0 {
-            anyhow::bail!(
-                "store {} has group/world-writable mode {:04o} (expected 0700 or 0750)",
-                store.display(),
-                mode
-            );
-        }
-        let mut uids = vec![store_meta.uid(), effective_euid];
-        uids.sort_unstable();
-        uids.dedup();
-        (uids, store_meta.gid())
-    };
-    #[cfg(not(unix))]
-    let (allowed_uids, store_gid) = (vec![0u32], 0u32);
+    let (allowed_uids, store_gid) =
+        inspect_store_trust(store, effective_euid).map_err(anyhow::Error::msg)?;
 
     let pending_path = store.join(POLICY_PENDING_FILENAME);
     let pending_raw =

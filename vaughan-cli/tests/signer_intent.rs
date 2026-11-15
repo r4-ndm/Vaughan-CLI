@@ -1478,6 +1478,13 @@ fn test_cli_policy_set_and_confirm_unsafe_refuse_non_tty_stdin() {
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
+fn write_s3b_pending(store: &std::path::Path, policy: &AgentSessionPolicy) -> std::path::PathBuf {
+    let now = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::stage_pending_policy_with_replace(store, policy, now, true).unwrap();
+    store.join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME)
+}
+
+#[cfg(unix)]
 fn write_s3b_approval(
     store: &std::path::Path,
     old: &AgentSessionPolicy,
@@ -1485,6 +1492,7 @@ fn write_s3b_approval(
     ttl_secs: u64,
 ) -> std::path::PathBuf {
     let now = vaughan_agent::dca::now_unix();
+    write_s3b_pending(store, new);
     let approval = vaughan_cli::signerd::Approval {
         old_digest: old.digest(),
         new_digest: new.digest(),
@@ -1531,8 +1539,19 @@ async fn test_s3b_negative_approval_verifications_fail_closed_and_indistinguisha
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
     assert!(!audit_path.exists());
 
-    // 2. Wrong new_digest (approval minted for p_other, request submits p1) -> identical code+message, unlinked.
-    write_s3b_approval(dir.path(), &p0, &p_other, 120);
+    // 2. Wrong new_digest (pending holds p1, approval minted for p_other, request submits p1) -> identical code+message, unlinked.
+    write_s3b_pending(dir.path(), &p1);
+    let now_case2 = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p_other.digest(),
+            issued_at_unix: now_case2,
+            expires_at_unix: now_case2 + 120,
+        },
+    )
+    .unwrap();
     assert!(approval_path.exists());
     let r_wrong_digest: SignerResponse = serde_json::from_str(
         &signer
@@ -2259,4 +2278,288 @@ fn test_s3b_cli_approve_help_non_root_and_approve_with_io() {
     assert_eq!(consumed.new_digest, p1.digest());
     assert_eq!(consumed.issued_at_unix, now);
     assert_eq!(consumed.expires_at_unix, now + 120);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_1b_fix_b_junk_approved_does_not_burn_approval_and_missing_pending_refuses() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    signer.set_expected_approval_uid(current_uid);
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 55;
+    let mut p2 = p0.clone();
+    p2.daily_cap_pct = 75;
+
+    let approval_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME);
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+
+    // 1. Valid approval present, NO policy-pending.json on disk -> step_up_failed, approval untouched.
+    let now = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p1.digest(),
+            issued_at_unix: now,
+            expires_at_unix: now + 120,
+        },
+    )
+    .unwrap();
+    let approval_bytes_no_pending = std::fs::read(&approval_path).unwrap();
+    let policy_bytes_initial = std::fs::read(&policy_path).unwrap();
+
+    let approved_p1 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+    });
+    let r_no_pending: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_p1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_no_pending.ok);
+    assert_eq!(r_no_pending.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(
+        r_no_pending.message.as_deref(),
+        Some("policy approval verification failed")
+    );
+    assert_eq!(
+        std::fs::read(&approval_path).unwrap(),
+        approval_bytes_no_pending,
+        "approval file must remain untouched when pending file is missing"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), policy_bytes_initial);
+
+    // 2. Stage P1 and mint valid approval P0 -> P1.
+    let stage_p1 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r_stage: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_p1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_stage.code.as_deref(), Some("step_up_required"));
+
+    let now2 = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p1.digest(),
+            issued_at_unix: now2,
+            expires_at_unix: now2 + 120,
+        },
+    )
+    .unwrap();
+    let approval_bytes = std::fs::read(&approval_path).unwrap();
+    let pending_bytes = std::fs::read(&pending_path).unwrap();
+
+    // 3. Junk/different approved requests (wrong policy P2, malformed string, omitted policy)
+    //    must all return step_up_failed WITHOUT burning policy-approval.json or changing disk.
+    for (idx, bad_req) in [
+        serde_json::json!({
+            "op": "policy_update",
+            "auth": "approved",
+            "policy": p2,
+        }),
+        serde_json::json!({
+            "op": "policy_update",
+            "auth": "approved",
+            "policy": "junk",
+        }),
+        serde_json::json!({
+            "op": "policy_update",
+            "auth": "approved",
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r_junk: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(
+                    &bad_req.to_string(),
+                    current_uid.wrapping_add(10 + idx as u32),
+                )
+                .await,
+        )
+        .unwrap();
+        assert!(!r_junk.ok);
+        assert_eq!(r_junk.code.as_deref(), Some("step_up_failed"));
+        assert_eq!(
+            r_junk.message.as_deref(),
+            Some("policy approval verification failed")
+        );
+        assert_eq!(
+            std::fs::read(&approval_path).unwrap(),
+            approval_bytes,
+            "junk approved request #{idx} must NOT burn approval file"
+        );
+        assert_eq!(std::fs::read(&pending_path).unwrap(), pending_bytes);
+        assert_eq!(std::fs::read(&policy_path).unwrap(), policy_bytes_initial);
+    }
+
+    // 4. Genuine approved request with staged P1 succeeds, updates disk policy, and consumes both files.
+    let r_ok: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_p1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(
+        r_ok.ok,
+        "genuine approved P1 must succeed after junk attempts: {r_ok:?}"
+    );
+    let disk_after = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    assert_eq!(disk_after.daily_cap_pct, 55);
+    assert_eq!(disk_after.digest(), p1.digest());
+    assert!(!approval_path.exists());
+    assert!(!pending_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_1b_fix_a_tightening_replaces_held_pending_slot_and_deletes_approval() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    signer.set_expected_approval_uid(current_uid);
+
+    let baseline_bytes = std::fs::read(&policy_path).unwrap();
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+    let approval_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME);
+
+    // 1. Attacker holds the pending slot with non-tightening P_x (daily_cap_pct: 50).
+    let mut p_x = p0.clone();
+    p_x.daily_cap_pct = 50;
+    let stage_px = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_x,
+        "expected_digest": p0.digest(),
+    });
+    let r_px: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_px.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_px.code.as_deref(), Some("step_up_required"));
+    let pending_px_bytes = std::fs::read(&pending_path).unwrap();
+
+    // 2. Second non-tightening stage P_w (daily_cap_pct: 60) -> step_up_pending, disk byte-identical.
+    let mut p_w = p0.clone();
+    p_w.daily_cap_pct = 60;
+    let stage_pw = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_w,
+        "expected_digest": p0.digest(),
+    });
+    let r_pw: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_pw.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_pw.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_px_bytes);
+
+    // 3. Negative (mixed caps): lowering daily_cap_pct (10 < 20) while raising max_position_pct (25 > 20)
+    //    is NOT tighten-only -> step_up_pending, pending unchanged.
+    let mut p_mixed = p0.clone();
+    p_mixed.daily_cap_pct = 10;
+    p_mixed.max_position_pct = 25;
+    let stage_mixed = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_mixed,
+        "expected_digest": p0.digest(),
+    });
+    let r_mixed: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_mixed.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_mixed.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_px_bytes);
+
+    // 4. Negative (Invariant 5): tighter than held pending P_x (30 < 50) but wider than current on-disk P0 (30 > 20)
+    //    must NOT replace held pending slot.
+    let mut p_vs_pending = p0.clone();
+    p_vs_pending.daily_cap_pct = 30;
+    let stage_vs_pending = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_vs_pending,
+        "expected_digest": p0.digest(),
+    });
+    let r_vs_pending: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_vs_pending.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_vs_pending.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_px_bytes);
+
+    // 5. Place an existing approval minted for P_x on disk, then human stages tightening P_t (10 < 20).
+    let now = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p_x.digest(),
+            issued_at_unix: now,
+            expires_at_unix: now + 120,
+        },
+    )
+    .unwrap();
+    assert!(approval_path.exists());
+
+    let mut p_t = p0.clone();
+    p_t.daily_cap_pct = 10;
+    let stage_pt = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_t,
+        "expected_digest": p0.digest(),
+    });
+    let r_pt: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_pt.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_pt.ok);
+    assert_eq!(r_pt.code.as_deref(), Some("step_up_required"));
+    assert_eq!(r_pt.policy_digest.as_deref(), Some(p_t.digest().as_str()));
+
+    let disk_pending: vaughan_cli::signerd::approval::PendingPolicy =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    assert_eq!(disk_pending.policy, p_t);
+    assert!(
+        !approval_path.exists(),
+        "replacing held pending slot must delete any stale policy-approval.json"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
 }

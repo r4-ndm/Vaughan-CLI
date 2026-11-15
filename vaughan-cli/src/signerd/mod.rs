@@ -16,7 +16,10 @@ pub mod intents;
 pub mod migrate;
 pub mod quoter;
 
-pub use approval::{consume_approval, write_approval, Approval, ApprovalError};
+pub use approval::{
+    consume_approval, load_pending_policy, stage_pending_policy_with_replace, write_approval,
+    Approval, ApprovalError,
+};
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
@@ -537,14 +540,20 @@ impl Signer {
         policy_val: Option<serde_json::Value>,
         expected_digest: Option<String>,
     ) -> SignerResponse {
-        let (_old_policy, new_policy) =
+        let (old_policy, new_policy) =
             match self.precheck_policy_update(policy_val, expected_digest) {
                 Ok(pair) => pair,
                 Err(resp) => return *resp,
             };
 
+        let allow_replace = old_policy.is_tighten_only(&new_policy);
         let now = vaughan_agent::dca::now_unix();
-        match approval::stage_pending_policy(&self.inner.store, &new_policy, now) {
+        match approval::stage_pending_policy_with_replace(
+            &self.inner.store,
+            &new_policy,
+            now,
+            allow_replace,
+        ) {
             Ok(()) => SignerResponse::step_up_required(new_policy.digest()),
             Err(approval::PendingStageError::AlreadyPending) => SignerResponse::error(
                 "step_up_pending",
@@ -578,28 +587,13 @@ impl Signer {
             entries.push(now);
         }
 
-        let expected_uid = self
-            .inner
-            .expected_approval_uid
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let now = vaughan_agent::dca::now_unix();
-        let approval = match approval::consume_approval(&self.inner.store, expected_uid, now) {
-            Ok(a) => a,
-            Err(_) => {
-                return SignerResponse::error(
-                    approval::STEP_UP_FAILED_CODE,
-                    approval::STEP_UP_FAILED_MSG,
-                );
-            }
-        };
-
+        // (1) Parse request policy before touching pending or approval files.
         let Some(val) = policy_val else {
             return SignerResponse::error(
                 approval::STEP_UP_FAILED_CODE,
                 approval::STEP_UP_FAILED_MSG,
             );
         };
-
         let candidate: vaughan_agent::sentient::AgentSessionPolicy =
             match serde_json::from_value(val.clone()) {
                 Ok(p) => p,
@@ -611,6 +605,42 @@ impl Signer {
                 }
             };
 
+        // (2) Read staged pending policy without touching policy-approval.json.
+        let now = vaughan_agent::dca::now_unix();
+        let pending = match approval::load_pending_policy(&self.inner.store, now) {
+            Ok(p) => p,
+            Err(_) => {
+                return SignerResponse::error(
+                    approval::STEP_UP_FAILED_CODE,
+                    approval::STEP_UP_FAILED_MSG,
+                );
+            }
+        };
+
+        // (3) Prove this request matches the staged pending policy before unlinking approval.
+        if candidate.digest() != pending.policy.digest() {
+            return SignerResponse::error(
+                approval::STEP_UP_FAILED_CODE,
+                approval::STEP_UP_FAILED_MSG,
+            );
+        }
+
+        // (4) Only now consume (fstat-verify and unlink) policy-approval.json.
+        let expected_uid = self
+            .inner
+            .expected_approval_uid
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let approval = match approval::consume_approval(&self.inner.store, expected_uid, now) {
+            Ok(a) => a,
+            Err(_) => {
+                return SignerResponse::error(
+                    approval::STEP_UP_FAILED_CODE,
+                    approval::STEP_UP_FAILED_MSG,
+                );
+            }
+        };
+
+        // (5) Bind candidate to approval.new_digest, check caller expected_digest, re-check disk & apply.
         if candidate.digest() != approval.new_digest {
             return SignerResponse::error(
                 approval::STEP_UP_FAILED_CODE,
