@@ -340,69 +340,31 @@ pub fn write_approval(store: &Path, approval: &Approval) -> Result<PathBuf, Appr
     Ok(dst)
 }
 
-fn existing_pending_unexpired(path: &Path, now: u64) -> bool {
-    let file = match open_nofollow_readonly(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
+fn read_unexpired_pending(path: &Path, now: u64) -> Option<PendingPolicy> {
+    let file = open_nofollow_readonly(path).ok()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        match file.metadata() {
-            Ok(m) => {
-                if !m.file_type().is_file() || (m.mode() & 0o7777) != 0o0600 {
-                    return false;
-                }
-            }
-            Err(_) => return false,
+        let meta = file.metadata().ok()?;
+        if !meta.file_type().is_file() || (meta.mode() & 0o7777) != 0o0600 {
+            return None;
         }
     }
-    let raw = match read_bounded_fd(file, MAX_POLICY_FILE_BYTES) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let existing = match serde_json::from_str::<PendingPolicy>(&raw) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    now < existing.expires_at_unix
-}
-
-/// Stage `policy-pending.json` (mode `0600`, TTL 10 min) if no unexpired pending exists.
-pub fn stage_pending_policy(
-    store: &Path,
-    policy: &AgentSessionPolicy,
-    now: u64,
-) -> Result<(), PendingStageError> {
-    stage_pending_policy_with_replace(store, policy, now, false)
-}
-
-/// Stage `policy-pending.json` (mode `0600`, TTL 10 min).
-///
-/// When an unexpired pending file already exists:
-/// - `allow_replace == false` returns `PendingStageError::AlreadyPending` without touching disk;
-/// - `allow_replace == true` atomically replaces the pending file and removes any existing
-///   `policy-approval.json` so an approval minted for the superseded pending cannot remain.
-pub fn stage_pending_policy_with_replace(
-    store: &Path,
-    policy: &AgentSessionPolicy,
-    now: u64,
-    allow_replace: bool,
-) -> Result<(), PendingStageError> {
-    let path = store.join(POLICY_PENDING_FILENAME);
-    let had_unexpired = existing_pending_unexpired(&path, now);
-    if had_unexpired && !allow_replace {
-        return Err(PendingStageError::AlreadyPending);
+    let raw = read_bounded_fd(file, MAX_POLICY_FILE_BYTES).ok()?;
+    let existing: PendingPolicy = serde_json::from_str(&raw).ok()?;
+    if existing.staged_at_unix > existing.expires_at_unix || now >= existing.expires_at_unix {
+        return None;
     }
+    Some(existing)
+}
 
-    let pending = PendingPolicy {
-        policy: policy.clone(),
-        staged_at_unix: now,
-        expires_at_unix: now.saturating_add(PENDING_TTL_SECS),
-    };
-    let body = serde_json::to_string_pretty(&pending)
+fn write_pending_file(
+    store: &Path,
+    path: &Path,
+    pending: &PendingPolicy,
+) -> Result<(), PendingStageError> {
+    let body = serde_json::to_string_pretty(pending)
         .map_err(|e| PendingStageError::Io(format!("serialize pending policy: {e}")))?;
-
     let tmp = store.join(format!(".{POLICY_PENDING_FILENAME}.tmp"));
     let _ = fs::remove_file(&tmp);
     let mut opts = OpenOptions::new();
@@ -429,13 +391,57 @@ pub fn stage_pending_policy_with_replace(
             .map_err(|e| PendingStageError::Io(format!("chmod 0600 {}: {e}", tmp.display())))?;
     }
     drop(file);
+    fs::rename(&tmp, path)
+        .map_err(|e| PendingStageError::Io(format!("rename to {}: {e}", path.display())))
+}
 
-    fs::rename(&tmp, &path)
-        .map_err(|e| PendingStageError::Io(format!("rename to {}: {e}", path.display())))?;
-    if had_unexpired && allow_replace {
+/// Stage `policy-pending.json` (mode `0600`, TTL 10 min) if no unexpired pending exists.
+///
+/// Re-staging a policy whose digest equals an unexpired pending policy is idempotent
+/// and returns the existing `expires_at_unix` without rewriting the file or resetting TTL.
+pub fn stage_pending_policy(
+    store: &Path,
+    policy: &AgentSessionPolicy,
+    now: u64,
+) -> Result<u64, PendingStageError> {
+    stage_pending_policy_with_replace(store, policy, now, false)
+}
+
+/// Stage `policy-pending.json` (mode `0600`, TTL 10 min) and return `expires_at_unix`.
+///
+/// When an unexpired pending file already exists:
+/// - matching digest (`cur.policy.digest() == policy.digest()`) returns `Ok(cur.expires_at_unix)`
+///   idempotently without touching disk or removing any valid approval;
+/// - `allow_replace == false` returns `PendingStageError::AlreadyPending` without touching disk;
+/// - `allow_replace == true` atomically replaces the pending file and removes any existing
+///   `policy-approval.json` so an approval minted for the superseded pending cannot remain.
+pub fn stage_pending_policy_with_replace(
+    store: &Path,
+    policy: &AgentSessionPolicy,
+    now: u64,
+    allow_replace: bool,
+) -> Result<u64, PendingStageError> {
+    let path = store.join(POLICY_PENDING_FILENAME);
+    let existing = read_unexpired_pending(&path, now);
+    if let Some(ref cur) = existing {
+        if cur.policy.digest() == policy.digest() {
+            return Ok(cur.expires_at_unix);
+        }
+        if !allow_replace {
+            return Err(PendingStageError::AlreadyPending);
+        }
+    }
+
+    let pending = PendingPolicy {
+        policy: policy.clone(),
+        staged_at_unix: now,
+        expires_at_unix: now.saturating_add(PENDING_TTL_SECS),
+    };
+    write_pending_file(store, &path, &pending)?;
+    if existing.is_some() && allow_replace {
         let _ = fs::remove_file(store.join(POLICY_APPROVAL_FILENAME));
     }
-    Ok(())
+    Ok(pending.expires_at_unix)
 }
 
 /// Remove `policy-pending.json` if present.

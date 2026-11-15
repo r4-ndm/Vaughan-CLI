@@ -358,12 +358,12 @@ impl Signer {
             now,
             allow_replace,
         ) {
-            Ok(()) => {
+            Ok(expires_at_unix) => {
                 let digest = new_policy.digest();
                 let mut resp = SignerResponse::step_up_required(digest.clone());
                 resp.pending = Some(PendingInfo {
                     policy_digest: digest,
-                    expires_at_unix: now.saturating_add(approval::PENDING_TTL_SECS),
+                    expires_at_unix,
                     approval_present: false,
                 });
                 resp

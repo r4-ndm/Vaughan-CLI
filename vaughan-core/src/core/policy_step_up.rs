@@ -2,7 +2,7 @@
 //!
 //! Purpose: single implementation of the out-of-band human approval policy
 //! update flow against `vaughan signerd`.
-//! Called by: CLI policy commands (`vaughan sentient policy set` / `confirm-unsafe`)
+//! Called by: CLI policy commands (`vaughan --profile sentient policy set` / `confirm-unsafe`)
 //! and TUI policy screens.
 //! Must NOT live here: vault password handling, filesystem writes to signer
 //! store files (`policy-pending.json` / `policy-approval.json`), UI rendering,
@@ -63,7 +63,7 @@ impl fmt::Display for StepUpError {
             ),
             Self::TimedOut => write!(
                 f,
-                "timed out waiting for root approval; run `sudo vaughan signerd approve` and check pending status"
+                "timed out waiting for root approval; run `sudo vaughan signerd approve` or `vaughan policy pending`"
             ),
             Self::NotApproved => write!(
                 f,
