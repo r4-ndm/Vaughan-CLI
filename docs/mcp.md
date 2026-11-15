@@ -193,8 +193,9 @@ vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
   transfers; **unlimited** (`type(uint256).max`) approve is always refused for
   Sentient auto-exec (use a sized amount or the Advisor profile). Revoke
   (`approve(…, 0)`) is OK.
-- Policy changes need the vault password, verified inside the daemon via
-  `policy_update` — see [`sentient-ops.md`](sentient-ops.md).
+- Policy changes stage via `policy_stage` and require out-of-band root
+  approval (`sudo vaughan signerd approve`) before `policy_update` applies
+  them — see [`sentient-ops.md`](sentient-ops.md).
 - Residual risk (stated honestly): a same-UID process can still edit the agent's
   profile files (proposals, DCA plans, config), but signing keys, policy and the
   spend ledger sit under the `vaughan-signer` uid and are only reachable through

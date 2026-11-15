@@ -26,6 +26,7 @@ pub mod keys;
 pub mod lp;
 pub mod onboarding;
 pub mod placeholder;
+pub mod policy_approval;
 pub mod receive;
 pub mod send;
 pub mod settings;
@@ -40,29 +41,14 @@ pub mod unlock;
 pub mod unshield_flow;
 pub mod wrap;
 
-pub use aa_send::AaSendView;
-pub use ag::AgView;
-pub use approvals::ApprovalsView;
-pub use approve::ApproveView;
-pub use assets::AssetsView;
-pub use bridge::BridgeView;
-pub use browser::BrowserView;
-pub use dapps::DappsView;
-pub use dashboard::DashboardView;
-pub use dca::DcaView;
-pub use dex::DexView;
-pub use hex::HexView;
-pub use history::HistoryView;
-pub use keys::KeysView;
-pub use lp::LpView;
-pub use onboarding::OnboardingView;
-pub use placeholder::PlaceholderView;
-pub use receive::ReceiveView;
-pub use send::SendView;
-pub use settings::SettingsView;
-pub use token_launch::TokenLaunchView;
-pub use unlock::UnlockView;
-pub use wrap::WrapView;
+pub use {
+    aa_send::AaSendView, ag::AgView, approvals::ApprovalsView, approve::ApproveView,
+    assets::AssetsView, bridge::BridgeView, browser::BrowserView, dapps::DappsView,
+    dashboard::DashboardView, dca::DcaView, dex::DexView, hex::HexView, history::HistoryView,
+    keys::KeysView, lp::LpView, onboarding::OnboardingView, placeholder::PlaceholderView,
+    receive::ReceiveView, send::SendView, settings::SettingsView, token_launch::TokenLaunchView,
+    unlock::UnlockView, wrap::WrapView,
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{

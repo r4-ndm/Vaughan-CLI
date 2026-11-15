@@ -812,6 +812,11 @@ impl App {
             if let View::Receive(v) = &mut self.view {
                 v.poll();
             }
+            if let View::Settings(v) = &mut self.view {
+                if let Some(flash) = v.poll(self.tick, &self.handle) {
+                    self.set_flash(flash);
+                }
+            }
             if self.screen() == Screen::Approve
                 && self.pending_approval.is_none()
                 && !self.mcp_approve_inflight
@@ -2642,17 +2647,7 @@ impl App {
             }
             Screen::AaSend => View::AaSend(AaSendView::default()),
             Screen::Receive => View::Receive(ReceiveView::default()),
-            Screen::Settings => {
-                let wallet = self.wallet();
-                let active_id = wallet.networks().active_id().to_string();
-                let selected = wallet
-                    .networks()
-                    .networks()
-                    .iter()
-                    .position(|n| n.id == active_id)
-                    .unwrap_or(0);
-                View::Settings(SettingsView::new(selected))
-            }
+            Screen::Settings => View::Settings(SettingsView::for_wallet(&self.wallet())),
             Screen::Keys => View::Keys(KeysView::default()),
             Screen::Dapps => View::Dapps(DappsView::default()),
             Screen::Assets => View::Assets(AssetsView::loading()),
