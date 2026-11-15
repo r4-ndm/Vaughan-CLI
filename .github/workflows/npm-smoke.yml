@@ -1,0 +1,51 @@
+# Install the PUBLISHED npm packages on every supported platform and run them.
+# The release job proves the tarballs were built and checksummed; only this
+# proves `npm i vaughan` yields a binary that starts on that OS/CPU.
+# Manual only: it tests whatever is on the registry, so it must not gate pushes.
+name: npm smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm version to install (e.g. 0.2.8); blank = latest"
+        required: false
+        default: ""
+
+jobs:
+  smoke:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Install from the registry and run
+        shell: bash
+        env:
+          WANT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"; cd "$dir"
+          npm init -y >/dev/null
+          spec="vaughan${WANT:+@$WANT}"
+          # a fresh publish can 404 from a cached packument for a few minutes
+          for i in 1 2 3 4 5 6; do
+            npm i "$spec" --prefer-online --no-audit --no-fund && break
+            echo "retry $i"; sleep 30
+          done
+          npm ls --all
+          out="$(npx --no-install vaughan --version)"
+          echo "vaughan: $out"
+          mcp="$(npx --no-install vaughan-mcp --version)"
+          echo "vaughan-mcp: $mcp"
+          if [ -n "$WANT" ]; then
+            case "$out" in *"$WANT"*) ;; *) echo "version mismatch: wanted $WANT"; exit 1;; esac
+          fi
+          bin="$(node -p "require.resolve('vaughan-' + process.platform + '-' + process.arch + '/package.json')")"
+          file "$(dirname "$bin")/bin/vaughan"
