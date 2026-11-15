@@ -10,11 +10,13 @@
 //! process from verified, re-derived parameters. Policy enforcement and the spend
 //! ledger reside exclusively inside the signer.
 
+pub mod approval;
 pub mod broadcaster;
 pub mod intents;
 pub mod migrate;
 pub mod quoter;
 
+pub use approval::{consume_approval, write_approval, Approval, ApprovalError};
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
@@ -67,6 +69,7 @@ struct SignerInner {
     balance_overrides: Mutex<HashMap<Option<Address>, U256>>,
     breaker: Mutex<vaughan_agent::CircuitBreaker>,
     step_up_limiter: Mutex<HashMap<u32, Vec<Instant>>>,
+    expected_approval_uid: std::sync::atomic::AtomicU32,
 }
 
 /// Signer engine handling policy checks, ledger reservations, and calldata builds.
@@ -100,8 +103,18 @@ impl Signer {
                 balance_overrides: Mutex::new(HashMap::new()),
                 breaker: Mutex::new(breaker),
                 step_up_limiter: Mutex::new(HashMap::new()),
+                expected_approval_uid: std::sync::atomic::AtomicU32::new(
+                    approval::PRODUCTION_APPROVAL_UID,
+                ),
             }),
         }
+    }
+
+    /// Override expected UID for `policy-approval.json` (used by non-root tests; production uses 0).
+    pub fn set_expected_approval_uid(&self, uid: u32) {
+        self.inner
+            .expected_approval_uid
+            .store(uid, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Access the circuit breaker inside the signer.
@@ -190,10 +203,25 @@ impl Signer {
         match req.op.as_str() {
             "status" => self.handle_status(),
             "policy" => self.handle_policy(),
-            "policy_update" => {
-                self.handle_policy_update(req.password, req.policy, req.expected_digest, peer_uid)
+            "policy_update" => match req.auth.as_deref() {
+                None => {
+                    self.handle_policy_update(
+                        req.password,
+                        req.policy,
+                        req.expected_digest,
+                        peer_uid,
+                    )
                     .await
-            }
+                }
+                Some("stage") => self.handle_policy_stage(req.policy, req.expected_digest),
+                Some("approved") => {
+                    self.handle_policy_approved(req.policy, req.expected_digest, peer_uid)
+                }
+                Some(_) => SignerResponse::error(
+                    approval::STEP_UP_FAILED_CODE,
+                    approval::STEP_UP_FAILED_MSG,
+                ),
+            },
             "sign" => match req.intent {
                 Some(intent) => self.handle_sign(intent).await,
                 None => SignerResponse::error("missing_intent", "op 'sign' requires 'intent'"),
@@ -302,11 +330,132 @@ impl Signer {
         }
     }
 
+    fn is_request_tighten_only(&self, policy_val: Option<&serde_json::Value>) -> bool {
+        let Some(val) = policy_val else {
+            return false;
+        };
+        let Ok(candidate) =
+            serde_json::from_value::<vaughan_agent::sentient::AgentSessionPolicy>(val.clone())
+        else {
+            return false;
+        };
+        let Ok(current) = vaughan_agent::sentient::load_policy(&self.inner.store) else {
+            return false;
+        };
+        current.is_tighten_only(&candidate)
+    }
+
+    fn precheck_policy_update(
+        &self,
+        policy_val: Option<serde_json::Value>,
+        expected_digest: Option<String>,
+    ) -> Result<
+        (
+            vaughan_agent::sentient::AgentSessionPolicy,
+            vaughan_agent::sentient::AgentSessionPolicy,
+        ),
+        Box<SignerResponse>,
+    > {
+        let old_policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(Box::new(SignerResponse::error(
+                    "policy_load_failed",
+                    format!("could not load current policy: {e}"),
+                )));
+            }
+        };
+
+        if let Some(expected) = expected_digest {
+            let current_digest = old_policy.digest();
+            if expected != current_digest {
+                return Err(Box::new(SignerResponse::error(
+                    "policy_conflict",
+                    format!(
+                        "policy digest mismatch: expected {expected}, current is {current_digest}"
+                    ),
+                )));
+            }
+        }
+
+        let Some(val) = policy_val else {
+            return Err(Box::new(SignerResponse::error(
+                "policy_invalid",
+                "missing 'policy' object",
+            )));
+        };
+
+        let new_policy: vaughan_agent::sentient::AgentSessionPolicy =
+            match serde_json::from_value(val) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Err(Box::new(SignerResponse::error(
+                        "policy_invalid",
+                        format!("invalid policy payload: {e}"),
+                    )));
+                }
+            };
+
+        if new_policy.enforcement == EnforcementMode::Disabled
+            && (!old_policy.acknowledge_unsafe || !new_policy.acknowledge_unsafe)
+        {
+            return Err(Box::new(SignerResponse::error(
+                "policy_refused",
+                "enforcement=disabled requires acknowledge_unsafe=true already persisted on disk (two-step confirm-unsafe required)",
+            )));
+        }
+
+        if let Err(e) = new_policy.validate() {
+            return Err(Box::new(SignerResponse::error(
+                "policy_invalid",
+                e.to_string(),
+            )));
+        }
+
+        Ok((old_policy, new_policy))
+    }
+
+    fn apply_validated_policy_update(
+        &self,
+        old_policy: &vaughan_agent::sentient::AgentSessionPolicy,
+        new_policy: &vaughan_agent::sentient::AgentSessionPolicy,
+    ) -> SignerResponse {
+        if let Err(e) = vaughan_agent::sentient::save_policy(&self.inner.store, new_policy) {
+            return SignerResponse::error("policy_save_failed", e.to_string());
+        }
+
+        if let Err(e) =
+            vaughan_agent::sentient::append_policy_audit(&self.inner.store, old_policy, new_policy)
+        {
+            let _ = vaughan_agent::sentient::save_policy(&self.inner.store, old_policy);
+            return SignerResponse::error("policy_audit_failed", e.to_string());
+        }
+
+        if let Ok(cfg) = vaughan_agent::breaker_config_for_session(Some(&self.inner.store), 1) {
+            self.inner.breaker.lock().unwrap().replace_config(cfg);
+        }
+
+        SignerResponse::policy_update_ok(new_policy.digest())
+    }
+
+    fn validate_and_apply_policy_update(
+        &self,
+        policy_val: Option<serde_json::Value>,
+        expected_digest: Option<String>,
+    ) -> SignerResponse {
+        let (old_policy, new_policy) =
+            match self.precheck_policy_update(policy_val, expected_digest) {
+                Ok(pair) => pair,
+                Err(resp) => return *resp,
+            };
+        self.apply_validated_policy_update(&old_policy, &new_policy)
+    }
+
     /// Handle `{"op":"policy_update","password":"…","policy":{…}}`.
     ///
     /// Rules:
     /// 1. Verify vault password via `spawn_blocking` KDF before touching or accepting any policy.
-    /// 2. Rate-limit step-up attempts per peer UID (5 attempts per 60s window).
+    /// 2. Rate-limit step-up attempts per peer UID (5 attempts per 60s window; tighten-only updates exempt).
     /// 3. Return indistinguishable `step_up_failed` on wrong password, missing wallet, or corrupt store.
     /// 4. Enforce `expected_digest` if supplied (`policy_conflict`).
     /// 5. Refuse `enforcement:"disabled"` unless persisted on-disk policy already has `acknowledge_unsafe: true`.
@@ -332,8 +481,10 @@ impl Signer {
             );
         }
 
-        // Per-peer-UID backoff before running Argon2id in spawn_blocking.
-        {
+        let tighten_only = self.is_request_tighten_only(policy_val.as_ref());
+
+        // Per-peer-UID backoff before running Argon2id in spawn_blocking (tighten-only exempt).
+        if !tighten_only {
             let mut limiter = self.inner.step_up_limiter.lock().unwrap();
             let now = Instant::now();
             let entries = limiter.entry(peer_uid).or_default();
@@ -362,9 +513,11 @@ impl Signer {
 
         match verify_res {
             Ok(Ok(())) => {
-                let mut limiter = self.inner.step_up_limiter.lock().unwrap();
-                if let Some(entries) = limiter.get_mut(&peer_uid) {
-                    entries.pop();
+                if !tighten_only {
+                    let mut limiter = self.inner.step_up_limiter.lock().unwrap();
+                    if let Some(entries) = limiter.get_mut(&peer_uid) {
+                        entries.pop();
+                    }
                 }
             }
             _ => {
@@ -375,74 +528,120 @@ impl Signer {
             }
         }
 
-        let old_policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
-            Ok(p) => p,
-            Err(e) => {
+        self.validate_and_apply_policy_update(policy_val, expected_digest)
+    }
+
+    /// Handle `{"op":"policy_update","auth":"stage","policy":{…},"expected_digest":"…"}`.
+    pub fn handle_policy_stage(
+        &self,
+        policy_val: Option<serde_json::Value>,
+        expected_digest: Option<String>,
+    ) -> SignerResponse {
+        let (_old_policy, new_policy) =
+            match self.precheck_policy_update(policy_val, expected_digest) {
+                Ok(pair) => pair,
+                Err(resp) => return *resp,
+            };
+
+        let now = vaughan_agent::dca::now_unix();
+        match approval::stage_pending_policy(&self.inner.store, &new_policy, now) {
+            Ok(()) => SignerResponse::step_up_required(new_policy.digest()),
+            Err(approval::PendingStageError::AlreadyPending) => SignerResponse::error(
+                "step_up_pending",
+                "a staged policy update is already pending approval",
+            ),
+            Err(approval::PendingStageError::Io(msg)) => {
+                SignerResponse::error("policy_save_failed", msg)
+            }
+        }
+    }
+
+    /// Handle `{"op":"policy_update","auth":"approved","policy":{…}}`.
+    pub fn handle_policy_approved(
+        &self,
+        policy_val: Option<serde_json::Value>,
+        expected_digest: Option<String>,
+        peer_uid: u32,
+    ) -> SignerResponse {
+        let tighten_only = self.is_request_tighten_only(policy_val.as_ref());
+        if !tighten_only {
+            let mut limiter = self.inner.step_up_limiter.lock().unwrap();
+            let now = Instant::now();
+            let entries = limiter.entry(peer_uid).or_default();
+            entries.retain(|t| now.duration_since(*t) < STEP_UP_WINDOW);
+            if entries.len() >= STEP_UP_MAX_ATTEMPTS {
                 return SignerResponse::error(
-                    "policy_load_failed",
-                    format!("could not load current policy: {e}"),
+                    "step_up_rate_limited",
+                    "rate limit exceeded: max 5 step-up attempts per minute",
+                );
+            }
+            entries.push(now);
+        }
+
+        let expected_uid = self
+            .inner
+            .expected_approval_uid
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let now = vaughan_agent::dca::now_unix();
+        let approval = match approval::consume_approval(&self.inner.store, expected_uid, now) {
+            Ok(a) => a,
+            Err(_) => {
+                return SignerResponse::error(
+                    approval::STEP_UP_FAILED_CODE,
+                    approval::STEP_UP_FAILED_MSG,
                 );
             }
         };
 
-        if let Some(expected) = expected_digest {
-            let current_digest = old_policy.digest();
-            if expected != current_digest {
+        let Some(val) = policy_val else {
+            return SignerResponse::error(
+                approval::STEP_UP_FAILED_CODE,
+                approval::STEP_UP_FAILED_MSG,
+            );
+        };
+
+        let candidate: vaughan_agent::sentient::AgentSessionPolicy =
+            match serde_json::from_value(val.clone()) {
+                Ok(p) => p,
+                Err(_) => {
+                    return SignerResponse::error(
+                        approval::STEP_UP_FAILED_CODE,
+                        approval::STEP_UP_FAILED_MSG,
+                    );
+                }
+            };
+
+        if candidate.digest() != approval.new_digest {
+            return SignerResponse::error(
+                approval::STEP_UP_FAILED_CODE,
+                approval::STEP_UP_FAILED_MSG,
+            );
+        }
+
+        if !tighten_only {
+            let mut limiter = self.inner.step_up_limiter.lock().unwrap();
+            if let Some(entries) = limiter.get_mut(&peer_uid) {
+                entries.pop();
+            }
+        }
+
+        if let Some(ref caller_expected) = expected_digest {
+            if caller_expected != &approval.old_digest {
                 return SignerResponse::error(
                     "policy_conflict",
                     format!(
-                        "policy digest mismatch: expected {expected}, current is {current_digest}"
+                        "policy digest mismatch: expected {caller_expected}, approval bound {}",
+                        approval.old_digest
                     ),
                 );
             }
         }
 
-        let Some(val) = policy_val else {
-            return SignerResponse::error("policy_invalid", "missing 'policy' object");
-        };
-
-        let new_policy: vaughan_agent::sentient::AgentSessionPolicy =
-            match serde_json::from_value(val) {
-                Ok(p) => p,
-                Err(e) => {
-                    return SignerResponse::error(
-                        "policy_invalid",
-                        format!("invalid policy payload: {e}"),
-                    );
-                }
-            };
-
-        if new_policy.enforcement == EnforcementMode::Disabled
-            && (!old_policy.acknowledge_unsafe || !new_policy.acknowledge_unsafe)
-        {
-            return SignerResponse::error(
-                "policy_refused",
-                "enforcement=disabled requires acknowledge_unsafe=true already persisted on disk (two-step confirm-unsafe required)",
-            );
+        let resp = self.validate_and_apply_policy_update(Some(val), Some(approval.old_digest));
+        if resp.ok {
+            approval::clear_pending_policy(&self.inner.store);
         }
-
-        if let Err(e) = new_policy.validate() {
-            return SignerResponse::error("policy_invalid", e.to_string());
-        }
-
-        if let Err(e) = vaughan_agent::sentient::save_policy(&self.inner.store, &new_policy) {
-            return SignerResponse::error("policy_save_failed", e.to_string());
-        }
-
-        if let Err(e) = vaughan_agent::sentient::append_policy_audit(
-            &self.inner.store,
-            &old_policy,
-            &new_policy,
-        ) {
-            let _ = vaughan_agent::sentient::save_policy(&self.inner.store, &old_policy);
-            return SignerResponse::error("policy_audit_failed", e.to_string());
-        }
-
-        if let Ok(cfg) = vaughan_agent::breaker_config_for_session(Some(&self.inner.store), 1) {
-            self.inner.breaker.lock().unwrap().replace_config(cfg);
-        }
-
-        SignerResponse::policy_update_ok(new_policy.digest())
+        resp
     }
 
     /// Handle `{"op":"sign","intent":{…}}`.

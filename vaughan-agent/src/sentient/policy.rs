@@ -309,6 +309,73 @@ impl AgentSessionPolicy {
             enforcement: self.enforcement,
         })
     }
+
+    /// Return true when `candidate` strictly tightens policy relative to `self`:
+    /// every numeric cap is `<=` current (`required_rpc_quorum` `>=`), allowlist is
+    /// not widened, enforcement is not weakened, `acknowledge_unsafe` is not newly
+    /// enabled, and at least one field is strictly tighter.
+    pub fn is_tighten_only(&self, candidate: &Self) -> bool {
+        if self.validate().is_err() || candidate.validate().is_err() {
+            return false;
+        }
+        let Ok(self_gas) = parse_wei(&self.max_session_gas_wei) else {
+            return false;
+        };
+        let Ok(cand_gas) = parse_wei(&candidate.max_session_gas_wei) else {
+            return false;
+        };
+
+        let rank = |mode: EnforcementMode| -> u8 {
+            match mode {
+                EnforcementMode::Disabled => 0,
+                EnforcementMode::WarnOnly => 1,
+                EnforcementMode::Enforced => 2,
+            }
+        };
+        let self_rank = rank(self.enforcement);
+        let cand_rank = rank(candidate.enforcement);
+        if cand_rank < self_rank {
+            return false;
+        }
+        if candidate.acknowledge_unsafe && !self.acknowledge_unsafe {
+            return false;
+        }
+        if candidate.max_position_pct > self.max_position_pct
+            || candidate.max_approve_pct() > self.max_approve_pct()
+            || candidate.daily_cap_pct > self.daily_cap_pct
+            || candidate.max_slippage_bps > self.max_slippage_bps
+            || cand_gas > self_gas
+            || candidate.max_consecutive_errors > self.max_consecutive_errors
+            || candidate.required_rpc_quorum < self.required_rpc_quorum
+        {
+            return false;
+        }
+
+        let self_set: std::collections::HashSet<String> = self
+            .allow_transfer_to
+            .iter()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .collect();
+        let cand_set: std::collections::HashSet<String> = candidate
+            .allow_transfer_to
+            .iter()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .collect();
+        if !cand_set.is_subset(&self_set) {
+            return false;
+        }
+
+        candidate.max_position_pct < self.max_position_pct
+            || candidate.max_approve_pct() < self.max_approve_pct()
+            || candidate.daily_cap_pct < self.daily_cap_pct
+            || candidate.max_slippage_bps < self.max_slippage_bps
+            || cand_gas < self_gas
+            || candidate.max_consecutive_errors < self.max_consecutive_errors
+            || candidate.required_rpc_quorum > self.required_rpc_quorum
+            || cand_set.len() < self_set.len()
+            || cand_rank > self_rank
+            || (!candidate.acknowledge_unsafe && self.acknowledge_unsafe)
+    }
 }
 
 /// AI-proposed policy change awaiting human `[a]` / `[d]` (does not sign txs).
@@ -477,16 +544,11 @@ pub fn save_policy(dir: &Path, policy: &AgentSessionPolicy) -> Result<(), AgentE
     write_owner_only_file(dir, SENTIENT_POLICY_TOML, &body)
 }
 
-/// Append a field-level diff entry to `<dir>/policy-audit.jsonl` (mode `0600`),
-/// written atomically and rotated to retain at most the most recent 200 lines.
-/// Passwords or secret material are never passed to or written by this helper.
-pub fn append_policy_audit(
-    dir: &Path,
+/// Compute field-by-field changes between `old_policy` and `new_policy`.
+pub fn policy_field_changes(
     old_policy: &AgentSessionPolicy,
     new_policy: &AgentSessionPolicy,
-) -> Result<(), AgentError> {
-    crate::paths::assert_signer_store_writable(dir)?;
-
+) -> Result<serde_json::Map<String, serde_json::Value>, AgentError> {
     let old_val = serde_json::to_value(old_policy)
         .map_err(|e| AgentError::ProviderError(format!("serialize old policy: {e}")))?;
     let new_val = serde_json::to_value(new_policy)
@@ -518,6 +580,35 @@ pub fn append_policy_audit(
             }
         }
     }
+    Ok(field_changes)
+}
+
+/// Render human-readable `field: old -> new` lines from [`policy_field_changes`].
+pub fn format_policy_diff_lines(
+    old_policy: &AgentSessionPolicy,
+    new_policy: &AgentSessionPolicy,
+) -> Result<Vec<String>, AgentError> {
+    let field_changes = policy_field_changes(old_policy, new_policy)?;
+    let mut lines = Vec::with_capacity(field_changes.len());
+    for (field, change) in field_changes {
+        let from = change.get("from").unwrap_or(&serde_json::Value::Null);
+        let to = change.get("to").unwrap_or(&serde_json::Value::Null);
+        lines.push(format!("{field}: {from} -> {to}"));
+    }
+    Ok(lines)
+}
+
+/// Append a field-level diff entry to `<dir>/policy-audit.jsonl` (mode `0600`),
+/// written atomically and rotated to retain at most the most recent 200 lines.
+/// Passwords or secret material are never passed to or written by this helper.
+pub fn append_policy_audit(
+    dir: &Path,
+    old_policy: &AgentSessionPolicy,
+    new_policy: &AgentSessionPolicy,
+) -> Result<(), AgentError> {
+    crate::paths::assert_signer_store_writable(dir)?;
+
+    let field_changes = policy_field_changes(old_policy, new_policy)?;
 
     let entry = serde_json::json!({
         "ts": crate::dca::now_unix(),
@@ -897,5 +988,56 @@ mod tests {
         // oldest retained is i=6 (6 -> 7) and newest is i=205 (205 -> 206).
         assert_eq!(first["field_changes"]["max_slippage_bps"]["to"], 7);
         assert_eq!(last["field_changes"]["max_slippage_bps"]["to"], 206);
+    }
+
+    #[test]
+    fn is_tighten_only_and_format_policy_diff_lines() {
+        let addr_a = "0x1111111111111111111111111111111111111111";
+        let addr_b = "0x2222222222222222222222222222222222222222";
+        let base = AgentSessionPolicy {
+            enforcement: EnforcementMode::WarnOnly,
+            acknowledge_unsafe: false,
+            max_position_pct: 20,
+            max_approve_pct: Some(25),
+            daily_cap_pct: 50,
+            allow_transfer_to: vec![addr_a.into(), addr_b.into()],
+            max_slippage_bps: 200,
+            max_session_gas_wei: "50000000000000000".into(),
+            max_consecutive_errors: 5,
+            required_rpc_quorum: 1,
+        };
+
+        // Identical policy is not a tightening change.
+        assert!(!base.is_tighten_only(&base));
+
+        // Strictly lowering a numeric cap is tighten-only.
+        let mut tighter = base.clone();
+        tighter.daily_cap_pct = 10;
+        assert!(base.is_tighten_only(&tighter));
+
+        // Strengthening enforcement and shrinking allowlist is tighten-only.
+        let mut stricter = base.clone();
+        stricter.enforcement = EnforcementMode::Enforced;
+        stricter.allow_transfer_to = vec![addr_a.into()];
+        assert!(base.is_tighten_only(&stricter));
+
+        // Widening any cap, adding an address, or weakening enforcement is NOT tighten-only.
+        let mut wider_cap = tighter.clone();
+        wider_cap.max_slippage_bps = 250;
+        assert!(!base.is_tighten_only(&wider_cap));
+
+        let mut wider_addr = tighter.clone();
+        wider_addr
+            .allow_transfer_to
+            .push("0x3333333333333333333333333333333333333333".into());
+        assert!(!base.is_tighten_only(&wider_addr));
+
+        let mut weaker_enf = tighter.clone();
+        weaker_enf.enforcement = EnforcementMode::Disabled;
+        weaker_enf.acknowledge_unsafe = true;
+        assert!(!base.is_tighten_only(&weaker_enf));
+
+        let diff_lines = format_policy_diff_lines(&base, &tighter).unwrap();
+        assert_eq!(diff_lines, vec!["daily_cap_pct: 50 -> 10"]);
     }
 }

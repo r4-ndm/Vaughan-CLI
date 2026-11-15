@@ -137,6 +137,8 @@ pub struct SignerRequest {
     pub policy: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
 }
 
 impl fmt::Debug for SignerRequest {
@@ -148,6 +150,7 @@ impl fmt::Debug for SignerRequest {
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("policy", &self.policy)
             .field("expected_digest", &self.expected_digest)
+            .field("auth", &self.auth)
             .finish()
     }
 }
@@ -227,6 +230,21 @@ impl SignerResponse {
         }
     }
 
+    pub fn step_up_required(policy_digest: String) -> Self {
+        Self {
+            ok: false,
+            address: None,
+            chain_id: None,
+            store: None,
+            policy_digest: Some(policy_digest),
+            policy: None,
+            tx_hash: None,
+            code: Some("step_up_required".to_string()),
+            message: Some("run: sudo vaughan signerd approve".to_string()),
+            budget: None,
+        }
+    }
+
     pub fn sign_ok(tx_hash: impl Into<String>) -> Self {
         Self {
             ok: true,
@@ -299,6 +317,7 @@ impl SignerClient {
             password: None,
             policy: None,
             expected_digest: None,
+            auth: None,
         };
         self.send_request(&req).await
     }
@@ -312,6 +331,7 @@ impl SignerClient {
             password: None,
             policy: None,
             expected_digest: None,
+            auth: None,
         };
         self.send_request(&req).await
     }
@@ -330,6 +350,7 @@ impl SignerClient {
             password: Some(password),
             policy: Some(policy),
             expected_digest,
+            auth: None,
         };
         self.send_request(&req).await
     }
@@ -343,6 +364,7 @@ impl SignerClient {
             password: None,
             policy: None,
             expected_digest: None,
+            auth: None,
         };
         self.send_request(&req).await
     }
@@ -440,6 +462,7 @@ mod tests {
             password: Some(SecretString::from(secret.to_string())),
             policy: Some(serde_json::json!({ "daily_cap_pct": 50 })),
             expected_digest: Some("abc123".to_string()),
+            auth: None,
         };
         let rendered = format!("{req:?}");
         assert!(

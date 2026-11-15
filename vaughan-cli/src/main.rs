@@ -396,6 +396,19 @@ pub enum SignerdCmd {
         #[arg(long)]
         old_profile_dir: Option<PathBuf>,
     },
+    /// Approve a staged sentient policy update (run from a clean console or run0, not an ordinary terminal tab).
+    #[command(
+        about = "Approve a staged sentient policy update (run from a clean console or run0, not an ordinary terminal tab)",
+        long_about = "Approve a staged sentient policy update as root (run from a clean console or run0, not an ordinary terminal tab)."
+    )]
+    Approve {
+        /// Store directory containing sentient-policy.toml and policy-pending.json.
+        #[arg(long, default_value = "/var/lib/vaughan/sentient")]
+        store: PathBuf,
+        /// Approval TTL in seconds (default: 120).
+        #[arg(long, default_value_t = signerd::approval::DEFAULT_APPROVAL_TTL_SECS)]
+        ttl_secs: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -525,6 +538,9 @@ fn main() {
                 store_root.as_deref(),
                 migrate_old_dir.as_deref(),
             ),
+            Some(SignerdCmd::Approve { store, ttl_secs }) => {
+                signerd::approval::run_approve(&store, ttl_secs)
+            }
             None => match (store, socket) {
                 (Some(store), Some(socket)) => {
                     vaughan_core::logging::init_logging();
