@@ -102,7 +102,7 @@ Hunt for ways **funds, keys, or approvals** could be bypassed. Prioritize:
 
 - `vaughan-mcp/`, `vaughan-tui/src/sentient_mcp.rs`, `vaughan-cli/src/serve.rs`
 - Loopback IPC, session tokens, queue HMAC, rate limits
-- Sentient: `gate_sentient_proposal`, breaker trip, policy precedence (`sentient-policy.toml` vs legacy `degen-policy.toml`)
+- Sentient: daemon-side policy enforcement in `vaughan-cli/src/signerd/` (`sign.rs`, `ops/*`; the old in-TUI `gate_sentient_proposal` was removed because the daemon is the only enforcement point), breaker trip, policy precedence (`sentient-policy.toml` vs legacy `degen-policy.toml`)
 - Tools that must **never** appear: `sign_*`, `export_*`, `unlock`, key material
 
 ### A4. Provider & VB bridge
