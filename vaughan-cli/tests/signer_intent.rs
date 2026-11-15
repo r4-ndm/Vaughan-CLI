@@ -1436,7 +1436,7 @@ async fn test_policy_update_peer_uid_outside_allowlist_refused_before_password_c
 }
 
 #[test]
-fn test_cli_policy_set_and_confirm_unsafe_refuse_non_tty_stdin() {
+fn test_cli_policy_set_and_confirm_unsafe_refuse_unreachable_socket_without_password_prompt() {
     let tmp = tempfile::tempdir().unwrap();
     let unused_sock = tmp.path().join("unused.sock");
     let bin = env!("CARGO_BIN_EXE_vaughan");
@@ -1461,14 +1461,14 @@ fn test_cli_policy_set_and_confirm_unsafe_refuse_non_tty_stdin() {
             .unwrap();
         assert!(
             !out.status.success(),
-            "{args:?} must refuse non-TTY stdin, got status {:?}: {}",
+            "{args:?} must fail cleanly on unreachable signer socket, got status {:?}: {}",
             out.status,
             String::from_utf8_lossy(&out.stdout)
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("TTY"),
-            "expected TTY refusal message for {args:?}, got stderr: {stderr}"
+            !stderr.contains("vault password") && stderr.contains("signer socket"),
+            "expected signer socket refusal without vault password prompt for {args:?}, got stderr: {stderr}"
         );
     }
 }
