@@ -1472,3 +1472,1094 @@ fn test_cli_policy_set_and_confirm_unsafe_refuse_non_tty_stdin() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// S3b: root-approved policy updates integration tests (negative first)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn write_s3b_pending(store: &std::path::Path, policy: &AgentSessionPolicy) -> std::path::PathBuf {
+    let now = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::stage_pending_policy_with_replace(store, policy, now, true).unwrap();
+    store.join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME)
+}
+
+#[cfg(unix)]
+fn write_s3b_approval(
+    store: &std::path::Path,
+    old: &AgentSessionPolicy,
+    new: &AgentSessionPolicy,
+    ttl_secs: u64,
+) -> std::path::PathBuf {
+    let now = vaughan_agent::dca::now_unix();
+    write_s3b_pending(store, new);
+    let approval = vaughan_cli::signerd::Approval {
+        old_digest: old.digest(),
+        new_digest: new.digest(),
+        issued_at_unix: now,
+        expires_at_unix: now.saturating_add(ttl_secs),
+    };
+    vaughan_cli::signerd::write_approval(store, &approval).unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_negative_approval_verifications_fail_closed_and_indistinguishable() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    signer.set_expected_approval_uid(current_uid);
+
+    let baseline_bytes = std::fs::read(&policy_path).unwrap();
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 55;
+    let mut p_other = p0.clone();
+    p_other.daily_cap_pct = 77;
+
+    let approval_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME);
+    let audit_path = dir.path().join(vaughan_agent::sentient::POLICY_AUDIT_JSONL);
+
+    let approved_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+    });
+
+    // 1. No approval present -> step_up_failed, disk unchanged.
+    let r_missing: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_missing.ok);
+    assert_eq!(r_missing.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+    assert!(!audit_path.exists());
+
+    // 2. Wrong new_digest (pending holds p1, approval minted for p_other, request submits p1) -> identical code+message, unlinked.
+    write_s3b_pending(dir.path(), &p1);
+    let now_case2 = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p_other.digest(),
+            issued_at_unix: now_case2,
+            expires_at_unix: now_case2 + 120,
+        },
+    )
+    .unwrap();
+    assert!(approval_path.exists());
+    let r_wrong_digest: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid.wrapping_add(1))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_wrong_digest.code, r_missing.code);
+    assert_eq!(r_wrong_digest.message, r_missing.message);
+    assert!(
+        !approval_path.exists(),
+        "approval must be unlinked on failure"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+
+    // 3. Corrupt approval JSON -> identical code+message, unlinked.
+    std::fs::write(&approval_path, b"{not valid json").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&approval_path, std::fs::Permissions::from_mode(0o440)).unwrap();
+    }
+    let r_corrupt: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid.wrapping_add(2))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_corrupt.code, r_missing.code);
+    assert_eq!(r_corrupt.message, r_missing.message);
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+
+    // 4. Expired approval -> identical code+message, unlinked.
+    let now = vaughan_agent::dca::now_unix();
+    let expired = vaughan_cli::signerd::Approval {
+        old_digest: p0.digest(),
+        new_digest: p1.digest(),
+        issued_at_unix: now.saturating_sub(200),
+        expires_at_unix: now.saturating_sub(1),
+    };
+    vaughan_cli::signerd::write_approval(dir.path(), &expired).unwrap();
+    let r_expired: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid.wrapping_add(3))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_expired.code, r_missing.code);
+    assert_eq!(r_expired.message, r_missing.message);
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+
+    // 5. Approval owned by wrong UID -> identical code+message, unlinked.
+    write_s3b_approval(dir.path(), &p0, &p1, 120);
+    signer.set_expected_approval_uid(current_uid.wrapping_add(1));
+    let r_wrong_uid: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid.wrapping_add(4))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_wrong_uid.code, r_missing.code);
+    assert_eq!(r_wrong_uid.message, r_missing.message);
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+    signer.set_expected_approval_uid(current_uid);
+
+    // 6. Mode 0644 and mode 0666 -> identical code+message, unlinked.
+    for (idx, bad_mode) in [0o644u32, 0o666u32].into_iter().enumerate() {
+        write_s3b_approval(dir.path(), &p0, &p1, 120);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&approval_path, std::fs::Permissions::from_mode(bad_mode))
+                .unwrap();
+        }
+        let r_bad_mode: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(
+                    &approved_req.to_string(),
+                    current_uid.wrapping_add(5 + idx as u32),
+                )
+                .await,
+        )
+        .unwrap();
+        assert_eq!(r_bad_mode.code, r_missing.code);
+        assert_eq!(r_bad_mode.message, r_missing.message);
+        assert!(!approval_path.exists());
+        assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+    }
+
+    // 7. Symlink -> identical code+message, symlink unlinked, target untouched.
+    let target_file = dir.path().join("approval-target.json");
+    let valid_json = serde_json::to_string(&vaughan_cli::signerd::Approval {
+        old_digest: p0.digest(),
+        new_digest: p1.digest(),
+        issued_at_unix: now,
+        expires_at_unix: now + 120,
+    })
+    .unwrap();
+    std::fs::write(&target_file, &valid_json).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target_file, std::fs::Permissions::from_mode(0o440)).unwrap();
+    }
+    std::os::unix::fs::symlink(&target_file, &approval_path).unwrap();
+    let r_symlink: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid.wrapping_add(7))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_symlink.code, r_missing.code);
+    assert_eq!(r_symlink.message, r_missing.message);
+    assert!(
+        std::fs::symlink_metadata(&approval_path).is_err(),
+        "symlink itself must be unlinked"
+    );
+    assert!(target_file.exists(), "symlink target must remain untouched");
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+
+    // 8. nlink == 2 (hardlink) -> identical code+message, approval_path unlinked.
+    write_s3b_approval(dir.path(), &p0, &p1, 120);
+    let extra_link = dir.path().join("approval-hardlink.json");
+    std::fs::hard_link(&approval_path, &extra_link).unwrap();
+    let r_hardlink: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid.wrapping_add(8))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_hardlink.code, r_missing.code);
+    assert_eq!(r_hardlink.message, r_missing.message);
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_old_digest_toctou_conflict_and_policy_guards_with_valid_approval() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    signer.set_expected_approval_uid(current_uid);
+
+    let approval_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME);
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+
+    // 1. old_digest mismatch (TOCTOU) => policy_conflict, approval unlinked, P1 remains on disk.
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 25;
+    let mut p2 = p0.clone();
+    p2.daily_cap_pct = 60;
+    write_s3b_approval(dir.path(), &p0, &p2, 120);
+    // Simulate concurrent on-disk update to P1 after approval was minted for P0 -> P2.
+    vaughan_agent::sentient::save_policy(dir.path(), &p1).unwrap();
+    let p1_bytes = std::fs::read(&policy_path).unwrap();
+
+    let req_p2 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p2,
+    });
+    let r_toctou: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&req_p2.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_toctou.ok);
+    assert_eq!(r_toctou.code.as_deref(), Some("policy_conflict"));
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), p1_bytes);
+
+    // 2. enforcement=disabled without persisted acknowledge_unsafe=true still refused with valid approval.
+    let mut p_disabled = p1.clone();
+    p_disabled.enforcement = EnforcementMode::Disabled;
+    p_disabled.acknowledge_unsafe = true;
+    write_s3b_approval(dir.path(), &p1, &p_disabled, 120);
+    let req_disabled = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p_disabled,
+    });
+    let r_disabled: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&req_disabled.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_disabled.ok);
+    assert_eq!(r_disabled.code.as_deref(), Some("policy_refused"));
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), p1_bytes);
+
+    // 3. Invalid policy (daily_cap_pct: 101) refused with valid approval.
+    let mut p_invalid = p1.clone();
+    p_invalid.daily_cap_pct = 101;
+    write_s3b_approval(dir.path(), &p1, &p_invalid, 120);
+    let req_invalid = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p_invalid,
+    });
+    let r_invalid: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&req_invalid.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_invalid.ok);
+    assert_eq!(r_invalid.code.as_deref(), Some("policy_invalid"));
+    assert!(!approval_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), p1_bytes);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_second_stage_pending_and_unauthorized_peer_before_consume() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    signer.set_expected_approval_uid(current_uid);
+    let baseline_bytes = std::fs::read(&policy_path).unwrap();
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 40;
+    let mut p2 = p0.clone();
+    p2.daily_cap_pct = 75;
+
+    // 1. First stage writes policy-pending.json and returns step_up_required.
+    let stage1 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r1: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r1.ok);
+    assert_eq!(r1.code.as_deref(), Some("step_up_required"));
+    assert_eq!(
+        r1.message.as_deref(),
+        Some("run: sudo vaughan signerd approve")
+    );
+    assert_eq!(r1.policy_digest.as_deref(), Some(p1.digest().as_str()));
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+    let pending_bytes = std::fs::read(&pending_path).unwrap();
+
+    // 2. Second stage while unexpired replaces nothing and returns step_up_pending.
+    let stage2 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p2,
+        "expected_digest": p0.digest(),
+    });
+    let r2: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage2.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r2.ok);
+    assert_eq!(r2.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_bytes);
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+
+    // 3. Unauthorized peer UID refused BEFORE approval file is examined or consumed.
+    let approval_path = write_s3b_approval(dir.path(), &p0, &p1, 120);
+    let other_uid = current_uid.wrapping_add(42_424);
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![other_uid]).await;
+    let approved_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+    });
+    let r_unauth = send_raw_socket_json(&sock_path, &approved_req.to_string()).await;
+    assert!(!r_unauth.ok);
+    assert_eq!(r_unauth.code.as_deref(), Some("unauthorized"));
+    assert!(
+        approval_path.exists(),
+        "approval file MUST remain present when unauthorized peer UID is rejected"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+
+    srv.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_positive_stage_approve_apply_replay_and_sign() {
+    let dest = Address::from([0x33; 20]);
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, broadcaster, dir, _, policy_path) =
+        setup_s3_store(vec![format!("{dest:#x}")], 5, 90);
+    signer.set_expected_approval_uid(current_uid);
+    signer.set_balance(None, U256::from(1_000));
+
+    let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![current_uid]).await;
+    let client = vaughan_core::core::SignerClient::new(&sock_path);
+
+    let intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(100), // 10% of 1000: blocked by daily_cap_pct=5
+    };
+    let before_err = client.sign(&intent).await.unwrap_err();
+    assert!(
+        before_err.contains("spend_guard") || before_err.contains("daily cap"),
+        "expected daily cap refusal before update, got: {before_err}"
+    );
+    assert!(broadcaster.get_last_tx().is_none());
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 90;
+
+    // 1. Stage via socket.
+    let stage_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let stage_resp = send_raw_socket_json(&sock_path, &stage_req.to_string()).await;
+    assert!(!stage_resp.ok);
+    assert_eq!(stage_resp.code.as_deref(), Some("step_up_required"));
+    assert_eq!(
+        stage_resp.message.as_deref(),
+        Some("run: sudo vaughan signerd approve")
+    );
+    assert_eq!(
+        stage_resp.policy_digest.as_deref(),
+        Some(p1.digest().as_str())
+    );
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+    assert!(pending_path.exists());
+
+    // 2. Simulate root approve writing 0440 approval (tests skip chown).
+    let approval_path = write_s3b_approval(dir.path(), &p0, &p1, 120);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&approval_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, 0o440);
+    }
+
+    // 3. Apply via auth:"approved".
+    let approved_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+    });
+    let apply_resp = send_raw_socket_json(&sock_path, &approved_req.to_string()).await;
+    assert!(apply_resp.ok, "expected ok, got: {apply_resp:?}");
+    assert_eq!(
+        apply_resp.policy_digest.as_deref(),
+        Some(p1.digest().as_str())
+    );
+
+    // 4. Verify on-disk policy updated, audit logged without secret, approval & pending gone.
+    let disk_policy = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    assert_eq!(disk_policy.daily_cap_pct, 90);
+    assert_eq!(disk_policy.digest(), p1.digest());
+    assert!(!approval_path.exists());
+    assert!(!pending_path.exists());
+
+    let audit_path = dir.path().join(vaughan_agent::sentient::POLICY_AUDIT_JSONL);
+    let audit_text = std::fs::read_to_string(&audit_path).unwrap();
+    assert!(!audit_text.contains(S3_TEST_PW));
+    let audit_line: serde_json::Value = serde_json::from_str(audit_text.trim()).unwrap();
+    assert_eq!(audit_line["field_changes"]["daily_cap_pct"]["from"], 5);
+    assert_eq!(audit_line["field_changes"]["daily_cap_pct"]["to"], 90);
+
+    // 5. Next sign call uses new cap immediately.
+    let sign_resp = client.sign(&intent).await.unwrap();
+    assert!(sign_resp.ok);
+    assert!(sign_resp.tx_hash.is_some());
+    assert!(broadcaster.get_last_tx().is_some());
+
+    // 6. Replay after consume: even if policy is reset on disk to p0, replaying fails step_up_failed.
+    vaughan_agent::sentient::save_policy(dir.path(), &p0).unwrap();
+    let p0_bytes = std::fs::read(&policy_path).unwrap();
+    let replay_resp = send_raw_socket_json(&sock_path, &approved_req.to_string()).await;
+    assert!(!replay_resp.ok);
+    assert_eq!(replay_resp.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), p0_bytes);
+
+    srv.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_tighten_only_does_not_consume_or_get_blocked_by_rate_limiter() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    signer.set_expected_approval_uid(current_uid);
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p_tight = p0.clone();
+    p_tight.daily_cap_pct = 5;
+    let mut p_wide = p0.clone();
+    p_wide.daily_cap_pct = 80;
+
+    let uid_tight = 2001u32;
+
+    // 1. 6 failed tighten-only requests must NOT consume limiter budget for uid_tight.
+    let tight_no_approval = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p_tight,
+    });
+    for _ in 0..6 {
+        let resp: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(&tight_no_approval.to_string(), uid_tight)
+                .await,
+        )
+        .unwrap();
+        assert_eq!(resp.code.as_deref(), Some("step_up_failed"));
+    }
+
+    // Subsequent widening request for uid_tight must NOT be rate-limited.
+    let wide_no_approval = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p_wide,
+    });
+    let wide_first: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&wide_no_approval.to_string(), uid_tight)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(
+        wide_first.code.as_deref(),
+        Some("step_up_failed"),
+        "tighten-only failures must not consume the widening rate limit"
+    );
+
+    // 2. Exhaust uid_tight's limiter with 4 more failed widening attempts (total 5).
+    for _ in 0..4 {
+        let resp: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(&wide_no_approval.to_string(), uid_tight)
+                .await,
+        )
+        .unwrap();
+        assert_eq!(resp.code.as_deref(), Some("step_up_failed"));
+    }
+
+    // 6th widening attempt is rate-limited.
+    let wide_blocked: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&wide_no_approval.to_string(), uid_tight)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(wide_blocked.code.as_deref(), Some("step_up_rate_limited"));
+
+    // 3. Even while uid_tight is rate-limited for widening, a valid tighten-only update succeeds!
+    write_s3b_approval(dir.path(), &p0, &p_tight, 120);
+    let tight_resp: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&tight_no_approval.to_string(), uid_tight)
+            .await,
+    )
+    .unwrap();
+    assert!(
+        tight_resp.ok,
+        "tighten-only update must not be blocked by rate limiter: {tight_resp:?}"
+    );
+    let disk_after = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    assert_eq!(disk_after.daily_cap_pct, 5);
+    assert!(std::fs::read(&policy_path).is_ok());
+
+    // 4. Password path: tighten-only also exempt from consuming/being blocked by limiter.
+    vaughan_agent::sentient::save_policy(dir.path(), &p0).unwrap();
+    let uid_pw = 2002u32;
+    let pw_tight_bad = serde_json::json!({
+        "op": "policy_update",
+        "password": "WrongPassword!1",
+        "policy": p_tight,
+    });
+    for _ in 0..6 {
+        let resp: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(&pw_tight_bad.to_string(), uid_pw)
+                .await,
+        )
+        .unwrap();
+        assert_eq!(resp.code.as_deref(), Some("step_up_failed"));
+    }
+    let pw_wide_bad = serde_json::json!({
+        "op": "policy_update",
+        "password": "WrongPassword!1",
+        "policy": p_wide,
+    });
+    for _ in 0..5 {
+        let resp: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(&pw_wide_bad.to_string(), uid_pw)
+                .await,
+        )
+        .unwrap();
+        assert_eq!(resp.code.as_deref(), Some("step_up_failed"));
+    }
+    let pw_wide_blocked: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&pw_wide_bad.to_string(), uid_pw)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(
+        pw_wide_blocked.code.as_deref(),
+        Some("step_up_rate_limited")
+    );
+
+    let pw_tight_ok = serde_json::json!({
+        "op": "policy_update",
+        "password": S3_TEST_PW,
+        "policy": p_tight,
+    });
+    let pw_tight_resp: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&pw_tight_ok.to_string(), uid_pw)
+            .await,
+    )
+    .unwrap();
+    assert!(pw_tight_resp.ok);
+    assert_eq!(
+        vaughan_agent::sentient::load_policy(dir.path())
+            .unwrap()
+            .daily_cap_pct,
+        5
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_corrupt_wallet_approval_succeeds_while_password_fails() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    signer.set_expected_approval_uid(current_uid);
+
+    // Corrupt wallet.json on disk.
+    std::fs::write(dir.path().join("wallet.json"), b"{corrupt json").unwrap();
+    let baseline = std::fs::read(&policy_path).unwrap();
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 45;
+
+    // 1. Password path fails with step_up_failed and leaves policy unchanged.
+    let pw_req = serde_json::json!({
+        "op": "policy_update",
+        "password": S3_TEST_PW,
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r_pw: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&pw_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_pw.ok);
+    assert_eq!(r_pw.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
+    // 2. Approval path (stage -> write_approval -> approved) succeeds without Argon2/wallet.json.
+    let stage_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r_stage: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_stage.code.as_deref(), Some("step_up_required"));
+
+    write_s3b_approval(dir.path(), &p0, &p1, 120);
+    let approved_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+    });
+    let r_approved: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(r_approved.ok, "approval path must succeed: {r_approved:?}");
+    let disk_policy = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    assert_eq!(disk_policy.daily_cap_pct, 45);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_s3b_cli_approve_help_non_root_and_approve_with_io() {
+    let bin = env!("CARGO_BIN_EXE_vaughan");
+
+    // 1. `--help` text must warn: run from a clean console or run0, not an ordinary terminal tab.
+    let help_out = std::process::Command::new(bin)
+        .args(["signerd", "approve", "--help"])
+        .output()
+        .unwrap();
+    assert!(help_out.status.success());
+    let help_stdout = String::from_utf8_lossy(&help_out.stdout);
+    assert!(
+        help_stdout.contains("run from a clean console or run0, not an ordinary terminal tab"),
+        "missing clean-console/run0 warning in --help: {help_stdout}"
+    );
+
+    // 2. Non-root CLI invocation refuses cleanly (when test runs non-root).
+    let current_uid = rustix::process::geteuid().as_raw();
+    let dir = tempfile::tempdir().unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    if current_uid != 0 {
+        let out = std::process::Command::new(bin)
+            .args(["signerd", "approve", "--store"])
+            .arg(dir.path())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("root") || stderr.contains("euid"),
+            "expected root/euid refusal, got: {stderr}"
+        );
+    }
+
+    // 3. approve_with_io verifies non-TTY refusal, y/N refusal, and y approval diff+digest rendering.
+    let p0 = AgentSessionPolicy::default();
+    vaughan_agent::sentient::save_policy(dir.path(), &p0).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 50;
+    let now = 1_700_000_000u64;
+    vaughan_cli::signerd::approval::stage_pending_policy(dir.path(), &p1, now).unwrap();
+
+    // Non-TTY refused.
+    let mut out_buf = Vec::new();
+    let mut empty_in = std::io::Cursor::new(b"y\n");
+    let non_tty_err = vaughan_cli::signerd::approval::approve_with_io(
+        dir.path(),
+        120,
+        current_uid,
+        current_uid,
+        false,
+        now,
+        &mut empty_in,
+        &mut out_buf,
+    )
+    .unwrap_err();
+    assert!(non_tty_err.to_string().contains("TTY"));
+
+    // Explicit 'n' aborts without creating approval file.
+    out_buf.clear();
+    let mut no_in = std::io::Cursor::new(b"n\n");
+    let abort_err = vaughan_cli::signerd::approval::approve_with_io(
+        dir.path(),
+        120,
+        current_uid,
+        current_uid,
+        true,
+        now,
+        &mut no_in,
+        &mut out_buf,
+    )
+    .unwrap_err();
+    assert!(abort_err.to_string().contains("aborted"));
+    assert!(!dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME)
+        .exists());
+
+    // Explicit 'y' prints digests + diff and writes 0440 approval matching in-memory policy.
+    out_buf.clear();
+    let mut yes_in = std::io::Cursor::new(b"y\n");
+    let written = vaughan_cli::signerd::approval::approve_with_io(
+        dir.path(),
+        120,
+        current_uid,
+        current_uid,
+        true,
+        now,
+        &mut yes_in,
+        &mut out_buf,
+    )
+    .unwrap();
+    let rendered = String::from_utf8(out_buf).unwrap();
+    assert!(rendered.contains(&p0.digest()));
+    assert!(rendered.contains(&p1.digest()));
+    assert!(rendered.contains("daily_cap_pct: 20 -> 50"));
+
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&written).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o440);
+    }
+    let consumed =
+        vaughan_cli::signerd::consume_approval(dir.path(), current_uid, now + 10).unwrap();
+    assert_eq!(consumed.old_digest, p0.digest());
+    assert_eq!(consumed.new_digest, p1.digest());
+    assert_eq!(consumed.issued_at_unix, now);
+    assert_eq!(consumed.expires_at_unix, now + 120);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_1b_fix_b_junk_approved_does_not_burn_approval_and_missing_pending_refuses() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    signer.set_expected_approval_uid(current_uid);
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 55;
+    let mut p2 = p0.clone();
+    p2.daily_cap_pct = 75;
+
+    let approval_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME);
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+
+    // 1. Valid approval present, NO policy-pending.json on disk -> step_up_failed, approval untouched.
+    let now = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p1.digest(),
+            issued_at_unix: now,
+            expires_at_unix: now + 120,
+        },
+    )
+    .unwrap();
+    let approval_bytes_no_pending = std::fs::read(&approval_path).unwrap();
+    let policy_bytes_initial = std::fs::read(&policy_path).unwrap();
+
+    let approved_p1 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+    });
+    let r_no_pending: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_p1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_no_pending.ok);
+    assert_eq!(r_no_pending.code.as_deref(), Some("step_up_failed"));
+    assert_eq!(
+        r_no_pending.message.as_deref(),
+        Some("policy approval verification failed")
+    );
+    assert_eq!(
+        std::fs::read(&approval_path).unwrap(),
+        approval_bytes_no_pending,
+        "approval file must remain untouched when pending file is missing"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), policy_bytes_initial);
+
+    // 2. Stage P1 and mint valid approval P0 -> P1.
+    let stage_p1 = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r_stage: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_p1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_stage.code.as_deref(), Some("step_up_required"));
+
+    let now2 = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p1.digest(),
+            issued_at_unix: now2,
+            expires_at_unix: now2 + 120,
+        },
+    )
+    .unwrap();
+    let approval_bytes = std::fs::read(&approval_path).unwrap();
+    let pending_bytes = std::fs::read(&pending_path).unwrap();
+
+    // 3. Junk/different approved requests (wrong policy P2, malformed string, omitted policy)
+    //    must all return step_up_failed WITHOUT burning policy-approval.json or changing disk.
+    for (idx, bad_req) in [
+        serde_json::json!({
+            "op": "policy_update",
+            "auth": "approved",
+            "policy": p2,
+        }),
+        serde_json::json!({
+            "op": "policy_update",
+            "auth": "approved",
+            "policy": "junk",
+        }),
+        serde_json::json!({
+            "op": "policy_update",
+            "auth": "approved",
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r_junk: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(
+                    &bad_req.to_string(),
+                    current_uid.wrapping_add(10 + idx as u32),
+                )
+                .await,
+        )
+        .unwrap();
+        assert!(!r_junk.ok);
+        assert_eq!(r_junk.code.as_deref(), Some("step_up_failed"));
+        assert_eq!(
+            r_junk.message.as_deref(),
+            Some("policy approval verification failed")
+        );
+        assert_eq!(
+            std::fs::read(&approval_path).unwrap(),
+            approval_bytes,
+            "junk approved request #{idx} must NOT burn approval file"
+        );
+        assert_eq!(std::fs::read(&pending_path).unwrap(), pending_bytes);
+        assert_eq!(std::fs::read(&policy_path).unwrap(), policy_bytes_initial);
+    }
+
+    // 4. Genuine approved request with staged P1 succeeds, updates disk policy, and consumes both files.
+    let r_ok: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&approved_p1.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(
+        r_ok.ok,
+        "genuine approved P1 must succeed after junk attempts: {r_ok:?}"
+    );
+    let disk_after = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    assert_eq!(disk_after.daily_cap_pct, 55);
+    assert_eq!(disk_after.digest(), p1.digest());
+    assert!(!approval_path.exists());
+    assert!(!pending_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3b_1b_fix_a_tightening_replaces_held_pending_slot_and_deletes_approval() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    signer.set_expected_approval_uid(current_uid);
+
+    let baseline_bytes = std::fs::read(&policy_path).unwrap();
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+    let approval_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_APPROVAL_FILENAME);
+
+    // 1. Attacker holds the pending slot with non-tightening P_x (daily_cap_pct: 50).
+    let mut p_x = p0.clone();
+    p_x.daily_cap_pct = 50;
+    let stage_px = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_x,
+        "expected_digest": p0.digest(),
+    });
+    let r_px: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_px.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_px.code.as_deref(), Some("step_up_required"));
+    let pending_px_bytes = std::fs::read(&pending_path).unwrap();
+
+    // 2. Second non-tightening stage P_w (daily_cap_pct: 60) -> step_up_pending, disk byte-identical.
+    let mut p_w = p0.clone();
+    p_w.daily_cap_pct = 60;
+    let stage_pw = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_w,
+        "expected_digest": p0.digest(),
+    });
+    let r_pw: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_pw.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_pw.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_px_bytes);
+
+    // 3. Negative (mixed caps): lowering daily_cap_pct (10 < 20) while raising max_position_pct (25 > 20)
+    //    is NOT tighten-only -> step_up_pending, pending unchanged.
+    let mut p_mixed = p0.clone();
+    p_mixed.daily_cap_pct = 10;
+    p_mixed.max_position_pct = 25;
+    let stage_mixed = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_mixed,
+        "expected_digest": p0.digest(),
+    });
+    let r_mixed: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_mixed.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_mixed.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_px_bytes);
+
+    // 4. Negative (Invariant 5): tighter than held pending P_x (30 < 50) but wider than current on-disk P0 (30 > 20)
+    //    must NOT replace held pending slot.
+    let mut p_vs_pending = p0.clone();
+    p_vs_pending.daily_cap_pct = 30;
+    let stage_vs_pending = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_vs_pending,
+        "expected_digest": p0.digest(),
+    });
+    let r_vs_pending: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_vs_pending.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_vs_pending.code.as_deref(), Some("step_up_pending"));
+    assert_eq!(std::fs::read(&pending_path).unwrap(), pending_px_bytes);
+
+    // 5. Place an existing approval minted for P_x on disk, then human stages tightening P_t (10 < 20).
+    let now = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::write_approval(
+        dir.path(),
+        &vaughan_cli::signerd::Approval {
+            old_digest: p0.digest(),
+            new_digest: p_x.digest(),
+            issued_at_unix: now,
+            expires_at_unix: now + 120,
+        },
+    )
+    .unwrap();
+    assert!(approval_path.exists());
+
+    let mut p_t = p0.clone();
+    p_t.daily_cap_pct = 10;
+    let stage_pt = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_t,
+        "expected_digest": p0.digest(),
+    });
+    let r_pt: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&stage_pt.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_pt.ok);
+    assert_eq!(r_pt.code.as_deref(), Some("step_up_required"));
+    assert_eq!(r_pt.policy_digest.as_deref(), Some(p_t.digest().as_str()));
+
+    let disk_pending: vaughan_cli::signerd::approval::PendingPolicy =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    assert_eq!(disk_pending.policy, p_t);
+    assert!(
+        !approval_path.exists(),
+        "replacing held pending slot must delete any stale policy-approval.json"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+}
