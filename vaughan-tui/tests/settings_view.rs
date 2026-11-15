@@ -971,3 +971,78 @@ fn sentient_policy_dead_daemon_on_poll_returns_error_without_hanging() {
     assert!(text.contains("42"), "{text}");
     assert!(text.contains(&flash[..flash.len().min(140)]), "{text}");
 }
+
+#[test]
+fn sentient_policy_status_lines_tag_command_and_muted_emphasis_by_role() {
+    use vaughan_core::core::SignerClient;
+    use vaughan_tui::views::policy_approval::{
+        Emphasis, PolicyApproval, APPROVE_COMMAND, CONSOLE_ADVICE,
+    };
+
+    let (_rt, handle) = runtime_handle();
+    let now = future_unix_secs(0);
+    let expires = now + 300;
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![serde_json::json!({
+            "ok": false,
+            "code": "step_up_required",
+            "message": "run: sudo vaughan signerd approve",
+            "policy_digest": "digest_role_check_1234",
+            "pending": {
+                "policy_digest": "digest_role_check_1234",
+                "expires_at_unix": expires,
+                "approval_present": false
+            }
+        })],
+    );
+    let client = SignerClient::new(&stub.sock_path);
+    let approval = PolicyApproval::start(
+        &handle,
+        &client,
+        initial_policy_value(),
+        None,
+        "enforcement=enforced".to_string(),
+    )
+    .unwrap();
+
+    let mut lines = approval.status_lines(now);
+    lines.reverse();
+
+    let cmd = lines
+        .iter()
+        .find(|l| l.text.contains(APPROVE_COMMAND))
+        .unwrap();
+    assert_eq!(cmd.emphasis, Emphasis::Command);
+
+    let advice = lines
+        .iter()
+        .find(|l| l.text.contains(CONSOLE_ADVICE))
+        .unwrap();
+    assert_eq!(advice.emphasis, Emphasis::Muted);
+
+    let expiry = lines
+        .iter()
+        .find(|l| l.text.contains("Expires in "))
+        .unwrap();
+    assert_eq!(expiry.emphasis, Emphasis::Muted);
+    assert!(expiry.text.contains("300s"));
+
+    let digest = lines
+        .iter()
+        .find(|l| l.text.contains("digest_role_"))
+        .unwrap();
+    assert_eq!(digest.emphasis, Emphasis::Normal);
+
+    let summary = lines
+        .iter()
+        .find(|l| l.text.contains("enforcement=enforced"))
+        .unwrap();
+    assert_eq!(summary.emphasis, Emphasis::Normal);
+
+    let spacer = lines
+        .iter()
+        .find(|l| l.emphasis == Emphasis::Spacer)
+        .unwrap();
+    assert!(spacer.text.is_empty());
+}

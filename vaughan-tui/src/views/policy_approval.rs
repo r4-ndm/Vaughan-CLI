@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 use serde_json::Value;
-use tokio::runtime::{Handle, RuntimeFlavor};
+use tokio::runtime::Handle;
 use vaughan_agent::sentient::AgentSessionPolicy;
 use vaughan_core::core::policy_step_up::{self, Staged, StepUpError, StepUpState};
 use vaughan_core::core::SignerClient;
@@ -38,6 +38,44 @@ pub const CONSOLE_ADVICE: &str =
 /// Status message shown when leaving the wait screen before root approval.
 pub const CANCELLED_STATUS: &str =
     "Policy update not applied; the staged update stays pending until it expires (10 min).";
+
+/// Semantic styling role for a line on the root-approval wait card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emphasis {
+    /// Primary informational text (summary, digest).
+    Normal,
+    /// Highlighted root command the operator must run.
+    Command,
+    /// Secondary guidance or countdown text.
+    Muted,
+    /// Blank vertical separator line.
+    Spacer,
+}
+
+/// A single structured line rendered on the root-approval wait card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLine {
+    /// Line text content (empty for [`Emphasis::Spacer`]).
+    pub text: String,
+    /// Semantic emphasis determining visual styling in [`render`].
+    pub emphasis: Emphasis,
+}
+
+impl StatusLine {
+    fn new(emphasis: Emphasis, text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            emphasis,
+        }
+    }
+
+    fn spacer() -> Self {
+        Self {
+            text: String::new(),
+            emphasis: Emphasis::Spacer,
+        }
+    }
+}
 
 /// Outcome of a single non-blocking poll tick on [`PolicyApproval`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,23 +109,13 @@ pub struct PolicyApproval {
     summary: String,
 }
 
-fn run_async<F, T>(handle: &Handle, fut: F) -> Result<T, StepUpError>
+fn run_step_up<F, T>(handle: &Handle, fut: F) -> Result<T, StepUpError>
 where
     F: Future<Output = Result<T, StepUpError>> + Send,
     T: Send,
 {
-    match Handle::try_current() {
-        Ok(cur) if cur.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| handle.block_on(fut))
-        }
-        Ok(_) => std::thread::scope(|s| match s.spawn(|| handle.block_on(fut)).join() {
-            Ok(res) => res,
-            Err(_) => Err(StepUpError::Transport(
-                "signer_rpc_worker_stopped".to_string(),
-            )),
-        }),
-        Err(_) => handle.block_on(fut),
-    }
+    crate::blocking::block_on_handle(handle, fut)
+        .map_err(|e| StepUpError::Transport(e.to_string()))?
 }
 
 fn now_unix_secs() -> u64 {
@@ -106,6 +134,16 @@ fn policy_summary(p: &AgentSessionPolicy) -> String {
         p.max_slippage_bps,
         p.acknowledge_unsafe,
     )
+}
+
+fn emphasis_style(emphasis: Emphasis) -> Style {
+    match emphasis {
+        Emphasis::Normal | Emphasis::Spacer => Style::default(),
+        Emphasis::Command => Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+        Emphasis::Muted => Style::default().fg(Color::DarkGray),
+    }
 }
 
 impl PolicyApproval {
@@ -136,7 +174,7 @@ impl PolicyApproval {
         expected_digest: Option<String>,
         summary: String,
     ) -> Result<Self, StepUpError> {
-        let staged = run_async(
+        let staged = run_step_up(
             handle,
             policy_step_up::stage(client, &draft_json, expected_digest),
         )?;
@@ -165,7 +203,7 @@ impl PolicyApproval {
         }
         self.last_poll_tick = Some(tick);
 
-        let next = match run_async(handle, policy_step_up::poll(client, &self.staged)) {
+        let next = match run_step_up(handle, policy_step_up::poll(client, &self.staged)) {
             Ok(state) => state,
             Err(err) => return Progress::Failed(err),
         };
@@ -175,7 +213,7 @@ impl PolicyApproval {
             StepUpState::Waiting { .. } => Progress::Waiting,
             StepUpState::Expired => Progress::Failed(StepUpError::Expired),
             StepUpState::Ready => {
-                match run_async(handle, policy_step_up::apply(client, &self.staged)) {
+                match run_step_up(handle, policy_step_up::apply(client, &self.staged)) {
                     Ok(digest) => Progress::Applied { digest },
                     Err(err) => Progress::Failed(err),
                 }
@@ -191,8 +229,8 @@ impl PolicyApproval {
         }
     }
 
-    /// Build the human-readable wait lines relative to `now_unix`.
-    pub fn status_lines(&self, now_unix: u64) -> Vec<String> {
+    /// Build structured wait lines with explicit emphasis roles relative to `now_unix`.
+    pub fn status_lines(&self, now_unix: u64) -> Vec<StatusLine> {
         let expires_at = match self.state {
             StepUpState::Waiting { expires_at_unix } => expires_at_unix,
             StepUpState::Ready | StepUpState::Expired => self.staged.expires_at_unix,
@@ -201,12 +239,16 @@ impl PolicyApproval {
         let digest = &self.staged.policy_digest;
         let digest_short = &digest[..digest.len().min(12)];
         vec![
-            format!("Staged: {}", self.summary),
-            format!("Policy digest: {digest_short}"),
-            format!("Run: {APPROVE_COMMAND}"),
-            CONSOLE_ADVICE.to_string(),
-            format!(
-                "Expires in {secs_left}s · Esc returns without applying (stays pending 10 min)"
+            StatusLine::new(Emphasis::Normal, format!("Staged: {}", self.summary)),
+            StatusLine::new(Emphasis::Normal, format!("Policy digest: {digest_short}")),
+            StatusLine::spacer(),
+            StatusLine::new(Emphasis::Command, format!("Run: {APPROVE_COMMAND}")),
+            StatusLine::new(Emphasis::Muted, CONSOLE_ADVICE),
+            StatusLine::new(
+                Emphasis::Muted,
+                format!(
+                    "Expires in {secs_left}s · Esc returns without applying (stays pending 10 min)"
+                ),
             ),
         ]
     }
@@ -227,23 +269,10 @@ pub fn render(frame: &mut Frame, area: Rect, approval: Option<&PolicyApproval>) 
         return;
     };
 
-    let raw = approval.status_lines(now_unix_secs());
-    let mut lines = Vec::with_capacity(raw.len() + 2);
-    for (idx, text) in raw.into_iter().enumerate() {
-        let line = match idx {
-            2 => Line::from(Span::styled(
-                text,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            3 | 4 => Line::from(Span::styled(text, Style::default().fg(Color::DarkGray))),
-            _ => Line::from(text),
-        };
-        lines.push(line);
-        if idx == 1 {
-            lines.push(Line::from(""));
-        }
-    }
+    let lines: Vec<Line> = approval
+        .status_lines(now_unix_secs())
+        .into_iter()
+        .map(|line| Line::from(Span::styled(line.text, emphasis_style(line.emphasis))))
+        .collect();
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

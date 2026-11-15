@@ -33,7 +33,7 @@ file 1414 vaughan-tui/src/views/lp/render.rs
 file 1244 vaughan-tui/src/views/lp/state.rs
 file 1072 vaughan-tui/src/views/mod.rs
 file 1377 vaughan-tui/src/views/send.rs
-file 1589 vaughan-tui/src/views/settings.rs
+file 1572 vaughan-tui/src/views/settings.rs
 fn 183 vaughan-agent/src/sentient/spend_ledger.rs::reserve_at#1
 fn 223 vaughan-agent/src/sentient/trader.rs::execute_swap_inner#1
 fn 612 vaughan-cli/src/main.rs::run_cli#1

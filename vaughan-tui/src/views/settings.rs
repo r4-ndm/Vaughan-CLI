@@ -1364,7 +1364,10 @@ impl SettingsView {
 
     fn open_policy(&mut self, handle: &Handle) -> KeyOutcome {
         let client = SignerClient::default();
-        let resp = match block_on_handle(handle, client.policy()) {
+        let resp = match crate::blocking::block_on_handle(handle, client.policy())
+            .map_err(|e| e.to_string())
+            .and_then(|r| r)
+        {
             Ok(r) => r,
             Err(e) => {
                 self.status = format!("Policy load failed: {e}");
@@ -1555,26 +1558,6 @@ fn policy_field_display(policy: &AgentSessionPolicy, idx: usize) -> String {
         7 => policy.required_rpc_quorum.to_string(),
         8 => policy.allow_transfer_to.join(", "),
         _ => policy.acknowledge_unsafe.to_string(),
-    }
-}
-
-fn block_on_handle<F, T>(handle: &Handle, fut: F) -> T
-where
-    F: std::future::Future<Output = T> + Send,
-    T: Send,
-{
-    match Handle::try_current() {
-        Ok(cur) => match cur.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| handle.block_on(fut))
-            }
-            _ => std::thread::scope(|s| {
-                s.spawn(|| handle.block_on(fut))
-                    .join()
-                    .expect("policy rpc thread panicked")
-            }),
-        },
-        Err(_) => handle.block_on(fut),
     }
 }
 

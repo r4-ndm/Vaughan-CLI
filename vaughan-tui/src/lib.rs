@@ -6,6 +6,7 @@
 //! launched with no subcommand.
 
 pub mod app;
+pub mod blocking;
 pub mod brand;
 pub mod clipboard;
 pub mod dapp_browser;
