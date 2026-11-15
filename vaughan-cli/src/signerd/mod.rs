@@ -215,15 +215,7 @@ impl Signer {
             "policy" => self.handle_policy(),
             "policy_pending" => self.handle_policy_pending(),
             "policy_update" => match req.auth.as_deref() {
-                None => {
-                    self.handle_policy_update(
-                        req.password,
-                        req.policy,
-                        req.expected_digest,
-                        peer_uid,
-                    )
-                    .await
-                }
+                None => self.handle_policy_unsupported(),
                 Some("stage") => self.handle_policy_stage(req.policy, req.expected_digest),
                 Some("approved") => {
                     self.handle_policy_approved(req.policy, req.expected_digest, peer_uid)

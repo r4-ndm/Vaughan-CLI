@@ -4,13 +4,9 @@
 //! Callers submit typed [`SignerIntent`] objects and receive [`SignerResponse`].
 //! Raw calldata never crosses the socket.
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use secrecy::{ExposeSecret, SecretString};
-use serde::de::{self, Deserializer, Visitor};
-use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -40,99 +36,15 @@ pub fn resolve_signer_socket_path() -> PathBuf {
     PathBuf::from(DEFAULT_SIGNER_SOCKET)
 }
 
-mod opt_secret_string {
-    use super::*;
-
-    struct SecretStringVisitor;
-
-    impl<'de> Visitor<'de> for SecretStringVisitor {
-        type Value = SecretString;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a password string")
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(SecretString::from(v.to_owned()))
-        }
-
-        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(SecretString::from(v))
-        }
-    }
-
-    struct OptSecretStringVisitor;
-
-    impl<'de> Visitor<'de> for OptSecretStringVisitor {
-        type Value = Option<SecretString>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("an optional password string")
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            deserializer
-                .deserialize_string(SecretStringVisitor)
-                .map(Some)
-        }
-    }
-
-    pub fn serialize<S>(val: &Option<SecretString>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match val {
-            Some(s) => serializer.serialize_some(s.expose_secret()),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SecretString>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_option(OptSecretStringVisitor)
-    }
-}
-
 /// Request sent over the Unix socket to `vaughan signerd`.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "SignerRequestWire")]
 pub struct SignerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u32>,
     pub op: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<SignerIntent>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "opt_secret_string"
-    )]
-    pub password: Option<SecretString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,17 +53,34 @@ pub struct SignerRequest {
     pub auth: Option<String>,
 }
 
-impl fmt::Debug for SignerRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignerRequest")
-            .field("v", &self.v)
-            .field("op", &self.op)
-            .field("intent", &self.intent)
-            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
-            .field("policy", &self.policy)
-            .field("expected_digest", &self.expected_digest)
-            .field("auth", &self.auth)
-            .finish()
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignerRequestWire {
+    #[serde(default)]
+    v: Option<u32>,
+    op: String,
+    #[serde(default)]
+    intent: Option<SignerIntent>,
+    #[serde(default, rename = "password")]
+    _legacy_password: serde::de::IgnoredAny,
+    #[serde(default)]
+    policy: Option<serde_json::Value>,
+    #[serde(default)]
+    expected_digest: Option<String>,
+    #[serde(default)]
+    auth: Option<String>,
+}
+
+impl From<SignerRequestWire> for SignerRequest {
+    fn from(w: SignerRequestWire) -> Self {
+        Self {
+            v: w.v,
+            op: w.op,
+            intent: w.intent,
+            policy: w.policy,
+            expected_digest: w.expected_digest,
+            auth: w.auth,
+        }
     }
 }
 
@@ -302,7 +231,6 @@ impl SignerClient {
             v: Some(1),
             op: "status".to_string(),
             intent: None,
-            password: None,
             policy: None,
             expected_digest: None,
             auth: None,
@@ -316,28 +244,8 @@ impl SignerClient {
             v: Some(1),
             op: "policy".to_string(),
             intent: None,
-            password: None,
             policy: None,
             expected_digest: None,
-            auth: None,
-        };
-        self.send_request(&req).await
-    }
-
-    /// Update the active policy on the signer daemon with vault password step-up (`{"op":"policy_update"}`).
-    pub async fn policy_update(
-        &self,
-        password: SecretString,
-        policy: serde_json::Value,
-        expected_digest: Option<String>,
-    ) -> Result<SignerResponse, String> {
-        let req = SignerRequest {
-            v: Some(1),
-            op: "policy_update".to_string(),
-            intent: None,
-            password: Some(password),
-            policy: Some(policy),
-            expected_digest,
             auth: None,
         };
         self.send_request(&req).await
@@ -352,7 +260,6 @@ impl SignerClient {
             v: Some(1),
             op: "policy_pending".to_string(),
             intent: None,
-            password: None,
             policy: None,
             expected_digest: None,
             auth: None,
@@ -373,7 +280,6 @@ impl SignerClient {
             v: Some(1),
             op: "policy_update".to_string(),
             intent: None,
-            password: None,
             policy: Some(policy),
             expected_digest,
             auth: Some("stage".to_string()),
@@ -394,7 +300,6 @@ impl SignerClient {
             v: Some(1),
             op: "policy_update".to_string(),
             intent: None,
-            password: None,
             policy: Some(policy),
             expected_digest,
             auth: Some("approved".to_string()),
@@ -408,7 +313,6 @@ impl SignerClient {
             v: Some(1),
             op: "sign".to_string(),
             intent: Some(intent.clone()),
-            password: None,
             policy: None,
             expected_digest: None,
             auth: None,
@@ -500,29 +404,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signer_request_debug_redacts_password() {
-        let secret = "SuperSecretVaultPw!99";
-        let req = SignerRequest {
-            v: Some(1),
-            op: "policy_update".to_string(),
-            intent: None,
-            password: Some(SecretString::from(secret.to_string())),
-            policy: Some(serde_json::json!({ "daily_cap_pct": 50 })),
-            expected_digest: Some("abc123".to_string()),
-            auth: None,
-        };
-        let rendered = format!("{req:?}");
-        assert!(
-            rendered.contains("[REDACTED]"),
-            "expected [REDACTED] in Debug output: {rendered}"
-        );
-        assert!(
-            !rendered.contains(secret),
-            "plaintext secret leaked into Debug output: {rendered}"
-        );
-    }
-
-    #[test]
     fn signer_request_rejects_unknown_top_level_fields() {
         let raw = r#"{"op":"policy","unexpected_field":123}"#;
         let parsed: Result<SignerRequest, _> = serde_json::from_str(raw);
@@ -530,5 +411,14 @@ mod tests {
             parsed.is_err(),
             "SignerRequest must reject unknown top-level fields"
         );
+    }
+
+    #[test]
+    fn signer_request_ignores_legacy_password_field() {
+        let raw = r#"{"op":"policy_update","password":"legacy","policy":{"daily_cap_pct":25}}"#;
+        let parsed: SignerRequest =
+            serde_json::from_str(raw).expect("legacy password key must be ignored by serde");
+        assert_eq!(parsed.op, "policy_update");
+        assert_eq!(parsed.auth, None);
     }
 }

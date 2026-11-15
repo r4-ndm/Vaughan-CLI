@@ -49,7 +49,7 @@ on-chain contracts.
 | Sentient sandwich / zero min-out | Gate-time fresh quote; `min_amount_out` must be within `max_slippage_bps` of it |
 | Sentient rogue router | Audited DEX router allowlist checked both at `propose_swap` and again at the auto-exec gate |
 | Sentient gas drain | Fresh fee estimate (fail-closed) + pre-broadcast `check_gas_budget` against the session ceiling; fee-spike >10% rejected |
-| Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced`; live edits require `policy_update` over socket with Argon2id vault-password step-up, `expected_digest` CAS, two-step `acknowledge_unsafe` before `disabled`, per-UID rate limiting, and `policy-audit.jsonl` logging |
+| Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced`; live edits require root-approved `policy_update` (`stage` -> `sudo vaughan signerd approve` -> `approved`), `expected_digest` CAS, two-step `acknowledge_unsafe` before `disabled`, per-UID rate limiting, and `policy-audit.jsonl` logging |
 | Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes; re-checked at the sentient gate |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
 | Runaway sentient agent | Profile policy + circuit breakers + **Ctrl+K** kill-switch (TUI) |
@@ -94,7 +94,7 @@ see [`mcp-transport.md`](mcp-transport.md).
 | Queue tampering | `vaughan-core` `proposal_queue_rejects_tampered_hmac` |
 | Local socket hijack | `vaughan-tui/tests/mcp_listener.rs::mcp_loopback_rejects_bad_session_token` |
 | Sentient signer peer UID rejection | `vaughan-cli/tests/signer_intent.rs::test_socket_peer_uid_rejection` |
-| Sentient policy password step-up & audit | `vaughan-cli/tests/signer_intent.rs::test_policy_update_*` |
+| Sentient policy root-approval step-up & audit | `vaughan-cli/tests/signer_intent.rs::test_policy_update_*`, `test_s3b_*`, `test_s3c4_*` |
 | Sentient untyped tool isolation | `vaughan-mcp/tests/sentient_cutover.rs::test_untyped_tools_return_intent_untyped_and_do_not_touch_signer` |
 | Sentient signer policy enforcement | `vaughan-mcp/tests/sentient_cutover.rs::test_signer_refusal_surfaces_unchanged_through_mcp` |
 | Sentient no `mcp.session` written | `vaughan-cli/tests/serve_sentient_gate.rs::test_serve_sentient_creates_no_mcp_session_file` |
@@ -150,6 +150,8 @@ For sentient profiles, all private keys (`wallet.json`, `signer.key`), policy co
 
 The daemon validates peer credentials on every connection via `SO_PEERCRED` against `allow_uid`. The agent process cannot read or alter private keys, policy limits, or spend ledgers, and cannot submit arbitrary calldata (untyped tools return `intent_untyped` and never reach the signer socket).
 
-Live policy updates (`vaughan --profile sentient policy set|confirm-unsafe` or the TUI policy screen) use root-approval step-up inside `vaughan-signerd`: `policy_stage` binds a single-use staged digest (10-minute TTL), `sudo vaughan signerd approve` writes a root-owned approval over `/run/vaughan/signerd-ctl.sock` (`SO_PEERCRED uid == 0`), `policy_pending` polls readiness without consuming rate limits, and `policy_update` verifies the approval digest, rejects stale `expected_digest`, and appends field diffs to `policy-audit.jsonl`. Because no password or approval secret crosses the agent UID boundary, a compromised agent-UID process cannot authorize policy changes on its own.
+Live policy updates (`vaughan --profile sentient policy set|confirm-unsafe` or the TUI policy screen) use out-of-band root approval inside `vaughan-signerd`: `{"op":"policy_update","auth":"stage"}` writes `policy-pending.json` (0600, 10-minute TTL); a human operator running `sudo vaughan signerd approve` inspects the on-disk policy and `policy-pending.json` on a root TTY and writes one-time `policy-approval.json` (mode `0440`, `root:vaughan-signer`); `{"op":"policy_update","auth":"approved"}` opens `policy-approval.json` with `O_RDONLY | O_NOFOLLOW`, verifies `fstat` (`uid == 0`, `nlink == 1`, `mode == 0440`), unlinks it before apply, rejects stale `expected_digest`, and appends field diffs to `policy-audit.jsonl`. The legacy socket password step-up path was removed in S3c (`auth: None` returns `step_up_unsupported` without reading or unlocking `wallet.json`).
+
+**What root approval defends against**: a compromised process running as the trader/agent UID (or `vaughan` group member) trying to widen policy, disable enforcement, or capture the vault passphrase from policy updates. **What it does NOT defend against**: a process that can already escalate to `root` (e.g. passwordless `sudo`), a compromised root session/console, or `ptrace`/keystroke injection against the privileged terminal running `sudo vaughan signerd approve`.
 
 Adviser profiles retain the loopback TCP / `mcp.session` token path where explicit human approval on screen is the security control.

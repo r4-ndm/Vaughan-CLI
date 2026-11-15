@@ -1,18 +1,23 @@
 //! Policy inspection, prechecks, and root-approved policy update handlers.
 //!
-//! Single purpose: `Signer` policy query (`status`, `policy`), tighten-only
-//! classification, and `policy_update` (password, stage, approved) handlers.
+//! Single purpose: `Signer` policy query (`status`, `policy`, `policy_pending`),
+//! tighten-only classification, and `policy_update` (`stage`, `approved`) handlers.
 //! Must NOT contain transaction signing, calldata building, or socket server
 //! accept-loop logic.
 
 use std::time::Instant;
 
-use secrecy::{ExposeSecret, SecretString};
 use vaughan_agent::sentient::policy::EnforcementMode;
 use vaughan_core::core::signer_client::{PendingInfo, SignerResponse};
-use vaughan_core::core::{OperatingMode, WalletState};
 
 use super::{approval, Signer, STEP_UP_MAX_ATTEMPTS, STEP_UP_WINDOW};
+
+/// Error code returned when a `policy_update` omits `auth` (removed password path).
+pub const STEP_UP_UNSUPPORTED_CODE: &str = "step_up_unsupported";
+
+/// Error message returned when a `policy_update` omits `auth`.
+pub const STEP_UP_UNSUPPORTED_MSG: &str =
+    "policy changes require root approval: stage the change, then run `sudo vaughan signerd approve`";
 
 impl Signer {
     /// Handle `{"op":"status"}` without requiring any unlock beyond what daemon holds.
@@ -258,84 +263,9 @@ impl Signer {
         self.apply_validated_policy_update(&old_policy, &new_policy)
     }
 
-    /// Handle `{"op":"policy_update","password":"…","policy":{…}}`.
-    ///
-    /// Rules:
-    /// 1. Verify vault password via `spawn_blocking` KDF before touching or accepting any policy.
-    /// 2. Rate-limit step-up attempts per peer UID (5 attempts per 60s window; tighten-only updates exempt).
-    /// 3. Return indistinguishable `step_up_failed` on wrong password, missing wallet, or corrupt store.
-    /// 4. Enforce `expected_digest` if supplied (`policy_conflict`).
-    /// 5. Refuse `enforcement:"disabled"` unless persisted on-disk policy already has `acknowledge_unsafe: true`.
-    /// 6. Run canonical `AgentSessionPolicy::validate()`.
-    /// 7. Atomically persist via `save_policy` and reload breaker config.
-    pub async fn handle_policy_update(
-        &self,
-        password: Option<SecretString>,
-        policy_val: Option<serde_json::Value>,
-        expected_digest: Option<String>,
-        peer_uid: u32,
-    ) -> SignerResponse {
-        let Some(password) = password else {
-            return SignerResponse::error(
-                "step_up_failed",
-                "vault password is required for policy_update",
-            );
-        };
-        if password.expose_secret().is_empty() {
-            return SignerResponse::error(
-                "step_up_failed",
-                "vault password is required for policy_update",
-            );
-        }
-
-        let tighten_only = self.is_request_tighten_only(policy_val.as_ref());
-
-        // Per-peer-UID backoff before running Argon2id in spawn_blocking (tighten-only exempt).
-        if !tighten_only {
-            let mut limiter = self.inner.step_up_limiter.lock().unwrap();
-            let now = Instant::now();
-            let entries = limiter.entry(peer_uid).or_default();
-            entries.retain(|t| now.duration_since(*t) < STEP_UP_WINDOW);
-            if entries.len() >= STEP_UP_MAX_ATTEMPTS {
-                return SignerResponse::error(
-                    "step_up_rate_limited",
-                    "rate limit exceeded: max 5 step-up attempts per minute",
-                );
-            }
-            entries.push(now);
-        }
-
-        let wallet_path = self.inner.store.join("wallet.json");
-        let verify_res = tokio::task::spawn_blocking(move || {
-            let mut wallet = WalletState::load_with_session(
-                wallet_path,
-                OperatingMode::SentientTrader,
-                "sentient",
-            )
-            .map_err(|_| ())?;
-            wallet.unlock(&password).map_err(|_| ())?;
-            Ok::<(), ()>(())
-        })
-        .await;
-
-        match verify_res {
-            Ok(Ok(())) => {
-                if !tighten_only {
-                    let mut limiter = self.inner.step_up_limiter.lock().unwrap();
-                    if let Some(entries) = limiter.get_mut(&peer_uid) {
-                        entries.pop();
-                    }
-                }
-            }
-            _ => {
-                return SignerResponse::error(
-                    "step_up_failed",
-                    "vault password verification failed",
-                );
-            }
-        }
-
-        self.validate_and_apply_policy_update(policy_val, expected_digest)
+    /// Refuse legacy `{"op":"policy_update"}` requests without `"auth"` (`stage`/`approved`).
+    pub fn handle_policy_unsupported(&self) -> SignerResponse {
+        SignerResponse::error(STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG)
     }
 
     /// Handle `{"op":"policy_update","auth":"stage","policy":{…},"expected_digest":"…"}`.
