@@ -23,6 +23,7 @@ pub mod mcp_ipc;
 pub mod network;
 pub mod persistence;
 pub mod piteas;
+pub mod policy_step_up;
 pub mod profile;
 pub mod proposal;
 pub mod proposal_review;
@@ -172,8 +173,8 @@ pub use proposal_verify::{
 };
 pub use provider_session::{ProviderSessionToken, PROVIDER_SESSION_FILE};
 pub use signer_client::{
-    resolve_signer_socket_path, SignerClient, SignerRequest, SignerResponse, DEFAULT_SIGNER_SOCKET,
-    ENV_SIGNER_SOCKET,
+    resolve_signer_socket_path, PendingInfo, SignerClient, SignerRequest, SignerResponse,
+    DEFAULT_SIGNER_SOCKET, ENV_SIGNER_SOCKET,
 };
 pub use signer_intent::{BatchTransferLeg, SignerIntent, SwapFamily};
 pub use stealth::{looks_like_stealth_uri, StealthNote, StealthSendResult};

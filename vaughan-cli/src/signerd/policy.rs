@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use secrecy::{ExposeSecret, SecretString};
 use vaughan_agent::sentient::policy::EnforcementMode;
-use vaughan_core::core::signer_client::SignerResponse;
+use vaughan_core::core::signer_client::{PendingInfo, SignerResponse};
 use vaughan_core::core::{OperatingMode, WalletState};
 
 use super::{approval, Signer, STEP_UP_MAX_ATTEMPTS, STEP_UP_WINDOW};
@@ -113,6 +113,28 @@ impl Signer {
                 SignerResponse::error("internal_error", format!("could not serialize policy: {e}"))
             }
         }
+    }
+
+    /// Handle `{"op":"policy_pending"}` (read-only staged pending status, no authentication).
+    ///
+    /// Never creates, modifies, unlinks, or chmods any file, never consumes
+    /// `policy-approval.json`, and never returns the policy body.
+    pub fn handle_policy_pending(&self) -> SignerResponse {
+        let now = vaughan_agent::dca::now_unix();
+        let Ok(pending) = approval::load_pending_policy(&self.inner.store, now) else {
+            return SignerResponse::policy_pending_ok(None);
+        };
+        let expected_uid = self
+            .inner
+            .expected_approval_uid
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let approval_present =
+            approval::inspect_approval_at(&self.inner.store, expected_uid, now).is_present();
+        SignerResponse::policy_pending_ok(Some(PendingInfo {
+            policy_digest: pending.policy.digest(),
+            expires_at_unix: pending.expires_at_unix,
+            approval_present,
+        }))
     }
 
     fn is_request_tighten_only(&self, policy_val: Option<&serde_json::Value>) -> bool {
@@ -336,7 +358,16 @@ impl Signer {
             now,
             allow_replace,
         ) {
-            Ok(()) => SignerResponse::step_up_required(new_policy.digest()),
+            Ok(()) => {
+                let digest = new_policy.digest();
+                let mut resp = SignerResponse::step_up_required(digest.clone());
+                resp.pending = Some(PendingInfo {
+                    policy_digest: digest,
+                    expires_at_unix: now.saturating_add(approval::PENDING_TTL_SECS),
+                    approval_present: false,
+                });
+                resp
+            }
             Err(approval::PendingStageError::AlreadyPending) => SignerResponse::error(
                 "step_up_pending",
                 "a staged policy update is already pending approval",

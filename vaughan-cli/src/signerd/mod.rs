@@ -27,14 +27,16 @@ mod server;
 mod sign;
 
 pub use approval::{
-    consume_approval, load_pending_policy, stage_pending_policy_with_replace, write_approval,
-    Approval, ApprovalError,
+    consume_approval, inspect_approval, inspect_approval_at, load_pending_policy,
+    stage_pending_policy_with_replace, write_approval, Approval, ApprovalError, ApprovalPresence,
 };
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
 pub use server::run_signerd;
-pub use vaughan_core::core::signer_client::{SignerClient, SignerRequest, SignerResponse};
+pub use vaughan_core::core::signer_client::{
+    PendingInfo, SignerClient, SignerRequest, SignerResponse,
+};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -211,6 +213,7 @@ impl Signer {
         match req.op.as_str() {
             "status" => self.handle_status(),
             "policy" => self.handle_policy(),
+            "policy_pending" => self.handle_policy_pending(),
             "policy_update" => match req.auth.as_deref() {
                 None => {
                     self.handle_policy_update(
