@@ -202,32 +202,32 @@ pub fn inspect_approval(store: &Path, expected_uid: u32) -> ApprovalPresence {
     inspect_approval_at(store, expected_uid, vaughan_agent::dca::now_unix())
 }
 
-/// Read-only check of `policy-approval.json` at explicit timestamp `now`.
-pub fn inspect_approval_at(store: &Path, expected_uid: u32, now: u64) -> ApprovalPresence {
+/// Read-only inspection returning the parsed [`Approval`] when `policy-approval.json`
+/// passes the exact same trust checks as [`consume_approval`] (`symlink_metadata`,
+/// `O_NOFOLLOW`, `fstat` ownership/mode/`nlink`, bounded read, JSON schema, and
+/// `now < expires_at_unix`), without unlinking or modifying any file on disk.
+pub fn read_trusted_approval_at(store: &Path, expected_uid: u32, now: u64) -> Option<Approval> {
     let path = store.join(POLICY_APPROVAL_FILENAME);
-    let Ok(sym_meta) = fs::symlink_metadata(&path) else {
-        return ApprovalPresence::Absent;
-    };
+    let sym_meta = fs::symlink_metadata(&path).ok()?;
     if sym_meta.file_type().is_symlink()
         || check_approval_metadata(&sym_meta, expected_uid).is_err()
     {
-        return ApprovalPresence::Absent;
+        return None;
     }
 
-    let Ok(file) = open_nofollow_readonly(&path) else {
-        return ApprovalPresence::Absent;
-    };
-    let Ok(fd_meta) = file.metadata() else {
-        return ApprovalPresence::Absent;
-    };
+    let file = open_nofollow_readonly(&path).ok()?;
+    let fd_meta = file.metadata().ok()?;
     if check_approval_metadata(&fd_meta, expected_uid).is_err() {
-        return ApprovalPresence::Absent;
+        return None;
     }
 
-    let Ok(raw) = read_bounded_fd(file, MAX_APPROVAL_FILE_BYTES) else {
-        return ApprovalPresence::Absent;
-    };
-    if parse_and_validate_approval(&raw, now).is_ok() {
+    let raw = read_bounded_fd(file, MAX_APPROVAL_FILE_BYTES).ok()?;
+    parse_and_validate_approval(&raw, now).ok()
+}
+
+/// Read-only check of `policy-approval.json` at explicit timestamp `now`.
+pub fn inspect_approval_at(store: &Path, expected_uid: u32, now: u64) -> ApprovalPresence {
+    if read_trusted_approval_at(store, expected_uid, now).is_some() {
         ApprovalPresence::Present
     } else {
         ApprovalPresence::Absent
@@ -438,9 +438,7 @@ pub fn stage_pending_policy_with_replace(
         expires_at_unix: now.saturating_add(PENDING_TTL_SECS),
     };
     write_pending_file(store, &path, &pending)?;
-    if existing.is_some() && allow_replace {
-        let _ = fs::remove_file(store.join(POLICY_APPROVAL_FILENAME));
-    }
+    let _ = fs::remove_file(store.join(POLICY_APPROVAL_FILENAME));
     Ok(pending.expires_at_unix)
 }
 

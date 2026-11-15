@@ -32,6 +32,7 @@ pub use approval::{
 };
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
+pub use policy::{STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
 pub use server::run_signerd;
 pub use vaughan_core::core::signer_client::{
@@ -215,15 +216,7 @@ impl Signer {
             "policy" => self.handle_policy(),
             "policy_pending" => self.handle_policy_pending(),
             "policy_update" => match req.auth.as_deref() {
-                None => {
-                    self.handle_policy_update(
-                        req.password,
-                        req.policy,
-                        req.expected_digest,
-                        peer_uid,
-                    )
-                    .await
-                }
+                None => self.handle_policy_unsupported(),
                 Some("stage") => self.handle_policy_stage(req.policy, req.expected_digest),
                 Some("approved") => {
                     self.handle_policy_approved(req.policy, req.expected_digest, peer_uid)

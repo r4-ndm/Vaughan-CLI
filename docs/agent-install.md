@@ -62,8 +62,8 @@ It backs up any file it modifies, never rewrites a file it cannot parse, and is 
 The MCP process is a proposer. Something has to hold the unlocked vault on the same machine:
 
 ```sh
-# headless (agents, containers, cron)
-VAUGHAN_PW=... vaughan serve --profile sentient --password-env VAUGHAN_PW
+# headless sentient mode (keys stay in vaughan-signerd; no vault password in the agent process)
+vaughan --profile sentient serve
 
 # or interactively, with the TUI open and unlocked
 vaughan --profile default

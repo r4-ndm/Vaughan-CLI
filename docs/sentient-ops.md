@@ -74,7 +74,7 @@ vaughan --profile sentient policy confirm-unsafe
 vaughan --profile sentient policy set --enforcement disabled
 ```
 
-Policy changes use root-approval step-up (`policy_stage` → `sudo vaughan signerd approve` from a clean console (`Ctrl+Alt+F3`) or `run0` → `policy_pending` → `policy_update`): `vaughan-signerd` validates `uid == 0` over `/run/vaughan/signerd-ctl.sock` (via `SO_PEERCRED`), reloads the daemon's active `CircuitBreaker` atomically, and logs `{ts, field_changes, source}` to `policy-audit.jsonl` (never any password). Press `y` in the TUI **Settings** view on a sentient profile to edit and stage the policy for root approval over the same socket.
+Policy changes use out-of-band root approval: the CLI/TUI sends `{"op":"policy_update","auth":"stage"}` (client `policy_stage`), which writes `policy-pending.json` (0600, 10-min TTL) in the signer store; an operator runs `/usr/local/bin/vaughan signerd approve` as root (from a root login on a clean console (`Ctrl+Alt+F3`), `run0`, or `sudo` from a separate admin account — never from a shell owned by the agent UID), reviews the diff on an interactive TTY, and confirms, writing one-time `policy-approval.json` (0440, `root:vaughan-signer` or the store's group if `vaughan-signer` does not exist); the client polls `{"op":"policy_pending"}` and then sends `{"op":"policy_update","auth":"approved"}`. The daemon fstat-verifies (`uid == 0`, `nlink == 1`, `mode == 0440`) and unlinks the approval before applying, reloads the active `CircuitBreaker`, and logs `{ts, field_changes, source}` to `policy-audit.jsonl` (never any password). Press `y` in the TUI **Settings** view on a sentient profile to edit and stage a change over `/run/vaughan/signerd.sock`.
 
 7. Agent loop pattern:
 

@@ -404,3 +404,131 @@ async fn test_policy_step_up_e2e_stage_poll_apply_against_real_signer() {
     assert!(!approval_path.exists());
     assert_eq!(poll(&client, &staged).await.unwrap(), StepUpState::Expired);
 }
+
+#[tokio::test]
+async fn test_stage_removes_stale_approval_when_prior_pending_absent_or_expired() {
+    let fx = setup_fixture(10);
+    let p0 = fx.base_policy.clone();
+    let p1 = draft_policy(&p0, 35);
+    let p2 = draft_policy(&p0, 50);
+
+    // Case A: valid approval for P0 -> P1 on disk with NO policy-pending.json;
+    // staging P2 must delete the stale approval file.
+    let approval_path = write_trusted_approval(&fx.store, &p0, &p1, 120);
+    assert!(approval_path.exists());
+    assert!(!fx.store.join(POLICY_PENDING_FILENAME).exists());
+
+    let t0 = vaughan_agent::dca::now_unix();
+    vaughan_cli::signerd::approval::stage_pending_policy(&fx.store, &p2, t0).unwrap();
+    assert!(
+        !approval_path.exists(),
+        "staging P2 with no prior pending must delete stale policy-approval.json"
+    );
+
+    // Case B: pending P1 staged at t0 plus valid approval for P0 -> P1;
+    // after P1's pending TTL expires (via injected `now`), staging P2 with allow_replace=false
+    // must delete the stale approval file.
+    stage_pending_policy_with_replace(&fx.store, &p1, t0, true).unwrap();
+    let approval_path = write_approval(
+        &fx.store,
+        &Approval {
+            old_digest: p0.digest(),
+            new_digest: p1.digest(),
+            issued_at_unix: t0,
+            expires_at_unix: t0
+                .saturating_add(vaughan_cli::signerd::approval::PENDING_TTL_SECS)
+                .saturating_add(120),
+        },
+    )
+    .unwrap();
+    assert!(approval_path.exists());
+
+    let t_after_ttl = t0.saturating_add(vaughan_cli::signerd::approval::PENDING_TTL_SECS + 1);
+    vaughan_cli::signerd::approval::stage_pending_policy(&fx.store, &p2, t_after_ttl).unwrap();
+    assert!(
+        !approval_path.exists(),
+        "staging P2 after prior pending expired must delete stale policy-approval.json"
+    );
+}
+
+#[tokio::test]
+async fn test_policy_pending_binds_approval_present_to_staged_and_current_digests() {
+    let fx = setup_fixture(10);
+    let p0 = fx.base_policy.clone();
+    let p1 = draft_policy(&p0, 35);
+    let p2 = draft_policy(&p0, 50);
+    let p_other_old = draft_policy(&p0, 15);
+
+    stage_on_disk(&fx.store, &p2);
+
+    // 1. Valid unexpired approval minted for P0 -> P1 while P2 is pending -> approval_present=false.
+    let approval_path = write_trusted_approval(&fx.store, &p0, &p1, 120);
+    let before_bytes = std::fs::read(&approval_path).unwrap();
+    let before_mtime = std::fs::metadata(&approval_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    let resp_wrong_new = query_pending(&fx.signer, fx.uid).await;
+    assert!(resp_wrong_new.ok);
+    assert!(
+        !resp_wrong_new.pending.unwrap().approval_present,
+        "approval minted for P0 -> P1 must not set approval_present=true when P2 is pending"
+    );
+    assert_eq!(std::fs::read(&approval_path).unwrap(), before_bytes);
+    assert_eq!(
+        std::fs::metadata(&approval_path)
+            .unwrap()
+            .modified()
+            .unwrap(),
+        before_mtime
+    );
+
+    // 2. Valid unexpired approval with mismatched old_digest (p_other_old -> P2) -> approval_present=false.
+    std::fs::remove_file(&approval_path).unwrap();
+    let approval_path = write_trusted_approval(&fx.store, &p_other_old, &p2, 120);
+    let before_bytes = std::fs::read(&approval_path).unwrap();
+    let before_mtime = std::fs::metadata(&approval_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    let resp_wrong_old = query_pending(&fx.signer, fx.uid).await;
+    assert!(resp_wrong_old.ok);
+    assert!(
+        !resp_wrong_old.pending.unwrap().approval_present,
+        "approval whose old_digest != current on-disk policy digest must set approval_present=false"
+    );
+    assert_eq!(std::fs::read(&approval_path).unwrap(), before_bytes);
+    assert_eq!(
+        std::fs::metadata(&approval_path)
+            .unwrap()
+            .modified()
+            .unwrap(),
+        before_mtime
+    );
+
+    // 3. Valid unexpired approval matching (current P0 -> P2) -> approval_present=true, bytes/mtime unchanged.
+    std::fs::remove_file(&approval_path).unwrap();
+    let approval_path = write_trusted_approval(&fx.store, &p0, &p2, 120);
+    let before_bytes = std::fs::read(&approval_path).unwrap();
+    let before_mtime = std::fs::metadata(&approval_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    let resp_match = query_pending(&fx.signer, fx.uid).await;
+    assert!(resp_match.ok);
+    assert!(
+        resp_match.pending.unwrap().approval_present,
+        "approval matching (current -> pending) must set approval_present=true"
+    );
+    assert_eq!(std::fs::read(&approval_path).unwrap(), before_bytes);
+    assert_eq!(
+        std::fs::metadata(&approval_path)
+            .unwrap()
+            .modified()
+            .unwrap(),
+        before_mtime
+    );
+}

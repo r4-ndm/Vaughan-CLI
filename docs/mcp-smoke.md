@@ -73,7 +73,7 @@ Do these in order. Tick when green.
 
 - [ ] Separate MCP entry on `--profile sentient` (not human `default` seed).
 - [ ] Preset applied: `vaughan --profile sentient preset apply balanced`.
-- [ ] Control plane up: unlocked TUI **or** `vaughan --profile sentient serve --password-env …`.
+- [ ] Control plane up: unlocked TUI **or** `vaughan --profile sentient serve` (with `vaughan-signerd` running).
 - [ ] `get_control_plane_status` → `sentient_auto_exec: true`, `ready_for_writes: true`.
 - [ ] `watch_balance` / `watch_quote` return snapshots (no sign).
 - [ ] One tiny `propose_transfer` auto-execs under policy (or fails clearly on breaker) — **testnet only**.

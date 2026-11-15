@@ -757,4 +757,4 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [ ] Reserve the `vaughan` and `vaughan-cli` names (both currently 404 on the registry) so the identity
       is ours before someone squats it; publish nothing until the real package is ready.
 
-Not a substitute for signer work: S3 (password step-up + hardening) and the DCA replay proof come first.
+Not a substitute for signer work: S3 (historical: initial password step-up, superseded by S3b/S3c root-approved policy updates + hardening) and the DCA replay proof come first.
