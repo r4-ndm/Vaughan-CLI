@@ -1059,6 +1059,56 @@ async fn test_approve_cap_scales_with_real_balance() {
     assert!(sign_intent(&signer2, &approve(501)).await.ok);
 }
 
+/// The daemon refuses to sign on a non-testnet chain unless ITS OWN environment opted in
+/// (`allow_mainnet_writes`, set at startup from the root-owned unit env), and a chain this
+/// build does not know counts as mainnet. Nothing is reserved or broadcast on refusal.
+#[tokio::test]
+async fn test_mainnet_and_unknown_chains_are_blocked_until_the_operator_opts_in() {
+    const PULSECHAIN_MAINNET: u64 = 369;
+    const UNKNOWN_CHAIN: u64 = 424_242;
+    let dest = Address::repeat_byte(0x11);
+    let (_testnet_signer, broadcaster, quoter, dir, active_addr, balances) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    let signer_on = |chain_id: u64| {
+        Signer::new(
+            dir.path().to_path_buf(),
+            active_addr,
+            chain_id,
+            "http://127.0.0.1:8545".to_string(),
+            quoter.clone(),
+            broadcaster.clone(),
+            balances.clone(),
+        )
+    };
+    let transfer = |chain_id: u64| SignerIntent::Transfer {
+        chain_id,
+        to: dest,
+        token: None,
+        amount: U256::from(10),
+    };
+
+    for chain_id in [PULSECHAIN_MAINNET, UNKNOWN_CHAIN] {
+        let signer = signer_on(chain_id);
+        let resp = sign_intent(&signer, &transfer(chain_id)).await;
+        assert!(!resp.ok, "chain {chain_id} must be blocked by default");
+        assert_eq!(resp.code.as_deref(), Some("mainnet_blocked"), "{chain_id}");
+        assert!(
+            broadcaster.get_last_tx().is_none(),
+            "nothing may be broadcast"
+        );
+        assert!(!dir.path().join("sentient-spend.json").exists());
+    }
+
+    // With the operator opt-in the guard lifts (the transfer itself then proceeds).
+    let signer = signer_on(PULSECHAIN_MAINNET);
+    signer.allow_mainnet_writes(true);
+    let resp = sign_intent(&signer, &transfer(PULSECHAIN_MAINNET)).await;
+    assert!(
+        resp.ok,
+        "opted-in mainnet transfer should proceed: {resp:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_wrap_and_unwrap_intents_build_correct_calldata() {
     let (signer, broadcaster, _, _dir, _active_addr, _) = setup_test_harness(vec![]);

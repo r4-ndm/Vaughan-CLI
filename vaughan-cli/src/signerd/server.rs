@@ -4,7 +4,7 @@
 //! optional `vaughan` group ownership, verify `SO_PEERCRED`, and dispatch lines
 //! to [`Signer`]. Must NOT contain policy logic, spend checks, or calldata ops.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alloy::primitives::Address;
@@ -57,32 +57,7 @@ pub async fn run_signerd(
     let chain_id = wallet.networks().active().chain_id;
     let (rpc_url, _) = wallet.rpc_endpoints_for(wallet.networks().active());
 
-    #[cfg(unix)]
-    {
-        if let Some(parent) = socket.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if socket.exists() {
-            let _ = std::fs::remove_file(&socket);
-        }
-    }
-
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660)) {
-            tracing::warn!("failed to set socket mode 0660: {e}");
-        }
-        if let Some(gid) = find_vaughan_gid() {
-            if let Err(e) = std::os::unix::fs::chown(&socket, None, Some(gid)) {
-                tracing::info!(
-                    "could not chgrp socket {} to vaughan (gid {gid}): {e}; continuing with current group",
-                    socket.display()
-                );
-            }
-        }
-    }
+    let listener = bind_socket(&socket)?;
 
     let wallet_arc = Arc::new(tokio::sync::Mutex::new(wallet));
     let broadcaster = Arc::new(broadcaster::WalletBroadcaster::new(wallet_arc));
@@ -96,6 +71,7 @@ pub async fn run_signerd(
         Arc::new(balance::LiveBalanceSource),
     );
 
+    signer.allow_mainnet_writes(vaughan_core::core::mcp_mainnet_writes_allowed());
     eprintln!(
         "vaughan signerd: active_address={active_address:#x} chain_id={chain_id} socket={} allow_uid={allow_uid:?}",
         socket.display()
@@ -175,4 +151,37 @@ pub async fn run_signerd(
             let _ = stream.write_all(response_str.as_bytes()).await;
         });
     }
+}
+
+/// Bind the daemon's Unix socket: replace a stale socket file, then restrict it to mode
+/// `0660` and, when a `vaughan` group exists, hand it to that group so its members (and
+/// only they, plus the allowlisted peer UIDs) can connect.
+fn bind_socket(socket: &Path) -> anyhow::Result<tokio::net::UnixListener> {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = socket.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if socket.exists() {
+            let _ = std::fs::remove_file(socket);
+        }
+    }
+
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660)) {
+            tracing::warn!("failed to set socket mode 0660: {e}");
+        }
+        if let Some(gid) = find_vaughan_gid() {
+            if let Err(e) = std::os::unix::fs::chown(socket, None, Some(gid)) {
+                tracing::info!(
+                    "could not chgrp socket {} to vaughan (gid {gid}): {e}; continuing with current group",
+                    socket.display()
+                );
+            }
+        }
+    }
+    Ok(listener)
 }
