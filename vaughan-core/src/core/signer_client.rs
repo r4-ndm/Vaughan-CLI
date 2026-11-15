@@ -37,8 +37,10 @@ pub fn resolve_signer_socket_path() -> PathBuf {
 }
 
 /// Request sent over the Unix socket to `vaughan signerd`.
+///
+/// `Debug` is derived: never add a secret-bearing field here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(from = "SignerRequestWire")]
+#[serde(deny_unknown_fields)]
 pub struct SignerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u32>,
@@ -51,37 +53,6 @@ pub struct SignerRequest {
     pub expected_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SignerRequestWire {
-    #[serde(default)]
-    v: Option<u32>,
-    op: String,
-    #[serde(default)]
-    intent: Option<SignerIntent>,
-    #[serde(default, rename = "password")]
-    _legacy_password: serde::de::IgnoredAny,
-    #[serde(default)]
-    policy: Option<serde_json::Value>,
-    #[serde(default)]
-    expected_digest: Option<String>,
-    #[serde(default)]
-    auth: Option<String>,
-}
-
-impl From<SignerRequestWire> for SignerRequest {
-    fn from(w: SignerRequestWire) -> Self {
-        Self {
-            v: w.v,
-            op: w.op,
-            intent: w.intent,
-            policy: w.policy,
-            expected_digest: w.expected_digest,
-            auth: w.auth,
-        }
-    }
 }
 
 /// Read-only status of a staged policy update returned by `{"op":"policy_pending"}`.
@@ -414,11 +385,12 @@ mod tests {
     }
 
     #[test]
-    fn signer_request_ignores_legacy_password_field() {
+    fn signer_request_rejects_legacy_password_field() {
         let raw = r#"{"op":"policy_update","password":"legacy","policy":{"daily_cap_pct":25}}"#;
-        let parsed: SignerRequest =
-            serde_json::from_str(raw).expect("legacy password key must be ignored by serde");
-        assert_eq!(parsed.op, "policy_update");
-        assert_eq!(parsed.auth, None);
+        let parsed: Result<SignerRequest, _> = serde_json::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "SignerRequest must reject legacy password field as unknown"
+        );
     }
 }

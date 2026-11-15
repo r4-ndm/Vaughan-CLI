@@ -12,10 +12,10 @@ use vaughan_core::core::signer_client::{PendingInfo, SignerResponse};
 
 use super::{approval, Signer, STEP_UP_MAX_ATTEMPTS, STEP_UP_WINDOW};
 
-/// Error code returned when a `policy_update` omits `auth` (removed password path).
+/// Error code returned when a `policy_update` request omits `auth`.
 pub const STEP_UP_UNSUPPORTED_CODE: &str = "step_up_unsupported";
 
-/// Error message returned when a `policy_update` omits `auth`.
+/// Error message returned when a `policy_update` request omits `auth`.
 pub const STEP_UP_UNSUPPORTED_MSG: &str =
     "policy changes require root approval: stage the change, then run `sudo vaughan signerd approve`";
 
@@ -263,7 +263,7 @@ impl Signer {
         self.apply_validated_policy_update(&old_policy, &new_policy)
     }
 
-    /// Refuse legacy `{"op":"policy_update"}` requests without `"auth"` (`stage`/`approved`).
+    /// Refuse `{"op":"policy_update"}` requests that omit `"auth"` (`stage`/`approved`).
     pub fn handle_policy_unsupported(&self) -> SignerResponse {
         SignerResponse::error(STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG)
     }

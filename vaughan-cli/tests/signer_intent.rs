@@ -8,6 +8,7 @@ use secrecy::SecretString;
 use vaughan_agent::sentient::policy::{AgentSessionPolicy, EnforcementMode};
 use vaughan_cli::signerd::{
     is_peer_uid_allowed, MockBroadcaster, MockSwapQuoter, Signer, SignerResponse,
+    STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG,
 };
 use vaughan_core::core::dex_routers::wpls_for_chain;
 use vaughan_core::core::{
@@ -1000,7 +1001,7 @@ async fn send_raw_socket_json(sock_path: &std::path::Path, raw_json: &str) -> Si
 
 #[cfg(unix)]
 #[tokio::test]
-async fn test_s3c4_policy_update_without_auth_or_with_password_refused_step_up_unsupported() {
+async fn test_s3c4_policy_update_without_auth_or_with_password_refused_and_password_key_rejected() {
     let current_uid = rustix::process::geteuid().as_raw();
     let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 5, 50);
     signer.set_expected_approval_uid(current_uid);
@@ -1014,7 +1015,7 @@ async fn test_s3c4_policy_update_without_auth_or_with_password_refused_step_up_u
     let mut modified = current.policy.unwrap();
     modified["daily_cap_pct"] = serde_json::json!(90);
 
-    // Confirm real Argon2id vault unlock on this store takes > 250 ms.
+    // Measure Argon2id vault unlock latency on this store for relative no-KDF check.
     let kdf_start = std::time::Instant::now();
     let mut kdf_wallet = WalletState::load_with_session(
         dir.path().join("wallet.json"),
@@ -1026,29 +1027,29 @@ async fn test_s3c4_policy_update_without_auth_or_with_password_refused_step_up_u
         .unlock(&secrecy::SecretString::from(S3_TEST_PW.to_string()))
         .unwrap();
     let kdf_elapsed = kdf_start.elapsed();
-    assert!(
-        kdf_elapsed > std::time::Duration::from_millis(250),
-        "expected Argon2id vault unlock > 250 ms in test harness, took {kdf_elapsed:?}"
-    );
 
-    let expected_msg =
-        "policy changes require root approval: stage the change, then run `sudo vaughan signerd approve`";
     let audit_path = dir.path().join(vaughan_agent::sentient::POLICY_AUDIT_JSONL);
 
-    // 1. auth: None with no password key -> step_up_unsupported, store unchanged, no audit file.
+    // 1. auth: None with no password key -> step_up_unsupported, store unchanged, no audit file, fast relative to KDF.
     let no_pw_req = serde_json::json!({
         "op": "policy_update",
         "policy": modified,
         "expected_digest": cur_digest,
     });
+    let no_pw_start = std::time::Instant::now();
     let r_no_pw = send_raw_socket_json(&sock_path, &no_pw_req.to_string()).await;
+    let no_pw_elapsed = no_pw_start.elapsed();
     assert!(!r_no_pw.ok);
-    assert_eq!(r_no_pw.code.as_deref(), Some("step_up_unsupported"));
-    assert_eq!(r_no_pw.message.as_deref(), Some(expected_msg));
+    assert_eq!(r_no_pw.code.as_deref(), Some(STEP_UP_UNSUPPORTED_CODE));
+    assert_eq!(r_no_pw.message.as_deref(), Some(STEP_UP_UNSUPPORTED_MSG));
+    assert!(
+        no_pw_elapsed < kdf_elapsed / 4,
+        "auth:None refusal must skip KDF and return fast (reply={no_pw_elapsed:?}, kdf={kdf_elapsed:?})"
+    );
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
     assert!(!audit_path.exists());
 
-    // 2. auth: None with wrong password key -> indistinguishable response.
+    // 2. Legacy password key on auth: None (wrong or right password) -> rejected as unknown field (invalid_json), no KDF.
     let wrong_pw_req = serde_json::json!({
         "op": "policy_update",
         "password": "WrongPassword!999",
@@ -1057,44 +1058,50 @@ async fn test_s3c4_policy_update_without_auth_or_with_password_refused_step_up_u
     });
     let r_wrong = send_raw_socket_json(&sock_path, &wrong_pw_req.to_string()).await;
     assert!(!r_wrong.ok);
-    assert_eq!(r_wrong.code, r_no_pw.code);
-    assert_eq!(r_wrong.message, r_no_pw.message);
+    assert_eq!(r_wrong.code.as_deref(), Some("invalid_json"));
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
     assert!(!audit_path.exists());
 
-    // 3. auth: None with CORRECT vault password -> fast (< 250 ms, no KDF), same refusal.
     let right_pw_req = serde_json::json!({
         "op": "policy_update",
         "password": S3_TEST_PW,
         "policy": modified,
         "expected_digest": cur_digest,
     });
-    let start = std::time::Instant::now();
+    let right_pw_start = std::time::Instant::now();
     let r_right = send_raw_socket_json(&sock_path, &right_pw_req.to_string()).await;
-    let reply_elapsed = start.elapsed();
+    let right_pw_elapsed = right_pw_start.elapsed();
     assert!(!r_right.ok);
-    assert_eq!(r_right.code, r_no_pw.code);
-    assert_eq!(r_right.message, r_no_pw.message);
+    assert_eq!(r_right.code, r_wrong.code);
+    assert_eq!(r_right.message, r_wrong.message);
     assert!(
-        reply_elapsed < std::time::Duration::from_millis(250),
-        "policy_update without auth must skip KDF and return in < 250 ms (took {reply_elapsed:?}, kdf took {kdf_elapsed:?})"
+        right_pw_elapsed < kdf_elapsed / 4,
+        "password-bearing request must skip KDF (reply={right_pw_elapsed:?}, kdf={kdf_elapsed:?})"
     );
     eprintln!(
-        "s3c4 no-KDF timing: vault_unlock={kdf_elapsed:?}, policy_update_reply={reply_elapsed:?}"
+        "s3c4 no-KDF timing: vault_unlock={kdf_elapsed:?}, no_auth_reply={no_pw_elapsed:?}, right_pw_rejected={right_pw_elapsed:?}"
     );
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
     assert!(!audit_path.exists());
 
-    // 4. auth: None calls do NOT consume the per-uid step_up_limiter.
+    // 3. auth: None and password-bearing requests do NOT consume the per-uid step_up_limiter.
     let limiter_uid = 3001u32;
     for _ in 0..10 {
-        let resp: SignerResponse = serde_json::from_str(
+        let resp_no_pw: SignerResponse = serde_json::from_str(
+            &signer
+                .handle_line_with_uid(&no_pw_req.to_string(), limiter_uid)
+                .await,
+        )
+        .unwrap();
+        assert_eq!(resp_no_pw.code.as_deref(), Some(STEP_UP_UNSUPPORTED_CODE));
+
+        let resp_pw: SignerResponse = serde_json::from_str(
             &signer
                 .handle_line_with_uid(&right_pw_req.to_string(), limiter_uid)
                 .await,
         )
         .unwrap();
-        assert_eq!(resp.code.as_deref(), Some("step_up_unsupported"));
+        assert_eq!(resp_pw.code.as_deref(), Some("invalid_json"));
     }
     let approved_probe = serde_json::json!({
         "op": "policy_update",
@@ -1110,10 +1117,13 @@ async fn test_s3c4_policy_update_without_auth_or_with_password_refused_step_up_u
     assert_eq!(
         after_probe.code.as_deref(),
         Some("step_up_failed"),
-        "auth: None refusals must not consume step_up_limiter budget"
+        "auth: None and invalid_json refusals must not consume step_up_limiter budget"
     );
 
-    // 5. Legacy password key + auth: "stage" does NOT bypass approval.
+    // 4. password key on auth: "stage" or auth: "approved" is rejected with invalid_json and leaves pending/approval untouched.
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
     let stage_with_pw = serde_json::json!({
         "op": "policy_update",
         "auth": "stage",
@@ -1123,16 +1133,42 @@ async fn test_s3c4_policy_update_without_auth_or_with_password_refused_step_up_u
     });
     let r_stage = send_raw_socket_json(&sock_path, &stage_with_pw.to_string()).await;
     assert!(!r_stage.ok);
-    assert_eq!(r_stage.code.as_deref(), Some("step_up_required"));
+    assert_eq!(r_stage.code.as_deref(), Some("invalid_json"));
+    assert!(!pending_path.exists());
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 90;
+    let appr = write_s3b_approval(dir.path(), &p0, &p1, 120);
+    let approved_with_pw = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "password": S3_TEST_PW,
+        "policy": p1,
+    });
+    let r_appr_pw = send_raw_socket_json(&sock_path, &approved_with_pw.to_string()).await;
+    assert!(!r_appr_pw.ok);
+    assert_eq!(r_appr_pw.code.as_deref(), Some("invalid_json"));
+    assert!(
+        appr.exists(),
+        "rejected password request must not consume approval"
+    );
+    assert!(
+        pending_path.exists(),
+        "rejected password request must not clear pending policy"
+    );
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
     assert!(!audit_path.exists());
+    std::fs::remove_file(&appr).unwrap();
+    std::fs::remove_file(&pending_path).unwrap();
 
     srv.abort();
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn test_policy_update_refusals_and_two_step_disable_leave_store_unchanged() {
+async fn test_policy_stage_refusals_write_no_pending_and_two_step_disable() {
     let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
     let uid = rustix::process::geteuid().as_raw();
     signer.set_expected_approval_uid(uid);
@@ -1252,6 +1288,12 @@ async fn test_policy_update_refusals_and_two_step_disable_leave_store_unchanged(
             std::fs::read(&policy_path).unwrap(),
             baseline_bytes,
             "{label}: store must remain unchanged on refusal"
+        );
+        assert!(
+            !dir.path()
+                .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME)
+                .exists(),
+            "{label}: refused stage must not write policy-pending.json"
         );
     }
 
@@ -1977,6 +2019,40 @@ async fn test_s3b_tighten_only_does_not_consume_or_get_blocked_by_rate_limiter()
     .unwrap();
     assert_eq!(wide_blocked.code.as_deref(), Some("step_up_rate_limited"));
 
+    // Rate-limited even with a valid staged pending + root approval; nothing consumed.
+    let wide_stage = serde_json::json!({
+        "op": "policy_update",
+        "auth": "stage",
+        "policy": p_wide,
+        "expected_digest": p0.digest(),
+    });
+    let _ = signer
+        .handle_line_with_uid(&wide_stage.to_string(), uid_tight)
+        .await;
+    let appr = write_s3b_approval(dir.path(), &p0, &p_wide, 120);
+    let pending_file = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+    let before = std::fs::read(&policy_path).unwrap();
+    let r_with_appr: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&wide_no_approval.to_string(), uid_tight)
+            .await,
+    )
+    .unwrap();
+    assert_eq!(r_with_appr.code.as_deref(), Some("step_up_rate_limited"));
+    assert!(
+        appr.exists(),
+        "rate-limited request must not consume the approval"
+    );
+    assert!(
+        pending_file.exists(),
+        "rate-limited request must not clear pending policy"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), before);
+    std::fs::remove_file(&appr).unwrap();
+    std::fs::remove_file(&pending_file).unwrap();
+
     // 3. Even while uid_tight is rate-limited for widening, another peer UID is unaffected.
     let other_uid_resp: SignerResponse = serde_json::from_str(
         &signer
@@ -2018,7 +2094,23 @@ async fn test_s3b_corrupt_wallet_does_not_block_stage_approve_apply() {
     let mut p1 = p0.clone();
     p1.daily_cap_pct = 45;
 
-    // 1. Legacy password shape returns step_up_unsupported and leaves policy unchanged.
+    // 1. Omitting auth returns step_up_unsupported; legacy password key returns invalid_json.
+    let no_auth_req = serde_json::json!({
+        "op": "policy_update",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r_no_auth: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&no_auth_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_no_auth.ok);
+    assert_eq!(r_no_auth.code.as_deref(), Some(STEP_UP_UNSUPPORTED_CODE));
+    assert_eq!(r_no_auth.message.as_deref(), Some(STEP_UP_UNSUPPORTED_MSG));
+    assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
+
     let pw_req = serde_json::json!({
         "op": "policy_update",
         "password": S3_TEST_PW,
@@ -2032,7 +2124,7 @@ async fn test_s3b_corrupt_wallet_does_not_block_stage_approve_apply() {
     )
     .unwrap();
     assert!(!r_pw.ok);
-    assert_eq!(r_pw.code.as_deref(), Some("step_up_unsupported"));
+    assert_eq!(r_pw.code.as_deref(), Some("invalid_json"));
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline);
 
     // 2. Approval path (stage -> write_approval -> approved) succeeds without wallet.json.

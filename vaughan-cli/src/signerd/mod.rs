@@ -32,6 +32,7 @@ pub use approval::{
 };
 pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
 pub use migrate::{check_legacy_policy_absent, run_migrate};
+pub use policy::{STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
 pub use server::run_signerd;
 pub use vaughan_core::core::signer_client::{
