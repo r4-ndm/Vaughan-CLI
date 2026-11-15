@@ -84,6 +84,8 @@ pub(super) struct SignerInner {
     pub(super) breaker: Mutex<vaughan_agent::CircuitBreaker>,
     pub(super) step_up_limiter: Mutex<HashMap<u32, Vec<Instant>>>,
     pub(super) expected_approval_uid: std::sync::atomic::AtomicU32,
+    /// Operator opt-in for signing on a non-testnet chain; see [`Signer::allow_mainnet_writes`].
+    pub(super) mainnet_writes_allowed: std::sync::atomic::AtomicBool,
 }
 
 /// Signer engine handling policy checks, ledger reservations, and calldata builds.
@@ -147,6 +149,7 @@ impl Signer {
                 expected_approval_uid: std::sync::atomic::AtomicU32::new(
                     approval::PRODUCTION_APPROVAL_UID,
                 ),
+                mainnet_writes_allowed: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -156,6 +159,17 @@ impl Signer {
         self.inner
             .expected_approval_uid
             .store(uid, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Allow signing on a non-testnet chain (default: refused, `mainnet_blocked`).
+    ///
+    /// Set once at startup from the daemon's own environment (`VAUGHAN_MCP_ALLOW_MAINNET`,
+    /// provided by the root-owned `/etc/vaughan/sentient.env`), never from a request: the
+    /// agent that talks to the daemon must not be able to lift its own mainnet guard.
+    pub fn allow_mainnet_writes(&self, allow: bool) {
+        self.inner
+            .mainnet_writes_allowed
+            .store(allow, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Access the circuit breaker inside the signer.

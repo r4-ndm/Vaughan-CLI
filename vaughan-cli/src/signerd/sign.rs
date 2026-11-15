@@ -39,6 +39,11 @@ impl Signer {
             );
         }
 
+        // 1b. Mainnet writes need the operator's opt-in
+        if let Some(resp) = self.mainnet_refusal(intent.chain_id()) {
+            return resp;
+        }
+
         // 2. Load active policy
         let policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
             Ok(p) => p,
@@ -135,5 +140,27 @@ impl Signer {
                     .await
             }
         }
+    }
+}
+
+impl Signer {
+    /// `mainnet_blocked` unless the chain is a known testnet or the operator opted in.
+    /// A chain this build does not know counts as mainnet: refusing is the safe default.
+    fn mainnet_refusal(&self, chain_id: u64) -> Option<SignerResponse> {
+        let is_testnet = vaughan_core::chains::evm::networks::get_network_by_chain_id(chain_id)
+            .is_some_and(|n| n.is_testnet);
+        let allowed = self
+            .inner
+            .mainnet_writes_allowed
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (!is_testnet && !allowed).then(|| {
+            SignerResponse::error(
+                "mainnet_blocked",
+                format!(
+                    "chain {chain_id} is not a known testnet; the signer daemon needs \
+                     VAUGHAN_MCP_ALLOW_MAINNET=1 in its environment (/etc/vaughan/sentient.env) to sign there"
+                ),
+            )
+        })
     }
 }

@@ -781,6 +781,10 @@ mod tests {
 
     #[test]
     fn assist_unlock_cached_reads_shared_file() {
+        // `assist_unlock_cached` answers `true` while the burn gate env var is "0"; hold the
+        // env lock so another test's `set_var` cannot flip this one's first assertion.
+        let _env = env_guard();
+        std::env::remove_var(ASSIST_BURN_GATE_ENV);
         let root = tempfile::tempdir().unwrap();
         let sentient = root.path().join("profiles").join("sentient");
         std::fs::create_dir_all(&sentient).unwrap();
