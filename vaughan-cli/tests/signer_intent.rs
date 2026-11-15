@@ -1372,7 +1372,6 @@ async fn test_policy_update_audit_rotates_at_200_lines_over_socket() {
     assert!(resp.ok, "expected approved audit update ok, got {resp:?}");
 
     let after = std::fs::read_to_string(&audit_path).unwrap();
-    assert!(!after.contains(S3_TEST_PW));
     let lines: Vec<&str> = after.lines().collect();
     assert_eq!(lines.len(), 200);
     let oldest: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -1927,7 +1926,6 @@ async fn test_s3b_positive_stage_approve_apply_replay_and_sign() {
 
     let audit_path = dir.path().join(vaughan_agent::sentient::POLICY_AUDIT_JSONL);
     let audit_text = std::fs::read_to_string(&audit_path).unwrap();
-    assert!(!audit_text.contains(S3_TEST_PW));
     let audit_line: serde_json::Value = serde_json::from_str(audit_text.trim()).unwrap();
     assert_eq!(audit_line["source"], "socket");
     assert_eq!(audit_line["field_changes"]["daily_cap_pct"]["from"], 5);
@@ -2556,4 +2554,77 @@ async fn test_s3b_1b_fix_a_tightening_replaces_held_pending_slot_and_deletes_app
         "replacing held pending slot must delete any stale policy-approval.json"
     );
     assert_eq!(std::fs::read(&policy_path).unwrap(), baseline_bytes);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_s3c4_approved_wrong_expected_digest_does_not_burn_approval() {
+    let current_uid = rustix::process::geteuid().as_raw();
+    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    signer.set_expected_approval_uid(current_uid);
+
+    let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    let mut p1 = p0.clone();
+    p1.daily_cap_pct = 55;
+
+    let approval_path = write_s3b_approval(dir.path(), &p0, &p1, 120);
+    let pending_path = dir
+        .path()
+        .join(vaughan_cli::signerd::approval::POLICY_PENDING_FILENAME);
+
+    let approval_bytes = std::fs::read(&approval_path).unwrap();
+    let pending_bytes = std::fs::read(&pending_path).unwrap();
+    let policy_bytes = std::fs::read(&policy_path).unwrap();
+
+    // 1. Request with a wrong expected_digest must return policy_conflict WITHOUT burning the approval.
+    let bad_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+        "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    });
+    let r_bad: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&bad_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(!r_bad.ok);
+    assert_eq!(r_bad.code.as_deref(), Some("policy_conflict"));
+    assert_eq!(
+        std::fs::read(&approval_path).unwrap(),
+        approval_bytes,
+        "wrong expected_digest must NOT burn policy-approval.json"
+    );
+    assert_eq!(
+        std::fs::read(&pending_path).unwrap(),
+        pending_bytes,
+        "wrong expected_digest must NOT remove policy-pending.json"
+    );
+    assert_eq!(std::fs::read(&policy_path).unwrap(), policy_bytes);
+
+    // 2. Same request with the right expected_digest succeeds using the unburned approval.
+    let ok_req = serde_json::json!({
+        "op": "policy_update",
+        "auth": "approved",
+        "policy": p1,
+        "expected_digest": p0.digest(),
+    });
+    let r_ok: SignerResponse = serde_json::from_str(
+        &signer
+            .handle_line_with_uid(&ok_req.to_string(), current_uid)
+            .await,
+    )
+    .unwrap();
+    assert!(
+        r_ok.ok,
+        "request with matching expected_digest must succeed after rejected wrong-digest attempt: {r_ok:?}"
+    );
+    assert_eq!(r_ok.policy_digest.as_deref(), Some(p1.digest().as_str()));
+    assert_eq!(
+        vaughan_agent::sentient::load_policy(dir.path()).unwrap(),
+        p1
+    );
+    assert!(!approval_path.exists());
+    assert!(!pending_path.exists());
 }

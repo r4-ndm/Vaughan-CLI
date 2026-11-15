@@ -133,41 +133,24 @@ impl Signer {
             .inner
             .expected_approval_uid
             .load(std::sync::atomic::Ordering::Relaxed);
+        let pending_digest = pending.policy.digest();
         let approval_present =
-            approval::inspect_approval_at(&self.inner.store, expected_uid, now).is_present();
+            approval::read_trusted_approval_at(&self.inner.store, expected_uid, now)
+                .zip(vaughan_agent::sentient::load_policy(&self.inner.store).ok())
+                .is_some_and(|(appr, current)| {
+                    appr.new_digest == pending_digest && appr.old_digest == current.digest()
+                });
         SignerResponse::policy_pending_ok(Some(PendingInfo {
-            policy_digest: pending.policy.digest(),
+            policy_digest: pending_digest,
             expires_at_unix: pending.expires_at_unix,
             approval_present,
         }))
     }
 
-    fn is_request_tighten_only(&self, policy_val: Option<&serde_json::Value>) -> bool {
-        let Some(val) = policy_val else {
-            return false;
-        };
-        let Ok(candidate) =
-            serde_json::from_value::<vaughan_agent::sentient::AgentSessionPolicy>(val.clone())
-        else {
-            return false;
-        };
-        let Ok(current) = vaughan_agent::sentient::load_policy(&self.inner.store) else {
-            return false;
-        };
-        current.is_tighten_only(&candidate)
-    }
-
-    fn precheck_policy_update(
+    fn load_and_check_expected_digest(
         &self,
-        policy_val: Option<serde_json::Value>,
-        expected_digest: Option<String>,
-    ) -> Result<
-        (
-            vaughan_agent::sentient::AgentSessionPolicy,
-            vaughan_agent::sentient::AgentSessionPolicy,
-        ),
-        Box<SignerResponse>,
-    > {
+        expected_digest: Option<&str>,
+    ) -> Result<vaughan_agent::sentient::AgentSessionPolicy, Box<SignerResponse>> {
         let old_policy = match vaughan_agent::sentient::load_policy(&self.inner.store) {
             Ok(p) => p,
             Err(e) => {
@@ -190,6 +173,45 @@ impl Signer {
             }
         }
 
+        Ok(old_policy)
+    }
+
+    fn validate_candidate_policy(
+        old_policy: &vaughan_agent::sentient::AgentSessionPolicy,
+        new_policy: &vaughan_agent::sentient::AgentSessionPolicy,
+    ) -> Result<(), Box<SignerResponse>> {
+        if new_policy.enforcement == EnforcementMode::Disabled
+            && (!old_policy.acknowledge_unsafe || !new_policy.acknowledge_unsafe)
+        {
+            return Err(Box::new(SignerResponse::error(
+                "policy_refused",
+                "enforcement=disabled requires acknowledge_unsafe=true already persisted on disk (two-step confirm-unsafe required)",
+            )));
+        }
+
+        if let Err(e) = new_policy.validate() {
+            return Err(Box::new(SignerResponse::error(
+                "policy_invalid",
+                e.to_string(),
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn precheck_policy_update(
+        &self,
+        policy_val: Option<serde_json::Value>,
+        expected_digest: Option<String>,
+    ) -> Result<
+        (
+            vaughan_agent::sentient::AgentSessionPolicy,
+            vaughan_agent::sentient::AgentSessionPolicy,
+        ),
+        Box<SignerResponse>,
+    > {
+        let old_policy = self.load_and_check_expected_digest(expected_digest.as_deref())?;
+
         let Some(val) = policy_val else {
             return Err(Box::new(SignerResponse::error(
                 "policy_invalid",
@@ -208,22 +230,7 @@ impl Signer {
                 }
             };
 
-        if new_policy.enforcement == EnforcementMode::Disabled
-            && (!old_policy.acknowledge_unsafe || !new_policy.acknowledge_unsafe)
-        {
-            return Err(Box::new(SignerResponse::error(
-                "policy_refused",
-                "enforcement=disabled requires acknowledge_unsafe=true already persisted on disk (two-step confirm-unsafe required)",
-            )));
-        }
-
-        if let Err(e) = new_policy.validate() {
-            return Err(Box::new(SignerResponse::error(
-                "policy_invalid",
-                e.to_string(),
-            )));
-        }
-
+        Self::validate_candidate_policy(&old_policy, &new_policy)?;
         Ok((old_policy, new_policy))
     }
 
@@ -252,15 +259,17 @@ impl Signer {
 
     fn validate_and_apply_policy_update(
         &self,
-        policy_val: Option<serde_json::Value>,
-        expected_digest: Option<String>,
+        candidate: &vaughan_agent::sentient::AgentSessionPolicy,
+        required_old_digest: &str,
     ) -> SignerResponse {
-        let (old_policy, new_policy) =
-            match self.precheck_policy_update(policy_val, expected_digest) {
-                Ok(pair) => pair,
-                Err(resp) => return *resp,
-            };
-        self.apply_validated_policy_update(&old_policy, &new_policy)
+        let old_policy = match self.load_and_check_expected_digest(Some(required_old_digest)) {
+            Ok(p) => p,
+            Err(resp) => return *resp,
+        };
+        if let Err(resp) = Self::validate_candidate_policy(&old_policy, candidate) {
+            return *resp;
+        }
+        self.apply_validated_policy_update(&old_policy, candidate)
     }
 
     /// Refuse `{"op":"policy_update"}` requests that omit `"auth"` (`stage`/`approved`).
@@ -315,7 +324,14 @@ impl Signer {
         expected_digest: Option<String>,
         peer_uid: u32,
     ) -> SignerResponse {
-        let tighten_only = self.is_request_tighten_only(policy_val.as_ref());
+        // Parse request policy once before touching pending or approval files.
+        let candidate: Option<vaughan_agent::sentient::AgentSessionPolicy> =
+            policy_val.and_then(|val| serde_json::from_value(val).ok());
+        let tighten_only = candidate.as_ref().is_some_and(|cand| {
+            vaughan_agent::sentient::load_policy(&self.inner.store)
+                .is_ok_and(|current| current.is_tighten_only(cand))
+        });
+
         if !tighten_only {
             let mut limiter = self.inner.step_up_limiter.lock().unwrap();
             let now = Instant::now();
@@ -330,23 +346,13 @@ impl Signer {
             entries.push(now);
         }
 
-        // (1) Parse request policy before touching pending or approval files.
-        let Some(val) = policy_val else {
+        // (1) Reject missing/unparseable policy before touching pending or approval files.
+        let Some(candidate) = candidate else {
             return SignerResponse::error(
                 approval::STEP_UP_FAILED_CODE,
                 approval::STEP_UP_FAILED_MSG,
             );
         };
-        let candidate: vaughan_agent::sentient::AgentSessionPolicy =
-            match serde_json::from_value(val.clone()) {
-                Ok(p) => p,
-                Err(_) => {
-                    return SignerResponse::error(
-                        approval::STEP_UP_FAILED_CODE,
-                        approval::STEP_UP_FAILED_MSG,
-                    );
-                }
-            };
 
         // (2) Read staged pending policy without touching policy-approval.json.
         let now = vaughan_agent::dca::now_unix();
@@ -368,7 +374,15 @@ impl Signer {
             );
         }
 
-        // (4) Only now consume (fstat-verify and unlink) policy-approval.json.
+        // (4) Verify caller's expected_digest against current on-disk policy BEFORE consuming approval
+        // so a stale expected_digest returns policy_conflict without burning policy-approval.json.
+        if let Some(ref caller_expected) = expected_digest {
+            if let Err(resp) = self.load_and_check_expected_digest(Some(caller_expected.as_str())) {
+                return *resp;
+            }
+        }
+
+        // (5) Only now consume (fstat-verify and unlink) policy-approval.json.
         let expected_uid = self
             .inner
             .expected_approval_uid
@@ -383,7 +397,7 @@ impl Signer {
             }
         };
 
-        // (5) Bind candidate to approval.new_digest, check caller expected_digest, re-check disk & apply.
+        // (6) Bind candidate to approval.new_digest, check approval.old_digest, re-check disk & apply.
         if candidate.digest() != approval.new_digest {
             return SignerResponse::error(
                 approval::STEP_UP_FAILED_CODE,
@@ -410,7 +424,7 @@ impl Signer {
             }
         }
 
-        let resp = self.validate_and_apply_policy_update(Some(val), Some(approval.old_digest));
+        let resp = self.validate_and_apply_policy_update(&candidate, &approval.old_digest);
         if resp.ok {
             approval::clear_pending_policy(&self.inner.store);
         }
