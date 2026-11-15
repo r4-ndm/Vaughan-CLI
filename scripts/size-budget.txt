@@ -21,7 +21,6 @@ file 1165 vaughan-mcp/src/dispatch.rs
 file 5453 vaughan-tui/src/app.rs
 file 1489 vaughan-tui/src/brand.rs
 file 1827 vaughan-tui/src/provider.rs
-file 989 vaughan-tui/src/sentient_mcp.rs
 file 1091 vaughan-tui/src/views/ag.rs
 file 1138 vaughan-tui/src/views/browser.rs
 file 1980 vaughan-tui/src/views/dex.rs
@@ -76,7 +75,6 @@ fn 188 vaughan-tui/src/app.rs::poll_provider#1
 fn 1129 vaughan-tui/src/app.rs::spawn_job#1
 fn 207 vaughan-tui/src/provider.rs::describe_approval_with_fee#1
 fn 279 vaughan-tui/src/provider.rs::execute_approval_with_fee#1
-fn 354 vaughan-tui/src/sentient_mcp.rs::gate_sentient_proposal#1
 fn 168 vaughan-tui/src/views/browser.rs::render#1
 fn 152 vaughan-tui/src/views/dex.rs::handle_input_key#1
 fn 163 vaughan-tui/src/views/dex.rs::render_input#1

@@ -233,6 +233,73 @@ async fn test_replay_refused_and_reservation_released_on_send_failure() {
     assert!(resp.message.unwrap().contains("spend_already_reserved"));
 }
 
+/// Sends one `sign` request for `intent` and returns the parsed daemon response.
+async fn sign_intent(signer: &Signer, intent: &SignerIntent) -> SignerResponse {
+    let req = serde_json::json!({ "op": "sign", "intent": intent });
+    serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap()
+}
+
+#[tokio::test]
+async fn test_swap_through_non_allowlisted_router_refused_in_every_family() {
+    let (signer, broadcaster, _quoter, dir, _) = setup_test_harness(vec![]);
+    let rogue_router = Address::repeat_byte(0x44);
+
+    for family in [SwapFamily::V2, SwapFamily::V3, SwapFamily::Agg] {
+        let intent = SignerIntent::Swap {
+            chain_id: TEST_CHAIN_ID,
+            family,
+            router: rogue_router,
+            path: vec![Address::repeat_byte(0x22), Address::repeat_byte(0x33)],
+            amount_in: U256::from(100_000),
+            min_amount_out: U256::from(1),
+            fee: Some(3000),
+        };
+        let resp = sign_intent(&signer, &intent).await;
+        assert!(
+            !resp.ok,
+            "{family:?}: swap via an unaudited router must fail"
+        );
+        assert_eq!(
+            resp.code.as_deref(),
+            Some("router_not_allowed"),
+            "{family:?}"
+        );
+    }
+    assert!(
+        broadcaster.get_last_tx().is_none(),
+        "nothing may be broadcast"
+    );
+    assert!(
+        !dir.path().join("sentient-spend.json").exists(),
+        "a refused router must not reserve any budget"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_to_non_allowlisted_spender_refused() {
+    let (signer, broadcaster, _quoter, dir, _) = setup_test_harness(vec![]);
+    let intent = SignerIntent::Approve {
+        chain_id: TEST_CHAIN_ID,
+        token: Address::repeat_byte(0x33),
+        spender: Address::repeat_byte(0x55),
+        amount: U256::from(1_000),
+        expiry: None,
+    };
+
+    let resp = sign_intent(&signer, &intent).await;
+
+    assert!(!resp.ok);
+    assert_eq!(resp.code.as_deref(), Some("spender_not_allowed"));
+    assert!(
+        broadcaster.get_last_tx().is_none(),
+        "nothing may be broadcast"
+    );
+    assert!(
+        !dir.path().join("sentient-spend.json").exists(),
+        "a refused spender must not reserve any budget"
+    );
+}
+
 #[tokio::test]
 async fn test_approve_with_u256_max_is_refused() {
     let router = Address::from_str("0x165c3410fc91ef562c50559f7d2289febed552d9").unwrap();

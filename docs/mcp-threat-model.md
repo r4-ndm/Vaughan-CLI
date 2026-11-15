@@ -45,14 +45,14 @@ on-chain contracts.
 | Local socket hijack | Adviser: loopback TCP (`127.0.0.1:8746`) with random session token in `mcp.session` (0600) · Sentient: Unix domain socket (`/run/vaughan/signerd.sock`) protected by `SO_PEERCRED` UID allowlist (`vaughan-signerd` daemon under `vaughan-signer` user); no TCP port or `mcp.session` file exists for sentient |
 | MCP exfiltrates keys | MCP process never unlocks vault; banned tools + tests |
 | Agent spends human savings | Use distinct seeds; only share mnemonic for intentional partnership |
-| Sentient batch smuggling | `Batch7702` auto-exec decodes `execute(txns)` legs; every native/ERC-20 transfer leg is sized against its own balance; unsizeable raw calls are refused (human profile required) |
-| Sentient sandwich / zero min-out | Gate-time fresh quote; `min_amount_out` must be within `max_slippage_bps` of it |
-| Sentient rogue router | Audited DEX router allowlist checked both at `propose_swap` and again at the auto-exec gate |
-| Sentient gas drain | Fresh fee estimate (fail-closed) + pre-broadcast `check_gas_budget` against the session ceiling; fee-spike >10% rejected |
+| Sentient batch smuggling | The signer daemon takes typed `SignerIntent`s only (no calldata member, `deny_unknown_fields`); every `BatchTransfer` leg is checked against `allow_transfer_to` and the whole batch is reserved against the daily spend ledger; unrecognised calls never become an intent (`intent_untyped`) |
+| Sentient sandwich / zero min-out | The daemon quotes on-chain itself and clamps `min_amount_out` to `max_slippage_bps` of that quote (`vaughan-cli/src/signerd/ops/swap.rs`); calldata is built by the daemon, never accepted from the agent |
+| Sentient rogue router | Audited DEX router allowlist at `propose_swap` and again in the daemon (`router_not_allowed`, `spender_not_allowed`; covered by `signer_intent` tests) |
+| Sentient gas drain | **Not yet enforced in the daemon** (tracked): the session gas ceiling (`max_session_gas_wei`) and the fee-spike check were enforced only by the removed in-TUI gate. Spend is still bounded by the daily cap and position caps |
 | Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced`; live edits require root-approved `policy_update` (`stage` -> `sudo vaughan signerd approve` -> `approved`), `expected_digest` CAS, two-step `acknowledge_unsafe` before `disabled`, per-UID rate limiting, and `policy-audit.jsonl` logging |
-| Mainnet accident | Testnet default; `VAUGHAN_MCP_ALLOW_MAINNET=1` for mainnet writes; re-checked at the sentient gate |
+| Mainnet accident | Testnet default; the daemon refuses any intent whose `chain_id` differs from its configured chain (`chain_id_mismatch`). **`VAUGHAN_MCP_ALLOW_MAINNET` is not yet checked by the daemon** (tracked) |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
-| Runaway sentient agent | Profile policy + circuit breakers + **Ctrl+K** kill-switch (TUI) |
+| Runaway sentient agent | Daily spend cap + position caps + circuit breaker inside the daemon; **Ctrl+K** trips only the TUI-side breaker, the daemon has no IPC trip op yet (tracked) |
 | Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`; Batch7702 uses Ambire `estimate_self_pay_fee`; **includes** `LpDeployStep` multi-step Brew) |
 | TOCTOU | Re-simulate + re-estimate fee before sign |
 | Double-spend proposal | Terminal states; duplicate `proposal_id` rejected at enqueue |

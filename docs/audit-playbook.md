@@ -68,8 +68,9 @@ money a mistake costs.
    `vaughan-core/src/chains/evm/adapter.rs::send_transaction` / `send_raw_transaction`
    (the chokepoint), `vaughan-tui`'s `UiJob::SendEvmWithFee` / `WalletState::send_transaction`
    (user-approved), and `vaughan-agent/src/sentient/trader.rs` (**signs and broadcasts on its
-   own in `SentientTrader` mode**, no approval card — reachable from
-   `vaughan-tui/src/sentient_mcp.rs`). A claim that "only the TUI broadcasts" is false and
+   own in `SentientTrader` mode**, no approval card — an in-process path that
+   sentient profiles are refused, see `ensure_local_signing_allowed`; MCP proposals reach the
+   chain only through `vaughan-cli/src/signerd/`). A claim that "only the TUI broadcasts" is false and
    will make you miss the autonomous path.
 5. **Spending starts disabled and explains itself.** A new spending feature ships off by
    default and reports why it is off; approvals and withdrawals stay deliberate user

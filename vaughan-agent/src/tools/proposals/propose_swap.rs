@@ -105,7 +105,7 @@ impl Tool for ProposeSwapTool {
             .map_err(|e| AgentError::InvalidToolCall(format!("Invalid router address: {e}")))?;
 
         // Only audited catalog V2 routers — an arbitrary "router" contract or
-        // V3/NPM contract would bypass the sentient gate's fresh-quote slippage floor
+        // V3/NPM contract would bypass the signer daemon's fresh-quote slippage floor
         // or build a proposal for a call the target does not implement.
         if !vaughan_core::core::is_allowed_dex_v2_router(context.chain_id, router) {
             return Err(AgentError::InvalidToolCall(format!(
