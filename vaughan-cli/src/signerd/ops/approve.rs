@@ -9,7 +9,7 @@ use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::signer_client::SignerResponse;
 use vaughan_core::core::SignerIntent;
 
-use crate::signerd::{intents, Signer};
+use crate::signerd::{balance_or_refuse, intents, Signer};
 
 impl Signer {
     pub(crate) async fn handle_approve(
@@ -55,9 +55,9 @@ impl Signer {
         }
 
         // Check approve cap
-        let balance = self.get_balance(Some(token)).await;
+        let balance = balance_or_refuse!(self, Some(token));
         let cap_pct = policy.max_approve_pct();
-        let cap = (balance * U256::from(cap_pct)) / U256::from(100);
+        let cap = balance.saturating_mul(U256::from(cap_pct)) / U256::from(100);
         if policy.enforcement == EnforcementMode::Enforced && amount > cap {
             return SignerResponse::error(
                 "approve_cap_exceeded",

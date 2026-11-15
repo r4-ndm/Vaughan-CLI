@@ -7,8 +7,8 @@ use alloy::primitives::{Address, U256};
 use secrecy::SecretString;
 use vaughan_agent::sentient::policy::{AgentSessionPolicy, EnforcementMode};
 use vaughan_cli::signerd::{
-    is_peer_uid_allowed, MockBroadcaster, MockSwapQuoter, Signer, SignerResponse,
-    STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG,
+    is_peer_uid_allowed, MockBalanceSource, MockBroadcaster, MockSwapQuoter, Signer,
+    SignerResponse, STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG,
 };
 use vaughan_core::core::dex_routers::wpls_for_chain;
 use vaughan_core::core::{
@@ -27,6 +27,7 @@ fn setup_test_harness(
     Arc<MockSwapQuoter>,
     tempfile::TempDir,
     Address,
+    Arc<MockBalanceSource>,
 ) {
     let dir = tempfile::tempdir().unwrap();
     let wallet_path = dir.path().join("wallet.json");
@@ -53,6 +54,7 @@ fn setup_test_harness(
 
     let broadcaster = Arc::new(MockBroadcaster::new());
     let quoter = Arc::new(MockSwapQuoter::new());
+    let balances = Arc::new(MockBalanceSource::new());
     let rpc_url = "http://127.0.0.1:8545".to_string();
 
     let signer = Signer::new(
@@ -62,9 +64,10 @@ fn setup_test_harness(
         rpc_url,
         quoter.clone(),
         broadcaster.clone(),
+        balances.clone(),
     );
 
-    (signer, broadcaster, quoter, dir, active_addr)
+    (signer, broadcaster, quoter, dir, active_addr, balances)
 }
 
 #[tokio::test]
@@ -86,7 +89,7 @@ async fn test_peer_uid_allowlist_function() {
 
 #[tokio::test]
 async fn test_status_op_returns_expected_fields() {
-    let (signer, _, _, dir, active_addr) = setup_test_harness(vec![]);
+    let (signer, _, _, dir, active_addr, _) = setup_test_harness(vec![]);
 
     let req_json = r#"{"op":"status"}"#;
     let resp_str = signer.handle_line(req_json).await;
@@ -105,7 +108,7 @@ async fn test_transfer_to_address_outside_allowlist_refused() {
     let allowed_addr = Address::repeat_byte(0x11);
     let disallowed_addr = Address::repeat_byte(0x22);
 
-    let (signer, _, _, _dir, _) = setup_test_harness(vec![format!("{allowed_addr:#x}")]);
+    let (signer, _, _, _dir, _, _) = setup_test_harness(vec![format!("{allowed_addr:#x}")]);
 
     // Attempt transfer to disallowed address
     let intent = SignerIntent::Transfer {
@@ -129,7 +132,7 @@ async fn test_transfer_to_address_outside_allowlist_refused() {
 
 #[tokio::test]
 async fn test_swap_below_floor_refused_and_valid_swap_produces_exact_calldata() {
-    let (signer, broadcaster, quoter, _dir, active_addr) = setup_test_harness(vec![]);
+    let (signer, broadcaster, quoter, _dir, active_addr, _) = setup_test_harness(vec![]);
 
     // Wiz4rd V3 SwapRouter on chain 943
     let router = Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap();
@@ -198,7 +201,8 @@ async fn test_swap_below_floor_refused_and_valid_swap_produces_exact_calldata() 
 #[tokio::test]
 async fn test_replay_refused_and_reservation_released_on_send_failure() {
     let allowed_addr = Address::repeat_byte(0x11);
-    let (signer, broadcaster, _, _dir, _) = setup_test_harness(vec![format!("{allowed_addr:#x}")]);
+    let (signer, broadcaster, _, _dir, _, _) =
+        setup_test_harness(vec![format!("{allowed_addr:#x}")]);
 
     let intent = SignerIntent::Transfer {
         chain_id: TEST_CHAIN_ID,
@@ -241,7 +245,7 @@ async fn sign_intent(signer: &Signer, intent: &SignerIntent) -> SignerResponse {
 
 #[tokio::test]
 async fn test_swap_through_non_allowlisted_router_refused_in_every_family() {
-    let (signer, broadcaster, _quoter, dir, _) = setup_test_harness(vec![]);
+    let (signer, broadcaster, _quoter, dir, _, _) = setup_test_harness(vec![]);
     let rogue_router = Address::repeat_byte(0x44);
 
     for family in [SwapFamily::V2, SwapFamily::V3, SwapFamily::Agg] {
@@ -277,7 +281,7 @@ async fn test_swap_through_non_allowlisted_router_refused_in_every_family() {
 
 #[tokio::test]
 async fn test_approve_to_non_allowlisted_spender_refused() {
-    let (signer, broadcaster, _quoter, dir, _) = setup_test_harness(vec![]);
+    let (signer, broadcaster, _quoter, dir, _, _) = setup_test_harness(vec![]);
     let intent = SignerIntent::Approve {
         chain_id: TEST_CHAIN_ID,
         token: Address::repeat_byte(0x33),
@@ -305,7 +309,7 @@ async fn test_approve_with_u256_max_is_refused() {
     let router = Address::from_str("0x165c3410fc91ef562c50559f7d2289febed552d9").unwrap();
     let token = Address::repeat_byte(0x33);
 
-    let (signer, _, _, _dir, _) = setup_test_harness(vec![]);
+    let (signer, _, _, _dir, _, _) = setup_test_harness(vec![]);
 
     let intent = SignerIntent::Approve {
         chain_id: TEST_CHAIN_ID,
@@ -329,7 +333,7 @@ async fn test_approve_with_u256_max_is_refused() {
 
 #[tokio::test]
 async fn test_dca_slice_refusals_and_execution() {
-    let (signer, broadcaster, quoter, dir, active_addr) = setup_test_harness(vec![]);
+    let (signer, broadcaster, quoter, dir, active_addr, _) = setup_test_harness(vec![]);
     let pair = Address::repeat_byte(0x44);
     let amount_in = U256::from(100_000);
 
@@ -486,6 +490,7 @@ async fn test_dca_slice_refusals_and_execution() {
         "http://127.0.0.1:8545".to_string(),
         quoter.clone(),
         broadcaster.clone(),
+        Arc::new(MockBalanceSource::new()),
     );
     let snap_after = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
     assert_eq!(snap_before.assets, snap_after.assets);
@@ -503,7 +508,7 @@ async fn test_dca_slice_refusals_and_execution() {
 
 #[tokio::test]
 async fn test_sweep_stealth_refusals_and_execution() {
-    let (signer, broadcaster, quoter, dir, active_addr) = setup_test_harness(vec![]);
+    let (signer, broadcaster, quoter, dir, active_addr, balances) = setup_test_harness(vec![]);
     let stealth_addr = Address::repeat_byte(0x55);
 
     // 1. Refusal on unknown stealth note (not in stealth-pending.json)
@@ -521,7 +526,7 @@ async fn test_sweep_stealth_refusals_and_execution() {
     vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth_addr).unwrap();
 
     // 2. Refusal when amount cannot be determined
-    signer.set_balance(Some(stealth_addr), U256::ZERO);
+    balances.set_for_owner(stealth_addr, None, U256::ZERO);
     let resp_no_amt: SignerResponse =
         serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
     assert!(!resp_no_amt.ok);
@@ -529,7 +534,7 @@ async fn test_sweep_stealth_refusals_and_execution() {
 
     // 3. Valid sweep with known amount
     let sweep_amount = U256::from(500_000_000);
-    signer.set_balance(Some(stealth_addr), sweep_amount);
+    balances.set_for_owner(stealth_addr, None, sweep_amount);
     let resp_ok: SignerResponse =
         serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap();
     assert!(resp_ok.ok);
@@ -544,7 +549,7 @@ async fn test_sweep_stealth_refusals_and_execution() {
     // 5. Failure release: failing broadcast releases ledger reservation
     let stealth_addr2 = Address::repeat_byte(0x66);
     vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth_addr2).unwrap();
-    signer.set_balance(Some(stealth_addr2), sweep_amount);
+    balances.set_for_owner(stealth_addr2, None, sweep_amount);
 
     broadcaster.set_fail(true);
     let intent2 = SignerIntent::SweepStealth {
@@ -572,6 +577,7 @@ async fn test_sweep_stealth_refusals_and_execution() {
     // 6. Restart durability: drop signer and rebuild from same store; spend/recent unchanged
     let snap_before = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
     drop(signer);
+    let balances2 = Arc::new(MockBalanceSource::new());
     let signer2 = Signer::new(
         dir.path().to_path_buf(),
         active_addr,
@@ -579,13 +585,14 @@ async fn test_sweep_stealth_refusals_and_execution() {
         "http://127.0.0.1:8545".to_string(),
         quoter.clone(),
         broadcaster.clone(),
+        balances2.clone(),
     );
     let snap_after = vaughan_agent::sentient::SpendLedger::snapshot(dir.path()).unwrap();
     assert_eq!(snap_before.assets, snap_after.assets);
     assert_eq!(snap_before.recent, snap_after.recent);
 
     // Replay on rebuilt signer is still refused with spend_already_reserved
-    signer2.set_balance(Some(stealth_addr2), sweep_amount);
+    balances2.set_for_owner(stealth_addr2, None, sweep_amount);
     let resp_rebuilt_replay: SignerResponse =
         serde_json::from_str(&signer2.handle_line(&req2.to_string()).await).unwrap();
     assert!(!resp_rebuilt_replay.ok);
@@ -595,9 +602,466 @@ async fn test_sweep_stealth_refusals_and_execution() {
     );
 }
 
+/// Every intent type that sizes a cap or budget off the account balance must
+/// fail closed — never reserve, never broadcast — when the balance source errors.
+#[tokio::test]
+async fn test_balance_unavailable_fails_closed_for_every_op() {
+    let dest = Address::repeat_byte(0x11);
+    let (signer, broadcaster, quoter, dir, _active_addr, balances) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+
+    // Allowlisted V3 router/spender address already proven elsewhere in this file
+    // (reused for both the approve spender and the swap router allowlist checks).
+    let v3_router = Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap();
+    let approve_spender = v3_router;
+
+    let spend_ledger_path = dir.path().join("sentient-spend.json");
+    let assert_refused_and_untouched = |resp: &SignerResponse| {
+        assert!(!resp.ok, "expected refusal, got {resp:?}");
+        assert_eq!(resp.code.as_deref(), Some("balance_unavailable"));
+        assert!(
+            broadcaster.get_last_tx().is_none(),
+            "nothing may be broadcast when the balance read fails"
+        );
+        assert!(
+            !spend_ledger_path.exists(),
+            "a balance_unavailable refusal must not create the spend ledger"
+        );
+    };
+
+    balances.set_fail(true);
+
+    // 1. Transfer
+    let transfer_intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(10),
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &transfer_intent).await);
+
+    // 2. Approve
+    let approve_intent = SignerIntent::Approve {
+        chain_id: TEST_CHAIN_ID,
+        token: Address::repeat_byte(0x22),
+        spender: approve_spender,
+        amount: U256::from(500),
+        expiry: None,
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &approve_intent).await);
+
+    // 3. Swap (V3; quote/slippage checks happen before the balance read and must pass first)
+    let quote_out = U256::from(1_000_000);
+    let floor = U256::from(990_000); // 1% max slippage per setup_test_harness policy
+    quoter.set_v3(Address::repeat_byte(0x88), quote_out);
+    let swap_intent = SignerIntent::Swap {
+        chain_id: TEST_CHAIN_ID,
+        family: SwapFamily::V3,
+        router: v3_router,
+        path: vec![Address::repeat_byte(0x33), Address::repeat_byte(0x44)],
+        amount_in: U256::from(100_000),
+        min_amount_out: floor,
+        fee: Some(3000),
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &swap_intent).await);
+
+    // 4. Batch transfer
+    let batch_intent = SignerIntent::BatchTransfer {
+        chain_id: TEST_CHAIN_ID,
+        legs: vec![BatchTransferLeg {
+            to: dest,
+            amount: U256::from(50),
+        }],
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &batch_intent).await);
+
+    // 5. Wrap
+    let wrap_intent = SignerIntent::Wrap {
+        chain_id: TEST_CHAIN_ID,
+        amount: U256::from(777),
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &wrap_intent).await);
+
+    // 6. DCA slice (quote must clear the corridor floor before the balance read)
+    let dca_pair = Address::repeat_byte(0x99);
+    quoter.set_v3(dca_pair, U256::from(100_000));
+    quoter.set_dca_tokens(Address::repeat_byte(0x55), Address::repeat_byte(0x66));
+    let dca_intent = SignerIntent::DcaSlice {
+        plan_id: "plan_balance_unavailable".into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair: dca_pair,
+        amount_in: U256::from(100_000),
+        corridor_min_out: U256::from(95_000),
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &dca_intent).await);
+
+    // 7. Unwrap
+    let unwrap_intent = SignerIntent::Unwrap {
+        chain_id: TEST_CHAIN_ID,
+        amount: U256::from(333),
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &unwrap_intent).await);
+
+    // 8. Sweep stealth: the pending note carries no amount, so the stealth address's balance
+    // must be read; a read failure is `balance_unavailable`, not `amount_undetermined`.
+    let stealth_addr = Address::repeat_byte(0x77);
+    vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth_addr).unwrap();
+    let sweep_intent = SignerIntent::SweepStealth {
+        chain_id: TEST_CHAIN_ID,
+        stealth_address: stealth_addr,
+    };
+    assert_refused_and_untouched(&sign_intent(&signer, &sweep_intent).await);
+}
+
+/// Caps are a percentage of the REAL balance, not a fixed number: the exact same
+/// transfer amount must be refused against a small balance and pass against a
+/// large one. This could not have passed before the hardcoded 10-unit default was
+/// removed. The two balances are exercised against separate fresh stores because
+/// `SpendLedger::reserve` snapshots the balance into the on-disk ledger the first
+/// time an asset is seen in a 24h window and reuses that snapshot afterwards —
+/// sizing against a *second* real balance is a fresh-window question, not a
+/// mid-window one.
+#[tokio::test]
+async fn test_daily_cap_scales_with_real_balance() {
+    let dest = Address::repeat_byte(0x11);
+
+    // Low balance: 1,000 units, daily_cap_pct 20 -> cap = 200.
+    let (signer, broadcaster, _quoter, dir, _active_addr, balances) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    let mut policy = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    policy.daily_cap_pct = 20;
+    vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+    balances.set_default(U256::from(1_000u64));
+
+    let make_transfer = |amount: u64| SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(amount),
+    };
+
+    // 201 > 20% of 1,000 (200) must be refused.
+    let resp_over = sign_intent(&signer, &make_transfer(201)).await;
+    assert!(!resp_over.ok);
+    assert!(
+        resp_over.code.as_deref() == Some("daily_cap")
+            || resp_over
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("daily cap")
+            || resp_over.code.as_deref() == Some("spend_guard"),
+        "expected a daily-cap-style refusal, got {resp_over:?}"
+    );
+    assert!(broadcaster.get_last_tx().is_none());
+
+    // 200 == 20% of 1,000 must pass.
+    let resp_at_cap = sign_intent(&signer, &make_transfer(200)).await;
+    assert!(
+        resp_at_cap.ok,
+        "expected 200 to clear the cap: {resp_at_cap:?}"
+    );
+
+    // High balance: a fresh store sized at 1,000,000 units with the same 20% cap —
+    // the exact 201-unit amount that was refused above now passes.
+    let (signer2, _broadcaster2, _quoter2, dir2, _active_addr2, balances2) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    let mut policy2 = vaughan_agent::sentient::load_policy(dir2.path()).unwrap();
+    policy2.daily_cap_pct = 20;
+    vaughan_agent::sentient::save_policy(dir2.path(), &policy2).unwrap();
+    balances2.set_default(U256::from(1_000_000u64));
+
+    let resp_large_balance = sign_intent(&signer2, &make_transfer(201)).await;
+    assert!(
+        resp_large_balance.ok,
+        "201 is well under 20% of 1,000,000 and must pass: {resp_large_balance:?}"
+    );
+}
+
+/// `max_position_pct` scales with the real balance exactly like the daily cap
+/// does; unlike the daily cap it is recomputed from `get_balance` on every call
+/// (no on-disk snapshot), but the two stages still use separate fresh stores so
+/// a successful reservation in the first stage cannot shrink the second stage's
+/// `daily_cap_pct` headroom.
+#[tokio::test]
+async fn test_position_cap_scales_with_real_balance() {
+    let dest = Address::repeat_byte(0x11);
+
+    // Low balance: 1,000 units, max_position_pct 50 (setup_test_harness default) -> cap = 500.
+    let (signer, broadcaster, _quoter, _dir, _active_addr, balances) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    balances.set_default(U256::from(1_000u64));
+
+    let make_transfer = |amount: u64| SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(amount),
+    };
+
+    // 501 > 50% of 1,000 (500) must be refused by the position cap.
+    let resp_over = sign_intent(&signer, &make_transfer(501)).await;
+    assert!(!resp_over.ok);
+    assert_eq!(resp_over.code.as_deref(), Some("position_cap_exceeded"));
+    assert!(broadcaster.get_last_tx().is_none());
+
+    // 500 == 50% of 1,000 must pass.
+    let resp_at_cap = sign_intent(&signer, &make_transfer(500)).await;
+    assert!(
+        resp_at_cap.ok,
+        "expected 500 to clear the cap: {resp_at_cap:?}"
+    );
+
+    // High balance: a fresh store sized at 1,000,000 units — the exact 501-unit
+    // amount that was refused above now passes the position cap.
+    let (signer2, _broadcaster2, _quoter2, _dir2, _active_addr2, balances2) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    balances2.set_default(U256::from(1_000_000u64));
+
+    let resp_large_balance = sign_intent(&signer2, &make_transfer(501)).await;
+    assert!(
+        resp_large_balance.ok,
+        "501 is well under 50% of 1,000,000 and must pass: {resp_large_balance:?}"
+    );
+}
+
+/// The balance source must be asked with `token = Some(..)` for an ERC-20 leg and
+/// `token = None` for the native leg — never the wrong one.
+#[tokio::test]
+async fn test_balance_source_queried_with_correct_token_for_erc20_vs_native() {
+    let dest = Address::repeat_byte(0x11);
+    let (signer, _broadcaster, _quoter, _dir, active_addr, balances) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    let token = Address::repeat_byte(0x99);
+
+    // Native transfer: token = None.
+    let native_intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(1),
+    };
+    let resp = sign_intent(&signer, &native_intent).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(balances.calls().contains(&(active_addr, None)));
+
+    // ERC-20 transfer: token = Some(token).
+    let erc20_intent = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: Some(token),
+        amount: U256::from(1),
+    };
+    let resp = sign_intent(&signer, &erc20_intent).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(balances.calls().contains(&(active_addr, Some(token))));
+}
+
+/// Reads the on-disk spend ledger as text so tests can assert WHICH asset bucket was charged.
+fn spend_ledger_text(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join("sentient-spend.json")).unwrap_or_default()
+}
+
+/// A swap whose input is the wrapped-native token spends the NATIVE coin (the calldata
+/// builders send it as `value`): its cap is sized from the native balance and charged to
+/// the shared `native` bucket. A wallet holding native coin and zero WPLS must not be refused,
+/// and a WPLS balance must not inflate the native cap.
+#[tokio::test]
+async fn test_native_in_swap_is_sized_from_native_balance_not_wrapped_token() {
+    let (signer, _broadcaster, quoter, dir, active_addr, balances) = setup_test_harness(vec![]);
+    let wpls = wpls_for_chain(TEST_CHAIN_ID).unwrap();
+    balances.set(Some(wpls), U256::ZERO);
+    balances.set(None, U256::from(1_000_000_000u64));
+    quoter.set_v3(Address::repeat_byte(0x88), U256::from(1_000_000));
+    let intent = SignerIntent::Swap {
+        chain_id: TEST_CHAIN_ID,
+        family: SwapFamily::V3,
+        router: Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap(),
+        path: vec![wpls, Address::repeat_byte(0x44)],
+        amount_in: U256::from(100_000),
+        min_amount_out: U256::from(990_000),
+        fee: Some(3000),
+    };
+
+    let resp = sign_intent(&signer, &intent).await;
+
+    assert!(
+        resp.ok,
+        "native-in swap must be sized from native: {resp:?}"
+    );
+    let calls = balances.calls();
+    assert!(calls.contains(&(active_addr, None)), "{calls:?}");
+    assert!(!calls.contains(&(active_addr, Some(wpls))), "{calls:?}");
+    let ledger = spend_ledger_text(dir.path());
+    assert!(ledger.contains("943:native"), "{ledger}");
+    assert!(!ledger.contains(&format!("943:{wpls:#x}")), "{ledger}");
+}
+
+/// The mirror case: an ERC-20 input is sized from, and charged to, that token.
+#[tokio::test]
+async fn test_erc20_in_swap_is_sized_from_that_tokens_balance() {
+    let (signer, _broadcaster, quoter, dir, active_addr, balances) = setup_test_harness(vec![]);
+    let token_in = Address::repeat_byte(0x33);
+    balances.set(Some(token_in), U256::from(1_000_000_000u64));
+    balances.set(None, U256::ZERO);
+    quoter.set_v3(Address::repeat_byte(0x88), U256::from(1_000_000));
+    let intent = SignerIntent::Swap {
+        chain_id: TEST_CHAIN_ID,
+        family: SwapFamily::V3,
+        router: Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap(),
+        path: vec![token_in, Address::repeat_byte(0x44)],
+        amount_in: U256::from(100_000),
+        min_amount_out: U256::from(990_000),
+        fee: Some(3000),
+    };
+
+    let resp = sign_intent(&signer, &intent).await;
+
+    assert!(resp.ok, "{resp:?}");
+    let calls = balances.calls();
+    assert!(calls.contains(&(active_addr, Some(token_in))), "{calls:?}");
+    assert!(!calls.contains(&(active_addr, None)), "{calls:?}");
+    assert!(spend_ledger_text(dir.path()).contains(&format!("943:{token_in:#x}")));
+}
+
+/// A DCA slice follows the same rule as a swap: the asset it spends is decided by the quote's
+/// `token_in`, not assumed to be native.
+#[tokio::test]
+async fn test_dca_slice_is_sized_from_the_quoted_input_asset() {
+    let wpls = wpls_for_chain(TEST_CHAIN_ID).unwrap();
+    let erc20_in = Address::repeat_byte(0x55);
+    let pair = Address::repeat_byte(0x99);
+    let slice = |plan: &str| SignerIntent::DcaSlice {
+        plan_id: plan.into(),
+        slice_index: 0,
+        chain_id: TEST_CHAIN_ID,
+        pair,
+        amount_in: U256::from(100_000),
+        corridor_min_out: U256::from(95_000),
+    };
+
+    // ERC-20 input: sized from the token, charged to its bucket, native balance irrelevant.
+    let (signer, _b, quoter, dir, active_addr, balances) = setup_test_harness(vec![]);
+    quoter.set_v3(pair, U256::from(100_000));
+    quoter.set_dca_tokens(erc20_in, Address::repeat_byte(0x66));
+    balances.set(Some(erc20_in), U256::from(1_000_000_000u64));
+    balances.set(None, U256::ZERO);
+    let resp = sign_intent(&signer, &slice("plan_erc20")).await;
+    assert!(resp.ok, "{resp:?}");
+    let calls = balances.calls();
+    assert!(calls.contains(&(active_addr, Some(erc20_in))), "{calls:?}");
+    assert!(!calls.contains(&(active_addr, None)), "{calls:?}");
+    assert!(spend_ledger_text(dir.path()).contains(&format!("943:{erc20_in:#x}")));
+
+    // Wrapped-native input: spends the native coin.
+    let (signer, _b, quoter, dir, active_addr, balances) = setup_test_harness(vec![]);
+    quoter.set_v3(pair, U256::from(100_000));
+    quoter.set_dca_tokens(wpls, Address::repeat_byte(0x66));
+    balances.set(Some(wpls), U256::ZERO);
+    balances.set(None, U256::from(1_000_000_000u64));
+    let resp = sign_intent(&signer, &slice("plan_native")).await;
+    assert!(resp.ok, "{resp:?}");
+    let calls = balances.calls();
+    assert!(calls.contains(&(active_addr, None)), "{calls:?}");
+    assert!(!calls.contains(&(active_addr, Some(wpls))), "{calls:?}");
+    assert!(spend_ledger_text(dir.path()).contains("943:native"));
+}
+
+/// A sweep moves funds the profile already owns into the active wallet. It must not
+/// consume or inflate the active wallet's outgoing native allowance: a large stealth note
+/// swept first must leave the native daily cap sized from the wallet's real balance.
+#[tokio::test]
+async fn test_stealth_sweep_does_not_inflate_the_native_daily_cap() {
+    let dest = Address::repeat_byte(0x11);
+    let (signer, _broadcaster, _quoter, dir, _active, balances) =
+        setup_test_harness(vec![format!("{dest:#x}")]);
+    let mut policy = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    policy.daily_cap_pct = 20;
+    vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+    balances.set_default(U256::from(1_000u64));
+    let stealth = Address::repeat_byte(0x55);
+    vaughan_agent::sentient::record_stealth_pending(dir.path(), stealth).unwrap();
+    balances.set_for_owner(stealth, None, U256::from(500_000_000u64));
+
+    let sweep = SignerIntent::SweepStealth {
+        chain_id: TEST_CHAIN_ID,
+        stealth_address: stealth,
+    };
+    assert!(sign_intent(&signer, &sweep).await.ok);
+
+    // 20% of the real 1,000 balance is 200: 201 must still be refused.
+    let over = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: None,
+        amount: U256::from(201),
+    };
+    let resp = sign_intent(&signer, &over).await;
+    assert!(!resp.ok, "a sweep must not raise the native cap: {resp:?}");
+}
+
+/// The agent chooses the token address, so a hostile ERC-20 can report any balance. Cap
+/// arithmetic must saturate: with a plain `*`, `2^255 * 50` WRAPS to 0 and the cap silently
+/// becomes zero (or some unrelated number) instead of "very large".
+#[tokio::test]
+async fn test_huge_reported_balance_saturates_cap_arithmetic_instead_of_wrapping() {
+    let dest = Address::repeat_byte(0x11);
+    let (signer, _b, _q, _dir, _active, balances) = setup_test_harness(vec![format!("{dest:#x}")]);
+    let token = Address::repeat_byte(0x99);
+    // 2^255 * 50 (the harness position/approve percentage) is an exact multiple of 2^256.
+    balances.set(Some(token), U256::from(1u8) << 255);
+
+    let transfer = SignerIntent::Transfer {
+        chain_id: TEST_CHAIN_ID,
+        to: dest,
+        token: Some(token),
+        amount: U256::from(1),
+    };
+    let approve = SignerIntent::Approve {
+        chain_id: TEST_CHAIN_ID,
+        token,
+        spender: Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap(),
+        amount: U256::from(1),
+        expiry: None,
+    };
+
+    let r1 = sign_intent(&signer, &transfer).await;
+    let r2 = sign_intent(&signer, &approve).await;
+    assert!(r1.ok, "position cap wrapped to zero: {r1:?}");
+    assert!(r2.ok, "approve cap wrapped to zero: {r2:?}");
+}
+
+/// `max_approve_pct` is a percentage of the real token balance like the other caps.
+#[tokio::test]
+async fn test_approve_cap_scales_with_real_balance() {
+    let token = Address::repeat_byte(0x22);
+    let spender = Address::from_str("0xfC656c95eCd418536844FeeaA46949bb9365BEaF").unwrap();
+    let approve = |amount: u64| SignerIntent::Approve {
+        chain_id: TEST_CHAIN_ID,
+        token,
+        spender,
+        amount: U256::from(amount),
+        expiry: None,
+    };
+
+    // max_position_pct 50 (harness default) -> 1,000 balance gives a 500 approve cap.
+    let (signer, _b, _q, _dir, _a, balances) = setup_test_harness(vec![]);
+    balances.set(Some(token), U256::from(1_000u64));
+    let over = sign_intent(&signer, &approve(501)).await;
+    assert!(!over.ok);
+    assert_eq!(over.code.as_deref(), Some("approve_cap_exceeded"));
+    assert!(sign_intent(&signer, &approve(500)).await.ok);
+
+    // Same 501 against a 1,000,000 balance passes.
+    let (signer2, _b2, _q2, _d2, _a2, balances2) = setup_test_harness(vec![]);
+    balances2.set(Some(token), U256::from(1_000_000u64));
+    assert!(sign_intent(&signer2, &approve(501)).await.ok);
+}
+
 #[tokio::test]
 async fn test_wrap_and_unwrap_intents_build_correct_calldata() {
-    let (signer, broadcaster, _, _dir, _active_addr) = setup_test_harness(vec![]);
+    let (signer, broadcaster, _, _dir, _active_addr, _) = setup_test_harness(vec![]);
     let wpls = wpls_for_chain(TEST_CHAIN_ID).unwrap();
 
     // Wrap
@@ -642,7 +1106,7 @@ async fn test_batch_transfer_builds_7702_execute() {
     let dest1 = Address::repeat_byte(0x11);
     let dest2 = Address::repeat_byte(0x22);
 
-    let (signer, broadcaster, _, _dir, active_addr) =
+    let (signer, broadcaster, _, _dir, active_addr, _) =
         setup_test_harness(vec![format!("{dest1:#x}"), format!("{dest2:#x}")]);
 
     let batch_intent = SignerIntent::BatchTransfer {
@@ -682,7 +1146,7 @@ async fn test_batch_transfer_builds_7702_execute() {
 
 #[tokio::test]
 async fn test_status_op_returns_budget_and_breaker_info() {
-    let (signer, _, _, dir, _) = setup_test_harness(vec![]);
+    let (signer, _, _, dir, _, _) = setup_test_harness(vec![]);
 
     let req_json = r#"{"op":"status"}"#;
     let resp_str = signer.handle_line(req_json).await;
@@ -704,7 +1168,7 @@ async fn test_status_op_returns_budget_and_breaker_info() {
 #[tokio::test]
 async fn test_circuit_breaker_tripped_refuses_sign_and_reports_status() {
     let allowed_addr = Address::repeat_byte(0x11);
-    let (signer, _, _, _, _) = setup_test_harness(vec![format!("{allowed_addr:#x}")]);
+    let (signer, _, _, _, _, _) = setup_test_harness(vec![format!("{allowed_addr:#x}")]);
 
     // Manually trip the circuit breaker inside the signer
     signer.breaker().trip("emergency stop triggered in test");
@@ -748,7 +1212,7 @@ async fn test_signer_client_over_real_unix_socket() {
     use vaughan_cli::signerd::SignerClient;
 
     let dest = Address::repeat_byte(0x55);
-    let (signer, _, _, dir, _) = setup_test_harness(vec![format!("{dest:#x}")]);
+    let (signer, _, _, dir, _, _) = setup_test_harness(vec![format!("{dest:#x}")]);
     let socket_path = dir.path().join("test_signerd.sock");
 
     let listener = UnixListener::bind(&socket_path).unwrap();
@@ -852,7 +1316,7 @@ async fn test_socket_peer_uid_rejection() {
 
 #[tokio::test]
 async fn test_native_in_swap_and_dca_sets_tx_value_and_unknown_chain_refuses() {
-    let (signer, broadcaster, quoter, _dir, active_addr) = setup_test_harness(vec![]);
+    let (signer, broadcaster, quoter, _dir, active_addr, _) = setup_test_harness(vec![]);
 
     let wpls_943 = wpls_for_chain(TEST_CHAIN_ID).unwrap();
     let token_out = Address::repeat_byte(0x33);
@@ -960,6 +1424,7 @@ fn setup_s3_store(
     tempfile::TempDir,
     Address,
     std::path::PathBuf,
+    Arc<MockBalanceSource>,
 ) {
     let dir = tempfile::tempdir().unwrap();
     #[cfg(unix)]
@@ -990,6 +1455,7 @@ fn setup_s3_store(
         .join(vaughan_agent::sentient::SENTIENT_POLICY_TOML);
     let broadcaster = Arc::new(MockBroadcaster::new());
     let quoter = Arc::new(MockSwapQuoter::new());
+    let balances = Arc::new(MockBalanceSource::new());
     let signer = Signer::new(
         dir.path().to_path_buf(),
         active_addr,
@@ -997,8 +1463,9 @@ fn setup_s3_store(
         "http://127.0.0.1:8545".to_string(),
         quoter,
         broadcaster.clone(),
+        balances.clone(),
     );
-    (signer, broadcaster, dir, active_addr, policy_path)
+    (signer, broadcaster, dir, active_addr, policy_path, balances)
 }
 
 #[cfg(unix)]
@@ -1070,7 +1537,7 @@ async fn send_raw_socket_json(sock_path: &std::path::Path, raw_json: &str) -> Si
 #[tokio::test]
 async fn test_s3c4_policy_update_without_auth_or_with_password_refused_and_password_key_rejected() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 5, 50);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 5, 50);
     signer.set_expected_approval_uid(current_uid);
     let baseline = std::fs::read(&policy_path).unwrap();
     let (_sock_dir, sock_path, srv) =
@@ -1236,7 +1703,7 @@ async fn test_s3c4_policy_update_without_auth_or_with_password_refused_and_passw
 #[cfg(unix)]
 #[tokio::test]
 async fn test_policy_stage_refusals_write_no_pending_and_two_step_disable() {
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 10, 10);
     let uid = rustix::process::geteuid().as_raw();
     signer.set_expected_approval_uid(uid);
     let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![uid]).await;
@@ -1404,7 +1871,7 @@ async fn test_policy_stage_refusals_write_no_pending_and_two_step_disable() {
 async fn test_policy_update_audit_rotates_at_200_lines_over_socket() {
     use std::os::unix::fs::PermissionsExt;
 
-    let (signer, _, dir, _, _) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, _, _) = setup_s3_store(vec![], 10, 10);
     let uid = rustix::process::geteuid().as_raw();
     signer.set_expected_approval_uid(uid);
 
@@ -1453,7 +1920,7 @@ async fn test_policy_update_audit_rotates_at_200_lines_over_socket() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_policy_update_peer_uid_outside_allowlist_refused_before_step_up() {
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 10, 10);
     // Remove wallet.json on disk and check both auth:"stage" and auth:"approved"
     // from an unauthorized peer UID: peer UID check runs BEFORE examining the request.
     std::fs::remove_file(dir.path().join("wallet.json")).unwrap();
@@ -1553,7 +2020,7 @@ fn write_s3b_approval(
 #[tokio::test]
 async fn test_s3b_negative_approval_verifications_fail_closed_and_indistinguishable() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 10, 10);
     signer.set_expected_approval_uid(current_uid);
 
     let baseline_bytes = std::fs::read(&policy_path).unwrap();
@@ -1739,7 +2206,7 @@ async fn test_s3b_negative_approval_verifications_fail_closed_and_indistinguisha
 #[tokio::test]
 async fn test_s3b_old_digest_toctou_conflict_and_policy_guards_with_valid_approval() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 10, 10);
     signer.set_expected_approval_uid(current_uid);
 
     let approval_path = dir
@@ -1819,7 +2286,7 @@ async fn test_s3b_old_digest_toctou_conflict_and_policy_guards_with_valid_approv
 #[tokio::test]
 async fn test_s3b_second_stage_pending_and_unauthorized_peer_before_consume() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 10, 10);
     signer.set_expected_approval_uid(current_uid);
     let baseline_bytes = std::fs::read(&policy_path).unwrap();
 
@@ -1898,10 +2365,10 @@ async fn test_s3b_second_stage_pending_and_unauthorized_peer_before_consume() {
 async fn test_s3b_positive_stage_approve_apply_replay_and_sign() {
     let dest = Address::from([0x33; 20]);
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, broadcaster, dir, _, policy_path) =
+    let (signer, broadcaster, dir, _, policy_path, balances) =
         setup_s3_store(vec![format!("{dest:#x}")], 5, 90);
     signer.set_expected_approval_uid(current_uid);
-    signer.set_balance(None, U256::from(1_000));
+    balances.set(None, U256::from(1_000));
 
     let (_sock_dir, sock_path, srv) = spawn_s3_socket_server(signer, vec![current_uid]).await;
     let client = vaughan_core::core::SignerClient::new(&sock_path);
@@ -2019,7 +2486,7 @@ async fn test_s3b_positive_stage_approve_apply_replay_and_sign() {
 #[tokio::test]
 async fn test_s3b_tighten_only_does_not_consume_or_get_blocked_by_rate_limiter() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 20, 20);
     signer.set_expected_approval_uid(current_uid);
 
     let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
@@ -2148,7 +2615,7 @@ async fn test_s3b_tighten_only_does_not_consume_or_get_blocked_by_rate_limiter()
 #[tokio::test]
 async fn test_s3b_corrupt_wallet_does_not_block_stage_approve_apply() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 10, 10);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 10, 10);
     signer.set_expected_approval_uid(current_uid);
 
     // Corrupt wallet.json on disk.
@@ -2343,7 +2810,7 @@ fn test_s3b_cli_approve_help_non_root_and_approve_with_io() {
 #[tokio::test]
 async fn test_s3b_1b_fix_b_junk_approved_does_not_burn_approval_and_missing_pending_refuses() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 20, 20);
     signer.set_expected_approval_uid(current_uid);
 
     let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
@@ -2494,7 +2961,7 @@ async fn test_s3b_1b_fix_b_junk_approved_does_not_burn_approval_and_missing_pend
 #[tokio::test]
 async fn test_s3b_1b_fix_a_tightening_replaces_held_pending_slot_and_deletes_approval() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 20, 20);
     signer.set_expected_approval_uid(current_uid);
 
     let baseline_bytes = std::fs::read(&policy_path).unwrap();
@@ -2627,7 +3094,7 @@ async fn test_s3b_1b_fix_a_tightening_replaces_held_pending_slot_and_deletes_app
 #[tokio::test]
 async fn test_s3c4_approved_wrong_expected_digest_does_not_burn_approval() {
     let current_uid = rustix::process::geteuid().as_raw();
-    let (signer, _, dir, _, policy_path) = setup_s3_store(vec![], 20, 20);
+    let (signer, _, dir, _, policy_path, _) = setup_s3_store(vec![], 20, 20);
     signer.set_expected_approval_uid(current_uid);
 
     let p0 = vaughan_agent::sentient::load_policy(dir.path()).unwrap();

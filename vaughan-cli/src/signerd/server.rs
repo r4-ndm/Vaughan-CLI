@@ -15,7 +15,8 @@ use vaughan_core::core::{OperatingMode, WalletState};
 use zeroize::Zeroize;
 
 use super::{
-    broadcaster, check_legacy_policy_absent, find_vaughan_gid, is_peer_uid_allowed, quoter, Signer,
+    balance, broadcaster, check_legacy_policy_absent, find_vaughan_gid, is_peer_uid_allowed,
+    quoter, Signer,
 };
 
 /// Run the daemon loop serving Unix domain socket connections.
@@ -85,14 +86,14 @@ pub async fn run_signerd(
 
     let wallet_arc = Arc::new(tokio::sync::Mutex::new(wallet));
     let broadcaster = Arc::new(broadcaster::WalletBroadcaster::new(wallet_arc));
-    let quoter = Arc::new(quoter::LiveSwapQuoter);
     let signer = Signer::new(
         store,
         active_address,
         chain_id,
         rpc_url,
-        quoter,
+        Arc::new(quoter::LiveSwapQuoter),
         broadcaster,
+        Arc::new(balance::LiveBalanceSource),
     );
 
     eprintln!(

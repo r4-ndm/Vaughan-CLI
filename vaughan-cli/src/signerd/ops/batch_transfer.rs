@@ -8,7 +8,7 @@ use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::signer_client::SignerResponse;
 use vaughan_core::core::SignerIntent;
 
-use crate::signerd::{intents, Signer};
+use crate::signerd::{balance_or_refuse, intents, Signer};
 
 impl Signer {
     pub(crate) async fn handle_batch_transfer(
@@ -27,7 +27,7 @@ impl Signer {
             .iter()
             .fold(U256::ZERO, |acc, l| acc.saturating_add(l.amount));
         let asset = format!("{chain_id}:native");
-        let balance = self.get_balance(None).await;
+        let balance = balance_or_refuse!(self, None);
         let intent = SignerIntent::BatchTransfer {
             chain_id,
             legs: legs.clone(),

@@ -8,7 +8,7 @@ use vaughan_agent::sentient::SpendLedger;
 use vaughan_core::core::signer_client::SignerResponse;
 use vaughan_core::core::{SignerIntent, SwapFamily};
 
-use crate::signerd::{intents, Signer};
+use crate::signerd::{balance_or_refuse, intents, swap_input_or_refuse, Signer};
 
 impl Signer {
     #[allow(clippy::too_many_arguments)]
@@ -104,21 +104,13 @@ impl Signer {
             );
         }
 
-        // Check slippage floor
-        let max_bps = u64::from(policy.max_slippage_bps.min(10_000));
-        let floor = expected_out * U256::from(10_000u64 - max_bps) / U256::from(10_000u64);
-        if min_amount_out < floor {
-            return SignerResponse::error(
-                "slippage_exceeded",
-                format!(
-                    "min_amount_out {min_amount_out} is below policy floor {floor} (fresh quote {expected_out} less {max_bps} bps slippage)"
-                ),
-            );
+        if let Some(resp) = slippage_refusal(expected_out, min_amount_out, policy) {
+            return resp;
         }
 
         let token_in = path[0];
-        let asset = format!("{chain_id}:{token_in:#x}");
-        let balance = self.get_balance(Some(token_in)).await;
+        let (balance_token, asset) = swap_input_or_refuse!(chain_id, token_in);
+        let balance = balance_or_refuse!(self, balance_token);
         let intent = SignerIntent::Swap {
             chain_id,
             family,
@@ -208,4 +200,24 @@ impl Signer {
             }
         }
     }
+}
+
+/// The refusal for a swap whose `min_amount_out` is below the policy's slippage floor,
+/// measured against the daemon's own fresh quote (`expected_out`), never the agent's number.
+fn slippage_refusal(
+    expected_out: U256,
+    min_amount_out: U256,
+    policy: &vaughan_agent::sentient::AgentSessionPolicy,
+) -> Option<SignerResponse> {
+    let max_bps = u64::from(policy.max_slippage_bps.min(10_000));
+    let floor =
+        expected_out.saturating_mul(U256::from(10_000u64 - max_bps)) / U256::from(10_000u64);
+    (min_amount_out < floor).then(|| {
+        SignerResponse::error(
+            "slippage_exceeded",
+            format!(
+                "min_amount_out {min_amount_out} is below policy floor {floor} (fresh quote {expected_out} less {max_bps} bps slippage)"
+            ),
+        )
+    })
 }

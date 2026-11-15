@@ -10,6 +10,13 @@ use vaughan_core::core::SignerIntent;
 
 use crate::signerd::Signer;
 
+/// Budget of the stealth-sweep ledger bucket: unlimited, see `handle_sweep_stealth`.
+///
+/// The ledger `amount` of a sweep is bookkeeping only: the broadcaster sweeps whatever the
+/// wallet's own note scan finds at the address, so the recorded amount must not be read as
+/// the quantity actually moved.
+const SWEEP_BUDGET: U256 = U256::MAX;
+
 impl Signer {
     pub(crate) async fn handle_sweep_stealth(
         &self,
@@ -91,30 +98,9 @@ impl Signer {
             );
         }
 
-        let balance_override = self
-            .inner
-            .balance_overrides
-            .lock()
-            .unwrap()
-            .get(&Some(stealth_address))
-            .copied();
-
-        let amount = if let Some(amt) = note_amount {
-            amt
-        } else if let Some(b) = balance_override {
-            b
-        } else {
-            match self.get_onchain_balance(stealth_address).await {
-                Ok(b) if !b.is_zero() => b,
-                _ => {
-                    return SignerResponse::error(
-                        "amount_undetermined",
-                        format!(
-                            "could not determine balance for stealth address {stealth_address:#x}"
-                        ),
-                    );
-                }
-            }
+        let amount = match self.sweep_amount(stealth_address, note_amount).await {
+            Ok(a) => a,
+            Err(resp) => return resp,
         };
 
         if amount.is_zero() {
@@ -124,21 +110,23 @@ impl Signer {
             );
         }
 
-        let asset = format!("{chain_id}:native");
+        // A sweep moves funds the profile already owns INTO the active wallet, so it neither
+        // consumes nor sizes the active wallet's outgoing native allowance. It gets its own
+        // bucket with no spending limit (`SWEEP_BUDGET`): the reservation exists for replay
+        // protection (idempotency), and several notes may be swept in one window.
+        let asset = format!("{chain_id}:stealth-sweep");
         let intent = SignerIntent::SweepStealth {
             chain_id,
             stealth_address,
         };
         let key = intent.idempotency_key();
-        let balance = self.get_balance(None).await.max(amount);
 
-        // Size the reservation as full-budget (cap_pct = 100) per existing sweep rule
         match SpendLedger::reserve(
             &self.inner.store,
             &key,
             &asset,
             amount,
-            balance,
+            SWEEP_BUDGET,
             100,
             policy.enforcement,
         ) {
@@ -174,6 +162,37 @@ impl Signer {
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
                 SignerResponse::error("broadcast_failed", err)
             }
+        }
+    }
+}
+
+impl Signer {
+    /// The amount a sweep is accounted at: the pending note's recorded amount, else the
+    /// stealth address's live balance. An unreadable balance is `balance_unavailable`
+    /// (never a guess); an empty one is `amount_undetermined`.
+    async fn sweep_amount(
+        &self,
+        stealth_address: Address,
+        note_amount: Option<U256>,
+    ) -> Result<U256, SignerResponse> {
+        if let Some(amt) = note_amount {
+            return Ok(amt);
+        }
+        match self
+            .inner
+            .balances
+            .balance_of(&self.inner.rpc_url, stealth_address, None)
+            .await
+        {
+            Ok(b) if !b.is_zero() => Ok(b),
+            Ok(_) => Err(SignerResponse::error(
+                "amount_undetermined",
+                format!("stealth address {stealth_address:#x} holds no funds to sweep"),
+            )),
+            Err(e) => Err(SignerResponse::error(
+                "balance_unavailable",
+                format!("could not read balance of stealth address {stealth_address:#x}: {e}"),
+            )),
         }
     }
 }

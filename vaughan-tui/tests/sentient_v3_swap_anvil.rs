@@ -20,7 +20,7 @@ use tokio::net::UnixListener;
 use vaughan_agent::sentient::{
     AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig, EnforcementMode, SpendLedger,
 };
-use vaughan_cli::signerd::{LiveSwapQuoter, Signer, WalletBroadcaster};
+use vaughan_cli::signerd::{LiveBalanceSource, LiveSwapQuoter, Signer, WalletBroadcaster};
 use vaughan_core::core::proposal::{DexSwapKind, ProposalType, TxProposal};
 use vaughan_core::core::{OperatingMode, SignerClient, SignerIntent, SwapFamily, WalletState};
 use vaughan_core::security::hd_wallet::validate_mnemonic;
@@ -96,6 +96,7 @@ fn spawn_test_signerd(
         rpc_url,
         quoter,
         broadcaster,
+        Arc::new(LiveBalanceSource),
     );
 
     let listener = UnixListener::bind(&socket_path).unwrap();
@@ -1038,6 +1039,13 @@ async fn test_native_in_swap_and_dca_slice_broadcast_with_value_on_anvil() {
     // 3. Negative check: prove that if token_in is an ERC-20 (value == 0),
     // the router's CALLVALUE check reverts during fee estimation (the exact bug).
     let erc20_token = address!("29bab93456c0e97ee931c1554c7c215480aa7766");
+    // Give the cap-sizing balance read a real contract to call (this address
+    // otherwise carries no code on a bare anvil chain).
+    let mut erc20_balance_stub = vec![0x7fu8]; // PUSH32
+    erc20_balance_stub
+        .extend_from_slice(&U256::from(10_000_000_000_000_000_000u128).to_be_bytes::<32>());
+    erc20_balance_stub.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+    plant_code(&anvil, erc20_token, &erc20_balance_stub);
     let intent_erc20 = SignerIntent::Swap {
         chain_id: 943,
         family: SwapFamily::V3,

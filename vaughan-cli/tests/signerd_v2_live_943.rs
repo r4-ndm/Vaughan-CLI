@@ -24,7 +24,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use vaughan_agent::sentient::policy::{AgentSessionPolicy, EnforcementMode};
-use vaughan_cli::signerd::{LiveSwapQuoter, Signer, SignerResponse, WalletBroadcaster};
+use vaughan_cli::signerd::{
+    LiveBalanceSource, LiveSwapQuoter, Signer, SignerResponse, WalletBroadcaster,
+};
 use vaughan_core::core::signer_client::ENV_SIGNER_SOCKET;
 use vaughan_core::core::{quote_v2_exact_in, OperatingMode, WalletState};
 use vaughan_core::security::hd_wallet::generate_mnemonic;
@@ -300,6 +302,7 @@ async fn v2_native_in_swap_live_943() {
     let wallet_arc = Arc::new(tokio::sync::Mutex::new(wallet));
     let broadcaster = Arc::new(WalletBroadcaster::new(wallet_arc));
     let quoter = Arc::new(LiveSwapQuoter);
+    let balances = Arc::new(LiveBalanceSource);
     let signer = Signer::new(
         store_dir.clone(),
         active_addr,
@@ -307,6 +310,7 @@ async fn v2_native_in_swap_live_943() {
         RPC_943.to_string(),
         quoter,
         broadcaster,
+        balances,
     );
 
     let listener = UnixListener::bind(&socket_path).expect("bind temp unix socket");
