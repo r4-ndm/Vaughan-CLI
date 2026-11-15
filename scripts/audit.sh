@@ -158,6 +158,17 @@ else
     fi
 fi
 
+# ---------------------------------------------------------------- module size
+section "module size budget"
+
+# Ratchet, not a target: existing oversized files/functions are frozen in
+# scripts/size-budget.txt, new ones are refused. See scripts/size_budget.py.
+if command -v python3 >/dev/null 2>&1; then
+    run_check "no new oversized file or function (scripts/size_budget.py)" python3 scripts/size_budget.py
+else
+    fail "python3 not found — module size budget cannot run (unchecked, not clean)"
+fi
+
 # ---------------------------------------------------------------- tracked files
 section "tracked file hygiene"
 

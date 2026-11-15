@@ -80,6 +80,14 @@ disagree, this file wins and `CLAUDE.md` should be fixed.
 13. **Re-quote immediately before signing**; persisted quotes are display-only.
 14. **Allowlist routers/spenders.** An unknown contract in an execution path is a refusal.
 
+### Module size (enforced by `scripts/audit.sh`)
+
+New feature code goes in a **new module**, never appended to a big file. `scripts/size_budget.py` freezes the
+existing oversized files/functions in `scripts/size-budget.txt` (production lines > 800 per file, >= 150 per fn)
+and fails on any new one or any growth. When you split something, run `python3 scripts/size_budget.py --update`
+so the number goes down; never raise it. Splits are move-only commits (no behaviour change, proved by comparing
+normalised lines before/after), one concern per commit.
+
 ## Parallel agents and git
 
 More than one agent edits this repo at the same time. A dirty tree may contain work that is
