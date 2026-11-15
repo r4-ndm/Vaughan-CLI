@@ -1,6 +1,6 @@
 //! Settings / Net: switch networks; add, edit, or remove custom EVM networks;
 //! Agent CDP / autonomy toggles; manage F3 wallets (remove hardware / imports);
-//! change vault password; edit Sentient daemon policy via password step-up.
+//! change vault password; edit Sentient daemon policy via root-approval step-up.
 //!
 //! Footer `n` / `i` both land here. Built-ins are fixed; customs persist in the vault.
 //! Built-in RPC: **`r`**. Custom chains: **`a`** add · **`e`** edit · **`d`** delete.
@@ -30,6 +30,9 @@ use vaughan_provider::{EventBus, ProviderEvent};
 use crate::app::{KeyOutcome, Screen};
 use crate::brand;
 use crate::input::{Input, InputAction};
+use crate::views::policy_approval::{
+    self, Action as ApprovalAction, PolicyApproval, Progress as ApprovalProgress,
+};
 use crate::views::{body_areas, render_labeled_input, status_paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -56,8 +59,8 @@ enum Stage {
     ChangePasswordConfirm,
     /// Sentient session policy editor (backed by `vaughan signerd`).
     Policy,
-    /// Vault password prompt for sentient `policy_update` (never cached or pre-filled).
-    PolicyPassword,
+    /// Waiting for out-of-band root approval (`sudo vaughan signerd approve`) of a staged policy update.
+    PolicyApproval,
 }
 
 const POLICY_FIELDS: &[(&str, &str)] = &[
@@ -119,6 +122,7 @@ pub struct SettingsView {
     policy_digest: String,
     policy_focus: usize,
     policy_value: Input,
+    policy_approval: Option<PolicyApproval>,
     status: String,
 }
 
@@ -152,8 +156,21 @@ impl SettingsView {
             policy_digest: String::new(),
             policy_focus: 0,
             policy_value: Input::new(false, "value"),
+            policy_approval: None,
             status: String::new(),
         }
+    }
+
+    /// Construct a settings view pre-selecting the wallet's currently active network.
+    pub fn for_wallet(wallet: &WalletState) -> Self {
+        let active_id = wallet.networks().active_id();
+        let selected = wallet
+            .networks()
+            .networks()
+            .iter()
+            .position(|n| n.id == active_id)
+            .unwrap_or(0);
+        Self::new(selected)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, wallet: &WalletState) {
@@ -606,7 +623,7 @@ impl SettingsView {
                     Paragraph::new(vec![
                         Line::from(format!("Digest: {digest_short}")),
                         Line::from(Span::styled(
-                            "↑↓ select · edit value · Space toggle · Enter apply (vault password) · Esc back",
+                            "↑↓ select · edit value · Space toggle · Enter stage (root approval) · Esc back",
                             Style::default().fg(Color::DarkGray),
                         )),
                     ]),
@@ -642,43 +659,8 @@ impl SettingsView {
                 let label = format!("{field_name} ({field_hint})");
                 render_labeled_input(frame, edit_area, &label, &self.policy_value, true);
             }
-            Stage::PolicyPassword => {
-                let [msg, pw] =
-                    Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(content);
-                let msg_inner = brand::render_faded_box(
-                    frame,
-                    msg,
-                    Some(brand::fade_line(" Confirm policy update (step-up) ")),
-                );
-                let summary = self
-                    .policy_draft
-                    .as_ref()
-                    .map(|p| {
-                        format!(
-                            "enforcement={}  max_position={}  daily_cap={}  slippage={}bps  unsafe={}",
-                            p.enforcement.as_str(),
-                            p.max_position_pct,
-                            p.daily_cap_pct,
-                            p.max_slippage_bps,
-                            p.acknowledge_unsafe,
-                        )
-                    })
-                    .unwrap_or_default();
-                frame.render_widget(
-                    Paragraph::new(vec![
-                        Line::from(summary),
-                        Line::from(
-                            "Enter vault password to authorize signer daemon policy_update (never cached).",
-                        ),
-                        Line::from(Span::styled(
-                            "Enter submit · Esc cancel back to policy fields",
-                            Style::default().fg(Color::DarkGray),
-                        )),
-                    ])
-                    .wrap(Wrap { trim: false }),
-                    msg_inner,
-                );
-                render_labeled_input(frame, pw, "Vault password", &self.account_password, true);
+            Stage::PolicyApproval => {
+                policy_approval::render(frame, content, self.policy_approval.as_ref());
             }
         }
 
@@ -713,8 +695,8 @@ impl SettingsView {
             Stage::ChangePasswordCurrent
             | Stage::ChangePasswordNew
             | Stage::ChangePasswordConfirm => self.handle_change_password_key(key, wallet),
-            Stage::Policy => self.handle_policy_key(key),
-            Stage::PolicyPassword => self.handle_policy_password_key(key, handle),
+            Stage::Policy => self.handle_policy_key(key, handle),
+            Stage::PolicyApproval => self.handle_policy_approval_key(key),
         }
     }
 
@@ -1373,8 +1355,7 @@ impl SettingsView {
     }
 
     fn clear_policy_state(&mut self) {
-        let _ = self.account_password.take_secret();
-        self.account_password = Input::new(true, "vault password");
+        self.policy_approval = None;
         self.policy_draft = None;
         self.policy_digest.clear();
         self.policy_focus = 0;
@@ -1383,7 +1364,10 @@ impl SettingsView {
 
     fn open_policy(&mut self, handle: &Handle) -> KeyOutcome {
         let client = SignerClient::default();
-        let resp = match block_on_handle(handle, client.policy()) {
+        let resp = match crate::blocking::block_on_handle(handle, client.policy())
+            .map_err(|e| e.to_string())
+            .and_then(|r| r)
+        {
             Ok(r) => r,
             Err(e) => {
                 self.status = format!("Policy load failed: {e}");
@@ -1405,9 +1389,7 @@ impl SettingsView {
         self.policy_draft = Some(policy);
         self.policy_focus = 0;
         self.sync_policy_input();
-        // Never pre-fill or carry over any previous password input.
-        let _ = self.account_password.take_secret();
-        self.account_password = Input::new(true, "vault password");
+        self.policy_approval = None;
         self.stage = Stage::Policy;
         self.status.clear();
         KeyOutcome::Consumed
@@ -1444,7 +1426,7 @@ impl SettingsView {
         KeyOutcome::Consumed
     }
 
-    fn handle_policy_key(&mut self, key: KeyEvent) -> KeyOutcome {
+    fn handle_policy_key(&mut self, key: KeyEvent, handle: &Handle) -> KeyOutcome {
         match key.code {
             KeyCode::Esc => {
                 self.clear_policy_state();
@@ -1484,71 +1466,68 @@ impl SettingsView {
                             return KeyOutcome::Consumed;
                         }
                     }
-                    let _ = self.account_password.take_secret();
-                    self.account_password = Input::new(true, "vault password");
-                    self.stage = Stage::PolicyPassword;
-                    self.status.clear();
+                    self.start_policy_approval(handle);
                     KeyOutcome::Consumed
                 }
             },
         }
     }
 
-    fn handle_policy_password_key(&mut self, key: KeyEvent, handle: &Handle) -> KeyOutcome {
-        if key.code == KeyCode::Esc {
-            let _ = self.account_password.take_secret();
-            self.account_password = Input::new(true, "vault password");
-            self.stage = Stage::Policy;
-            self.status = "Password entry cancelled.".into();
-            return KeyOutcome::Consumed;
+    fn start_policy_approval(&mut self, handle: &Handle) {
+        let Some(draft) = self.policy_draft.as_ref() else {
+            self.stage = Stage::List;
+            self.status = "Policy draft lost.".into();
+            return;
+        };
+        match PolicyApproval::start_draft(handle, draft, &self.policy_digest) {
+            Ok(approval) => {
+                self.policy_approval = Some(approval);
+                self.stage = Stage::PolicyApproval;
+                self.status = format!(
+                    "Staged policy update — run `{}`.",
+                    policy_approval::APPROVE_COMMAND
+                );
+            }
+            Err(err) => self.status = err,
         }
-        match self.account_password.handle_key(key) {
-            InputAction::Ignored => KeyOutcome::NotHandled,
-            InputAction::Consumed => KeyOutcome::Consumed,
-            InputAction::Submitted => {
-                let pw = self.account_password.take_secret();
-                // Always reset immediately so the password is never cached or pre-filled.
-                self.account_password = Input::new(true, "vault password");
-                let Some(draft) = self.policy_draft.as_ref() else {
-                    drop(pw);
-                    self.stage = Stage::List;
-                    self.status = "Policy draft lost.".into();
-                    return KeyOutcome::Consumed;
-                };
-                let policy_json = match serde_json::to_value(draft) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        drop(pw);
-                        self.stage = Stage::Policy;
-                        self.status = format!("Policy encode error: {e}");
-                        return KeyOutcome::Consumed;
-                    }
-                };
-                let expected = if self.policy_digest.is_empty() {
-                    None
-                } else {
-                    Some(self.policy_digest.clone())
-                };
-                let client = SignerClient::default();
-                let res = block_on_handle(handle, client.policy_update(pw, policy_json, expected));
-                match res {
-                    Ok(resp) => {
-                        let new_digest = resp.policy_digest.unwrap_or_default();
-                        self.clear_policy_state();
-                        self.stage = Stage::List;
-                        self.status = format!("Policy updated on signerd (digest {new_digest}).");
-                        KeyOutcome::Flash("Sentient policy updated.".into())
-                    }
-                    Err(e) => {
-                        if e.contains("step_up_") {
-                            self.status = e;
-                        } else {
-                            self.stage = Stage::Policy;
-                            self.status = e;
-                        }
-                        KeyOutcome::Consumed
-                    }
-                }
+    }
+
+    fn handle_policy_approval_key(&mut self, key: KeyEvent) -> KeyOutcome {
+        let action = self
+            .policy_approval
+            .as_ref()
+            .map_or(ApprovalAction::Cancel, |a| a.handle_key(key));
+        if action == ApprovalAction::Cancel {
+            self.policy_approval = None;
+            self.stage = Stage::Policy;
+            self.status = policy_approval::CANCELLED_STATUS.to_string();
+        }
+        KeyOutcome::Consumed
+    }
+
+    /// Advance an active Sentient policy root-approval step-up without blocking the UI.
+    pub fn poll(&mut self, tick: u64, handle: &Handle) -> Option<String> {
+        if self.stage != Stage::PolicyApproval {
+            return None;
+        }
+        let Some(approval) = self.policy_approval.as_mut() else {
+            self.stage = Stage::Policy;
+            return None;
+        };
+        match approval.poll(tick, handle, &SignerClient::default()) {
+            ApprovalProgress::Waiting => None,
+            ApprovalProgress::Applied { digest } => {
+                self.clear_policy_state();
+                self.stage = Stage::List;
+                self.status = format!("Policy updated on signerd (digest {digest}).");
+                Some("Sentient policy updated.".into())
+            }
+            ApprovalProgress::Failed(err) => {
+                self.policy_approval = None;
+                self.stage = Stage::Policy;
+                let msg = err.to_string();
+                self.status = msg.clone();
+                Some(msg)
             }
         }
     }
@@ -1579,26 +1558,6 @@ fn policy_field_display(policy: &AgentSessionPolicy, idx: usize) -> String {
         7 => policy.required_rpc_quorum.to_string(),
         8 => policy.allow_transfer_to.join(", "),
         _ => policy.acknowledge_unsafe.to_string(),
-    }
-}
-
-fn block_on_handle<F, T>(handle: &Handle, fut: F) -> T
-where
-    F: std::future::Future<Output = T> + Send,
-    T: Send,
-{
-    match Handle::try_current() {
-        Ok(cur) => match cur.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| handle.block_on(fut))
-            }
-            _ => std::thread::scope(|s| {
-                s.spawn(|| handle.block_on(fut))
-                    .join()
-                    .expect("policy rpc thread panicked")
-            }),
-        },
-        Err(_) => handle.block_on(fut),
     }
 }
 

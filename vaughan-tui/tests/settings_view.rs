@@ -405,3 +405,644 @@ fn settings_view_sentient_shows_policy_shortcut_and_default_refuses_y() {
     let sentient_view = SettingsView::new(0);
     assert!(render(&sentient_view, &sentient_wallet).contains("y policy"));
 }
+
+static SIGNER_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct SignerSocketGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prev: Option<String>,
+}
+
+impl SignerSocketGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let lock = SIGNER_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("VAUGHAN_SIGNER_SOCKET").ok();
+        std::env::set_var("VAUGHAN_SIGNER_SOCKET", path);
+        Self { _lock: lock, prev }
+    }
+}
+
+impl Drop for SignerSocketGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var("VAUGHAN_SIGNER_SOCKET", v),
+            None => std::env::remove_var("VAUGHAN_SIGNER_SOCKET"),
+        }
+    }
+}
+
+struct StubSigner {
+    _dir: tempfile::TempDir,
+    sock_path: std::path::PathBuf,
+    requests: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for StubSigner {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn spawn_signer_stub(handle: &Handle, responses: Vec<Value>) -> StubSigner {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock_path = dir.path().join("signerd.sock");
+    let listener = handle
+        .block_on(async { UnixListener::bind(&sock_path) })
+        .unwrap();
+    let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let rec = requests.clone();
+    let task = handle.spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let queue = queue.clone();
+            let rec = rec.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                if let Ok(req) = serde_json::from_str::<Value>(line.trim()) {
+                    rec.lock().unwrap().push(req);
+                }
+                let next = queue.lock().unwrap().pop_front().unwrap_or_else(|| {
+                    serde_json::json!({"ok": false, "code": "unexpected_call", "message": "stub queue empty"})
+                });
+                let payload = format!("{next}\n");
+                let _ = stream.write_all(payload.as_bytes()).await;
+            });
+        }
+    });
+    StubSigner {
+        _dir: dir,
+        sock_path,
+        requests,
+        task,
+    }
+}
+
+fn sentient_wallet(dir: &std::path::Path) -> WalletState {
+    WalletState::load_with_session(
+        dir.join("sentient-wallet.json"),
+        OperatingMode::SentientTrader,
+        "sentient",
+    )
+    .unwrap()
+}
+
+fn initial_policy_value() -> Value {
+    let p = vaughan_agent::sentient::AgentSessionPolicy {
+        max_position_pct: 15,
+        ..Default::default()
+    };
+    serde_json::to_value(&p).unwrap()
+}
+
+fn future_unix_secs(offset: u64) -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + offset
+}
+
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn render_wide(view: &SettingsView, wallet: &WalletState) -> String {
+    render_frame(160, 30, |f| view.render(f, f.area(), wallet))
+}
+
+fn open_edit_and_stage_42(
+    view: &mut SettingsView,
+    wallet: &mut WalletState,
+    handle: &Handle,
+    events: &EventBus,
+) {
+    view.handle_key(key(KeyCode::Char('y')), wallet, handle, events);
+    view.handle_key(key(KeyCode::Down), wallet, handle, events);
+    for _ in 0..4 {
+        view.handle_key(key(KeyCode::Backspace), wallet, handle, events);
+    }
+    view.handle_key(key(KeyCode::Char('4')), wallet, handle, events);
+    view.handle_key(key(KeyCode::Char('2')), wallet, handle, events);
+    view.handle_key(key(KeyCode::Enter), wallet, handle, events);
+}
+
+#[test]
+fn sentient_policy_submit_opens_root_approval_without_password_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_initial_0001"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_abcdef",
+                "pending": {
+                    "policy_digest": "digest_staged_abcdef",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    let text = render(&view, &wallet);
+    let lower = text.to_ascii_lowercase();
+
+    assert!(
+        !lower.contains("password"),
+        "wait screen must never mention password:\n{text}"
+    );
+    assert!(
+        !lower.contains("vault"),
+        "wait screen must not prompt for vault credentials:\n{text}"
+    );
+    assert!(text.contains("sudo vaughan signerd approve"), "{text}");
+    assert!(text.contains("digest_stage"), "{text}");
+    assert!(
+        text.contains(
+            "run it from a clean console (Ctrl+Alt+F3) or run0, not a normal terminal tab"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Expires in "), "{text}");
+
+    let reqs = stub.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[1]["op"], "policy_update");
+    assert_eq!(reqs[1]["auth"], "stage");
+}
+
+#[test]
+fn sentient_policy_step_up_pending_keeps_editor_open_with_draft() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_initial_0001"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_pending",
+                "message": "another policy update is already staged"
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    let text = render_wide(&view, &wallet);
+    let expected = vaughan_core::core::policy_step_up::StepUpError::Daemon {
+        code: "step_up_pending".into(),
+        message: "another policy update is already staged".into(),
+    }
+    .to_string();
+
+    assert!(
+        text.contains("max_position_pct"),
+        "must stay on field editor:\n{text}"
+    );
+    assert!(
+        text.contains("42"),
+        "edited draft must remain intact:\n{text}"
+    );
+    assert!(
+        normalize_ws(&text).contains(&expected),
+        "expected `{expected}` in:\n{text}"
+    );
+}
+
+#[test]
+fn sentient_policy_esc_on_wait_screen_applies_nothing_and_leaves_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_initial_0001"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_cancel",
+                "pending": {
+                    "policy_digest": "digest_staged_cancel",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    view.handle_key(key(KeyCode::Esc), &mut wallet, &handle, &events);
+
+    let text = normalize_ws(&render(&view, &wallet));
+    assert!(text.contains("max_position_pct"), "{text}");
+    assert!(text.contains("not applied"), "{text}");
+    assert!(
+        text.contains("stays pending until it expires (10 min)"),
+        "{text}"
+    );
+
+    let reqs = stub.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 2, "Esc must never call apply: {reqs:?}");
+}
+
+#[test]
+fn sentient_policy_expired_returns_to_editor_with_draft_and_applies_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_initial_0001"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_exp",
+                "pending": {
+                    "policy_digest": "digest_staged_exp",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+            serde_json::json!({ "ok": true, "pending": null }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    let flash = view.poll(1, &handle).unwrap();
+    let expected = vaughan_core::core::policy_step_up::StepUpError::Expired.to_string();
+    assert_eq!(flash, expected);
+
+    let text = normalize_ws(&render_wide(&view, &wallet));
+    assert!(text.contains("max_position_pct"), "{text}");
+    assert!(text.contains("42"), "{text}");
+    assert!(text.contains(&expected), "{text}");
+
+    let reqs = stub.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs[2]["op"], "policy_pending");
+}
+
+#[test]
+fn sentient_policy_poll_throttles_to_once_per_25_ticks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_initial_0001"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_thr",
+                "pending": {
+                    "policy_digest": "digest_staged_thr",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+            serde_json::json!({
+                "ok": true,
+                "pending": {
+                    "policy_digest": "digest_staged_thr",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+            serde_json::json!({
+                "ok": true,
+                "pending": {
+                    "policy_digest": "digest_staged_thr",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    for tick in 1..=25 {
+        assert!(view.poll(tick, &handle).is_none());
+    }
+    assert_eq!(stub.requests.lock().unwrap().len(), 3);
+
+    assert!(view.poll(26, &handle).is_none());
+    let reqs = stub.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 4);
+    assert_eq!(reqs[2]["op"], "policy_pending");
+    assert_eq!(reqs[3]["op"], "policy_pending");
+}
+
+#[test]
+fn sentient_policy_happy_path_applies_edited_draft_not_daemon_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_old_1111"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_ok",
+                "pending": {
+                    "policy_digest": "digest_staged_ok",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+            serde_json::json!({
+                "ok": true,
+                "pending": {
+                    "policy_digest": "digest_staged_ok",
+                    "expires_at_unix": expires,
+                    "approval_present": true,
+                    "policy": { "max_position_pct": 99 }
+                }
+            }),
+            serde_json::json!({
+                "ok": true,
+                "policy_digest": "digest_new_3333"
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    let flash = view.poll(1, &handle).unwrap();
+    assert_eq!(flash, "Sentient policy updated.");
+
+    let text = normalize_ws(&render_wide(&view, &wallet));
+    assert!(
+        text.contains("Policy updated on signerd (digest digest_new_3333)."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("max_position_pct"),
+        "must return to Settings list after Applied:\n{text}"
+    );
+
+    let reqs = stub.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 4);
+    assert_eq!(reqs[3]["op"], "policy_update");
+    assert_eq!(reqs[3]["auth"], "approved");
+    assert_eq!(reqs[3]["expected_digest"], "digest_old_1111");
+    assert_eq!(reqs[3]["policy"]["max_position_pct"], 42);
+}
+
+#[test]
+fn sentient_policy_conflict_on_apply_returns_to_editor_with_draft_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_old_1111"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_conf",
+                "pending": {
+                    "policy_digest": "digest_staged_conf",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+            serde_json::json!({
+                "ok": true,
+                "pending": {
+                    "policy_digest": "digest_staged_conf",
+                    "expires_at_unix": expires,
+                    "approval_present": true
+                }
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "policy_conflict",
+                "message": "policy digest changed concurrently"
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    let flash = view.poll(1, &handle).unwrap();
+    let expected = vaughan_core::core::policy_step_up::StepUpError::Daemon {
+        code: "policy_conflict".into(),
+        message: "policy digest changed concurrently".into(),
+    }
+    .to_string();
+    assert_eq!(flash, expected);
+
+    let text = normalize_ws(&render_wide(&view, &wallet));
+    assert!(text.contains("max_position_pct"), "{text}");
+    assert!(text.contains("42"), "{text}");
+    assert!(text.contains(&expected), "{text}");
+}
+
+#[test]
+fn sentient_policy_dead_daemon_on_poll_returns_error_without_hanging() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = sentient_wallet(dir.path());
+    let (_rt, handle) = runtime_handle();
+    let events = EventBus::new();
+    let expires = future_unix_secs(600);
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![
+            serde_json::json!({
+                "ok": true,
+                "policy": initial_policy_value(),
+                "policy_digest": "digest_old_1111"
+            }),
+            serde_json::json!({
+                "ok": false,
+                "code": "step_up_required",
+                "message": "run: sudo vaughan signerd approve",
+                "policy_digest": "digest_staged_dead",
+                "pending": {
+                    "policy_digest": "digest_staged_dead",
+                    "expires_at_unix": expires,
+                    "approval_present": false
+                }
+            }),
+        ],
+    );
+    let _guard = SignerSocketGuard::set(&stub.sock_path);
+    let mut view = SettingsView::new(0);
+
+    open_edit_and_stage_42(&mut view, &mut wallet, &handle, &events);
+    drop(stub);
+
+    let flash = view.poll(1, &handle).unwrap();
+    let expected =
+        vaughan_core::core::policy_step_up::StepUpError::Transport("signer_unavailable".into());
+    assert!(
+        flash.starts_with("signer transport error: signer_unavailable:")
+            && flash.ends_with("; verify vaughan-signerd is running"),
+        "expected StepUpError::Transport Display verbatim, got: {flash}"
+    );
+    let _ = expected;
+
+    let text = normalize_ws(&render_wide(&view, &wallet));
+    assert!(text.contains("max_position_pct"), "{text}");
+    assert!(text.contains("42"), "{text}");
+    assert!(text.contains(&flash[..flash.len().min(140)]), "{text}");
+}
+
+#[test]
+fn sentient_policy_status_lines_tag_command_and_muted_emphasis_by_role() {
+    use vaughan_core::core::SignerClient;
+    use vaughan_tui::views::policy_approval::{
+        Emphasis, PolicyApproval, APPROVE_COMMAND, CONSOLE_ADVICE,
+    };
+
+    let (_rt, handle) = runtime_handle();
+    let now = future_unix_secs(0);
+    let expires = now + 300;
+    let stub = spawn_signer_stub(
+        &handle,
+        vec![serde_json::json!({
+            "ok": false,
+            "code": "step_up_required",
+            "message": "run: sudo vaughan signerd approve",
+            "policy_digest": "digest_role_check_1234",
+            "pending": {
+                "policy_digest": "digest_role_check_1234",
+                "expires_at_unix": expires,
+                "approval_present": false
+            }
+        })],
+    );
+    let client = SignerClient::new(&stub.sock_path);
+    let approval = PolicyApproval::start(
+        &handle,
+        &client,
+        initial_policy_value(),
+        None,
+        "enforcement=enforced".to_string(),
+    )
+    .unwrap();
+
+    let mut lines = approval.status_lines(now);
+    lines.reverse();
+
+    let cmd = lines
+        .iter()
+        .find(|l| l.text.contains(APPROVE_COMMAND))
+        .unwrap();
+    assert_eq!(cmd.emphasis, Emphasis::Command);
+
+    let advice = lines
+        .iter()
+        .find(|l| l.text.contains(CONSOLE_ADVICE))
+        .unwrap();
+    assert_eq!(advice.emphasis, Emphasis::Muted);
+
+    let expiry = lines
+        .iter()
+        .find(|l| l.text.contains("Expires in "))
+        .unwrap();
+    assert_eq!(expiry.emphasis, Emphasis::Muted);
+    assert!(expiry.text.contains("300s"));
+
+    let digest = lines
+        .iter()
+        .find(|l| l.text.contains("digest_role_"))
+        .unwrap();
+    assert_eq!(digest.emphasis, Emphasis::Normal);
+
+    let summary = lines
+        .iter()
+        .find(|l| l.text.contains("enforcement=enforced"))
+        .unwrap();
+    assert_eq!(summary.emphasis, Emphasis::Normal);
+
+    let spacer = lines
+        .iter()
+        .find(|l| l.emphasis == Emphasis::Spacer)
+        .unwrap();
+    assert!(spacer.text.is_empty());
+}

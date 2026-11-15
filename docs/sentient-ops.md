@@ -74,7 +74,7 @@ vaughan --profile sentient policy confirm-unsafe
 vaughan --profile sentient policy set --enforcement disabled
 ```
 
-Mutating commands require an interactive TTY (piped/non-TTY stdin is refused so an agent shell cannot pipe a cached password into them), read the vault password with echo suppressed, verify it against `wallet.json` inside `vaughan-signerd`, reload the daemon's active `CircuitBreaker` atomically, and log `{ts, field_changes, source}` to `policy-audit.jsonl` (never the password). Press `y` in the TUI **Settings** view on a sentient profile to view/edit the same policy over the socket.
+Policy changes use root-approval step-up (`policy_stage` → `sudo vaughan signerd approve` from a clean console (`Ctrl+Alt+F3`) or `run0` → `policy_pending` → `policy_update`): `vaughan-signerd` validates `uid == 0` over `/run/vaughan/signerd-ctl.sock` (via `SO_PEERCRED`), reloads the daemon's active `CircuitBreaker` atomically, and logs `{ts, field_changes, source}` to `policy-audit.jsonl` (never any password). Press `y` in the TUI **Settings** view on a sentient profile to edit and stage the policy for root approval over the same socket.
 
 7. Agent loop pattern:
 
