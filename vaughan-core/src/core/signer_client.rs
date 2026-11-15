@@ -155,8 +155,19 @@ impl fmt::Debug for SignerRequest {
     }
 }
 
-/// Response returned by the signer daemon.
+/// Read-only status of a staged policy update returned by `{"op":"policy_pending"}`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingInfo {
+    /// Canonical SHA-256 hex digest of the staged pending policy.
+    pub policy_digest: String,
+    /// Unix timestamp when the staged pending policy expires.
+    pub expires_at_unix: u64,
+    /// True only when a valid, trusted, unexpired `policy-approval.json` is present.
+    pub approval_present: bool,
+}
+
+/// Response returned by the signer daemon.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignerResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,6 +188,9 @@ pub struct SignerResponse {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget: Option<serde_json::Value>,
+    /// Read-only staged pending policy status (populated by `policy_pending` and `stage`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingInfo>,
 }
 
 impl SignerResponse {
@@ -192,86 +206,60 @@ impl SignerResponse {
             chain_id: Some(chain_id),
             store: Some(store),
             policy_digest: Some(policy_digest),
-            policy: None,
-            tx_hash: None,
-            code: None,
-            message: None,
-            budget: None,
+            ..Default::default()
         }
     }
 
     pub fn policy_ok(policy: serde_json::Value, policy_digest: String) -> Self {
         Self {
             ok: true,
-            address: None,
-            chain_id: None,
-            store: None,
             policy_digest: Some(policy_digest),
             policy: Some(policy),
-            tx_hash: None,
-            code: None,
-            message: None,
-            budget: None,
+            ..Default::default()
         }
     }
 
     pub fn policy_update_ok(policy_digest: String) -> Self {
         Self {
             ok: true,
-            address: None,
-            chain_id: None,
-            store: None,
             policy_digest: Some(policy_digest),
-            policy: None,
-            tx_hash: None,
-            code: None,
-            message: None,
-            budget: None,
+            ..Default::default()
+        }
+    }
+
+    /// Construct a `{"op":"policy_pending"}` response.
+    pub fn policy_pending_ok(pending: Option<PendingInfo>) -> Self {
+        Self {
+            ok: true,
+            pending,
+            ..Default::default()
         }
     }
 
     pub fn step_up_required(policy_digest: String) -> Self {
         Self {
             ok: false,
-            address: None,
-            chain_id: None,
-            store: None,
             policy_digest: Some(policy_digest),
-            policy: None,
-            tx_hash: None,
             code: Some("step_up_required".to_string()),
             message: Some("run: sudo vaughan signerd approve".to_string()),
-            budget: None,
+            ..Default::default()
         }
     }
 
     pub fn sign_ok(tx_hash: impl Into<String>) -> Self {
         Self {
             ok: true,
-            address: None,
-            chain_id: None,
-            store: None,
-            policy_digest: None,
-            policy: None,
             tx_hash: Some(tx_hash.into()),
-            code: None,
-            message: None,
-            budget: None,
+            ..Default::default()
         }
     }
 
     pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             ok: false,
-            address: None,
-            chain_id: None,
-            store: None,
-            policy_digest: None,
-            policy: None,
-            tx_hash: None,
             code: Some(code.into()),
             message: Some(message.into()),
-            budget: None,
+            ..Default::default()
         }
     }
 }
@@ -355,6 +343,65 @@ impl SignerClient {
         self.send_request(&req).await
     }
 
+    /// Query read-only staged policy status (`{"op":"policy_pending"}`).
+    ///
+    /// Returns the raw [`SignerResponse`] so callers can inspect structured daemon errors separately
+    /// from transport failures.
+    pub async fn policy_pending(&self) -> Result<SignerResponse, String> {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "policy_pending".to_string(),
+            intent: None,
+            password: None,
+            policy: None,
+            expected_digest: None,
+            auth: None,
+        };
+        self.send_raw_request(&req).await
+    }
+
+    /// Stage a policy update for out-of-band root approval (`{"op":"policy_update","auth":"stage"}`).
+    ///
+    /// Returns the raw [`SignerResponse`] (note that staging returns `ok: false` with
+    /// `code == "step_up_required"`).
+    pub async fn policy_stage(
+        &self,
+        policy: serde_json::Value,
+        expected_digest: Option<String>,
+    ) -> Result<SignerResponse, String> {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "policy_update".to_string(),
+            intent: None,
+            password: None,
+            policy: Some(policy),
+            expected_digest,
+            auth: Some("stage".to_string()),
+        };
+        self.send_raw_request(&req).await
+    }
+
+    /// Apply a previously staged policy update after root approval (`{"op":"policy_update","auth":"approved"}`).
+    ///
+    /// Returns the raw [`SignerResponse`] so callers can distinguish `step_up_failed` from
+    /// transport failures.
+    pub async fn policy_approved(
+        &self,
+        policy: serde_json::Value,
+        expected_digest: Option<String>,
+    ) -> Result<SignerResponse, String> {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "policy_update".to_string(),
+            intent: None,
+            password: None,
+            policy: Some(policy),
+            expected_digest,
+            auth: Some("approved".to_string()),
+        };
+        self.send_raw_request(&req).await
+    }
+
     /// Submit a typed [`SignerIntent`] for verification, policy checking, and signing.
     pub async fn sign(&self, intent: &SignerIntent) -> Result<SignerResponse, String> {
         let req = SignerRequest {
@@ -376,24 +423,23 @@ impl SignerClient {
             .ok_or_else(|| "missing tx_hash in signer response".to_string())
     }
 
-    /// Core IPC request handler: connects, sends line, reads line, maps errors.
-    async fn send_request(&self, req: &SignerRequest) -> Result<SignerResponse, String> {
-        let stream = match timeout(CONNECT_TIMEOUT, UnixStream::connect(&self.socket_path)).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                return Err(format!(
-                    "signer_unavailable: cannot connect to signer socket at {}: {e}",
-                    self.socket_path.display()
-                ));
-            }
-            Err(_) => {
-                return Err(format!(
-                    "signer_unavailable: connection timed out to signer socket at {}",
-                    self.socket_path.display()
-                ));
-            }
-        };
+    async fn connect_socket(&self) -> Result<UnixStream, String> {
+        match timeout(CONNECT_TIMEOUT, UnixStream::connect(&self.socket_path)).await {
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => Err(format!(
+                "signer_unavailable: cannot connect to signer socket at {}: {e}",
+                self.socket_path.display()
+            )),
+            Err(_) => Err(format!(
+                "signer_unavailable: connection timed out to signer socket at {}",
+                self.socket_path.display()
+            )),
+        }
+    }
 
+    /// Send a request and decode the raw [`SignerResponse`] without converting `ok: false` into `Err`.
+    async fn send_raw_request(&self, req: &SignerRequest) -> Result<SignerResponse, String> {
+        let stream = self.connect_socket().await?;
         let mut line =
             serde_json::to_string(req).map_err(|e| format!("invalid_request_json: {e}"))?;
         line.push('\n');
@@ -415,15 +461,13 @@ impl SignerClient {
 
         let mut buf = BufReader::new(reader);
         let mut response_line = String::new();
-        let read_res = timeout(IPC_TIMEOUT, buf.read_line(&mut response_line)).await;
-        let bytes_read = match read_res {
+        let bytes_read = match timeout(IPC_TIMEOUT, buf.read_line(&mut response_line)).await {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => return Err(format!("signer_read_failed: {e}")),
             Err(_) => {
                 return Err("signer_timeout: request timed out waiting for signer".to_string())
             }
         };
-
         if bytes_read == 0 {
             return Err("signer_eof: signer closed connection without response".to_string());
         }
@@ -431,19 +475,22 @@ impl SignerClient {
             return Err("signer_response_too_large: response exceeded 64 KiB limit".to_string());
         }
 
-        let resp: SignerResponse = serde_json::from_str(response_line.trim())
-            .map_err(|e| format!("invalid_signer_response: {e}"))?;
+        serde_json::from_str(response_line.trim())
+            .map_err(|e| format!("invalid_signer_response: {e}"))
+    }
 
+    /// Core IPC request handler: connects, sends line, reads line, maps daemon errors to `Err`.
+    async fn send_request(&self, req: &SignerRequest) -> Result<SignerResponse, String> {
+        let resp = self.send_raw_request(req).await?;
         if resp.ok {
-            Ok(resp)
+            return Ok(resp);
+        }
+        let code = resp.code.as_deref().unwrap_or("signer_refused");
+        let msg = resp.message.as_deref().unwrap_or(code);
+        if msg.starts_with(code) {
+            Err(msg.to_string())
         } else {
-            let code = resp.code.as_deref().unwrap_or("signer_refused");
-            let msg = resp.message.as_deref().unwrap_or(code);
-            if msg.starts_with(code) {
-                Err(msg.to_string())
-            } else {
-                Err(format!("{code}: {msg}"))
-            }
+            Err(format!("{code}: {msg}"))
         }
     }
 }

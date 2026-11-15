@@ -128,6 +128,112 @@ fn read_bounded_fd(file: File, max_bytes: u64) -> Result<String, String> {
     Ok(raw)
 }
 
+fn check_approval_metadata(meta: &fs::Metadata, expected_uid: u32) -> Result<(), ApprovalError> {
+    if !meta.file_type().is_file() {
+        return Err(ApprovalError::Untrusted("not a regular file".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.uid() != expected_uid {
+            return Err(ApprovalError::Untrusted(format!(
+                "owner uid {} != expected {}",
+                meta.uid(),
+                expected_uid
+            )));
+        }
+        if meta.nlink() != 1 {
+            return Err(ApprovalError::Untrusted(format!(
+                "hardlink count {} != 1",
+                meta.nlink()
+            )));
+        }
+        let mode = meta.mode() & 0o7777;
+        if mode != 0o0440 {
+            return Err(ApprovalError::Untrusted(format!("mode {mode:04o} != 0440")));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = expected_uid;
+    Ok(())
+}
+
+fn parse_and_validate_approval(raw: &str, now: u64) -> Result<Approval, ApprovalError> {
+    let approval: Approval = serde_json::from_str(raw)
+        .map_err(|e| ApprovalError::Corrupt(format!("invalid approval json: {e}")))?;
+
+    if !is_valid_sha256_hex(&approval.old_digest)
+        || !is_valid_sha256_hex(&approval.new_digest)
+        || approval.issued_at_unix > approval.expires_at_unix
+    {
+        return Err(ApprovalError::Corrupt(
+            "invalid digest format or timestamps".into(),
+        ));
+    }
+
+    if now >= approval.expires_at_unix {
+        return Err(ApprovalError::Expired);
+    }
+
+    Ok(approval)
+}
+
+/// Read-only trust verdict for `policy-approval.json` without consuming or modifying files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalPresence {
+    /// A valid, trusted, unexpired `policy-approval.json` is present.
+    Present,
+    /// `policy-approval.json` is missing, symlinked, untrusted, corrupt, or expired.
+    Absent,
+}
+
+impl ApprovalPresence {
+    /// Return `true` if a trusted unexpired approval file is present.
+    pub fn is_present(self) -> bool {
+        matches!(self, Self::Present)
+    }
+}
+
+/// Read-only check of `policy-approval.json` at the current wall-clock time.
+///
+/// Uses [`inspect_approval_at`] with the same `uid`/`mode`/`nlink`/symlink and
+/// payload validation rules as [`consume_approval`], without unlinking or modifying files.
+pub fn inspect_approval(store: &Path, expected_uid: u32) -> ApprovalPresence {
+    inspect_approval_at(store, expected_uid, vaughan_agent::dca::now_unix())
+}
+
+/// Read-only check of `policy-approval.json` at explicit timestamp `now`.
+pub fn inspect_approval_at(store: &Path, expected_uid: u32, now: u64) -> ApprovalPresence {
+    let path = store.join(POLICY_APPROVAL_FILENAME);
+    let Ok(sym_meta) = fs::symlink_metadata(&path) else {
+        return ApprovalPresence::Absent;
+    };
+    if sym_meta.file_type().is_symlink()
+        || check_approval_metadata(&sym_meta, expected_uid).is_err()
+    {
+        return ApprovalPresence::Absent;
+    }
+
+    let Ok(file) = open_nofollow_readonly(&path) else {
+        return ApprovalPresence::Absent;
+    };
+    let Ok(fd_meta) = file.metadata() else {
+        return ApprovalPresence::Absent;
+    };
+    if check_approval_metadata(&fd_meta, expected_uid).is_err() {
+        return ApprovalPresence::Absent;
+    }
+
+    let Ok(raw) = read_bounded_fd(file, MAX_APPROVAL_FILE_BYTES) else {
+        return ApprovalPresence::Absent;
+    };
+    if parse_and_validate_approval(&raw, now).is_ok() {
+        ApprovalPresence::Present
+    } else {
+        ApprovalPresence::Absent
+    }
+}
+
 /// Open, `fstat`-verify, read, and atomically unlink `policy-approval.json` via one fd.
 ///
 /// Trust rules (fail closed):
@@ -151,45 +257,18 @@ pub fn consume_approval(
         }
     };
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let meta = match file.metadata() {
-            Ok(m) => m,
-            Err(e) => {
-                drop(file);
-                let _ = fs::remove_file(&path);
-                return Err(ApprovalError::Untrusted(format!("fstat failed: {e}")));
-            }
-        };
-        if !meta.file_type().is_file() {
+    let meta = match file.metadata() {
+        Ok(m) => m,
+        Err(e) => {
             drop(file);
             let _ = fs::remove_file(&path);
-            return Err(ApprovalError::Untrusted("not a regular file".into()));
+            return Err(ApprovalError::Untrusted(format!("fstat failed: {e}")));
         }
-        if meta.uid() != expected_uid {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(ApprovalError::Untrusted(format!(
-                "owner uid {} != expected {}",
-                meta.uid(),
-                expected_uid
-            )));
-        }
-        if meta.nlink() != 1 {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(ApprovalError::Untrusted(format!(
-                "hardlink count {} != 1",
-                meta.nlink()
-            )));
-        }
-        let mode = meta.mode() & 0o7777;
-        if mode != 0o0440 {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(ApprovalError::Untrusted(format!("mode {mode:04o} != 0440")));
-        }
+    };
+    if let Err(err) = check_approval_metadata(&meta, expected_uid) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(err);
     }
 
     let raw = match read_bounded_fd(file, MAX_APPROVAL_FILE_BYTES) {
@@ -204,23 +283,7 @@ pub fn consume_approval(
     fs::remove_file(&path)
         .map_err(|e| ApprovalError::UnlinkFailed(format!("unlink failed: {e}")))?;
 
-    let approval: Approval = serde_json::from_str(&raw)
-        .map_err(|e| ApprovalError::Corrupt(format!("invalid approval json: {e}")))?;
-
-    if !is_valid_sha256_hex(&approval.old_digest)
-        || !is_valid_sha256_hex(&approval.new_digest)
-        || approval.issued_at_unix > approval.expires_at_unix
-    {
-        return Err(ApprovalError::Corrupt(
-            "invalid digest format or timestamps".into(),
-        ));
-    }
-
-    if now >= approval.expires_at_unix {
-        return Err(ApprovalError::Expired);
-    }
-
-    Ok(approval)
+    parse_and_validate_approval(&raw, now)
 }
 
 /// Write `approval` atomically to `store/.policy-approval.json.tmp` at mode `0440`
