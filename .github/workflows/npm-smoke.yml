@@ -34,11 +34,17 @@ jobs:
           dir="$(mktemp -d)"; cd "$dir"
           npm init -y >/dev/null
           spec="vaughan${WANT:+@$WANT}"
-          # a fresh publish can 404 from a cached packument for a few minutes
-          for i in 1 2 3 4 5 6; do
-            npm i "$spec" --prefer-online --no-audit --no-fund && break
-            echo "retry $i"; sleep 30
+          # A fresh publish is invisible for several minutes (npm "is being processed"), and the
+          # launcher can resolve before ITS platform package does: `npm i` then succeeds with an
+          # UNMET optional dependency. Retry until the platform package is actually installed.
+          plat="vaughan-$(node -p "process.platform + '-' + process.arch")"
+          for i in $(seq 1 16); do
+            rm -rf node_modules package-lock.json
+            npm i "$spec" --prefer-online --no-audit --no-fund \
+              && node -e "require.resolve('$plat/package.json')" 2>/dev/null && break
+            echo "retry $i: $plat not installable yet"; sleep 30
           done
+          node -e "require.resolve('$plat/package.json')"
           npm ls --all
           out="$(npx --no-install vaughan --version)"
           echo "vaughan: $out"
