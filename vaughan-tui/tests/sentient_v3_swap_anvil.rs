@@ -257,8 +257,9 @@ async fn test_failed_send_releases_reservation_and_allows_retry() {
         .map(|a| a.spent)
         .unwrap_or(U256::ZERO);
 
-    // Signer passes gate (reserves legs), but broadcast fails
-    // because the router contract reverts!
+    // Signer passes the gate (reserves legs), then refuses: the router reverts, so
+    // the metered path cannot even price the transaction (`gas_unavailable`, a
+    // refusal that sends nothing) and an unmetered one fails at broadcast.
     let result = client.execute(&intent).await;
     assert!(
         result.is_err(),
@@ -266,10 +267,11 @@ async fn test_failed_send_releases_reservation_and_allows_retry() {
     );
     let err_msg = result.unwrap_err();
     assert!(
-        err_msg.contains("broadcast_failed")
+        err_msg.contains("gas_unavailable")
+            || err_msg.contains("broadcast_failed")
             || err_msg.contains("revert")
             || err_msg.contains("simulation reverted"),
-        "expected broadcast / simulation failure error, got: {err_msg}"
+        "expected pricing refusal / broadcast failure error, got: {err_msg}"
     );
 
     // The reservation must have been released on send failure inside signer ledger!
@@ -300,10 +302,11 @@ async fn test_failed_send_releases_reservation_and_allows_retry() {
         "retry must not be blocked by spend_already_reserved, got: {retry_err}"
     );
     assert!(
-        retry_err.contains("broadcast_failed")
+        retry_err.contains("gas_unavailable")
+            || retry_err.contains("broadcast_failed")
             || retry_err.contains("revert")
             || retry_err.contains("simulation reverted"),
-        "retry should reach simulation again, got: {retry_err}"
+        "retry should reach pricing/simulation again, got: {retry_err}"
     );
 
     std::env::remove_var("VAUGHAN_SIGNER_SOCKET");
@@ -794,7 +797,14 @@ async fn test_sentient_dca_slice_anvil_replay_revert_refusals_and_durability() {
         .unwrap_or(U256::ZERO);
 
     let fail_err = client2.execute(&intent_fail).await.unwrap_err();
-    assert!(fail_err.contains("broadcast_failed") || fail_err.contains("revert"));
+    // A reverting router is refused while pricing the tx (`gas_unavailable`) on the
+    // metered path; either way nothing was sent and the legs must come back.
+    assert!(
+        fail_err.contains("gas_unavailable")
+            || fail_err.contains("broadcast_failed")
+            || fail_err.contains("revert"),
+        "unexpected refusal: {fail_err}"
+    );
 
     let snap_fail = SpendLedger::snapshot(dir.path()).unwrap();
     let spent_after_fail = snap_fail
