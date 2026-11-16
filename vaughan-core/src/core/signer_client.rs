@@ -53,6 +53,10 @@ pub struct SignerRequest {
     pub expected_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
+    /// Free-text reason for `{"op":"trip"}`; sanitised and persisted by the daemon, never
+    /// used for any other op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Read-only status of a staged policy update returned by `{"op":"policy_pending"}`.
@@ -205,6 +209,7 @@ impl SignerClient {
             policy: None,
             expected_digest: None,
             auth: None,
+            reason: None,
         };
         self.send_request(&req).await
     }
@@ -218,6 +223,7 @@ impl SignerClient {
             policy: None,
             expected_digest: None,
             auth: None,
+            reason: None,
         };
         self.send_request(&req).await
     }
@@ -234,6 +240,7 @@ impl SignerClient {
             policy: None,
             expected_digest: None,
             auth: None,
+            reason: None,
         };
         self.send_raw_request(&req).await
     }
@@ -254,6 +261,7 @@ impl SignerClient {
             policy: Some(policy),
             expected_digest,
             auth: Some("stage".to_string()),
+            reason: None,
         };
         self.send_raw_request(&req).await
     }
@@ -274,6 +282,7 @@ impl SignerClient {
             policy: Some(policy),
             expected_digest,
             auth: Some("approved".to_string()),
+            reason: None,
         };
         self.send_raw_request(&req).await
     }
@@ -287,8 +296,33 @@ impl SignerClient {
             policy: None,
             expected_digest: None,
             auth: None,
+            reason: None,
         };
         self.send_request(&req).await
+    }
+
+    /// Trip the signer daemon's circuit breaker (`{"op":"trip","reason":"…"}`). Stopping is
+    /// the safe direction, so there is deliberately no untrip op over this wire.
+    ///
+    /// An old daemon refuses this two different ways and both mean the same thing to the
+    /// caller: one built before the `trip` op existed answers `unknown_op`; one built before
+    /// `SignerRequest` grew the `reason` field rejects the whole request via
+    /// `#[serde(deny_unknown_fields)]` before `op` is even read, answering `invalid_json`.
+    pub async fn trip(&self, reason: impl Into<String>) -> Result<SignerResponse, String> {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "trip".to_string(),
+            intent: None,
+            policy: None,
+            expected_digest: None,
+            auth: None,
+            reason: Some(reason.into()),
+        };
+        let resp = self.send_raw_request(&req).await?;
+        if !resp.ok && is_too_old_for_trip(resp.code.as_deref()) {
+            return Err("daemon too old to take a trip".to_string());
+        }
+        Ok(resp)
     }
 
     /// Submit a typed intent and return the transaction hash on success, or a mapped error string.
@@ -370,6 +404,45 @@ impl SignerClient {
     }
 }
 
+/// True for the two ways an old daemon refuses `{"op":"trip"}` (see [`SignerClient::trip`]).
+pub fn is_too_old_for_trip(code: Option<&str>) -> bool {
+    matches!(code, Some("unknown_op") | Some("invalid_json"))
+}
+
+/// Extract the leading `{code}` from an error string produced by
+/// [`SignerClient::send_request`] (`"{code}: {message}"`), so callers stop string-matching
+/// full messages ad hoc. `None` if the string has no `": "` separator.
+pub fn error_code(err: &str) -> Option<&str> {
+    err.split_once(": ").map(|(code, _)| code)
+}
+
+/// How a caller should react to a signer error code (gas-ceiling spec A6), via [`retry_class`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryClass {
+    /// Shrink the request and/or wait for the session window to refresh; retrying as-is will
+    /// not help.
+    ShrinkOrWait,
+    /// Transient (e.g. RPC down); back off before retrying.
+    BackOff,
+    /// May have executed. Stop retrying — an operator must look before anything else is sent.
+    StopOperatorLooks,
+    /// Trading is halted. Stop.
+    Stop,
+    /// Not one of the known gas/trip codes; no retry guidance implied.
+    Unknown,
+}
+
+/// Map a signer error `code` (see [`error_code`]) to its [`RetryClass`].
+pub fn retry_class(code: &str) -> RetryClass {
+    match code {
+        "gas_ceiling_exceeded" => RetryClass::ShrinkOrWait,
+        "gas_unavailable" => RetryClass::BackOff,
+        "broadcast_uncertain" => RetryClass::StopOperatorLooks,
+        "circuit_breaker_tripped" => RetryClass::Stop,
+        _ => RetryClass::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +455,58 @@ mod tests {
             parsed.is_err(),
             "SignerRequest must reject unknown top-level fields"
         );
+    }
+
+    #[test]
+    fn signer_request_trip_serde_round_trip() {
+        let req = SignerRequest {
+            v: Some(1),
+            op: "trip".to_string(),
+            intent: None,
+            policy: None,
+            expected_digest: None,
+            auth: None,
+            reason: Some("kill switch: operator stop".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: SignerRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.op, "trip");
+        assert_eq!(
+            parsed.reason,
+            Some("kill switch: operator stop".to_string())
+        );
+    }
+
+    #[test]
+    fn trip_too_old_detects_unknown_op_and_invalid_json() {
+        assert!(is_too_old_for_trip(Some("unknown_op")));
+        assert!(is_too_old_for_trip(Some("invalid_json")));
+        assert!(!is_too_old_for_trip(Some("circuit_breaker_tripped")));
+        assert!(!is_too_old_for_trip(None));
+    }
+
+    #[test]
+    fn error_code_extracts_leading_code() {
+        assert_eq!(
+            error_code("gas_ceiling_exceeded: would exceed budget"),
+            Some("gas_ceiling_exceeded")
+        );
+        assert_eq!(error_code("no colon here"), None);
+    }
+
+    #[test]
+    fn retry_class_maps_known_codes() {
+        assert_eq!(
+            retry_class("gas_ceiling_exceeded"),
+            RetryClass::ShrinkOrWait
+        );
+        assert_eq!(retry_class("gas_unavailable"), RetryClass::BackOff);
+        assert_eq!(
+            retry_class("broadcast_uncertain"),
+            RetryClass::StopOperatorLooks
+        );
+        assert_eq!(retry_class("circuit_breaker_tripped"), RetryClass::Stop);
+        assert_eq!(retry_class("something_else"), RetryClass::Unknown);
     }
 
     #[test]

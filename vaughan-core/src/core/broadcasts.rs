@@ -13,6 +13,21 @@ use crate::error::WalletError;
 /// Max recent broadcasts kept in the TUI session (newest first).
 pub const MAX_RECENT_BROADCASTS: usize = 32;
 
+/// Whether a failed broadcast definitely never reached the node, or may have been accepted
+/// before the error surfaced. Threaded out of [`crate::core::WalletState::broadcast_phased`]
+/// so a caller that reserves funds/gas against a tx up front (the signer daemon) knows
+/// whether it is safe to release that reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BroadcastPhase {
+    /// Nothing was sent (signing/fee/nonce error), or the node's JSON-RPC response is a
+    /// concrete rejection (nonce too low, underpriced, insufficient funds, revert-on-submit):
+    /// safe to treat as "no money moved".
+    Definitive,
+    /// Transport failure, timeout, or anything unrecognised: the raw tx may have reached the
+    /// node before the error surfaced. Conservative callers must NOT release a reservation.
+    Uncertain,
+}
+
 /// How to replace a pending broadcast (same nonce).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplaceKind {

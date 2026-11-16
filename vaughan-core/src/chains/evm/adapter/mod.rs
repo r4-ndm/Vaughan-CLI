@@ -4,6 +4,8 @@
 //! fee estimation, and transaction signing/broadcast. EVM-specific operations
 //! (nonce, ERC-20) live on [`EvmAdapter`] itself rather than the shared trait.
 
+mod broadcast;
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::str::FromStr;
@@ -426,26 +428,6 @@ impl EvmAdapter {
                 .map_err(|e| WalletError::RpcError(e.to_string()))
         })
         .await
-    }
-
-    /// Broadcast an already-signed raw transaction (EIP-2718 encoded, no
-    /// leading `0x`) through the primary + fallback provider chain.
-    ///
-    /// Broadcasting the same signed envelope to a fallback endpoint is safe:
-    /// identical nonce means a duplicate is a no-op on-chain.
-    pub async fn broadcast_raw(&self, raw: Vec<u8>) -> Result<TxHash, WalletError> {
-        let pending = self
-            .with_provider(move |provider| {
-                let raw = raw.clone();
-                async move {
-                    provider
-                        .send_raw_transaction(&raw)
-                        .await
-                        .map_err(|e| WalletError::TransactionFailed(e.to_string()))
-                }
-            })
-            .await?;
-        Ok(TxHash(format!("{:?}", pending.tx_hash())))
     }
 
     /// Drop cached native / ERC-20 balances (call after a successful broadcast).
