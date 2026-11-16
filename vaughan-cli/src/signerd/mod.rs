@@ -20,6 +20,7 @@
 pub mod approval;
 pub mod balance;
 pub mod broadcaster;
+mod gas;
 pub mod intents;
 pub mod migrate;
 mod ops;
@@ -33,7 +34,8 @@ pub use approval::{
     stage_pending_policy_with_replace, write_approval, Approval, ApprovalError, ApprovalPresence,
 };
 pub use balance::{BalanceSource, LiveBalanceSource, MockBalanceSource};
-pub use broadcaster::{MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
+pub use broadcaster::{FeeQuote, MockBroadcaster, TransactionBroadcaster, WalletBroadcaster};
+pub use gas::SendPhase;
 pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use policy::{STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
