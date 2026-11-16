@@ -126,6 +126,106 @@ fn test_circuit_breaker_emergency_stop() {
 }
 
 #[test]
+fn test_reserve_gas_boundary_and_release() {
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+        max_session_gas_wei: U256::from(1_000),
+        ..Default::default()
+    });
+
+    // Exactly at the ceiling is admitted (`>` trips, not `>=`).
+    assert!(breaker.reserve_gas(U256::from(1_000)).is_ok());
+    assert_eq!(breaker.cumulative_gas_wei(), U256::from(1_000));
+
+    // One more wei over is refused, and the reservation is NOT added.
+    let err = breaker.reserve_gas(U256::from(1)).unwrap_err();
+    assert!(err.to_string().contains("max_session_gas_wei"));
+    assert_eq!(breaker.cumulative_gas_wei(), U256::from(1_000));
+    assert!(!breaker.is_tripped(), "over-budget reserve must not trip");
+
+    // release_gas undoes a booking; a cheaper reservation then fits.
+    breaker.release_gas(U256::from(1_000));
+    assert_eq!(breaker.cumulative_gas_wei(), U256::ZERO);
+    assert!(breaker.reserve_gas(U256::from(500)).is_ok());
+
+    // release_gas floors at zero rather than underflowing.
+    breaker.release_gas(U256::from(10_000));
+    assert_eq!(breaker.cumulative_gas_wei(), U256::ZERO);
+}
+
+#[test]
+fn test_reserve_gas_disabled_and_warn_only() {
+    use vaughan_agent::EnforcementMode;
+
+    let disabled = CircuitBreaker::new(CircuitBreakerConfig {
+        max_session_gas_wei: U256::from(1),
+        enforcement: EnforcementMode::Disabled,
+        ..Default::default()
+    });
+    assert!(disabled.reserve_gas(U256::from(1_000_000)).is_ok());
+    assert_eq!(
+        disabled.cumulative_gas_wei(),
+        U256::ZERO,
+        "Disabled must not add to the counter"
+    );
+
+    let warn_only = CircuitBreaker::new(CircuitBreakerConfig {
+        max_session_gas_wei: U256::from(1_000),
+        enforcement: EnforcementMode::WarnOnly,
+        ..Default::default()
+    });
+    assert!(warn_only.reserve_gas(U256::from(5_000)).is_ok());
+    assert_eq!(
+        warn_only.cumulative_gas_wei(),
+        U256::from(5_000),
+        "WarnOnly admits over-budget but still books the gas"
+    );
+    assert!(!warn_only.is_tripped());
+}
+
+#[test]
+fn test_reserve_gas_refuses_when_tripped() {
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    breaker.trip("halt");
+    let err = breaker.reserve_gas(U256::from(1)).unwrap_err();
+    assert!(err.to_string().contains("halt"));
+}
+
+#[test]
+fn test_record_success_no_gas_resets_errors_only() {
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+        max_session_gas_wei: U256::from(1_000),
+        max_consecutive_errors: 3,
+        ..Default::default()
+    });
+    breaker.reserve_gas(U256::from(1_000)).unwrap();
+    breaker.record_failure("e1");
+    breaker.record_failure("e2");
+    assert_eq!(breaker.consecutive_errors(), 2);
+
+    breaker.record_success_no_gas();
+    assert_eq!(breaker.consecutive_errors(), 0);
+    assert_eq!(
+        breaker.cumulative_gas_wei(),
+        U256::from(1_000),
+        "record_success_no_gas must not touch the gas counter"
+    );
+}
+
+#[test]
+fn test_trip_first_reason_wins_and_trip_state() {
+    let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+    assert_eq!(breaker.trip_state(), (false, None));
+
+    breaker.trip("first: gas ceiling");
+    breaker.trip("second: manual kill switch");
+    assert_eq!(
+        breaker.trip_state(),
+        (true, Some("first: gas ceiling".to_string())),
+        "first reason must win"
+    );
+}
+
+#[test]
 fn test_enforcement_disabled_skips_limits_esc_still_trips() {
     use vaughan_agent::EnforcementMode;
     let breaker = CircuitBreaker::new(CircuitBreakerConfig {
