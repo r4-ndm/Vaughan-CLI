@@ -79,8 +79,14 @@ async fn sign_intent(signer: &Signer, intent: &SignerIntent) -> SignerResponse {
     serde_json::from_str(&signer.handle_line(&req.to_string()).await).unwrap()
 }
 
-/// Replace the breaker's gas ceiling, keeping every other default.
-fn set_ceiling(signer: &Signer, max_session_gas_wei: U256) {
+/// Set the session gas ceiling the way an operator would: on disk. `handle_sign` reloads the
+/// policy per request and reapplies it to the breaker (spec A4), so a ceiling set only in
+/// memory would be overwritten by the first sign.
+fn set_ceiling(store: &std::path::Path, signer: &Signer, max_session_gas_wei: U256) {
+    let mut policy = vaughan_agent::sentient::load_policy(store).unwrap();
+    policy.max_session_gas_wei = max_session_gas_wei.to_string();
+    vaughan_agent::sentient::save_policy(store, &policy).unwrap();
+    // Also in memory, so a test can assert on the ceiling before any sign happens.
     signer.breaker().replace_config(CircuitBreakerConfig {
         max_session_gas_wei,
         ..signer.breaker().config()
@@ -101,7 +107,7 @@ async fn test_over_ceiling_quote_refused_and_nothing_sent() {
     let dest = Address::repeat_byte(0x11);
     let (signer, broadcaster, _, _dir, _, _) = setup_test_harness(vec![format!("{dest:#x}")]);
     // Default mock quote is 21000 * 1 gwei = 2.1e13 wei; a 1-wei ceiling cannot admit it.
-    set_ceiling(&signer, U256::from(1));
+    set_ceiling(_dir.path(), &signer, U256::from(1));
 
     let resp = sign_intent(&signer, &transfer(dest, 100)).await;
     assert!(!resp.ok);
@@ -117,7 +123,7 @@ async fn test_over_ceiling_quote_refused_and_nothing_sent() {
 async fn test_gas_refusal_releases_ledger_legs_for_retry() {
     let dest = Address::repeat_byte(0x11);
     let (signer, broadcaster, _, _dir, _, _) = setup_test_harness(vec![format!("{dest:#x}")]);
-    set_ceiling(&signer, U256::from(1));
+    set_ceiling(_dir.path(), &signer, U256::from(1));
 
     let intent = transfer(dest, 100);
     let refused = sign_intent(&signer, &intent).await;
@@ -126,7 +132,7 @@ async fn test_gas_refusal_releases_ledger_legs_for_retry() {
 
     // Raise the ceiling (equivalent to a cheaper quote) and retry the SAME intent: it must
     // succeed, proving the ledger legs from the refused attempt were released.
-    set_ceiling(&signer, U256::MAX);
+    set_ceiling(_dir.path(), &signer, U256::MAX);
     broadcaster.set_quote_max_fee(U256::from(1));
     let ok = sign_intent(&signer, &intent).await;
     assert!(ok.ok, "{ok:?}");
@@ -137,7 +143,7 @@ async fn test_gas_refusal_releases_ledger_legs_for_retry() {
 async fn test_gas_refusal_does_not_trip_or_count_as_error() {
     let dest = Address::repeat_byte(0x11);
     let (signer, _, _, _dir, _, _) = setup_test_harness(vec![format!("{dest:#x}")]);
-    set_ceiling(&signer, U256::from(1));
+    set_ceiling(_dir.path(), &signer, U256::from(1));
 
     for _ in 0..3 {
         let resp = sign_intent(&signer, &transfer(dest, 100)).await;
@@ -161,7 +167,7 @@ async fn test_cumulative_gas_second_tx_refused_boundary_admitted() {
     // Fixed 21000-wei quote per tx (21000 gas * 1 wei/gas); ceiling admits exactly two.
     broadcaster.set_quote_max_fee(U256::from(1));
     broadcaster.set_quote_gas_limit(21_000);
-    set_ceiling(&signer, U256::from(42_000));
+    set_ceiling(_dir.path(), &signer, U256::from(42_000));
 
     let r1 = sign_intent(&signer, &transfer(dest1, 10)).await;
     assert!(r1.ok, "{r1:?}");
@@ -265,7 +271,7 @@ async fn test_concurrent_reservations_never_exceed_ceiling() {
     // 21000 gas * 1 wei/gas = 21000 wei per tx; a 105000-wei ceiling admits exactly 5 of 10.
     broadcaster.set_quote_max_fee(U256::from(1));
     broadcaster.set_quote_gas_limit(21_000);
-    set_ceiling(&signer, U256::from(105_000));
+    set_ceiling(_dir.path(), &signer, U256::from(105_000));
 
     let mut handles = Vec::new();
     for (i, addr) in addrs.into_iter().enumerate() {
