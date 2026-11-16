@@ -12,18 +12,17 @@ use super::Signer;
 impl Signer {
     /// Handle `{"op":"sign","intent":{…}}`.
     pub async fn handle_sign(&self, intent: SignerIntent) -> SignerResponse {
-        // 0. Circuit breaker trip check
-        if self.inner.breaker.lock().unwrap().is_tripped() {
-            let reason = self
-                .inner
-                .breaker
-                .lock()
-                .unwrap()
-                .trip_reason()
-                .unwrap_or_else(|| "halted".into());
+        // 0. Circuit breaker trip check. One `trip_state` read, not is_tripped() + a second
+        // trip_reason() lock: a trip landing between the two would report "halted" instead of
+        // the reason that actually stopped trading.
+        let (tripped, trip_reason) = self.inner.breaker.lock().unwrap().trip_state();
+        if tripped {
             return SignerResponse::error(
                 "circuit_breaker_tripped",
-                format!("circuit breaker tripped: {reason}"),
+                format!(
+                    "circuit breaker tripped: {}",
+                    trip_reason.unwrap_or_else(|| "halted".into())
+                ),
             );
         }
 
@@ -54,6 +53,20 @@ impl Signer {
                 );
             }
         };
+
+        // 2b. Apply the policy just read to the breaker. The policy is loaded per request but
+        // the breaker's config was set once in `Signer::new`, so a tightened
+        // `max_session_gas_wei` (hand-edited, or written by another tool) would otherwise
+        // never reach the ceiling check. `replace_config` does not clear trip state.
+        match policy.to_breaker_config() {
+            Ok(cfg) => self.inner.breaker.lock().unwrap().replace_config(cfg),
+            Err(e) => {
+                return SignerResponse::error(
+                    "policy_load_failed",
+                    format!("policy on disk is not a usable breaker config: {e}"),
+                );
+            }
+        }
 
         // 3. Dispatch by intent variant
         match intent {

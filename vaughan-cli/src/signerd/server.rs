@@ -57,10 +57,11 @@ pub async fn run_signerd(
     let chain_id = wallet.networks().active().chain_id;
     let (rpc_url, _) = wallet.rpc_endpoints_for(wallet.networks().active());
 
-    let listener = bind_socket(&socket)?;
-
     let wallet_arc = Arc::new(tokio::sync::Mutex::new(wallet));
     let broadcaster = Arc::new(broadcaster::WalletBroadcaster::new(wallet_arc));
+    // Built BEFORE the socket is bound: `Signer::new` loads the durable kill switch
+    // (`signerd-tripped.json`), so no peer can connect to a daemon that has not yet decided
+    // whether it is halted.
     let signer = Signer::new(
         store,
         active_address,
@@ -72,6 +73,16 @@ pub async fn run_signerd(
     );
 
     signer.allow_mainnet_writes(vaughan_core::core::mcp_mainnet_writes_allowed());
+    if let (true, reason) = signer.breaker().trip_state() {
+        eprintln!(
+            "vaughan signerd: HALTED by a persisted kill switch ({}): every sign request will \
+             be refused. Clear it as root (rm the trip file in the store) and restart the unit.",
+            reason.unwrap_or_else(|| "no reason recorded".into())
+        );
+    }
+    warn_if_known_l2(chain_id);
+
+    let listener = bind_socket(&socket)?;
     eprintln!(
         "vaughan signerd: active_address={active_address:#x} chain_id={chain_id} socket={} allow_uid={allow_uid:?}",
         socket.display()
@@ -150,6 +161,20 @@ pub async fn run_signerd(
             line.zeroize();
             let _ = stream.write_all(response_str.as_bytes()).await;
         });
+    }
+}
+
+/// Warn once at startup when the daemon's chain is a known L2 whose real cost includes an
+/// L1 data fee that `estimate_fee` does not price: on those chains the session gas ceiling
+/// UNDER-counts what is actually paid. Pricing the L1 component is out of scope — see
+/// docs/mcp-threat-model.md. The two configured L2s are Base (8453) and Arbitrum One (42161).
+fn warn_if_known_l2(chain_id: u64) {
+    if matches!(chain_id, 8453 | 42161) {
+        eprintln!(
+            "vaughan signerd: chain {chain_id} is an L2 — the session gas ceiling counts only the \
+             L2 execution fee, so the real cost (plus the unpriced L1 data fee) can EXCEED \
+             max_session_gas_wei. Set the ceiling with that margin in mind."
+        );
     }
 }
 

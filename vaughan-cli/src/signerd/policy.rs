@@ -69,8 +69,18 @@ impl Signer {
             }));
         }
 
-        let is_tripped = self.inner.breaker.lock().unwrap().is_tripped();
-        let trip_reason = self.inner.breaker.lock().unwrap().trip_reason();
+        let (is_tripped, trip_reason) = self.inner.breaker.lock().unwrap().trip_state();
+        // Gas ceiling AS IN FORCE in the breaker, not as parsed from the policy file: those
+        // differ if the file was edited since the last `sign` (see `handle_sign`), or if the
+        // policy was unreadable at startup and the built-in defaults are what bound the agent.
+        let gas_max_wei = self
+            .inner
+            .breaker
+            .lock()
+            .unwrap()
+            .config()
+            .max_session_gas_wei;
+        let gas_spent_wei = self.inner.breaker.lock().unwrap().cumulative_gas_wei();
 
         let mut budget_json = serde_json::json!({
             "profile": "sentient",
@@ -82,6 +92,9 @@ impl Signer {
             "allow_transfer_to": policy.allow_transfer_to,
             "ledger_path": ledger_path.display().to_string(),
             "circuit_breaker_tripped": is_tripped,
+            "gas_spent_wei": gas_spent_wei.to_string(),
+            "gas_max_wei": gas_max_wei.to_string(),
+            "gas_remaining_wei": gas_max_wei.saturating_sub(gas_spent_wei).to_string(),
         });
         if let Some(reason) = trip_reason {
             budget_json["circuit_breaker_reason"] = serde_json::json!(reason);

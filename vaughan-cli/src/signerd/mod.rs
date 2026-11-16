@@ -28,6 +28,7 @@ mod policy;
 pub mod quoter;
 mod server;
 mod sign;
+mod trip;
 
 pub use approval::{
     consume_approval, inspect_approval, inspect_approval_at, load_pending_policy,
@@ -40,6 +41,7 @@ pub use migrate::{check_legacy_policy_absent, run_migrate};
 pub use policy::{STEP_UP_UNSUPPORTED_CODE, STEP_UP_UNSUPPORTED_MSG};
 pub use quoter::{LiveSwapQuoter, MockSwapQuoter, SwapQuoter};
 pub use server::run_signerd;
+pub use trip::TRIP_FILE;
 pub use vaughan_core::core::signer_client::{
     PendingInfo, SignerClient, SignerRequest, SignerResponse,
 };
@@ -134,9 +136,30 @@ impl Signer {
         balances: Arc<dyn BalanceSource>,
     ) -> Self {
         let rpc_count = 1usize;
-        let config =
-            vaughan_agent::breaker_config_for_session(Some(&store), rpc_count).unwrap_or_default();
+        // A policy that cannot be read is NOT silently the default: the owner's ceilings may
+        // be tighter than the defaults, so say so loudly — `status` reports what is actually
+        // in force, and `handle_sign` re-reads the policy per request (see `replace_config`).
+        let config = match vaughan_agent::breaker_config_for_session(Some(&store), rpc_count) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(
+                    "could not load sentient policy from {}: {e} — falling back to the built-in \
+                     breaker defaults; `status` reports the config in force",
+                    store.display()
+                );
+                vaughan_agent::CircuitBreakerConfig::default()
+            }
+        };
         let breaker = vaughan_agent::CircuitBreaker::new(config);
+        // Durable kill switch: a trip recorded by an earlier process (including one that
+        // panicked or was OOM-killed and restarted by systemd) must still be halted here.
+        match trip::load_trip(&store) {
+            trip::TripOnDisk::Absent => {}
+            trip::TripOnDisk::Tripped(reason) => {
+                tracing::error!("signer daemon starting TRIPPED: {reason}");
+                breaker.trip(reason);
+            }
+        }
         Self {
             inner: Arc::new(SignerInner {
                 store,
@@ -248,9 +271,16 @@ impl Signer {
                 ),
             },
             "sign" => match req.intent {
-                Some(intent) => self.handle_sign(intent).await,
+                Some(intent) => {
+                    let resp = self.handle_sign(intent).await;
+                    // An automatic trip (gas ceiling / error streak) raised while handling
+                    // this request must outlive a restart too, not just this process.
+                    self.persist_automatic_trip();
+                    resp
+                }
                 None => SignerResponse::error("missing_intent", "op 'sign' requires 'intent'"),
             },
+            "trip" => self.handle_trip(req.reason, peer_uid),
             other => SignerResponse::error("unknown_op", format!("unrecognized op '{other}'")),
         }
     }
