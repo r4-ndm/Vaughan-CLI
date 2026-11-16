@@ -18,7 +18,7 @@ file 5012 vaughan-hl/src/tui.rs
 file 884 vaughan-hl/src/wire.rs
 file 1134 vaughan-mcp/src/browser_bridge.rs
 file 1165 vaughan-mcp/src/dispatch.rs
-file 5453 vaughan-tui/src/app.rs
+file 5446 vaughan-tui/src/app.rs
 file 1489 vaughan-tui/src/brand.rs
 file 1827 vaughan-tui/src/provider.rs
 file 1091 vaughan-tui/src/views/ag.rs
@@ -63,7 +63,7 @@ fn 192 vaughan-hl/src/tui.rs::open_dapp_url_exact#1
 fn 159 vaughan-mcp/src/browser_bridge.rs::browser_open_agg#1
 fn 211 vaughan-mcp/src/browser_bridge.rs::browser_tool_definitions#1
 fn 280 vaughan-mcp/src/dispatch.rs::map_sentient_tool_to_intent#1
-fn 196 vaughan-tui/src/app.rs::execute_dca_slice_job#1
+fn 183 vaughan-tui/src/app.rs::execute_dca_slice_job#1
 fn 208 vaughan-tui/src/app.rs::handle_approval_key#1
 fn 276 vaughan-tui/src/app.rs::handle_key#2
 fn 322 vaughan-tui/src/app.rs::poll_jobs#1
