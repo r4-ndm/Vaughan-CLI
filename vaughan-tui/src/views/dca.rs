@@ -143,7 +143,7 @@ impl DcaView {
                     format!(
                         "No DCA plans · n new · Esc back{}",
                         if self.auto_fire {
-                            " · Sentient auto-fire on"
+                            " · Sentient auto-fire on (Ctrl+K halts the signer daemon)"
                         } else {
                             " · open Sentient profile to auto-fire"
                         }

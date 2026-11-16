@@ -15,6 +15,7 @@ pub mod freedom;
 pub mod input;
 pub mod intent;
 pub mod jobs;
+pub mod killswitch;
 pub mod mcp;
 pub mod provider;
 pub mod sentient_mcp;

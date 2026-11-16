@@ -404,6 +404,8 @@ pub struct App {
     /// Session-scoped circuit breaker for sentient auto-exec (created lazily,
     /// dropped on lock so tripwires reset with the session).
     sentient_breaker: Option<vaughan_agent::CircuitBreaker>,
+    /// Ctrl+K: in-flight daemon trip awaiting its honest verdict flash.
+    killswitch: crate::killswitch::KillSwitch,
     /// True while a DCA slice job is in flight (at most one).
     dca_fire_inflight: bool,
     /// Live provider-bridge secret slots shared with the WS server; the token
@@ -584,6 +586,7 @@ impl App {
             bridge_status,
             connected_sites,
             sentient_breaker: None,
+            killswitch: crate::killswitch::KillSwitch::default(),
             dca_fire_inflight: false,
             provider_slots,
             provider_session_unlocked: false,
@@ -645,25 +648,25 @@ impl App {
         });
     }
 
-    /// Ctrl+K kill switch: trip the session breaker so sentient auto-exec
-    /// halts for the rest of the session. No-op on non-sentient profiles and
-    /// while locked (auto-exec cannot run locked anyway).
+    /// Ctrl+K kill switch: halt the session breaker AND the signer daemon that
+    /// actually holds the keys — see [`crate::killswitch`] for the gate, the
+    /// background trip, and the honest flash wording.
     fn trip_sentient_breaker(&mut self) {
-        if !self.wallet().is_unlocked()
-            || !crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name())
-        {
+        let applies = {
+            let w = self.wallet();
+            crate::killswitch::applies(w.is_unlocked(), w.profile_name())
+        };
+        if !applies {
             return;
         }
-        match self.sentient_breaker() {
+        let flash = match self.sentient_breaker() {
             Ok(breaker) => {
-                breaker.trip("manual kill switch (Ctrl+K)");
-                tracing::warn!(target: "vaughan_tui::mcp", "sentient circuit breaker tripped manually");
-                self.set_flash(
-                    "Sentient breaker TRIPPED — auto-exec halted until restart".to_string(),
-                );
+                let handle = self.handle.clone();
+                self.killswitch.engage(&breaker, &handle)
             }
-            Err(e) => self.set_flash(e.to_string()),
-        }
+            Err(e) => e.to_string(),
+        };
+        self.set_flash(flash);
     }
 
     pub fn wallet(&self) -> std::sync::MutexGuard<'_, WalletState> {
@@ -802,6 +805,9 @@ impl App {
                 }
             }
             self.chrome.copy_pulse_ticks = self.chrome.copy_pulse_ticks.saturating_sub(1);
+            if let Some(flash) = self.killswitch.poll() {
+                self.set_flash(flash);
+            }
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
@@ -977,9 +983,9 @@ impl App {
             return;
         }
 
-        // Sentient kill switch: Ctrl+K trips the session breaker from any
-        // screen (including the approval prompt), halting auto-exec for the
-        // rest of the session.
+        // Sentient kill switch: Ctrl+K trips the session breaker from any screen
+        // (including the approval prompt) and asks the signer daemon to halt
+        // durably — the flash says which of the two actually stopped.
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
         {

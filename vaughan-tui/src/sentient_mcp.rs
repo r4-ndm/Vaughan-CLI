@@ -154,7 +154,7 @@ fn format_policy_summary(
             max_slippage_bps as f64 / 100.0
         ),
         EnforcementMode::Disabled => {
-            "policy DISABLED — agent trades unbounded (Ctrl+K still stops)".to_string()
+            "policy DISABLED — agent trades unbounded (Ctrl+K halts the signer daemon)".to_string()
         }
     }
 }

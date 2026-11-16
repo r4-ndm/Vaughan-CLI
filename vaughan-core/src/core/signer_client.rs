@@ -320,7 +320,7 @@ impl SignerClient {
         };
         let resp = self.send_raw_request(&req).await?;
         if !resp.ok && is_too_old_for_trip(resp.code.as_deref()) {
-            return Err("daemon too old to take a trip".to_string());
+            return Err(TRIP_UNSUPPORTED_ERR.to_string());
         }
         Ok(resp)
     }
@@ -403,6 +403,13 @@ impl SignerClient {
         }
     }
 }
+
+/// The `Err` [`SignerClient::trip`] returns when the daemon is too old to take a trip.
+///
+/// A const because the caller that has to tell the operator "NOT halted"
+/// (`vaughan-tui`'s kill switch) must recognise it exactly; two copies of the string
+/// would drift silently and the UI would lie.
+pub const TRIP_UNSUPPORTED_ERR: &str = "daemon too old to take a trip";
 
 /// True for the two ways an old daemon refuses `{"op":"trip"}` (see [`SignerClient::trip`]).
 pub fn is_too_old_for_trip(code: Option<&str>) -> bool {
