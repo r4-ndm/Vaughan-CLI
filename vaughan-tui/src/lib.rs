@@ -10,6 +10,7 @@ pub mod blocking;
 pub mod brand;
 pub mod clipboard;
 pub mod dapp_browser;
+pub mod dca_defer;
 pub mod freedom;
 pub mod input;
 pub mod intent;

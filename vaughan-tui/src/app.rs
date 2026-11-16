@@ -5389,24 +5389,11 @@ pub fn execute_dca_slice_job(
                 })
             }
             Err(refusal) => {
+                // A gas refusal moved no money: it must not count as a failure or burn
+                // this buy window (see crate::dca_defer).
+                let class = crate::dca_defer::classify(&refusal);
                 let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
-                    p.consecutive_failures = p.consecutive_failures.saturating_add(1);
-                    if p.consecutive_failures >= vaughan_agent::dca::MAX_CONSECUTIVE_FAILURES {
-                        p.status = vaughan_agent::dca::DcaStatus::Paused;
-                    }
-                    vaughan_agent::dca::advance_schedule(p, now);
-                    p.slice_log.push(vaughan_agent::dca::SliceLog {
-                        at: now,
-                        ok: false,
-                        tx_hash: String::new(),
-                        dry_run: plan.dry_run,
-                        error: refusal.clone(),
-                        amount_in_wei: amount_in.to_string(),
-                    });
-                    if p.slice_log.len() > 32 {
-                        let drop_n = p.slice_log.len() - 32;
-                        p.slice_log.drain(0..drop_n);
-                    }
+                    vaughan_agent::dca::apply_refusal(p, now, class, &refusal, &amount_in);
                     Ok(())
                 });
                 Err(WalletError::Other(refusal))

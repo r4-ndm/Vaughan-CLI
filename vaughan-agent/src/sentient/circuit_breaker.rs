@@ -8,6 +8,16 @@ use std::sync::{Arc, RwLock};
 use crate::error::AgentError;
 use crate::sentient::policy::EnforcementMode;
 
+/// Prefix of every pre-flight "the breaker is tripped, nothing was signed" refusal.
+///
+/// A const because callers must be able to tell this refusal (no money moved, see
+/// [`crate::dca::defer`]) from the retrospective ceiling trip raised by
+/// [`CircuitBreaker::record_success`] *after* a broadcast.
+pub const TRADING_HALTED_PREFIX: &str = "Trading halted: ";
+
+/// Prefix of the [`CircuitBreaker::reserve_gas`] refusal, which names the policy key.
+pub const GAS_CEILING_REFUSAL_PREFIX: &str = "max_session_gas_wei ceiling";
+
 /// Configuration defining strict risk boundaries for autonomous trading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitBreakerConfig {
@@ -124,7 +134,7 @@ impl CircuitBreaker {
         if self.is_tripped() {
             let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
             return Err(AgentError::CircuitBreakerTripped(format!(
-                "Trading halted: {reason}"
+                "{TRADING_HALTED_PREFIX}{reason}"
             )));
         }
 
@@ -184,7 +194,7 @@ impl CircuitBreaker {
         if self.is_tripped() {
             let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
             return Err(AgentError::CircuitBreakerTripped(format!(
-                "Trading halted: {reason}"
+                "{TRADING_HALTED_PREFIX}{reason}"
             )));
         }
         let cfg = self.config.read().unwrap().clone();
@@ -218,7 +228,7 @@ impl CircuitBreaker {
         if self.is_tripped() {
             let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
             return Err(AgentError::CircuitBreakerTripped(format!(
-                "Trading halted: {reason}"
+                "{TRADING_HALTED_PREFIX}{reason}"
             )));
         }
         let cfg = self.config.read().unwrap().clone();
@@ -231,7 +241,7 @@ impl CircuitBreaker {
         let projected = spent.saturating_add(gas);
         if projected > cfg.max_session_gas_wei {
             let msg = format!(
-                "max_session_gas_wei ceiling {} wei would be exceeded: spent {spent} wei + \
+                "{GAS_CEILING_REFUSAL_PREFIX} {} wei would be exceeded: spent {spent} wei + \
                  this tx's quoted max fee {gas} wei (remaining {remaining} wei) — shrink the \
                  tx or wait for a cheaper quote",
                 cfg.max_session_gas_wei
