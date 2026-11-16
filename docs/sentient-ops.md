@@ -99,9 +99,14 @@ swaps, sized approve/unwrap (unlimited approve refused), and `Batch7702`
 on DEX routers (agg routers need `min_amount_out > 0`), audited DEX/Agg
 allowlist, fresh fee estimate (fail-closed) + pre-broadcast gas-budget check,
 and the mainnet-write guard.
-Kill-switch: **Ctrl+K** in the TUI trips the session breaker (TUI-side only
-today — to halt the daemon, use the `trip` op below). The human
-`default` profile never auto-signs.
+Kill-switch: **Ctrl+K** in the TUI trips the session breaker **and** sends the
+daemon's `trip` op (below), so the thing that holds the keys stops too and stays
+stopped across a restart. The flash is explicit about what happened — only
+"daemon HALTED" means the daemon stopped; "daemon NOT reached … local breaker
+only", "daemon too old — NOT halted" and "daemon HALTED but NOT on disk" each
+mean you still have work to do (stop the unit). Ctrl+K stays a no-op on a
+non-sentient profile: the socket is machine-global and a human wallet never
+asked the daemon to sign. The human `default` profile never auto-signs.
 
 ## Gas ceiling: set it before you upgrade the daemon
 
@@ -131,6 +136,14 @@ everything. After the upgrade, the daemon's `status` op — which the MCP
 ```
 budget.gas_spent_wei / budget.gas_max_wei / budget.gas_remaining_wei
 ```
+
+A DCA plan whose slice the daemon refuses on gas (`gas_ceiling_exceeded`,
+`gas_unavailable`, `circuit_breaker_tripped`) is **deferred, not failed**: nothing
+was spent, so the slice does not count toward the three-failure pause and does
+not burn the buy window. The slice log shows `deferred (not counted): …` and the
+plan retries about a minute later, so a too-tight ceiling shows up as a stalled
+plan, not a paused one. A `broadcast_uncertain` slice still counts — it may have
+executed.
 
 The counter is per daemon process and in memory: restarting the daemon refunds
 the whole gas budget. On Base/Arbitrum the ceiling under-counts (unpriced L1 data
