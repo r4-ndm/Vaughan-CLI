@@ -48,11 +48,11 @@ on-chain contracts.
 | Sentient batch smuggling | The signer daemon takes typed `SignerIntent`s only (no calldata member, `deny_unknown_fields`); every `BatchTransfer` leg is checked against `allow_transfer_to` and the whole batch is reserved against the daily spend ledger; unrecognised calls never become an intent (`intent_untyped`) |
 | Sentient sandwich / zero min-out | The daemon quotes on-chain itself and clamps `min_amount_out` to `max_slippage_bps` of that quote (`vaughan-cli/src/signerd/ops/swap.rs`); calldata is built by the daemon, never accepted from the agent |
 | Sentient rogue router | Audited DEX router allowlist at `propose_swap` and again in the daemon (`router_not_allowed`, `spender_not_allowed`; covered by `signer_intent` tests) |
-| Sentient gas drain | **Not yet enforced in the daemon** (tracked): the session gas ceiling (`max_session_gas_wei`) and the fee-spike check were enforced only by the removed in-TUI gate. Spend is still bounded by the daily cap and position caps |
+| Sentient gas drain | Enforced in the daemon: every metered broadcast is priced first (`quote_fee`), its worst-case fee (`gas_limit × max_fee_per_gas`) is RESERVED against `max_session_gas_wei` before signing, and an over-budget quote is refused (`gas_ceiling_exceeded`) without sending. A tx that cannot be priced is refused (`gas_unavailable`), never treated as free. See "Sentient gas ceiling" below for its four documented limits |
 | Sentient policy downgrade | `sentient-policy.toml` written 0600, `deny_unknown_fields`, loud warning when enforcement ≠ `enforced`; live edits require root-approved `policy_update` (`stage` -> `sudo vaughan signerd approve` -> `approved`), `expected_digest` CAS, two-step `acknowledge_unsafe` before `disabled`, per-UID rate limiting, and `policy-audit.jsonl` logging |
 | Mainnet accident | Testnet default; the signer daemon refuses any intent on a chain that is not a known testnet (`mainnet_blocked`; an unknown chain counts as mainnet) unless its OWN environment sets `VAUGHAN_MCP_ALLOW_MAINNET=1` (root-owned `/etc/vaughan/sentient.env`, read at startup, never settable by a request); it also refuses any intent whose `chain_id` differs from its configured chain (`chain_id_mismatch`) |
 | Approval flooding | Max 10 pending + 30 enqueues / 60s sliding window per profile |
-| Runaway sentient agent | Daily spend cap + position caps + circuit breaker inside the daemon; **Ctrl+K** trips only the TUI-side breaker, the daemon has no IPC trip op yet (tracked). Every cap is sized from the account's live on-chain balance (`vaughan-cli/src/signerd/balance.rs::BalanceSource`, read fresh per request); a balance read failure refuses the intent (`balance_unavailable`) rather than falling back to a default or cached value |
+| Runaway sentient agent | Daily spend cap + position caps + session gas ceiling + circuit breaker inside the daemon. The daemon has a kill switch: `{"op":"trip","reason":"…"}` from any allowlisted peer halts it, persists the reason to `signerd-tripped.json`, and survives a restart (see "Durable kill switch" below). There is no untrip op. **Ctrl+K in the TUI still trips only the TUI-side breaker** — wiring it to the daemon's `trip` op is tracked and NOT done. Every cap is sized from the account's live on-chain balance (`vaughan-cli/src/signerd/balance.rs::BalanceSource`, read fresh per request); a balance read failure refuses the intent (`balance_unavailable`) rather than falling back to a default or cached value |
 | Fee spike | Re-estimate at approve; reject when `estimated_fee_wei` set and fresh fee >10% higher (agent propose tools stamp this via core `EvmAdapter::estimate_fee`; Batch7702 uses Ambire `estimate_self_pay_fee`; **includes** `LpDeployStep` multi-step Brew) |
 | TOCTOU | Re-simulate + re-estimate fee before sign |
 | Double-spend proposal | Terminal states; duplicate `proposal_id` rejected at enqueue |
@@ -60,6 +60,85 @@ on-chain contracts.
 | Provider token theft | Token rotates on every lock/unlock edge; `provider.session` only exists while unlocked; invalidated on exit |
 | MCP listener DoS | Bind-before-token-publish, exponential backoff on bind failure, connection cap + per-connection lifetime timeout |
 | Profile path traversal | Profile names validated (`[a-zA-Z0-9_-]`, ≤64) before any path join |
+
+## Sentient gas ceiling (what it bounds, and what it does not)
+
+Every broadcast the daemon makes for a typed intent (transfer, swap, approve, wrap, unwrap,
+batch transfer, DCA slice) goes through one metered path
+(`vaughan-cli/src/signerd/gas.rs::broadcast_metered`): quote the fee, reserve it, re-check the
+trip, send the **quoted** tx verbatim. The quoted transaction is byte-for-byte the signed
+transaction (`WalletState::fill_fee` is shared by both paths); a quote is refused unless
+`gas_limit >= 21_000` and `max_fee_per_gas > 0`. There is deliberately **no upper bound on the
+gas price**: PulseChain 369 legitimately quotes ~2e15 wei/gas, so a "1000 gwei" style cut-off
+would refuse every transaction there.
+
+Error codes an agent sees, and how it should react:
+
+| Code | Meaning | Retry class |
+|------|---------|-------------|
+| `gas_ceiling_exceeded` | The quote does not fit the remaining `max_session_gas_wei`. The message names the key, the ceiling, spent, remaining, and this quote | Shrink the tx or wait — do not hammer |
+| `gas_unavailable` | The fee could not be priced or failed validation (RPC down, `estimate_gas` revert, zero/absent fee). A reverting estimate is a refusal: the tx would likely revert and burn gas | Back off |
+| `broadcast_uncertain` | The raw tx may already be in a mempool (transport error/timeout after signing). The spend-ledger legs and the gas reservation are KEPT, so an identical retry answers `spend_already_reserved` | STOP; an operator must look |
+| `circuit_breaker_tripped` | Trading is halted (kill switch, gas ceiling via `record_success`, or the consecutive-error tripwire) | Stop |
+
+`vaughan_core::core::signer_client::{error_code, retry_class}` map a returned
+`"{code}: {message}"` string to these classes so callers stop string-matching ad hoc.
+
+Four limits are real and deliberate:
+
+1. **The counter is per process and in memory.** The daemon and the (dormant) in-TUI
+   `SentientTrader` are separate `CircuitBreaker` instances, and a daemon restart refunds the
+   whole gas budget. Persisting the counter is out of scope; the trip file is not.
+   The in-process `SentientTrader` keeps its own *retrospective* ceiling, which is fail-open by
+   one transaction (it books `gasUsed` after the send).
+2. **On known L2s the ceiling under-counts.** Base (8453) and Arbitrum One (42161) add an L1
+   data fee that `estimate_fee` does not price, so the real cost can exceed
+   `max_session_gas_wei`. The daemon logs a warning at startup on those chains. Pricing the L1
+   component is out of scope.
+3. **The stealth sweep is not metered.** Its fee is paid out of the swept note itself
+   (`vaughan-core/src/core/stealth.rs` refuses when `balance <= gas`), so it is the one
+   broadcast outside the metered path; a source-guard test keeps every other op inside it. The
+   sweep also no longer calls `record_success`, so an agent cannot clear a building failure
+   streak with unmetered sweeps.
+4. **An uncertain broadcast over-counts.** Keeping the reservation (and the ledger legs) for a
+   send that may have reached the node is the conservative error: a genuinely lost tx costs one
+   worst-case fee of head-room until the daemon restarts, rather than letting a tx that DID
+   execute be re-armed by an identical retry.
+
+A trip cannot recall an envelope already handed to the RPC. The trip is re-checked immediately
+before the send, so the window is one sign+send round trip.
+
+## Durable kill switch (`{"op":"trip"}`)
+
+Any peer the `SO_PEERCRED` allowlist already admits may trip the daemon: stopping is the safe
+direction and needs no root step-up. There is **no untrip op** over the socket.
+
+- The reason is stripped of control characters and clamped to 200 chars/bytes before it is
+  formatted into a message, a log, or a file (it reaches an operator's terminal).
+- First reason wins, in memory and on disk: an automatic trip racing a manual kill switch
+  cannot have its reason clobbered by whichever call lands second.
+- The trip is persisted to `<store>/signerd-tripped.json` (mode `0600`, temp file + `fsync` +
+  rename) BEFORE the op returns. If that write fails the daemon is still halted in memory but
+  answers `ok:false` / `trip_not_persisted` — a restart would come back untripped, so the
+  operator must stop the unit.
+- Automatic trips (gas ceiling, consecutive-error tripwire) are persisted after every `sign`
+  for the same reason.
+- `Signer::new` loads the marker BEFORE the socket is bound, and fails **closed**: a marker
+  that exists but cannot be read, parsed, or trusted (wrong mode/owner) also starts the daemon
+  tripped. Only a genuinely absent marker means "not halted". This matters because
+  `Restart=on-failure` plus workspace `panic = "abort"` means any panic or OOM kill would
+  otherwise bring the daemon back with a clean breaker in a few seconds.
+- **Clearing a trip is root removing `/var/lib/vaughan/sentient/signerd-tripped.json` and
+  restarting the unit** (`systemctl restart vaughan-signerd`). See
+  [`sentient-ops.md`](sentient-ops.md).
+- Every trip appends `{ts, event, peer_uid, reason}` to `policy-audit.jsonl` (`peer_uid` is
+  `null` for an automatic trip): a kill switch leaves a trace next to the policy changes it
+  overrides.
+
+`status` reports `budget.gas_spent_wei`, `budget.gas_max_wei`, `budget.gas_remaining_wei` from
+the config actually in force, alongside `budget.circuit_breaker_tripped` / `_reason`. The
+policy is re-read per `sign` request and reapplied to the breaker, so a ceiling tightened on
+disk binds the next request rather than the next restart.
 
 ## VB agent control (CDP) controls
 
@@ -99,6 +178,11 @@ see [`mcp-transport.md`](mcp-transport.md).
 | Sentient signer policy enforcement | `vaughan-mcp/tests/sentient_cutover.rs::test_signer_refusal_surfaces_unchanged_through_mcp` |
 | Sentient no `mcp.session` written | `vaughan-cli/tests/serve_sentient_gate.rs::test_serve_sentient_creates_no_mcp_session_file` |
 | Mainnet accident | `vaughan-core` `guard_mainnet_write_gates` |
+| Sentient gas drain | `vaughan-cli/tests/signerd_gas.rs` (ceiling refusal, cumulative/boundary admission, atomic concurrent reservations, quote-validation floors, saturation, every op kind metered, source guard that no op but `sweep.rs` bypasses metering) |
+| Quoted fee == signed fee | `vaughan-cli/tests/signerd_fee_anvil.rs::test_quoted_fee_is_the_fee_the_node_sees` (anvil) |
+| Uncertain broadcast keeps the reservation | `signerd_gas.rs::test_uncertain_broadcast_failure_keeps_gas_and_legs` |
+| Durable kill switch | `vaughan-cli/tests/signerd_trip.rs` (signs refused after `trip`, first reason wins in memory and on disk, reason sanitised, survives a restart, file `0600`, corrupt marker starts tripped, automatic trip persisted, audit line written) |
+| Policy freshness per request | `signerd_trip.rs::test_policy_edit_on_disk_tightens_the_next_sign` |
 | Approval flooding | `proposal_queue_rejects_when_full` + `check_enqueue_rate` in enqueue |
 | Fee spike at approve | `mcp_fee_spike_blocks_sign` + `fee_spike_threshold` |
 | Invalid proposal_id | `validate_proposal_id_rejects_path_traversal` + `mcp_host` dispatch test |
@@ -146,7 +230,7 @@ MCP stdio wire format (initialize / tools/list / tools/call envelopes): see
 
 ## Sentient UID isolation & residual risk
 
-For sentient profiles, all private keys (`wallet.json`), policy configuration (`sentient-policy.toml`), spend ledger records (`sentient-spend.json`), and policy audit entries (`policy-audit.jsonl`) reside in `/var/lib/vaughan/sentient` owned exclusively by the `vaughan-signer` system user (mode `0700`/`0600`); one-time `policy-approval.json` files (when present) are owned by `root:vaughan-signer` (or root and the store's group if `vaughan-signer` does not exist), mode `0440`. The agent process runs under the normal host UID and communicates with `vaughan-signerd` strictly via `/run/vaughan/signerd.sock`.
+For sentient profiles, all private keys (`wallet.json`), policy configuration (`sentient-policy.toml`), spend ledger records (`sentient-spend.json`), policy audit entries (`policy-audit.jsonl`), and the kill-switch marker (`signerd-tripped.json`) reside in `/var/lib/vaughan/sentient` owned exclusively by the `vaughan-signer` system user (mode `0700`/`0600`); one-time `policy-approval.json` files (when present) are owned by `root:vaughan-signer` (or root and the store's group if `vaughan-signer` does not exist), mode `0440`. The agent process runs under the normal host UID and communicates with `vaughan-signerd` strictly via `/run/vaughan/signerd.sock`.
 
 The daemon validates peer credentials on every connection via `SO_PEERCRED` against `allow_uid`. The agent process cannot read or alter private keys, policy limits, or spend ledgers, and cannot submit arbitrary calldata (untyped tools return `intent_untyped` and never reach the signer socket).
 
