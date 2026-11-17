@@ -14,7 +14,9 @@ use alloy::primitives::U256;
 use super::trigger::advance_schedule;
 use super::types::{DcaPlan, DcaStatus, SliceLog, MAX_CONSECUTIVE_FAILURES, MAX_SLICE_LOG};
 use crate::error::AgentError;
-use crate::sentient::{GAS_CEILING_REFUSAL_PREFIX, TRADING_HALTED_PREFIX};
+use crate::sentient::{
+    GAS_BUDGET_REFUSAL_PREFIX, GAS_CEILING_REFUSAL_PREFIX, TRADING_HALTED_PREFIX,
+};
 
 /// How soon a deferred slice is re-tried, capped by the plan's own interval.
 ///
@@ -28,6 +30,11 @@ const DEFER_RETRY_SECS: u64 = 60;
 pub enum SliceRefusal {
     /// Nothing was sent and nothing was spent: no failure count, no window burned.
     Deferred,
+    /// Nothing was sent, and nothing will be until an operator acts (the daemon is
+    /// durably tripped — there is no untrip op). Paused rather than deferred: deferring
+    /// would re-ask the halted daemon every [`DEFER_RETRY_SECS`] forever and leave the
+    /// plan reading `Active`. No failure count — nothing moved, so it is not the plan's fault.
+    Paused,
     /// Counts against the plan (may have executed, or the plan itself is wrong).
     Failed,
 }
@@ -44,8 +51,15 @@ pub fn classify_agent_error(err: &AgentError) -> SliceRefusal {
         AgentError::CircuitBreakerTripped(m) if m.starts_with(TRADING_HALTED_PREFIX) => {
             SliceRefusal::Deferred
         }
-        // Gas reservation refused by the session ceiling; nothing was sent.
-        AgentError::InvalidToolCall(m) if m.starts_with(GAS_CEILING_REFUSAL_PREFIX) => {
+        // Gas reservation refused by the session ceiling; nothing was sent. Both ceiling
+        // checks are covered: `reserve_gas` is the daemon's pre-broadcast reservation,
+        // `check_gas_budget` the in-process pre-flight — its doc pairs it with
+        // `record_success`, so if it is ever wired into the trader its refusals must
+        // defer too, not count.
+        AgentError::InvalidToolCall(m)
+            if m.starts_with(GAS_CEILING_REFUSAL_PREFIX)
+                || m.starts_with(GAS_BUDGET_REFUSAL_PREFIX) =>
+        {
             SliceRefusal::Deferred
         }
         _ => SliceRefusal::Failed,
@@ -73,6 +87,13 @@ pub fn apply_refusal(
                 .max(1);
             plan.next_due_at = now.saturating_add(DEFER_RETRY_SECS.min(interval));
         }
+        SliceRefusal::Paused => {
+            // A durable daemon trip is permanent by design: pause the plan instead of
+            // re-asking a halted daemon every DEFER_RETRY_SECS. Nothing moved, so the
+            // failure streak is untouched and the window is not advanced either — the
+            // operator re-enables by clearing the trip marker, and the plan resumes.
+            plan.status = DcaStatus::Paused;
+        }
         SliceRefusal::Failed => {
             plan.consecutive_failures = plan.consecutive_failures.saturating_add(1);
             if plan.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
@@ -84,6 +105,7 @@ pub fn apply_refusal(
     }
     let error = match class {
         SliceRefusal::Deferred => format!("deferred (not counted): {reason}"),
+        SliceRefusal::Paused => format!("halted (not counted): {reason}"),
         SliceRefusal::Failed => reason.to_string(),
     };
     push_log(
@@ -176,6 +198,39 @@ mod tests {
         assert_eq!(
             classify_agent_error(&AgentError::RpcQuorumMismatch),
             SliceRefusal::Failed
+        );
+    }
+
+    #[test]
+    fn a_durable_trip_pauses_the_plan_without_counting_a_failure() {
+        let mut p = plan();
+        apply_refusal(
+            &mut p,
+            2_000,
+            SliceRefusal::Paused,
+            "circuit_breaker_tripped: kill switch",
+            &U256::ZERO,
+        );
+        assert_eq!(p.status, DcaStatus::Paused);
+        assert_eq!(
+            p.consecutive_failures, 0,
+            "nothing moved, so nothing counts"
+        );
+        assert_eq!(
+            p.next_due_at, 1_000,
+            "no retry loop against a halted daemon"
+        );
+        assert_eq!(p.slice_log.len(), 1);
+        assert!(p.slice_log[0].error.contains("halted (not counted)"));
+    }
+
+    #[test]
+    fn the_in_process_budget_preflight_is_deferred_too() {
+        assert_eq!(
+            classify_agent_error(&AgentError::InvalidToolCall(format!(
+                "{GAS_BUDGET_REFUSAL_PREFIX}: spent 4 + this tx 5 wei > max 8 wei"
+            ))),
+            SliceRefusal::Deferred
         );
     }
 

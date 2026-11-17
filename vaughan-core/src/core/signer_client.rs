@@ -446,6 +446,11 @@ pub fn retry_class(code: &str) -> RetryClass {
         "gas_unavailable" => RetryClass::BackOff,
         "broadcast_uncertain" => RetryClass::StopOperatorLooks,
         "circuit_breaker_tripped" => RetryClass::Stop,
+        // Nothing was signed: the daemon refused before policy was even in force. An
+        // operator must restore/stage a policy file, so this is `Stop` (halted) rather
+        // than `Unknown` — retrying as-is cannot help, and counting it as a failure
+        // would burn a buy window for a refusal that moved no money.
+        "policy_load_failed" => RetryClass::Stop,
         _ => RetryClass::Unknown,
     }
 }
@@ -513,6 +518,11 @@ mod tests {
             RetryClass::StopOperatorLooks
         );
         assert_eq!(retry_class("circuit_breaker_tripped"), RetryClass::Stop);
+        assert_eq!(
+            retry_class("policy_load_failed"),
+            RetryClass::Stop,
+            "a pre-policy refusal signed nothing; it must halt, not count as a failure"
+        );
         assert_eq!(retry_class("something_else"), RetryClass::Unknown);
     }
 

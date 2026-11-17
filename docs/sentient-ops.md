@@ -138,12 +138,20 @@ budget.gas_spent_wei / budget.gas_max_wei / budget.gas_remaining_wei
 ```
 
 A DCA plan whose slice the daemon refuses on gas (`gas_ceiling_exceeded`,
-`gas_unavailable`, `circuit_breaker_tripped`) is **deferred, not failed**: nothing
-was spent, so the slice does not count toward the three-failure pause and does
-not burn the buy window. The slice log shows `deferred (not counted): …` and the
-plan retries about a minute later, so a too-tight ceiling shows up as a stalled
-plan, not a paused one. A `broadcast_uncertain` slice still counts — it may have
-executed.
+`gas_unavailable`) is **deferred, not failed**: nothing was spent, so the slice
+does not count toward the three-failure pause and does not burn the buy window.
+The slice log shows `deferred (not counted): …` and the plan retries about a
+minute later, so a too-tight ceiling shows up as a stalled plan, not a paused one.
+
+A slice refused with `circuit_breaker_tripped` or `policy_load_failed` is
+**paused, not deferred**: the daemon's trip is durable and there is no untrip op,
+and a missing policy file will not reappear on its own, so retrying every minute
+would only re-ask a halted daemon forever while the plan still read `Active`.
+The slice log shows `halted (not counted): …`, the failure streak is untouched,
+and the plan resumes once the operator clears the trip marker (or restores the
+policy file) and re-enables it.
+
+A `broadcast_uncertain` slice still counts — it may have executed.
 
 The counter is per daemon process and in memory: restarting the daemon refunds
 the whole gas budget. On Base/Arbitrum the ceiling under-counts (unpriced L1 data

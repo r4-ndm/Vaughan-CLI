@@ -80,6 +80,7 @@ Error codes an agent sees, and how it should react:
 | `gas_unavailable` | The fee could not be priced or failed validation (RPC down, `estimate_gas` revert, zero/absent fee). A reverting estimate is a refusal: the tx would likely revert and burn gas | Back off |
 | `broadcast_uncertain` | The raw tx may already be in a mempool (transport error/timeout after signing). The spend-ledger legs and the gas reservation are KEPT, so an identical retry answers `spend_already_reserved` | STOP; an operator must look |
 | `circuit_breaker_tripped` | Trading is halted (kill switch, gas ceiling via `record_success`, or the consecutive-error tripwire) | Stop |
+| `policy_load_failed` | No policy file in the store, or one that cannot be read or turned into a breaker config. A MISSING file is a refusal, not the defaults: `load_policy` answers `Ok(default)` for absence, and the built-in defaults can be far looser than the ceilings the daemon was started under. Nothing is signed | Stop; restore the policy file or stage one via `policy_update` |
 
 `vaughan_core::core::signer_client::{error_code, retry_class}` map a returned
 `"{code}: {message}"` string to these classes so callers stop string-matching ad hoc.
