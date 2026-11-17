@@ -16,7 +16,12 @@
 #   scripts/audit.sh --history       # ALSO scan every reachable commit for secrets,
 #                                    # not just the working tree (slow: walks all of
 #                                    # `git rev-list --all`, O(commits x tree)); the
-#                                    # default run stays working-tree-only
+#                                    # default run stays working-tree-only. Needs full
+#                                    # history — a shallow clone has nothing to walk, so
+#                                    # CI must check out with fetch-depth: 0. Run by the
+#                                    # release gate in .github/workflows/release.yml;
+#                                    # known pre-Rust fixture hits are documented in
+#                                    # docs/audit-playbook.md
 #
 # `-history` is accepted as the same flag. Exit code 0 only when every selected
 # check passes.
@@ -235,15 +240,50 @@ git_grep() { # git_grep <pattern> [pathspec...]
 }
 
 api_pat='sk-[A-Za-z0-9]{20,}|sk-or-v1-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-api_hits=$(git_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
+
+# Tier-2 filter for the API-key pattern, shared by the working-tree and history
+# tiers so both judge the same evidence by the same rules (same contract as
+# hex_tier below). ONLY provably-synthetic placeholders belong here — anything
+# that could plausibly be a live key must fail the gate instead.
+#
+# These are the COMPLETE set of api-shaped strings in this repo's history (three
+# distinct values; verify with the enumeration in docs/audit-playbook.md). All
+# three are fixtures from the pre-Rust Go demo scripts security_demo.sh /
+# security_complete_demo.sh, deleted in b3dca8c7 when the repo was rebuilt as a
+# Rust workspace, so they are reachable only under --history:
+#   sk-0{16,}                                 all-zero placeholder, never issued
+#   sk-123456789012345678901234567890abcdef   sequential digits + abcdef
+#   sk-updated1234567890abcdef                literal fixture string
+# Each is matched in full rather than by a loose `sk-…` wildcard, so a real key
+# in one of those files would still fail the gate.
+api_allow='sk-0{16,}|sk-123456789012345678901234567890abcdef|sk-updated1234567890abcdef'
+api_tier() { # api_tier <raw tier-1 output> — filtered, truncated hits
+    # Guard empty input: `printf '%s\n' ""` would emit a blank line that
+    # survives `grep -v` and read as a hit.
+    [ -z "$1" ] && return 0
+    printf '%s\n' "$1" \
+        | grep -viE "$api_allow" \
+        | head -10
+}
+
+api_raw=$(git_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
 api_rc=$?
+api_hits=$(api_tier "$api_raw")
 
 hex_pat='[0-9a-fA-F]{64}'
 
 # Tier-2 filters, shared by the working-tree and history tiers so both judge the
 # same evidence by the same rules.
 hex_context='(priv|secret|mnemonic|signer|api[_-]?key)'
-hex_allow='anvil|ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80|59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d|b256!|SALT=|/tx/|topic|selector|0xaaaa|deadbeef|000000000000000000000000'
+#
+# The last two entries are reachable only through git history (the working tree
+# no longer contains either), which is why they only matter under --history:
+#   1234...1234  64 sequential digits, the INPUT to a log-sanitizer demo in the
+#                pre-Rust Go scripts deleted in b3dca8c7 — a fixture whose whole
+#                point was proving key material gets masked, not a key
+#   1111...ffff  a patterned mock TX HASH (not a key at all), superseded in-tree
+#                by the 0xaaaa… hash already allowlisted above
+hex_allow='anvil|ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80|59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d|b256!|SALT=|/tx/|topic|selector|0xaaaa|deadbeef|000000000000000000000000|1234567890123456789012345678901234567890123456789012345678901234|1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff'
 hex_tier() { # hex_tier <raw tier-2 output> — filtered, truncated hits
     printf '%s\n' "$1" \
         | grep -iE "$hex_context" \
@@ -293,8 +333,9 @@ else
         git grep -nIE "$pat" "${hist_revs[@]}" -- "$@"
     }
 
-    hist_api=$(hist_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
+    hist_api_raw=$(hist_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
     hist_api_rc=$?
+    hist_api=$(api_tier "$hist_api_raw")
     hist_hex_raw=$(hist_grep "$hex_pat" "${scan_paths[@]}" ':!*package-lock.json' ':!*Cargo.lock' "${scan_skip[@]}")
     hist_hex_rc=$?
     hist_hex_hits=$(hex_tier "$hist_hex_raw")

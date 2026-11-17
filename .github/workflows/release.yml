@@ -28,8 +28,59 @@ permissions:
   contents: write
 
 jobs:
+  # Release gate. A tag can point at any commit, so the CI gate that ran on main
+  # is not evidence about THIS tree — the full gate runs again here, and nothing
+  # is built or published unless it passes.
+  #
+  # This is also the only place `--history` runs. The working-tree secrets scan
+  # that CI performs cannot see a key that was committed and later deleted, but
+  # such a key is still in every clone until history is rewritten, so a release
+  # is exactly the moment to check: `fetch-depth: 0` is required for it to have
+  # a history to walk, and audit.sh fails rather than passing if the scan cannot
+  # run.
+  audit:
+    name: release gate (fmt · clippy · test · secrets incl. history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history: --history walks every reachable commit.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install Foundry (anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinned to match ci.yml: newer anvil replies to eth_sendTransaction
+          # before mining, which races the Anvil tests' send-then-read checks.
+          version: v1.2.1
+
+      - name: Verify anvil on PATH
+        run: anvil --version
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Railgun is skipped for the same reason as in ci.yml: the dedicated job
+      # there is the only place allowed to compile that stack, and no release
+      # build may carry it while wasmer-compiler-singlepass (BUSL-1.1) is in the
+      # graph (see docs/railgun-go-no-go.md).
+      - name: audit gate (with history scan)
+        run: scripts/audit.sh --with-tests --history --skip-railgun
+
   build:
     name: build (${{ matrix.target }})
+    needs: audit
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
