@@ -86,6 +86,24 @@ fn validate_quote(tx: EvmTransaction) -> Result<FeeQuote, String> {
     if max_fee_per_gas.is_zero() {
         return Err("gas_unavailable: quoted max_fee_per_gas is zero".to_string());
     }
+    // The tip is validated like the max fee, matching the `FeeQuote` doc: the signer needs
+    // both 1559 fields, so a quote missing (or failing to parse) the tip — e.g. from a
+    // legacy-only RPC — must be refused here, before anything is reserved, rather than
+    // failing later at `build` as a generic `broadcast_failed`.
+    let tip_str = tx
+        .max_priority_fee_per_gas
+        .as_deref()
+        .ok_or_else(|| "gas_unavailable: quote missing max_priority_fee_per_gas".to_string())?;
+    let tip = U256::from_str(tip_str).map_err(|e| {
+        format!(
+            "gas_unavailable: quoted max_priority_fee_per_gas {tip_str:?} is not a valid U256: {e}"
+        )
+    })?;
+    if tip > max_fee_per_gas {
+        return Err(
+            "gas_unavailable: quoted max_priority_fee_per_gas exceeds max_fee_per_gas".to_string(),
+        );
+    }
     let max_fee_wei = U256::from(gas_limit).saturating_mul(max_fee_per_gas);
     Ok(FeeQuote { tx, max_fee_wei })
 }
@@ -274,5 +292,82 @@ impl TransactionBroadcaster for MockBroadcaster {
             Ok(hash) => Ok(hash),
             Err(e) => Err((*self.fail_phase.lock().unwrap(), e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A quote carrying both 1559 fields, which callers then mutate per case.
+    fn priced() -> EvmTransaction {
+        EvmTransaction {
+            from: format!("{:#x}", Address::repeat_byte(0xaa)),
+            to: format!("{:#x}", Address::repeat_byte(0xbb)),
+            value: "1".to_string(),
+            data: None,
+            gas_limit: Some(21_000),
+            gas_price: None,
+            max_fee_per_gas: Some("2000000000".to_string()),
+            max_priority_fee_per_gas: Some("1500000000".to_string()),
+            nonce: None,
+            chain_id: 369,
+        }
+    }
+
+    #[test]
+    fn a_fully_priced_quote_books_gas_limit_times_max_fee() {
+        let quote = validate_quote(priced()).unwrap();
+        assert_eq!(
+            quote.max_fee_wei,
+            U256::from(21_000u64) * U256::from(2_000_000_000u64)
+        );
+    }
+
+    /// The `FeeQuote` doc promises all three fee fields are `Some` and validated. A
+    /// legacy-only RPC that fills `max_fee_per_gas` but no tip must be refused here,
+    /// while nothing is reserved — not later at `build` as a generic `broadcast_failed`.
+    #[test]
+    fn a_quote_without_a_tip_is_refused_as_gas_unavailable() {
+        let mut tx = priced();
+        tx.max_priority_fee_per_gas = None;
+        let err = validate_quote(tx).unwrap_err();
+        assert!(
+            err.starts_with("gas_unavailable:"),
+            "must carry the back-off code, got {err:?}"
+        );
+        assert!(err.contains("missing max_priority_fee_per_gas"), "{err:?}");
+    }
+
+    #[test]
+    fn an_unparseable_tip_is_refused_rather_than_treated_as_zero() {
+        let mut tx = priced();
+        tx.max_priority_fee_per_gas = Some("not-a-number".to_string());
+        let err = validate_quote(tx).unwrap_err();
+        assert!(err.starts_with("gas_unavailable:"), "{err:?}");
+        assert!(err.contains("is not a valid U256"), "{err:?}");
+    }
+
+    /// `tip > max_fee` is not a signable 1559 pair; `tip == max_fee` is (the mock
+    /// broadcaster quotes exactly that), so the boundary must stay admitted.
+    #[test]
+    fn a_tip_above_the_max_fee_is_refused_but_an_equal_tip_is_admitted() {
+        let mut tx = priced();
+        tx.max_priority_fee_per_gas = Some("2000000001".to_string());
+        let err = validate_quote(tx).unwrap_err();
+        assert!(err.contains("exceeds max_fee_per_gas"), "{err:?}");
+
+        let mut tx = priced();
+        tx.max_priority_fee_per_gas = tx.max_fee_per_gas.clone();
+        assert!(validate_quote(tx).is_ok(), "tip == max_fee must be allowed");
+    }
+
+    /// A zero tip is legitimate (it just buys no priority), so it must not be swept up
+    /// by the `max_fee_per_gas`-style zero check.
+    #[test]
+    fn a_zero_tip_is_allowed() {
+        let mut tx = priced();
+        tx.max_priority_fee_per_gas = Some("0".to_string());
+        assert!(validate_quote(tx).is_ok());
     }
 }
