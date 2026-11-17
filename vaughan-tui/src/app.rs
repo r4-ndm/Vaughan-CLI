@@ -3465,12 +3465,6 @@ impl App {
         self.set_flash("Unlock tools: confirm ≥13 WZRD to the dead address (one tx, no drip)");
     }
 
-    fn lp_job_rpc_urls(wallet: &WalletState, job_primary: &str) -> Vec<String> {
-        wallet
-            .active_rpc_url_list()
-            .unwrap_or_else(|_| vaughan_core::core::merge_rpc_urls(job_primary, &[]))
-    }
-
     fn approval_may_need_trezor(kind: &ApprovalKind) -> bool {
         matches!(
             kind,
@@ -4208,32 +4202,13 @@ impl App {
                     owner,
                     list_gen,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{list_v3_lp_position_views, with_lp_rpc_urls};
-                    let owner_for_result = owner.clone();
-                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
-                        WalletError::InvalidTransaction("invalid owner address".into())
-                    });
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
-                    UiJobResult::LpPositions {
-                        list_gen,
-                        owner: owner_for_result,
-                        result: match parsed_owner {
-                            Err(e) => Err(e),
-                            Ok(addr) => {
-                                handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
-                                    list_v3_lp_position_views(
-                                        &url, venue, chain_id, addr, None, None,
-                                    )
-                                    .await
-                                }))
-                            }
-                        },
-                    }
+                    crate::jobs::lp::list_v3_positions(
+                        &handle, &rpc_urls, venue, chain_id, owner, list_gen,
+                    )
                 }
                 UiJob::LpListV2Positions {
                     venue: _,
@@ -4242,31 +4217,13 @@ impl App {
                     owner,
                     list_gen,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{list_all_v2_lp_positions, with_lp_rpc_urls};
-                    let owner_for_result = owner.clone();
-                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
-                        WalletError::InvalidTransaction("invalid owner address".into())
-                    });
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
-                    // Listing always walks every V2 factory on the chain so ETHW
-                    // LPs aren't hidden behind the current [ ] DEX focus.
-                    UiJobResult::LpV2Positions {
-                        list_gen,
-                        owner: owner_for_result,
-                        result: match parsed_owner {
-                            Err(e) => Err(e),
-                            Ok(addr) => {
-                                handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
-                                    list_all_v2_lp_positions(&url, chain_id, addr).await
-                                }))
-                            }
-                        },
-                    }
+                    crate::jobs::lp::list_v2_positions(
+                        &handle, &rpc_urls, chain_id, owner, list_gen,
+                    )
                 }
                 UiJob::LpV3PoolDeployStep {
                     venue,
@@ -4299,7 +4256,7 @@ impl App {
                     };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
                     UiJobResult::LpV3PoolDeployStep(handle.block_on(async {
                         use tokio::time::{timeout, Duration};
@@ -4375,7 +4332,7 @@ impl App {
                     };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
                     UiJobResult::LpEnableCheck((|| {
                         let parse_addr = |s: &str, label: &str| {
@@ -4444,7 +4401,7 @@ impl App {
                     };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
                     UiJobResult::LpEnablePrepare(handle.block_on(async {
                         let parse_addr = |s: &str, label: &str| {
@@ -4518,7 +4475,7 @@ impl App {
                     };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
                     UiJobResult::LpEnableWait(handle.block_on(async {
                         let parse_addr = |s: &str, label: &str| {
@@ -4580,42 +4537,13 @@ impl App {
                     dec0,
                     dec1,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{fetch_v3_lp_pool_quote, with_lp_rpc_urls};
-                    let parse_addr = |s: &str, label: &str| {
-                        Address::from_str(s.trim()).map_err(|_| {
-                            WalletError::InvalidTransaction(format!("invalid {label}"))
-                        })
-                    };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
-                    UiJobResult::LpV3PoolQuote(handle.block_on(async {
-                        use tokio::time::{timeout, Duration};
-                        const POOL_QUOTE_TIMEOUT: Duration = Duration::from_secs(45);
-                        let t0 = parse_addr(&token0, "token0")?;
-                        let t1 = parse_addr(&token1, "token1")?;
-                        if t0 >= t1 {
-                            return Err(WalletError::InvalidTransaction(
-                                "internal: token0 must be sorted".into(),
-                            ));
-                        }
-                        with_lp_rpc_urls(&rpc_urls, |url| async move {
-                            timeout(
-                                POOL_QUOTE_TIMEOUT,
-                                fetch_v3_lp_pool_quote(
-                                    &url, venue, chain_id, t0, t1, dec0, dec1, fee,
-                                ),
-                            )
-                            .await
-                            .map_err(|_| {
-                                WalletError::NetworkError("pool lookup timed out (45s)".into())
-                            })?
-                        })
-                        .await
-                    }))
+                    crate::jobs::lp::v3_pool_quote(
+                        &handle, &rpc_urls, venue, chain_id, token0, token1, fee, dec0, dec1,
+                    )
                 }
                 UiJob::DeployToken {
                     name,

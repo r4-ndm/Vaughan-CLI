@@ -1,4 +1,11 @@
 //! Background UI jobs so RPC work never `block_on`s the TUI thread.
+//!
+//! This module owns the job *data*: [`UiJob`] (what to run) and [`UiJobResult`]
+//! (what came back). The bodies that actually run them live in `app.rs`'s
+//! `spawn_job`, except where a family is big enough to deserve its own module —
+//! see [`lp`].
+
+pub mod lp;
 
 use secrecy::SecretString;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee};
