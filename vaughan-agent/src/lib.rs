@@ -33,8 +33,8 @@ pub use sentient::{
     record_stealth_pending, release_legs, reserve_legs, save_policy, sentient_queue_hmac_key,
     verify_sentient_queue_entry, AgentSessionPolicy, CircuitBreaker, CircuitBreakerConfig,
     EnforcementMode, LedgerView, PolicyProposal, QuorumReserves, QuorumValidator, ReserveOutcome,
-    SentientTrader, SpendLedger, SwapExecution, LEGACY_DEGEN_POLICY_TOML, SENTIENT_POLICY_TOML,
-    SIGNER_KEY_FILE,
+    SentientTrader, SpendLedger, SwapExecution, GAS_BUDGET_REFUSAL_PREFIX,
+    GAS_CEILING_REFUSAL_PREFIX, LEGACY_DEGEN_POLICY_TOML, SENTIENT_POLICY_TOML, SIGNER_KEY_FILE,
 };
 pub use tools::{
     default_assist_registry, default_assist_registry_for, default_sensory_registry,

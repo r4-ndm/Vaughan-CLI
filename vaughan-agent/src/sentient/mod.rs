@@ -10,7 +10,8 @@ pub mod stealth_pending;
 pub mod trader;
 
 pub use circuit_breaker::{
-    CircuitBreaker, CircuitBreakerConfig, GAS_CEILING_REFUSAL_PREFIX, TRADING_HALTED_PREFIX,
+    CircuitBreaker, CircuitBreakerConfig, GAS_BUDGET_REFUSAL_PREFIX, GAS_CEILING_REFUSAL_PREFIX,
+    TRADING_HALTED_PREFIX,
 };
 pub use file_guard::assert_owner_only_file;
 pub use policy::{

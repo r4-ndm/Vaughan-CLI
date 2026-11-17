@@ -18,6 +18,11 @@ pub const TRADING_HALTED_PREFIX: &str = "Trading halted: ";
 /// Prefix of the [`CircuitBreaker::reserve_gas`] refusal, which names the policy key.
 pub const GAS_CEILING_REFUSAL_PREFIX: &str = "max_session_gas_wei ceiling";
 
+/// Prefix of the [`CircuitBreaker::check_gas_budget`] refusal (the in-process pre-flight
+/// check). Separate const because the two ceilings word their refusals differently and
+/// `crate::dca::defer` must defer BOTH — neither one has signed anything.
+pub const GAS_BUDGET_REFUSAL_PREFIX: &str = "Gas ceiling would be exceeded";
+
 /// Configuration defining strict risk boundaries for autonomous trading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitBreakerConfig {
@@ -205,7 +210,7 @@ impl CircuitBreaker {
         let projected = spent.saturating_add(gas_wei);
         if projected > cfg.max_session_gas_wei {
             let msg = format!(
-                "Gas ceiling would be exceeded: spent {spent} + this tx {gas_wei} wei \
+                "{GAS_BUDGET_REFUSAL_PREFIX}: spent {spent} + this tx {gas_wei} wei \
                  > max {} wei — session stays open for cheaper transactions",
                 cfg.max_session_gas_wei
             );
@@ -260,7 +265,13 @@ impl CircuitBreaker {
     /// Undo a [`Self::reserve_gas`] booking (refusal or a definitively-failed broadcast
     /// moved no money, so its worst-case fee must not count against the ceiling). Saturating:
     /// floors at zero rather than underflowing if called more than the reservation covers.
+    /// Mirrors `reserve_gas`'s `Disabled` early return: a mode that books nothing must
+    /// release nothing, or a release can erase a booking another in-flight reservation
+    /// still needs (across a mid-session enforcement change).
     pub fn release_gas(&self, gas: U256) {
+        if self.config.read().unwrap().enforcement == EnforcementMode::Disabled {
+            return;
+        }
         let mut total_gas = self.cumulative_gas_wei.write().unwrap();
         *total_gas = total_gas.saturating_sub(gas);
     }
