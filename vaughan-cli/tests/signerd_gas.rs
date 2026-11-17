@@ -453,3 +453,46 @@ fn test_ops_source_files_do_not_bypass_metering() {
         );
     }
 }
+
+/// A store whose policy file went missing must stop signing, not sign under the
+/// built-in defaults (`load_policy` answers `Ok(default)` for absence, and the
+/// defaults can be far looser than the ceilings the daemon was started under).
+#[tokio::test]
+async fn test_missing_policy_file_refuses_to_sign() {
+    let dest = Address::repeat_byte(0x11);
+    let (signer, _, _, dir, _, _) = setup_test_harness(vec![format!("{dest:#x}")]);
+
+    // Sanity: with the policy present the same intent signs.
+    let ok = sign_intent(&signer, &transfer(dest, 100)).await;
+    assert!(ok.ok, "{ok:?}");
+
+    std::fs::remove_file(dir.path().join("sentient-policy.toml")).unwrap();
+    let resp = sign_intent(&signer, &transfer(dest, 100)).await;
+    assert!(!resp.ok);
+    assert_eq!(
+        resp.code.as_deref(),
+        Some("policy_load_failed"),
+        "a missing policy file must fail closed, not install the defaults"
+    );
+}
+
+/// The per-request reload must go through the session-aware builder: a policy whose
+/// `required_rpc_quorum` exceeds the single configured endpoint is clamped, exactly as
+/// at startup, instead of silently over-promising multi-RPC verification.
+#[tokio::test]
+async fn test_policy_reload_keeps_the_rpc_quorum_clamp() {
+    let dest = Address::repeat_byte(0x22);
+    let (signer, _, _, dir, _, _) = setup_test_harness(vec![format!("{dest:#x}")]);
+
+    let mut policy = vaughan_agent::sentient::load_policy(dir.path()).unwrap();
+    policy.required_rpc_quorum = 3; // one endpoint configured; startup clamps to 1
+    vaughan_agent::sentient::save_policy(dir.path(), &policy).unwrap();
+
+    let ok = sign_intent(&signer, &transfer(dest, 100)).await;
+    assert!(ok.ok, "{ok:?}");
+    assert_eq!(
+        signer.breaker().config().required_rpc_quorum,
+        1,
+        "the reload must clamp the quorum to the endpoint count, like Signer::new"
+    );
+}
