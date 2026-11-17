@@ -171,8 +171,13 @@ Rough flow:
 
 Guards you get by default: re-simulation at approve time, chain mismatch
 rejection, fee-spike rejection if gas jumped more than ~10% since the proposal,
-session token for the local queue, and testnet-first mainnet gating for MCP
-writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
+session token for the local queue (adviser), and testnet-first mainnet gating
+for MCP writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
+
+A separate **`sentient`** profile is the deliberate exception to “you approve
+every spend”: that seed belongs to `vaughan signerd`, which signs its intents
+under policy caps and a spend ledger with no approval card. Keys never enter the
+MCP process either way — see [docs/sentient-ops.md](docs/sentient-ops.md).
 
 ### What is in good shape vs still rough
 
@@ -196,7 +201,9 @@ before mainnet funds.
 ```bash
 vaughan balance --network pulsechain-testnet-v4
 vaughan send 0x… --value 0.01 --network pulsechain-testnet-v4
-vaughan serve --password-env VAUGHAN_PASSWORD   # unlock + MCP listener for agents
+vaughan serve --password-env VAUGHAN_PASSWORD   # adviser: unlock vault + MCP listener
+vaughan --profile sentient serve                 # sentient thin client: no password, no token,
+                                                 # keys stay in vaughan signerd
 ```
 
 For agent tool names and limits, see [docs/ai-tool-surface.md](docs/ai-tool-surface.md).

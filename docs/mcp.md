@@ -8,9 +8,10 @@ agents (Cursor, Claude Code, Codex) can use the same DeFi verbs as the TUI.
 1. **Adviser** — you use Vaughan; agent proposes; you approve (`vaughan` /
    `--profile default`).
 2. **Sentient** — the agent uses **its own seed** and acts with full control
-   (`vaughan-sentient` / `--profile sentient`). Unlock the **sentient** TUI
-   session; MCP proposals auto-exec (re-sim + policy). Human may **partner** by
-   sharing that same seed + a skill preset.
+   (`vaughan-sentient` / `--profile sentient`). That seed lives in `vaughan
+   signerd`; MCP intents auto-exec there under policy (re-sim + caps), no
+   approval card. Human may **partner** by sharing that same seed + a skill
+   preset.
 
 Signing never happens inside the MCP process. Keys stay in Vaughan.
 
@@ -45,8 +46,9 @@ dev). For an installed binary:
 
 ### Sentient (agent-led) — `vaughan-sentient`
 
-Separate MCP entry on the **agent’s** profile. Unlock Vaughan with
-`--profile sentient` so the loopback session can auto-sign:
+Separate MCP entry on the **agent’s** profile. Nothing to unlock for it: those
+keys live in `vaughan signerd`, and `vaughan mcp` submits typed intents over
+`/run/vaughan/signerd.sock` (see [Architecture](#architecture)).
 
 ```json
 {
@@ -102,9 +104,9 @@ Wire-format CI: `cargo test -p vaughan-mcp --test conformance`.
 
 | Symptom | Fix |
 |---------|-----|
-| `wallet_locked` | Unlock Vaughan TUI; or pass explicit `account_address` on read tools |
-| `pending_user` forever | TUI must be open and unlocked for live socket path |
-| `mainnet_blocked` | Set `VAUGHAN_MCP_ALLOW_MAINNET=1` (use testnet first) |
+| `wallet_locked` (adviser) | Unlock Vaughan TUI; or pass explicit `account_address` on read tools |
+| `pending_user` forever (adviser) | TUI must be open and unlocked for live socket path; sentient intents never queue for approval |
+| `mainnet_blocked` | Sentient: set `VAUGHAN_MCP_ALLOW_MAINNET=1` in the **daemon's own** root-owned env (`/etc/vaughan/sentient.env`) and restart it — a client-side variable does nothing. Adviser: same variable in the serve/TUI process. Use testnet first |
 | MCP broken in Cursor | Ensure nothing writes to stdout except JSON-RPC (logs go to stderr); reconnect MCP — [`mcp-connect`](../vaughan-agent/skills/mcp-connect/SKILL.md) |
 
 ## Browser tools (VB B1 + B2)
@@ -189,14 +191,18 @@ vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
   to the socket; `vaughan mcp` for the same profile submits typed intents there.
 - Auto-exec under policy (same as unlocked TUI). Spend is bounded by the
   `sentient-spend.json` ledger in the signer store
-  (`/var/lib/vaughan/sentient`). Sized approve/unwrap legs are gated like
-  transfers; **unlimited** (`type(uint256).max`) approve is always refused for
-  Sentient auto-exec (use a sized amount or the Advisor profile). Revoke
-  (`approve(…, 0)`) is OK.
+  (`/var/lib/vaughan/sentient`) plus the policy caps (`daily_cap_pct`,
+  `max_position_pct`, `max_approve_pct`) sized from the account's **live
+  on-chain balance**, read fresh per request. Sized approve/unwrap legs are
+  gated like transfers; **unlimited** (`type(uint256).max`) approve is always
+  refused for Sentient auto-exec (use a sized amount or the Advisor profile).
+  Revoke (`approve(…, 0)`) is OK.
 - Policy changes stage via `{"op":"policy_update","auth":"stage"}` (client
   `policy_stage`) and require out-of-band root approval
   (`sudo /usr/local/bin/vaughan signerd approve`) before
-  `{"op":"policy_update","auth":"approved"}` applies them — see
+  `{"op":"policy_update","auth":"approved"}` applies them. No vault password
+  is involved anywhere in that flow — the password path was removed in v0.2.10;
+  check a staged change with `vaughan policy pending`. See
   [`sentient-ops.md`](sentient-ops.md).
 - Residual risk (stated honestly): a same-UID process can still edit the agent's
   profile files (proposals, DCA plans, config), but signing keys, policy and the
@@ -206,7 +212,10 @@ vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
 
 Both profiles:
 
-- Mainnet writes still require `VAUGHAN_MCP_ALLOW_MAINNET=1` (same gate as MCP stdio).
+- Mainnet writes are refused (`mainnet_blocked`) unless the process that signs
+  has `VAUGHAN_MCP_ALLOW_MAINNET=1` in its **own** environment: the signer
+  daemon's root-owned `/etc/vaughan/sentient.env` for sentient, the serve/TUI
+  process for adviser. Setting it on the MCP client changes nothing.
 - EmpX quotes/proposes are PulseChain **mainnet (369) only**.
 - MCP stdio (`vaughan mcp`) remains the agent-facing process; adviser attaches to
   the serve/TUI loopback socket, sentient to `vaughan-signerd`.

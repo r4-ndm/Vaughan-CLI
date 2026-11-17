@@ -14,9 +14,11 @@ on the same machine as the vault.
 | ask how much budget remains (`budget_status`) | read, export or unlock the vault |
 
 The bound is not advice in a config file: every money path — proposals, DCA slices, stealth
-sweeps and CLI sends — is charged against `profiles/<name>/sentient-spend.json` before it signs,
-under a lock, and the file survives restarts. A failed broadcast still costs budget; a retried
-action is refused rather than re-run.
+sweeps and CLI sends — is charged against the spend ledger (`sentient-spend.json`) before it
+signs, under a lock, and the file survives restarts. In the recommended setup the ledger lives in
+the signer daemon's store (`/var/lib/vaughan/sentient`, owned by `vaughan-signer`); a TUI-hosted
+profile keeps it under `profiles/<name>/`. A failed broadcast still costs budget; a retried action
+is refused rather than re-run.
 
 ## 1. Install the binary
 
@@ -57,37 +59,55 @@ vaughan mcp install --client all --dry-run   # show what would change, write not
 
 It backs up any file it modifies, never rewrites a file it cannot parse, and is safe to re-run.
 
-## 4. Start the vault
+## 4. Start the signer (sentient) or the vault (adviser)
 
-The MCP process is a proposer. Something has to hold the unlocked vault on the same machine:
+The MCP process is a proposer. For **sentient**, the keys belong to `vaughan signerd` — a
+root-installed systemd service running as user `vaughan-signer`, reachable only through
+`/run/vaughan/signerd.sock` — so there is nothing to unlock and the agent's process never holds a
+password:
 
 ```sh
-# headless sentient mode (keys stay in vaughan-signerd; no vault password in the agent process)
-vaughan --profile sentient serve
-
-# or interactively, with the TUI open and unlocked
-vaughan --profile default
+sudo bash scripts/install-signerd.sh   # one-off: store, ownership, vaughan-signerd.service
+vaughan --profile sentient serve        # optional thin client: no vault unlock, no password,
+                                        # no mcp.session token, no TCP port
 ```
 
-Adviser mode needs the TUI for approvals; sentient mode runs headless under policy.
+`vaughan mcp --profile sentient` can reach the socket directly, so that thin client is convenience,
+not a requirement.
+
+For **adviser** (`default`) the vault itself must be unlocked on the same machine, because every
+proposal waits for a human approval card:
+
+```sh
+export VAUGHAN_WALLET_PASSWORD='…'      # secret manager / short-lived injection only
+vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
+# or interactively: vaughan --profile default
+```
 
 ## 5. Give the agent a budget
 
-In `profiles/sentient/sentient-policy.toml`:
+Percentage caps are sized from the account's **live on-chain balance**, read fresh on every request
+(a failed balance read refuses the intent rather than falling back to a default). Stage them
+through the signer rather than editing the store by hand:
 
-```toml
-enforcement = "enforced"
-max_position_pct = 10    # per trade, % of that asset's balance
-daily_cap_pct = 20       # cumulative, per asset, rolling 24h
-allow_transfer_to = []   # empty = all plain transfers refused; list addresses to permit
+```sh
+vaughan --profile sentient policy set --max-position-pct 10 --daily-cap-pct 20
+vaughan policy pending            # show the staged change
+sudo vaughan signerd approve      # as root, on a clean console: prints the diff, asks y/N
 ```
+
+The live file is `<store>/sentient-policy.toml` (`/var/lib/vaughan/sentient`, owned by
+`vaughan-signer`); a staged change sits in `policy-pending.json` (10-minute TTL) until root
+approval writes the one-time `policy-approval.json`, and applied diffs are appended to
+`policy-audit.jsonl`. **No vault password is involved** — that path was deleted in v0.2.10.
 
 Fund the sentient profile with what you are willing to lose — that balance, not the policy, is the
 hardest limit in the system. Ask the agent to call `budget_status` to see what it has left.
 
 ## Verifying instead of trusting
 
-Every claim above is checkable: the ledger is a JSON file you can read, the allowlist is in the
-policy file, and `cargo test -p vaughan-agent spend_ledger` exercises the cap, the restart
-survival, the lock and the duplicate-key refusal. A wallet an agent is asked to trust should be
-one its operator can test.
+Every claim above is checkable: the ledger is a plain JSON file in the signer store (0600, so read
+it as root), the allowlist and caps are in the policy file, policy changes are logged, and
+`cargo test -p vaughan-agent spend_ledger` exercises the cap, the restart survival, the lock and
+the duplicate-key refusal. A wallet an agent is asked to trust should be one its operator can
+test.

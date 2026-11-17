@@ -41,8 +41,9 @@ a second transport mode. Prefer a **small hand-rolled fix** before adopting `rmc
 
 1. Build or install `vaughan` (`cargo build -p vaughan-cli` or release install).
 2. Cursor MCP (or Claude/Codex) configured per [`mcp.md`](mcp.md).
-3. Prefer **PulseChain testnet** (943). Unlock Vaughan TUI **or** run
-   `vaughan serve` for write paths.
+3. Prefer **PulseChain testnet** (943). Adviser write paths need the vault unlocked (TUI, or
+   `vaughan serve --password-env <VAR>`); sentient write paths need `vaughan-signerd` running and
+   nothing unlocked — that daemon holds the keys.
 
 ## Automated (CI)
 
@@ -73,7 +74,8 @@ Do these in order. Tick when green.
 
 - [ ] Separate MCP entry on `--profile sentient` (not human `default` seed).
 - [ ] Preset applied: `vaughan --profile sentient preset apply balanced`.
-- [ ] Control plane up: unlocked TUI **or** `vaughan --profile sentient serve` (with `vaughan-signerd` running).
+- [ ] Signer daemon up: `systemctl status vaughan-signerd` (socket `/run/vaughan/signerd.sock`, peer-UID allowlist). `vaughan --profile sentient serve` is an optional thin client — no unlock, no password, no `mcp.session`.
+- [ ] Policy change stages (`vaughan policy set …` → `vaughan policy pending`) and applies only after root `vaughan signerd approve` — no vault password prompt anywhere in the flow.
 - [ ] `get_control_plane_status` → `sentient_auto_exec: true`, `ready_for_writes: true`.
 - [ ] `watch_balance` / `watch_quote` return snapshots (no sign).
 - [ ] One tiny `propose_transfer` auto-execs under policy (or fails clearly on breaker) — **testnet only**.
@@ -84,9 +86,9 @@ Stable substrings / codes (see also [`ai-tool-surface.md`](ai-tool-surface.md)):
 
 | Signal | Meaning |
 |--------|---------|
-| `wallet_locked` | Unlock TUI/serve or pass `account_address` on reads |
+| `wallet_locked` | Adviser: unlock TUI/serve or pass `account_address` on reads |
 | `tui_offline` / `session_required` | Start TUI or `vaughan serve` |
-| `mainnet_blocked` | Set `VAUGHAN_MCP_ALLOW_MAINNET=1` only if intentional |
+| `mainnet_blocked` | Only if intentional, and only in the signing process's own env: `/etc/vaughan/sentient.env` for the signer daemon (restart it), or the serve/TUI process for adviser. A client-side variable does nothing |
 | `unknown tool` | Typo or tool not in this profile’s list |
 | fee … 10% | Fee spike — re-propose |
 | `isError: true` | Tool failed; read `content[0].text` |
@@ -96,8 +98,8 @@ Stable substrings / codes (see also [`ai-tool-surface.md`](ai-tool-surface.md)):
 | Symptom | Fix |
 |---------|-----|
 | Host hangs / no tools | Restart MCP; ensure `command` is `vaughan mcp` not a wrapper that logs to stdout |
-| `ready_for_writes: false` | Unlock TUI or start `serve`; check `get_control_plane_status.hint` |
-| Propose stuck `pending_user` | Adviser needs TUI open; sentient needs unlocked serve/TUI |
+| `ready_for_writes: false` | Adviser: unlock TUI or start `serve`. Sentient: check `vaughan-signerd` is up and the socket is reachable by your UID. Then read `get_control_plane_status.hint` |
+| Propose stuck `pending_user` | Adviser only — the TUI must be open and unlocked. Sentient intents never queue for approval; look for a policy refusal instead |
 | Parse / method errors in conformance | Regression — open an issue with fixture name |
 
 ## Related
