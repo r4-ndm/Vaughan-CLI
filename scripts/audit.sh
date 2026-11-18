@@ -9,7 +9,8 @@
 #   scripts/audit.sh                 # fmt, clippy (default + railgun), advisories,
 #                                    # hygiene, secrets, default-build leak checks
 #   scripts/audit.sh --with-tests    # adds `cargo test --workspace` (slow, anvil v1.2.1)
-#   scripts/audit.sh --binary        # adds checks against ~/.cargo/bin/vaughan*
+#   scripts/audit.sh --binary        # adds checks against the installed `vaughan`
+#                                    # (whatever PATH resolves, else $VAUGHAN_INSTALL_DIR)
 #   scripts/audit.sh --skip-railgun  # default-features clippy only; CI's railgun job
 #                                    # owns the RAILGUN compile
 #   scripts/audit.sh --no-audit      # skip cargo audit (advisory debt NOT checked)
@@ -359,11 +360,26 @@ fi
 section "installed binary"
 
 if [ "$CHECK_BINARY" -eq 1 ]; then
-    BIN="${HOME}/.cargo/bin/vaughan"
+    # Check whatever `vaughan` actually runs, not a fixed path: auditing a copy
+    # the user's PATH never reaches is worse than not auditing one, because it
+    # reports green for a binary nobody executes. Fall back to the install
+    # directory so a machine without it on PATH still gets a useful message.
+    INSTALL_DIR="${VAUGHAN_INSTALL_DIR:-${HOME}/.local/bin}"
+    BIN="$(command -v vaughan 2>/dev/null || true)"
+    [ -n "$BIN" ] || BIN="${INSTALL_DIR}/vaughan"
     if [ ! -x "$BIN" ]; then
         note "no installed binary at $BIN (CI has none) — build with scripts/install-vaughan.sh to check it"
         SKIPPED=$((SKIPPED + 1))
     else
+        note "checking $BIN ($("$BIN" --version 2>/dev/null || echo "version unknown"))"
+        # A second copy earlier on PATH is the silent-staleness failure mode:
+        # install-vaughan.sh writes one place, PATH prefers another.
+        shadow_dir="$(cd "$(dirname "$BIN")" && pwd)"
+        if [ "$shadow_dir" != "$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" ]; then
+            fail "'vaughan' resolves to $BIN, not ${INSTALL_DIR}/vaughan — the install dir is shadowed"
+        else
+            pass "'vaughan' resolves to the install directory"
+        fi
         # NB: no `grep -q` here — it exits on first match, SIGPIPEs `strings`, and
         # `pipefail` would turn a hit into a failure.
         if strings "$BIN" | grep 'private (RAILGUN)' >/dev/null; then
@@ -371,7 +387,7 @@ if [ "$CHECK_BINARY" -eq 1 ]; then
         else
             fail "installed binary lacks the railgun feature (build with --features railgun)"
         fi
-        if [ -L "${HOME}/.cargo/bin/vaughan-p" ] || [ -x "${HOME}/.cargo/bin/vaughan-p" ]; then
+        if [ -L "${INSTALL_DIR}/vaughan-p" ] || [ -x "${INSTALL_DIR}/vaughan-p" ]; then
             pass "vaughan-p alias present"
         else
             note "vaughan-p alias missing (scripts/install-vaughan.sh creates it)"
