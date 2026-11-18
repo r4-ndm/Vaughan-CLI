@@ -15,7 +15,7 @@
 //! or channel plumbing.
 
 use tokio::runtime::Handle;
-use vaughan_core::core::{DexVenue, WalletState};
+use vaughan_core::core::{DexVenue, V3LpDeployParams, V3LpDeployWait, WalletState};
 use vaughan_core::error::WalletError;
 
 use super::UiJobResult;
@@ -97,6 +97,139 @@ pub(crate) fn list_v2_positions(
             })),
         },
     }
+}
+
+/// Build the next tx in the V3 create → initialize → approve → mint pipeline.
+///
+/// `deploy_wait` first blocks on the step the user just broadcast, so the next
+/// tx is built against post-inclusion chain state; the timeout therefore covers
+/// that wait as well as the build.
+pub(crate) fn v3_pool_deploy_step(
+    handle: &Handle,
+    rpc_urls: &[String],
+    params: V3LpDeployParams,
+    deploy_wait: V3LpDeployWait,
+    after_step_label: Option<String>,
+) -> UiJobResult {
+    use vaughan_core::core::{
+        v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, with_lp_rpc_urls, V3LpDeployContext,
+    };
+    UiJobResult::LpV3PoolDeployStep(handle.block_on(async {
+        use tokio::time::{timeout, Duration};
+        const DEPLOY_PREP_TIMEOUT: Duration = Duration::from_secs(30);
+        const DEPLOY_ONCHAIN_WAIT: Duration = Duration::from_secs(60);
+        let job_timeout = match deploy_wait {
+            V3LpDeployWait::None => DEPLOY_PREP_TIMEOUT,
+            _ => DEPLOY_ONCHAIN_WAIT + DEPLOY_PREP_TIMEOUT,
+        };
+        with_lp_rpc_urls(rpc_urls, |url| {
+            let mut p = params.clone();
+            p.rpc_url = url;
+            let ctx = after_step_label.clone().map(|label| V3LpDeployContext {
+                last_step_label: Some(label),
+            });
+            async move {
+                timeout(job_timeout, async {
+                    v3_lp_run_deploy_wait(deploy_wait, &p, ctx.as_ref()).await?;
+                    v3_lp_prepare_deploy_step(&p).await
+                })
+                .await
+                .map_err(|_| {
+                    WalletError::NetworkError(format!(
+                        "LP deploy step timed out ({}s)",
+                        job_timeout.as_secs()
+                    ))
+                })?
+            }
+        })
+        .await
+    }))
+}
+
+/// Read whether the NPM is already enabled (approved) for both deposit legs.
+pub(crate) fn enable_check(
+    handle: &Handle,
+    rpc_urls: &[String],
+    params: V3LpDeployParams,
+) -> UiJobResult {
+    use vaughan_core::core::{v3_lp_token_enable_status, with_lp_rpc_urls};
+    UiJobResult::LpEnableCheck(handle.block_on(async {
+        use tokio::time::{timeout, Duration};
+        const ENABLE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+        with_lp_rpc_urls(rpc_urls, |url| {
+            let mut p = params.clone();
+            p.rpc_url = url;
+            async move {
+                timeout(ENABLE_CHECK_TIMEOUT, v3_lp_token_enable_status(&p))
+                    .await
+                    .map_err(|_| WalletError::NetworkError("enable check timed out (30s)".into()))?
+            }
+        })
+        .await
+    }))
+}
+
+/// Build the next Enable (approve) tx, if the pool is far enough along to need one.
+pub(crate) fn enable_prepare(
+    handle: &Handle,
+    rpc_urls: &[String],
+    params: V3LpDeployParams,
+    symbol: String,
+) -> UiJobResult {
+    use vaughan_core::core::{v3_lp_build_next_enable_tx, with_lp_rpc_urls};
+    UiJobResult::LpEnablePrepare(handle.block_on(async {
+        use tokio::time::{timeout, Duration};
+        const ENABLE_PREP_TIMEOUT: Duration = Duration::from_secs(30);
+        let out = with_lp_rpc_urls(rpc_urls, |url| {
+            let mut p = params.clone();
+            p.rpc_url = url;
+            async move {
+                timeout(ENABLE_PREP_TIMEOUT, v3_lp_build_next_enable_tx(&p))
+                    .await
+                    .map_err(|_| {
+                        WalletError::NetworkError("enable prepare timed out (30s)".into())
+                    })?
+            }
+        })
+        .await?;
+        match out {
+            Some((tx, label)) => Ok((tx, label, symbol)),
+            None => Err(WalletError::InvalidTransaction(
+                "pool not ready for Enable yet — finish pool setup first".into(),
+            )),
+        }
+    }))
+}
+
+/// Wait for a broadcast Enable to be included, so the form can re-check allowances.
+pub(crate) fn enable_wait(
+    handle: &Handle,
+    rpc_urls: &[String],
+    params: V3LpDeployParams,
+    after_step_label: String,
+) -> UiJobResult {
+    use vaughan_core::core::{v3_lp_run_deploy_wait, with_lp_rpc_urls, V3LpDeployContext};
+    UiJobResult::LpEnableWait(handle.block_on(async {
+        use tokio::time::{timeout, Duration};
+        const ENABLE_WAIT: Duration = Duration::from_secs(75);
+        let ctx = V3LpDeployContext {
+            last_step_label: Some(after_step_label),
+        };
+        with_lp_rpc_urls(rpc_urls, |url| {
+            let mut p = params.clone();
+            p.rpc_url = url;
+            let ctx = ctx.clone();
+            async move {
+                timeout(
+                    ENABLE_WAIT,
+                    v3_lp_run_deploy_wait(V3LpDeployWait::AfterApprove, &p, Some(&ctx)),
+                )
+                .await
+                .map_err(|_| WalletError::NetworkError("Enable wait timed out (75s)".into()))?
+            }
+        })
+        .await
+    }))
 }
 
 /// Look up the V3 pool behind a prospective add-liquidity position.

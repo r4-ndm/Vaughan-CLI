@@ -4226,306 +4226,45 @@ impl App {
                     )
                 }
                 UiJob::LpV3PoolDeployStep {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
+                    params,
                     deploy_wait,
                     after_step_label,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, with_lp_rpc_urls,
-                        V3LpDeployContext, V3LpDeployParams,
-                    };
-                    let parse_addr = |s: &str, label: &str| {
-                        Address::from_str(s.trim()).map_err(|_| {
-                            WalletError::InvalidTransaction(format!("invalid {label}"))
-                        })
-                    };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpV3PoolDeployStep(handle.block_on(async {
-                        use tokio::time::{timeout, Duration};
-                        use vaughan_core::core::V3LpDeployWait;
-                        const DEPLOY_PREP_TIMEOUT: Duration = Duration::from_secs(30);
-                        const DEPLOY_ONCHAIN_WAIT: Duration = Duration::from_secs(60);
-                        let job_timeout = match deploy_wait {
-                            V3LpDeployWait::None => DEPLOY_PREP_TIMEOUT,
-                            _ => DEPLOY_ONCHAIN_WAIT + DEPLOY_PREP_TIMEOUT,
-                        };
-                        let t0 = parse_addr(&token0, "token0")?;
-                        let t1 = parse_addr(&token1, "token1")?;
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: t0,
-                            token1: t1,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        with_lp_rpc_urls(&rpc_urls, |url| {
-                            let mut p = params.clone();
-                            p.rpc_url = url;
-                            let ctx = after_step_label.clone().map(|label| V3LpDeployContext {
-                                last_step_label: Some(label),
-                            });
-                            async move {
-                                timeout(job_timeout, async {
-                                    v3_lp_run_deploy_wait(deploy_wait, &p, ctx.as_ref()).await?;
-                                    v3_lp_prepare_deploy_step(&p).await
-                                })
-                                .await
-                                .map_err(|_| {
-                                    WalletError::NetworkError(format!(
-                                        "LP deploy step timed out ({}s)",
-                                        job_timeout.as_secs()
-                                    ))
-                                })?
-                            }
-                        })
-                        .await
-                    }))
+                    crate::jobs::lp::v3_pool_deploy_step(
+                        &handle,
+                        &rpc_urls,
+                        params,
+                        deploy_wait,
+                        after_step_label,
+                    )
                 }
-                UiJob::LpEnableCheck {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
-                } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_token_enable_status, with_lp_rpc_urls, V3LpDeployParams,
-                    };
+                UiJob::LpEnableCheck { params } => {
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpEnableCheck((|| {
-                        let parse_addr = |s: &str, label: &str| {
-                            Address::from_str(s.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction(format!("invalid {label}"))
-                            })
-                        };
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: parse_addr(&token0, "token0")?,
-                            token1: parse_addr(&token1, "token1")?,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        handle.block_on(async {
-                            use tokio::time::{timeout, Duration};
-                            const ENABLE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
-                            with_lp_rpc_urls(&rpc_urls, |url| {
-                                let mut p = params.clone();
-                                p.rpc_url = url.to_string();
-                                async move {
-                                    timeout(ENABLE_CHECK_TIMEOUT, v3_lp_token_enable_status(&p))
-                                        .await
-                                        .map_err(|_| {
-                                            WalletError::NetworkError(
-                                                "enable check timed out (30s)".into(),
-                                            )
-                                        })?
-                                }
-                            })
-                            .await
-                        })
-                    })())
+                    crate::jobs::lp::enable_check(&handle, &rpc_urls, params)
                 }
-                UiJob::LpEnablePrepare {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
-                    symbol,
-                } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_build_next_enable_tx, with_lp_rpc_urls, V3LpDeployParams,
-                    };
+                UiJob::LpEnablePrepare { params, symbol } => {
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpEnablePrepare(handle.block_on(async {
-                        let parse_addr = |s: &str, label: &str| {
-                            Address::from_str(s.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction(format!("invalid {label}"))
-                            })
-                        };
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: parse_addr(&token0, "token0")?,
-                            token1: parse_addr(&token1, "token1")?,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        use tokio::time::{timeout, Duration};
-                        const ENABLE_PREP_TIMEOUT: Duration = Duration::from_secs(30);
-                        let out = with_lp_rpc_urls(&rpc_urls, |url| {
-                            let mut p = params.clone();
-                            p.rpc_url = url.to_string();
-                            async move {
-                                timeout(ENABLE_PREP_TIMEOUT, v3_lp_build_next_enable_tx(&p))
-                                    .await
-                                    .map_err(|_| {
-                                        WalletError::NetworkError(
-                                            "enable prepare timed out (30s)".into(),
-                                        )
-                                    })?
-                            }
-                        })
-                        .await?;
-                        match out {
-                            Some((tx, label)) => Ok((tx, label, symbol)),
-                            None => Err(WalletError::InvalidTransaction(
-                                "pool not ready for Enable yet — finish pool setup first".into(),
-                            )),
-                        }
-                    }))
+                    crate::jobs::lp::enable_prepare(&handle, &rpc_urls, params, symbol)
                 }
                 UiJob::LpEnableWait {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
+                    params,
                     after_step_label,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_run_deploy_wait, with_lp_rpc_urls, V3LpDeployContext,
-                        V3LpDeployParams, V3LpDeployWait,
-                    };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpEnableWait(handle.block_on(async {
-                        let parse_addr = |s: &str, label: &str| {
-                            Address::from_str(s.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction(format!("invalid {label}"))
-                            })
-                        };
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: parse_addr(&token0, "token0")?,
-                            token1: parse_addr(&token1, "token1")?,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        use tokio::time::{timeout, Duration};
-                        const ENABLE_WAIT: Duration = Duration::from_secs(75);
-                        let ctx = V3LpDeployContext {
-                            last_step_label: Some(after_step_label),
-                        };
-                        with_lp_rpc_urls(&rpc_urls, |url| {
-                            let mut p = params.clone();
-                            p.rpc_url = url;
-                            let ctx = ctx.clone();
-                            async move {
-                                timeout(
-                                    ENABLE_WAIT,
-                                    v3_lp_run_deploy_wait(
-                                        V3LpDeployWait::AfterApprove,
-                                        &p,
-                                        Some(&ctx),
-                                    ),
-                                )
-                                .await
-                                .map_err(|_| {
-                                    WalletError::NetworkError("Enable wait timed out (75s)".into())
-                                })?
-                            }
-                        })
-                        .await
-                    }))
+                    crate::jobs::lp::enable_wait(&handle, &rpc_urls, params, after_step_label)
                 }
                 UiJob::LpV3PoolQuote {
                     venue,

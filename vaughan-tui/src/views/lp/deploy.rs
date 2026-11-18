@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 use vaughan_core::core::{V3LpDeployParams, V3LpDeployWait, WalletState};
 
 use crate::app::KeyOutcome;
@@ -111,44 +110,16 @@ impl LpView {
         deploy_wait: V3LpDeployWait,
         after_step_label: Option<String>,
     ) -> Result<UiJob, String> {
-        let params = self.lp_deploy_params(wallet)?;
         Ok(UiJob::LpV3PoolDeployStep {
-            venue: params.venue,
-            chain_id: params.chain_id,
-            rpc_url: params.rpc_url,
-            from: params.from,
-            token0: format!("{:#x}", params.token0),
-            token1: format!("{:#x}", params.token1),
-            fee: params.fee,
-            dec0: params.dec0,
-            dec1: params.dec1,
-            pool_initial_price: params.pool_initial_price,
-            pool_min_price: params.pool_min_price,
-            pool_max_price: params.pool_max_price,
-            amount0: params.amount0,
-            amount1: params.amount1,
+            params: self.lp_deploy_params(wallet)?,
             deploy_wait,
             after_step_label,
         })
     }
 
     pub(crate) fn build_lp_enable_check_job(&self, wallet: &WalletState) -> Result<UiJob, String> {
-        let params = self.lp_deploy_params(wallet)?;
         Ok(UiJob::LpEnableCheck {
-            venue: params.venue,
-            chain_id: params.chain_id,
-            rpc_url: params.rpc_url,
-            from: params.from,
-            token0: format!("{:#x}", params.token0),
-            token1: format!("{:#x}", params.token1),
-            fee: params.fee,
-            dec0: params.dec0,
-            dec1: params.dec1,
-            pool_initial_price: params.pool_initial_price,
-            pool_min_price: params.pool_min_price,
-            pool_max_price: params.pool_max_price,
-            amount0: params.amount0,
-            amount1: params.amount1,
+            params: self.lp_deploy_params(wallet)?,
         })
     }
 
@@ -157,43 +128,15 @@ impl LpView {
         wallet: &WalletState,
         symbol: String,
     ) -> Result<UiJob, String> {
-        let params = self.lp_deploy_params(wallet)?;
         Ok(UiJob::LpEnablePrepare {
-            venue: params.venue,
-            chain_id: params.chain_id,
-            rpc_url: params.rpc_url,
-            from: params.from,
-            token0: format!("{:#x}", params.token0),
-            token1: format!("{:#x}", params.token1),
-            fee: params.fee,
-            dec0: params.dec0,
-            dec1: params.dec1,
-            pool_initial_price: params.pool_initial_price,
-            pool_min_price: params.pool_min_price,
-            pool_max_price: params.pool_max_price,
-            amount0: params.amount0,
-            amount1: params.amount1,
+            params: self.lp_deploy_params(wallet)?,
             symbol,
         })
     }
 
     pub(crate) fn build_lp_enable_wait_job(&self, wallet: &WalletState) -> Result<UiJob, String> {
-        let params = self.lp_deploy_params(wallet)?;
         Ok(UiJob::LpEnableWait {
-            venue: params.venue,
-            chain_id: params.chain_id,
-            rpc_url: params.rpc_url,
-            from: params.from,
-            token0: format!("{:#x}", params.token0),
-            token1: format!("{:#x}", params.token1),
-            fee: params.fee,
-            dec0: params.dec0,
-            dec1: params.dec1,
-            pool_initial_price: params.pool_initial_price,
-            pool_min_price: params.pool_min_price,
-            pool_max_price: params.pool_max_price,
-            amount0: params.amount0,
-            amount1: params.amount1,
+            params: self.lp_deploy_params(wallet)?,
             after_step_label: self.lp_enable_last_label.clone(),
         })
     }

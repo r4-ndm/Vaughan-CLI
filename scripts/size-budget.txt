@@ -18,7 +18,7 @@ file 5012 vaughan-hl/src/tui.rs
 file 884 vaughan-hl/src/wire.rs
 file 1134 vaughan-mcp/src/browser_bridge.rs
 file 1165 vaughan-mcp/src/dispatch.rs
-file 5374 vaughan-tui/src/app.rs
+file 5113 vaughan-tui/src/app.rs
 file 1489 vaughan-tui/src/brand.rs
 file 1827 vaughan-tui/src/provider.rs
 file 1091 vaughan-tui/src/views/ag.rs
@@ -69,7 +69,7 @@ fn 276 vaughan-tui/src/app.rs::handle_key#2
 fn 322 vaughan-tui/src/app.rs::poll_jobs#1
 fn 295 vaughan-tui/src/app.rs::poll_mcp#1
 fn 188 vaughan-tui/src/app.rs::poll_provider#1
-fn 1063 vaughan-tui/src/app.rs::spawn_job#1
+fn 802 vaughan-tui/src/app.rs::spawn_job#1
 fn 207 vaughan-tui/src/provider.rs::describe_approval_with_fee#1
 fn 279 vaughan-tui/src/provider.rs::execute_approval_with_fee#1
 fn 168 vaughan-tui/src/views/browser.rs::render#1
