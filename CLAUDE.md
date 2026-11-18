@@ -138,7 +138,7 @@ listed here requires approval before it is added.
 | Trezor hardware signer (Phase 2) | `trezor-client` 0.1.6 (CC0-1.0, feature `ethereum` only; USB via `rusb`) |
 | Async trait objects | `async-trait` |
 | Async runtime | `tokio` |
-| HTTP client (aggregator / DexScreener / Piteas APIs) | `reqwest` |
+| HTTP client (aggregator / DexScreener / Piteas APIs; `vaughan-cli` release lookup + tarball download for `vaughan update`) | `reqwest` |
 | EIP-712 typed data / dynamic ABI | `alloy-dyn-abi` |
 | URLs | `url` |
 | In-memory caching | `moka` |
@@ -153,8 +153,8 @@ listed here requires approval before it is added.
 | Error types | `thiserror` |
 | Structured logging | `tracing`, `tracing-subscriber` |
 | Hex encoding | `hex` |
-| Data/config directories | `dirs` |
-| Hashing | `sha2` |
+| Data/config directories | `dirs` (also: `vaughan-cli` update-check state file, machine-wide not per-profile) |
+| Hashing | `sha2` (also: `vaughan-cli` verifies release `SHA256SUMS` before `vaughan update` installs) |
 | CLI argument parsing (`vaughan-cli`, `vaughan-dapp-browser`) | `clap` |
 | CLI password prompt (no echo) | `rpassword` |
 | Binary-level error plumbing (`vaughan-cli` only) | `anyhow` |

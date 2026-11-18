@@ -802,11 +802,25 @@ Not a substitute for signer work: S3 (historical: initial password step-up, supe
         residual `-dirty` staleness is documented rather than implied away.
       - `ScratchDir` keyed its directory on the pid alone, so two in one process
         collided and `new()` wiped the other's contents (found by the new tests).
+- [x] The tarball download → install leg had never actually run end to end
+      (2026-11-18). Rather than wait for a release newer than the running
+      binary, gave `install_tarball` a `VAUGHAN_UPDATE_BASE_URL` override (same
+      pattern as `update_check`'s `VAUGHAN_UPDATE_STATE`) and pointed it at a
+      minimal local HTTP server in a test — no new dependency, `tokio::net` was
+      already in the workspace. The test builds a real tarball with `tar`,
+      serves it plus a matching `SHA256SUMS` over a real socket, and asserts the
+      stand-in "running binary" ends up holding the fixture's bytes with the
+      executable bit set. This is the strongest evidence the flow works short
+      of a real release.
+- [x] Audited the `reqwest` / `sha2` / `dirs` additions to `vaughan-cli` against
+      "never add a dependency without approval": all three were already
+      workspace-approved for other crates, so documented the new use in the
+      CLAUDE.md allowlist table rather than treating it as a new dependency.
 - [ ] Sign releases with a pinned key and verify the signature in
       `vaughan update`. Today the tarball path verifies `SHA256SUMS` from the same
       host that served the archive, which proves integrity, not authenticity —
-      stated in the module doc so it is not mistaken for more than it is.
+      stated in the module doc so it is not mistaken for more than it is. Needs
+      a decision on signing tool and private-key custody before it can start;
+      not attempted without that.
 - [ ] Teach the npm launcher the same `update --check` courtesy, or document that
       npm installs update via `npm i -g vaughan@latest` only.
-- [ ] The tarball download → install leg still has no end-to-end run: it needs a
-      release newer than the running binary. Exercise it at the next tag bump.

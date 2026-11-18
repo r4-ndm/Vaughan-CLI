@@ -14,7 +14,13 @@
 //! served by the same host as the tarball, so verifying it proves the download
 //! was not corrupted in transit — not that the release is authentic. A funded
 //! wallet should prefer a manually verified download. Release signing with a
-//! pinned key is the fix and is not implemented yet.
+//! pinned key is the fix and is not implemented yet (tracked in TASKS.md).
+//!
+//! The full download → verify → extract → replace path is exercised against a
+//! real (local, test-only) HTTP server in
+//! `tests::install_tarball_runs_the_real_flow_against_a_local_server` — it was
+//! the one leg of this module that had never actually run before that test
+//! was added.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -284,14 +290,22 @@ fn run_channel(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Overrides the release base URL. Exists so a test can point the real HTTP
+/// path — `fetch` included — at a local server instead of GitHub, which is the
+/// only way to exercise `install_tarball` end to end without a live release.
+const BASE_URL_ENV: &str = "VAUGHAN_UPDATE_BASE_URL";
+
 /// Download the release tarball, verify its SHA256, and swap this binary for it.
 ///
 /// Split so the parts that can be wrong without a network are testable: see
-/// [`expected_sha256`], [`verify_sha256`], and [`extract_and_replace`].
+/// [`expected_sha256`], [`verify_sha256`], and [`extract_and_replace`]. The
+/// network leg itself — `fetch` against two real HTTP responses — is covered
+/// end to end by `tests::install_tarball_runs_the_real_flow_against_a_local_server`.
 async fn install_tarball(exe: &Path, tag: &str) -> Result<()> {
     let platform = platform_tag()?;
     let archive = format!("vaughan-{platform}.tar.gz");
-    let base = format!("https://github.com/{REPO}/releases/download/{tag}");
+    let base = std::env::var(BASE_URL_ENV)
+        .unwrap_or_else(|_| format!("https://github.com/{REPO}/releases/download/{tag}"));
 
     // A scratch dir of our own rather than the `tempfile` crate, which the
     // dependency allowlist marks dev-only.
@@ -665,6 +679,113 @@ mod tests {
             ),
             // An unsupported host must say so rather than inventing an asset.
             Err(e) => assert!(e.to_string().contains("no published release")),
+        }
+    }
+
+    /// Everything above tests the parts of `install_tarball` that do not need a
+    /// socket. This test is the one piece that was still unverified: `fetch`
+    /// making a real HTTP GET and `install_tarball` driving it end to end. It
+    /// stands in for GitHub with a minimal local server (no new dependency —
+    /// `tokio::net` is already in the workspace) serving a real tarball built
+    /// with `tar`, and asserts the stand-in "running binary" ends up holding
+    /// the fixture's bytes with the executable bit set.
+    #[tokio::test]
+    async fn install_tarball_runs_the_real_flow_against_a_local_server() {
+        use sha2::{Digest, Sha256};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Platform-gated like the real asset name; an unsupported CI host has
+        // nothing to test here rather than a spurious failure.
+        let Ok(platform) = platform_tag() else {
+            return;
+        };
+        let archive_name = format!("vaughan-{platform}.tar.gz");
+
+        let scratch = ScratchDir::new().expect("scratch");
+        let payload_dir = scratch.path().join("payload");
+        std::fs::create_dir_all(&payload_dir).expect("payload dir");
+        let fixture_body = b"#!/bin/sh\necho fixture-from-local-server\n";
+        std::fs::write(payload_dir.join("vaughan"), fixture_body).expect("payload");
+
+        let archive_path = scratch.path().join(&archive_name);
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(&payload_dir)
+            .arg("vaughan")
+            .status()
+            .expect("tar -czf");
+        assert!(status.success());
+        let archive_bytes = std::fs::read(&archive_path).expect("read archive");
+        let digest = hex::encode(Sha256::digest(&archive_bytes));
+        let sums = format!("{digest}  {archive_name}\n");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+
+        let archive_for_server = archive_bytes.clone();
+        let archive_name_for_server = archive_name.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let n = match socket.read(&mut buf).await {
+                    Ok(n) if n > 0 => n,
+                    _ => continue,
+                };
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                let body: &[u8] = if path.ends_with(&archive_name_for_server) {
+                    &archive_for_server
+                } else if path.ends_with("SHA256SUMS") {
+                    sums.as_bytes()
+                } else {
+                    b""
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(body).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        // Process-global, scoped tightly around the call this test exists to
+        // exercise; `install_tarball` is the only reader and nothing else in
+        // this crate runs it concurrently.
+        std::env::set_var(BASE_URL_ENV, format!("http://127.0.0.1:{port}"));
+        let exe = scratch.path().join("vaughan-under-test");
+        std::fs::write(&exe, b"old binary - must not survive a successful update").expect("exe");
+
+        let result = install_tarball(&exe, "vtest").await;
+        std::env::remove_var(BASE_URL_ENV);
+        server.abort();
+
+        result.expect("install_tarball against the local fixture server");
+        assert_eq!(std::fs::read(&exe).expect("read back"), fixture_body);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&exe)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o755,
+                "the replaced binary must be executable"
+            );
         }
     }
 }
