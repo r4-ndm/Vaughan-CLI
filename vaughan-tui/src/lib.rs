@@ -60,10 +60,11 @@ fn run_terminal(
     startup_notice: Option<String>,
 ) -> io::Result<()> {
     let mut app = App::new(handle, profile).map_err(|e| io::Error::other(e.user_message()))?;
-    // The launcher's notice is just the first chrome toast, so it reuses the
-    // same flash the rest of the app uses rather than inventing a banner.
+    // Routed, not flashed: an initialized wallet opens on the unlock screen,
+    // which does not render the chrome flash, so a plain `set_flash` here would
+    // expire unseen while the user types their password.
     if let Some(notice) = startup_notice {
-        app.set_flash(notice);
+        app.surface_message(notice);
     }
     app.run(terminal)
 }

@@ -783,9 +783,30 @@ Not a substitute for signer work: S3 (historical: initial password step-up, supe
       state in its own file rather than `wallet.json`. Rationale in
       `vaughan-cli/src/update_check.rs`: a wallet that beacons on launch hands
       GitHub a standing IP ↔ version correlation next to stealth/RAILGUN.
+- [x] Second pass on the above, after auditing what was actually unverified
+      (2026-11-18). Five fixes, two of them live defects:
+      - the startup notice was set as a chrome flash, which `views/unlock.rs`
+        explicitly does not render — so an opted-in user saw nothing and it
+        expired during password entry. Now routed through
+        `App::surface_message`, the same path profile-switch errors use.
+      - the launch check had no deadline (`reqwest` sets no default timeout), so
+        a blackholed host meant the TUI never opened. Now a 3s
+        `LAUNCH_CHECK_DEADLINE` at the call site plus a 30s client timeout —
+        and `notice()` persists the attempt BEFORE awaiting, since the await can
+        now be cancelled and a later save would never run.
+      - `install_tarball` was untestable and untested; split into
+        `expected_sha256` / `verify_sha256` / `extract_and_replace` with 8 tests,
+        including a real tarball round trip that swaps a stand-in binary.
+      - `build.rs` used `../.git/...`, which does not exist in a linked
+        worktree; now `git rev-parse --git-path` plus the branch ref file. The
+        residual `-dirty` staleness is documented rather than implied away.
+      - `ScratchDir` keyed its directory on the pid alone, so two in one process
+        collided and `new()` wiped the other's contents (found by the new tests).
 - [ ] Sign releases with a pinned key and verify the signature in
       `vaughan update`. Today the tarball path verifies `SHA256SUMS` from the same
       host that served the archive, which proves integrity, not authenticity —
       stated in the module doc so it is not mistaken for more than it is.
 - [ ] Teach the npm launcher the same `update --check` courtesy, or document that
       npm installs update via `npm i -g vaughan@latest` only.
+- [ ] The tarball download → install leg still has no end-to-end run: it needs a
+      release newer than the running binary. Exercise it at the next tag bump.

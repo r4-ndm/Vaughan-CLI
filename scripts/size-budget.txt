@@ -1,7 +1,7 @@
 # Size-budget baseline (see scripts/size_budget.py). Existing debt only:
 # numbers may go DOWN, never up. A new entry here needs a reason in the PR.
 # file = production lines > 800; fn = length >= 150.
-file 1284 vaughan-cli/src/main.rs
+file 1266 vaughan-cli/src/main.rs
 file 1349 vaughan-core/src/chains/evm/adapter/mod.rs
 file 887 vaughan-core/src/core/dex_catalog.rs
 file 1896 vaughan-core/src/core/dex_lp.rs

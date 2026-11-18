@@ -21,6 +21,13 @@ use serde::{Deserialize, Serialize};
 /// Minimum gap between two network checks.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// How long a launch may wait for the check before giving up on it.
+///
+/// Short on purpose: this runs before the unlock prompt, so the cost of a slow
+/// or unreachable host has to be bounded by something the user would not notice,
+/// not by the HTTP client's own timeout.
+pub const LAUNCH_CHECK_DEADLINE: Duration = Duration::from_secs(3);
+
 /// The opt-in flag plus last-check bookkeeping.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct State {
@@ -35,7 +42,14 @@ struct State {
     latest_seen: String,
 }
 
+/// Overrides [`state_path`]. Exists so tests can exercise the real load/save
+/// path without writing to the developer's own data directory.
+const STATE_PATH_ENV: &str = "VAUGHAN_UPDATE_STATE";
+
 fn state_path() -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os(STATE_PATH_ENV) {
+        return Ok(PathBuf::from(p));
+    }
     let base = dirs::data_dir().context("could not determine the user data directory")?;
     Ok(base.join("vaughan-cli").join("update-check.json"))
 }
@@ -94,13 +108,16 @@ pub async fn notice() -> Option<String> {
     let current = env!("CARGO_PKG_VERSION");
 
     if now_secs().saturating_sub(state.last_checked) >= CHECK_INTERVAL.as_secs() {
-        // Record the attempt before reporting it, so a host that is down cannot
-        // turn into a fresh check on every single launch.
+        // Persist the attempt BEFORE awaiting, not after. The launch path wraps
+        // this in `LAUNCH_CHECK_DEADLINE`, so the await below can be cancelled
+        // and never resume — and a save placed after it would then never run,
+        // turning an unreachable host into a fresh timeout on every launch.
         state.last_checked = now_secs();
+        let _ = save(&state);
         if let Ok(tag) = crate::update::latest_tag().await {
             state.latest_seen = tag;
+            let _ = save(&state);
         }
-        let _ = save(&state);
     }
 
     if !state.latest_seen.is_empty() && crate::update::is_newer(&state.latest_seen, current) {
@@ -108,6 +125,30 @@ pub async fn notice() -> Option<String> {
     } else {
         None
     }
+}
+
+/// The opening TUI toast when a newer release is known, else `None`.
+///
+/// Lives here rather than in `main` because it is the launch-path wrapper around
+/// [`notice`]: it checks the opt-in first and returns before building a runtime
+/// when the check is off (the default), then bounds the whole thing by
+/// [`LAUNCH_CHECK_DEADLINE`] — this sits between the user and their wallet, so a
+/// slow or blackholed host must cost a bounded pause, never the launch.
+pub fn startup_notice() -> Option<String> {
+    if !is_enabled() {
+        return None;
+    }
+    let runtime = tokio::runtime::Runtime::new().ok()?;
+    let latest = runtime.block_on(async {
+        tokio::time::timeout(LAUNCH_CHECK_DEADLINE, notice())
+            .await
+            .ok()
+            .flatten()
+    })?;
+    Some(format!(
+        "Update available: {latest} (you have {}) — run `vaughan update`",
+        env!("CARGO_PKG_VERSION")
+    ))
 }
 
 #[cfg(test)]
@@ -133,5 +174,42 @@ mod tests {
         assert!(!state.enabled);
         assert_eq!(state.last_checked, 0);
         assert!(state.latest_seen.is_empty());
+    }
+
+    /// A cached newer tag is reported without a network call, which is both the
+    /// 24h-cache behaviour and the only way to test the notice offline.
+    ///
+    /// This is the path that was silently dead before: the notice used to be
+    /// set as a chrome flash, which the unlock screen does not render, so it
+    /// expired unseen. It is now routed via `App::surface_message`.
+    #[test]
+    fn a_cached_newer_tag_is_reported_from_the_state_file() {
+        let dir = std::env::temp_dir().join(format!("vaughan-uc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("update-check.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "enabled": true,
+                // Fresh, so the 24h gate short-circuits before any request.
+                "last_checked": now_secs(),
+                "latest_seen": "v99.0.0",
+            }))
+            .expect("json"),
+        )
+        .expect("seed state");
+
+        // The override is process-global, so it is set and removed tightly
+        // around the call. The sibling test tolerates seeing it: it bails out
+        // early whenever the opt-in reads as on.
+        std::env::set_var(STATE_PATH_ENV, &path);
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let got = rt.block_on(notice());
+        let enabled = is_enabled();
+        std::env::remove_var(STATE_PATH_ENV);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(enabled, "the seeded state must read as opted in");
+        assert_eq!(got.as_deref(), Some("v99.0.0"));
     }
 }

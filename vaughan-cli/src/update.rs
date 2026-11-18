@@ -18,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
@@ -94,19 +95,38 @@ fn cargo_bin_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo").join("bin"))
 }
 
+/// Cap on any single request. Callers on a launch path add their own, shorter
+/// deadline on top (see `main::startup_update_notice`); this one exists so an
+/// explicit `vaughan update` cannot hang forever either.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Shared client: `user_agent` in the builder like the rest of the repo's HTTP
+/// clients, plus the timeout none of them set because they are wrapped by a
+/// `tokio::time::timeout` at the call site instead.
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .context("could not build the HTTP client")
+}
+
 /// The release asset platform tag, matching `scripts/install.sh::detect_platform`.
+///
+/// Only the three combinations that releases actually publish are accepted
+/// (see `npm/launcher/lib/resolve.js`, which gates the same set): building the
+/// tag for, say, `macos-x86_64` would only turn into a confusing 404 later.
 pub fn platform_tag() -> Result<String> {
-    let os = match std::env::consts::OS {
-        "linux" => "linux",
-        "macos" => "macos",
-        other => bail!("unsupported OS for release downloads: {other}"),
+    let tag = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "linux-x86_64",
+        ("linux", "aarch64") => "linux-aarch64",
+        ("macos", "aarch64") => "macos-aarch64",
+        (os, arch) => bail!(
+            "no published release for {os}-{arch} — build from source \
+             (supported: linux-x86_64, linux-aarch64, macos-aarch64)"
+        ),
     };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => bail!("unsupported CPU architecture for release downloads: {other}"),
-    };
-    Ok(format!("{os}-{arch}"))
+    Ok(tag.to_string())
 }
 
 /// Compare dotted numeric versions, ignoring a leading `v` and any suffix.
@@ -144,9 +164,8 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 /// The newest published release tag (e.g. `v0.2.12`).
 pub async fn latest_tag() -> Result<String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let mut req = reqwest::Client::new()
+    let mut req = http_client()?
         .get(&url)
-        .header("User-Agent", USER_AGENT)
         .header("Accept", "application/vnd.github+json");
     // Private-repo installs need a token; use the same env vars install.sh reads.
     if let Some(token) = github_token() {
@@ -266,9 +285,10 @@ fn run_channel(program: &str, args: &[&str]) -> Result<()> {
 }
 
 /// Download the release tarball, verify its SHA256, and swap this binary for it.
+///
+/// Split so the parts that can be wrong without a network are testable: see
+/// [`expected_sha256`], [`verify_sha256`], and [`extract_and_replace`].
 async fn install_tarball(exe: &Path, tag: &str) -> Result<()> {
-    use sha2::{Digest, Sha256};
-
     let platform = platform_tag()?;
     let archive = format!("vaughan-{platform}.tar.gz");
     let base = format!("https://github.com/{REPO}/releases/download/{tag}");
@@ -285,34 +305,64 @@ async fn install_tarball(exe: &Path, tag: &str) -> Result<()> {
     println!("verifying SHA256");
     let sums = String::from_utf8(fetch(&format!("{base}/SHA256SUMS")).await?)
         .context("SHA256SUMS was not valid UTF-8")?;
-    let expected = sums
-        .lines()
-        .find(|l| l.trim_end().ends_with(&archive))
-        .and_then(|l| l.split_whitespace().next())
-        .ok_or_else(|| anyhow!("no SHA256SUMS entry for {archive}"))?;
-    let actual = hex::encode(Sha256::digest(&bytes));
+    verify_sha256(&bytes, expected_sha256(&sums, &archive)?, &archive)?;
+
+    println!("extracting");
+    extract_and_replace(&archive_path, tmp.path(), exe)?;
+
+    println!("updated to {tag}");
+    Ok(())
+}
+
+/// The digest `SHA256SUMS` lists for `archive`.
+///
+/// Matches on the file name as a whole field rather than a line suffix, so a
+/// longer asset name that merely ends with ours (`extra-vaughan-…`) cannot be
+/// mistaken for it.
+fn expected_sha256<'a>(sums: &'a str, archive: &str) -> Result<&'a str> {
+    sums.lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let digest = fields.next()?;
+            // `sha256sum` writes "<digest>  <name>"; the name may carry a
+            // leading `*` in binary mode.
+            let name = fields.next()?.trim_start_matches('*');
+            (name == archive).then_some(digest)
+        })
+        .ok_or_else(|| anyhow!("no SHA256SUMS entry for {archive}"))
+}
+
+/// Fail unless `bytes` hashes to `expected`.
+fn verify_sha256(bytes: &[u8], expected: &str, archive: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let actual = hex::encode(Sha256::digest(bytes));
     if !actual.eq_ignore_ascii_case(expected) {
         bail!("checksum mismatch for {archive} — refusing to install");
     }
+    Ok(())
+}
 
-    println!("extracting");
+/// Unpack `archive_path` into `tmp` and move the `vaughan` inside it over `exe`.
+///
+/// Replaces via a sibling temp file + rename: writing over a running binary
+/// fails with ETXTBSY, while renaming over it is allowed and atomic. The staged
+/// file is a sibling so the rename stays within one filesystem.
+fn extract_and_replace(archive_path: &Path, tmp: &Path, exe: &Path) -> Result<()> {
     let status = Command::new("tar")
-        .args(["-xzf"])
-        .arg(&archive_path)
+        .arg("-xzf")
+        .arg(archive_path)
         .arg("-C")
-        .arg(tmp.path())
+        .arg(tmp)
         .status()
-        .context("could not run tar")?;
+        .context("could not run tar — is it on PATH?")?;
     if !status.success() {
         bail!("tar exited with {status}");
     }
-    let unpacked = tmp.path().join("vaughan");
+    let unpacked = tmp.join("vaughan");
     if !unpacked.is_file() {
-        bail!("the archive did not contain a `vaughan` binary");
+        bail!("the archive did not contain a `vaughan` binary at its root");
     }
 
-    // Replace via a sibling temp file + rename: writing over a running binary
-    // fails with ETXTBSY, while renaming over it is allowed and atomic.
     let dir = exe
         .parent()
         .ok_or_else(|| anyhow!("the running binary has no parent directory"))?;
@@ -325,15 +375,12 @@ async fn install_tarball(exe: &Path, tag: &str) -> Result<()> {
     })?;
     set_executable(&staged)?;
     std::fs::rename(&staged, exe).context("could not replace the current binary")?;
-
-    println!("updated to {tag}");
     Ok(())
 }
 
 async fn fetch(url: &str) -> Result<Vec<u8>> {
-    let mut req = reqwest::Client::new()
+    let mut req = http_client()?
         .get(url)
-        .header("User-Agent", USER_AGENT)
         .header("Accept", "application/octet-stream");
     if let Some(token) = github_token() {
         req = req.header("Authorization", format!("Bearer {token}"));
@@ -353,7 +400,12 @@ struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     fn new() -> Result<Self> {
-        let dir = std::env::temp_dir().join(format!("vaughan-update-{}", std::process::id()));
+        // Pid AND a per-process counter: the pid alone collides between two
+        // instances in one process, and since `new` clears the directory first,
+        // the second would delete the first's contents out from under it.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("vaughan-update-{}-{seq}", std::process::id()));
         // A leftover directory from a crashed run would otherwise poison the
         // extract step with a stale `vaughan`.
         let _ = std::fs::remove_dir_all(&dir);
@@ -432,9 +484,18 @@ mod tests {
 
     #[test]
     fn install_kind_follows_the_resolved_path() {
+        // The exact shape `npm/launcher/lib/resolve.js` spawns:
+        // `<pkg>/bin/vaughan` inside the platform package's node_modules dir.
         assert_eq!(
             classify(Path::new(
                 "/home/u/p/node_modules/vaughan-linux-x64/bin/vaughan"
+            )),
+            InstallKind::Npm
+        );
+        // A global npm prefix nests it one level deeper; still npm.
+        assert_eq!(
+            classify(Path::new(
+                "/usr/lib/node_modules/vaughan/node_modules/vaughan-linux-x64/bin/vaughan"
             )),
             InstallKind::Npm
         );
@@ -464,5 +525,146 @@ mod tests {
             classify(Path::new("/opt/target/bin/vaughan")),
             InstallKind::Tarball
         );
+    }
+
+    /// The real `SHA256SUMS` layout: `sha256sum` output, several assets.
+    const SUMS: &str = concat!(
+        "aaaa1111  vaughan-linux-aarch64.tar.gz\n",
+        "bbbb2222  vaughan-linux-x86_64.tar.gz\n",
+        "cccc3333  vaughan-macos-aarch64.tar.gz\n",
+    );
+
+    #[test]
+    fn the_checksum_is_taken_from_the_matching_asset_line() {
+        assert_eq!(
+            expected_sha256(SUMS, "vaughan-linux-x86_64.tar.gz").unwrap(),
+            "bbbb2222"
+        );
+        assert_eq!(
+            expected_sha256(SUMS, "vaughan-macos-aarch64.tar.gz").unwrap(),
+            "cccc3333"
+        );
+    }
+
+    #[test]
+    fn a_longer_asset_name_ending_in_ours_is_not_mistaken_for_it() {
+        // This is why the match is on the whole name field and not a line
+        // suffix: a suffix test would return the wrong digest here.
+        let sums = "dead9999  extra-vaughan-linux-x86_64.tar.gz\n";
+        assert!(expected_sha256(sums, "vaughan-linux-x86_64.tar.gz").is_err());
+    }
+
+    #[test]
+    fn binary_mode_star_prefixes_still_match() {
+        let sums = "beef7777 *vaughan-linux-x86_64.tar.gz\n";
+        assert_eq!(
+            expected_sha256(sums, "vaughan-linux-x86_64.tar.gz").unwrap(),
+            "beef7777"
+        );
+    }
+
+    #[test]
+    fn a_missing_entry_is_an_error_rather_than_a_skipped_check() {
+        assert!(expected_sha256(SUMS, "vaughan-windows-x86_64.tar.gz").is_err());
+    }
+
+    #[test]
+    fn verification_accepts_the_real_digest_and_rejects_anything_else() {
+        let bytes = b"vaughan release bytes";
+        let digest = {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(bytes))
+        };
+        assert!(verify_sha256(bytes, &digest, "a.tar.gz").is_ok());
+        // Case-insensitive, because SHA256SUMS may be written either way.
+        assert!(verify_sha256(bytes, &digest.to_uppercase(), "a.tar.gz").is_ok());
+        assert!(verify_sha256(bytes, "00ff", "a.tar.gz").is_err());
+        assert!(verify_sha256(b"tampered", &digest, "a.tar.gz").is_err());
+    }
+
+    /// End-to-end over the half that does not need the network: build a real
+    /// tarball, unpack it, and replace a stand-in binary with its contents.
+    #[test]
+    fn extract_and_replace_swaps_the_target_binary() {
+        let scratch = ScratchDir::new().expect("scratch");
+        let stage = scratch.path().join("stage");
+        let dest_dir = scratch.path().join("bin");
+        std::fs::create_dir_all(&stage).expect("stage dir");
+        std::fs::create_dir_all(&dest_dir).expect("dest dir");
+
+        // The archive layout a release ships: `vaughan` at the root.
+        std::fs::write(stage.join("vaughan"), b"#!/bin/sh\necho new\n").expect("payload");
+        let archive = scratch.path().join("vaughan-test.tar.gz");
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&stage)
+            .arg("vaughan")
+            .status()
+            .expect("tar -czf");
+        assert!(status.success(), "could not build the test archive");
+
+        let exe = dest_dir.join("vaughan");
+        std::fs::write(&exe, b"old binary").expect("old binary");
+
+        let unpack = scratch.path().join("unpack");
+        std::fs::create_dir_all(&unpack).expect("unpack dir");
+        extract_and_replace(&archive, &unpack, &exe).expect("replace");
+
+        assert_eq!(
+            std::fs::read(&exe).expect("read back"),
+            b"#!/bin/sh\necho new\n"
+        );
+        // The staged sibling must not be left behind.
+        assert!(!dest_dir.join(".vaughan.update.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&exe)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755, "the new binary must stay executable");
+        }
+    }
+
+    #[test]
+    fn an_archive_without_a_vaughan_at_its_root_is_refused() {
+        let scratch = ScratchDir::new().expect("scratch");
+        let stage = scratch.path().join("stage");
+        std::fs::create_dir_all(&stage).expect("stage dir");
+        std::fs::write(stage.join("something-else"), b"x").expect("payload");
+        let archive = scratch.path().join("wrong.tar.gz");
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&stage)
+            .arg("something-else")
+            .status()
+            .expect("tar -czf");
+        assert!(status.success());
+
+        let exe = scratch.path().join("vaughan");
+        std::fs::write(&exe, b"untouched").expect("exe");
+        let unpack = scratch.path().join("unpack");
+        std::fs::create_dir_all(&unpack).expect("unpack dir");
+
+        assert!(extract_and_replace(&archive, &unpack, &exe).is_err());
+        // The existing binary must survive a bad archive.
+        assert_eq!(std::fs::read(&exe).expect("read back"), b"untouched");
+    }
+
+    #[test]
+    fn the_platform_tag_is_one_of_the_published_three_or_an_error() {
+        match platform_tag() {
+            Ok(tag) => assert!(
+                ["linux-x86_64", "linux-aarch64", "macos-aarch64"].contains(&tag.as_str()),
+                "unexpected published platform tag: {tag}"
+            ),
+            // An unsupported host must say so rather than inventing an asset.
+            Err(e) => assert!(e.to_string().contains("no published release")),
+        }
     }
 }

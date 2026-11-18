@@ -350,7 +350,7 @@ fn main() {
     } = cli;
     let result = match command {
         None | Some(Command::Tui) => {
-            let notice = startup_update_notice();
+            let notice = update_check::startup_notice();
             vaughan_tui::run_interactive(&profile, notice).map_err(|e| anyhow::anyhow!("{}", e))
         }
         Some(Command::Mcp { action, source }) => match action {
@@ -469,24 +469,6 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
-}
-
-/// The opening TUI toast when a newer release is known, else `None`.
-///
-/// Reads the opt-in first and returns immediately when it is off (the default),
-/// so a launch with the check disabled creates no runtime and no socket. The
-/// whole thing is best-effort: an unreachable GitHub must not delay or block
-/// opening the wallet, so failures come back as `None`.
-fn startup_update_notice() -> Option<String> {
-    if !update_check::is_enabled() {
-        return None;
-    }
-    let runtime = tokio::runtime::Runtime::new().ok()?;
-    let latest = runtime.block_on(update_check::notice())?;
-    Some(format!(
-        "Update available: {latest} (you have {}) — run `vaughan update`",
-        env!("CARGO_PKG_VERSION")
-    ))
 }
 
 async fn run_cli(

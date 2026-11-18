@@ -7,7 +7,8 @@
 //!
 //! Every handler here reads or writes profile METADATA (`wallet.json` fields
 //! outside the encrypted vault). None of them unlocks, so none may touch key
-//! material.
+//! material. The one exception to the "profile" part is `update-check`, which
+//! is machine-wide and stored in its own file — see [`crate::update_check`].
 
 use clap::Subcommand;
 use serde_json::json;
@@ -39,6 +40,9 @@ pub(crate) enum ConfigCmd {
         action: NetworkCmd,
     },
     /// Periodic update check — off by default (no unprompted network calls).
+    ///
+    /// Unlike its siblings here, this one is machine-wide, not per-profile: it
+    /// is about the installed binary, and it is stored outside `wallet.json`.
     UpdateCheck {
         #[command(subcommand)]
         action: UpdateCheckCmd,
@@ -217,10 +221,12 @@ pub(crate) fn run_config(
         ConfigCmd::UpdateCheck { action } => {
             let set = |enabled: bool| -> anyhow::Result<()> {
                 crate::update_check::set_enabled(enabled)?;
-                let data = json!({ "update_check": enabled, "profile": profile });
+                // No profile in the message or the payload: this setting is
+                // machine-wide, and naming a profile would imply otherwise.
+                let data = json!({ "update_check": enabled, "scope": "machine" });
                 json_out::print_json_value(json_mode, &data, || {
                     println!(
-                        "periodic update check {} for profile `{profile}`",
+                        "periodic update check {} (applies to this install)",
                         if enabled { "enabled" } else { "disabled" }
                     );
                 });
@@ -229,12 +235,9 @@ pub(crate) fn run_config(
             match action {
                 UpdateCheckCmd::Show => {
                     let enabled = crate::update_check::is_enabled();
-                    let data = json!({ "update_check": enabled, "profile": profile });
+                    let data = json!({ "update_check": enabled, "scope": "machine" });
                     json_out::print_json_value(json_mode, &data, || {
-                        println!(
-                            "update_check ({profile}): {}",
-                            if enabled { "on" } else { "off" }
-                        );
+                        println!("update_check: {}", if enabled { "on" } else { "off" });
                         if !enabled {
                             println!(
                                 "  no unprompted network calls; run `vaughan update` to check"

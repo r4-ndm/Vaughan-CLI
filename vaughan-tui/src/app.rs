@@ -1213,11 +1213,11 @@ impl App {
     fn switch_profile(&mut self, profile: &str, mode: OperatingMode) {
         let path = match StateManager::profile_path(profile) {
             Ok(p) => p,
-            Err(e) => return self.profile_switch_error(e.user_message()),
+            Err(e) => return self.surface_message(e.user_message()),
         };
         let wallet = match WalletState::load_with_session(path, OperatingMode::HumanOnly, profile) {
             Ok(w) => w,
-            Err(e) => return self.profile_switch_error(e.user_message()),
+            Err(e) => return self.surface_message(e.user_message()),
         };
         let initialized = wallet.is_initialized();
         let old_dir = profile_dir(self.wallet().path());
@@ -1287,11 +1287,11 @@ impl App {
         }
     }
 
-    /// Surface a profile-switch failure where the user can see it: the chrome
-    /// flash only renders on unlocked screens, so on the unlock screen the
-    /// error goes to the view's status line instead of vanishing — otherwise
-    /// the password prompt would silently keep targeting the previous wallet.
-    fn profile_switch_error(&mut self, msg: String) {
+    /// Surface a message where the user can actually see it: the chrome flash
+    /// only renders on unlocked screens, so on the unlock screen it goes to the
+    /// view's status line instead of vanishing — used for profile-switch errors
+    /// and for the launcher's update notice, both of which arrive pre-unlock.
+    pub(crate) fn surface_message(&mut self, msg: String) {
         if let View::Unlock(v) = &mut self.view {
             v.set_status(msg);
         } else {
