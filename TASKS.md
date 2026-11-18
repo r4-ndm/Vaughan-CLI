@@ -758,3 +758,34 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
       is ours before someone squats it; publish nothing until the real package is ready.
 
 Not a substitute for signer work: S3 (historical: initial password step-up, superseded by S3b/S3c root-approved policy updates + hardening) and the DCA replay proof come first.
+
+### Keeping an install current (2026-11-18)
+
+> Found while answering "does `vaughan` load the latest build?" — it did not. The
+> installed binary was a release download six hours older than the branch it was
+> being compared against, and nothing in the product could ever have said so:
+> there was no update path at all, and `--version` printed the same `0.2.11` for
+> both.
+
+- [x] One install directory. `scripts/install-vaughan.sh` wrote to `~/.cargo/bin`
+      while `scripts/install.sh` wrote to `~/.local/bin`, which usually wins PATH —
+      a dev install reported success without changing what `vaughan` ran. Both now
+      use `$VAUGHAN_INSTALL_DIR` and fail loudly when shadowed.
+- [x] `audit.sh --binary` checks what `vaughan` resolves to, not a hardcoded path,
+      and now requires the DEFAULT command to be free of the private panel
+      (RAILGUN belongs in `vaughan-p`, which BUSL limits to dev/testing).
+- [x] `vaughan --version` carries the git revision (`vaughan-cli/build.rs`), so a
+      local build and a release of the same version are distinguishable.
+- [x] `vaughan update` / `--check`: classify the install (npm / cargo / tarball /
+      dev build) and refresh through that channel; dev builds are refused, not
+      overwritten.
+- [x] Periodic check is **opt-in, default off** (`vaughan config update-check`),
+      state in its own file rather than `wallet.json`. Rationale in
+      `vaughan-cli/src/update_check.rs`: a wallet that beacons on launch hands
+      GitHub a standing IP ↔ version correlation next to stealth/RAILGUN.
+- [ ] Sign releases with a pinned key and verify the signature in
+      `vaughan update`. Today the tarball path verifies `SHA256SUMS` from the same
+      host that served the archive, which proves integrity, not authenticity —
+      stated in the module doc so it is not mistaken for more than it is.
+- [ ] Teach the npm launcher the same `update --check` courtesy, or document that
+      npm installs update via `npm i -g vaughan@latest` only.

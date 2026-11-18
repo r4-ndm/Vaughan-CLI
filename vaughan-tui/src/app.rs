@@ -1246,7 +1246,7 @@ impl App {
     }
 
     /// Chrome toast under the address (home + every unlocked screen).
-    fn set_flash(&mut self, msg: impl Into<String>) {
+    pub(crate) fn set_flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash = Some(msg.into());
         self.chrome.flash_title = None;
         self.chrome.flash_table = None;

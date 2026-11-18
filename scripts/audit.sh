@@ -380,17 +380,27 @@ if [ "$CHECK_BINARY" -eq 1 ]; then
         else
             pass "'vaughan' resolves to the install directory"
         fi
+        # The DEFAULT command must look like a release: no private panel, hence no
+        # BUSL-1.1 Singlepass in its graph. RAILGUN lives in `vaughan-p`, which
+        # docs/railgun-go-no-go.md limits to development and testing. This check
+        # is deliberately the inverse of the one it replaced — the panel being
+        # present in `vaughan` used to pass, and that was the wrong default.
         # NB: no `grep -q` here — it exits on first match, SIGPIPEs `strings`, and
         # `pipefail` would turn a hit into a failure.
         if strings "$BIN" | grep 'private (RAILGUN)' >/dev/null; then
-            pass "installed binary has the RAILGUN private panel"
+            fail "installed 'vaughan' contains the RAILGUN private panel — that belongs in vaughan-p only"
         else
-            fail "installed binary lacks the railgun feature (build with --features railgun)"
+            pass "installed 'vaughan' matches the released shape (no private panel)"
         fi
-        if [ -L "${INSTALL_DIR}/vaughan-p" ] || [ -x "${INSTALL_DIR}/vaughan-p" ]; then
-            pass "vaughan-p alias present"
+        BIN_P="${INSTALL_DIR}/vaughan-p"
+        if [ ! -e "$BIN_P" ]; then
+            note "no vaughan-p (scripts/install-vaughan.sh builds it; --plain skips it)"
+        elif [ "$(readlink "$BIN_P" 2>/dev/null)" = "vaughan" ]; then
+            fail "vaughan-p is an alias of vaughan — it must be its own --features railgun build"
+        elif strings "$BIN_P" | grep 'private (RAILGUN)' >/dev/null; then
+            pass "vaughan-p carries the RAILGUN private panel"
         else
-            note "vaughan-p alias missing (scripts/install-vaughan.sh creates it)"
+            fail "vaughan-p lacks the railgun feature (build with --features railgun)"
         fi
     fi
 else

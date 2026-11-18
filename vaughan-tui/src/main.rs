@@ -11,5 +11,7 @@ fn main() -> std::io::Result<()> {
             }
         }
     }
-    vaughan_tui::run_interactive(&profile)
+    // No startup notice: the dev binary is built from the checkout, so "a newer
+    // release exists" is never the useful thing to say about it.
+    vaughan_tui::run_interactive(&profile, None)
 }

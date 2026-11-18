@@ -29,7 +29,11 @@ rustix = { workspace = true }
 alloy = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+dirs = { workspace = true }
 hex = { workspace = true }
+# `vaughan update`: release lookup + checksum verification of the download.
+reqwest = { workspace = true }
+sha2 = { workspace = true }
 rpassword = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
