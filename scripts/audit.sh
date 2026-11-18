@@ -9,14 +9,20 @@
 #   scripts/audit.sh                 # fmt, clippy (default + railgun), advisories,
 #                                    # hygiene, secrets, default-build leak checks
 #   scripts/audit.sh --with-tests    # adds `cargo test --workspace` (slow, anvil v1.2.1)
-#   scripts/audit.sh --binary        # adds checks against ~/.cargo/bin/vaughan*
+#   scripts/audit.sh --binary        # adds checks against the installed `vaughan`
+#                                    # (whatever PATH resolves, else $VAUGHAN_INSTALL_DIR)
 #   scripts/audit.sh --skip-railgun  # default-features clippy only; CI's railgun job
 #                                    # owns the RAILGUN compile
 #   scripts/audit.sh --no-audit      # skip cargo audit (advisory debt NOT checked)
 #   scripts/audit.sh --history       # ALSO scan every reachable commit for secrets,
 #                                    # not just the working tree (slow: walks all of
 #                                    # `git rev-list --all`, O(commits x tree)); the
-#                                    # default run stays working-tree-only
+#                                    # default run stays working-tree-only. Needs full
+#                                    # history — a shallow clone has nothing to walk, so
+#                                    # CI must check out with fetch-depth: 0. Run by the
+#                                    # release gate in .github/workflows/release.yml;
+#                                    # known pre-Rust fixture hits are documented in
+#                                    # docs/audit-playbook.md
 #
 # `-history` is accepted as the same flag. Exit code 0 only when every selected
 # check passes.
@@ -235,15 +241,50 @@ git_grep() { # git_grep <pattern> [pathspec...]
 }
 
 api_pat='sk-[A-Za-z0-9]{20,}|sk-or-v1-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-api_hits=$(git_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
+
+# Tier-2 filter for the API-key pattern, shared by the working-tree and history
+# tiers so both judge the same evidence by the same rules (same contract as
+# hex_tier below). ONLY provably-synthetic placeholders belong here — anything
+# that could plausibly be a live key must fail the gate instead.
+#
+# These are the COMPLETE set of api-shaped strings in this repo's history (three
+# distinct values; verify with the enumeration in docs/audit-playbook.md). All
+# three are fixtures from the pre-Rust Go demo scripts security_demo.sh /
+# security_complete_demo.sh, deleted in b3dca8c7 when the repo was rebuilt as a
+# Rust workspace, so they are reachable only under --history:
+#   sk-0{16,}                                 all-zero placeholder, never issued
+#   sk-123456789012345678901234567890abcdef   sequential digits + abcdef
+#   sk-updated1234567890abcdef                literal fixture string
+# Each is matched in full rather than by a loose `sk-…` wildcard, so a real key
+# in one of those files would still fail the gate.
+api_allow='sk-0{16,}|sk-123456789012345678901234567890abcdef|sk-updated1234567890abcdef'
+api_tier() { # api_tier <raw tier-1 output> — filtered, truncated hits
+    # Guard empty input: `printf '%s\n' ""` would emit a blank line that
+    # survives `grep -v` and read as a hit.
+    [ -z "$1" ] && return 0
+    printf '%s\n' "$1" \
+        | grep -viE "$api_allow" \
+        | head -10
+}
+
+api_raw=$(git_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
 api_rc=$?
+api_hits=$(api_tier "$api_raw")
 
 hex_pat='[0-9a-fA-F]{64}'
 
 # Tier-2 filters, shared by the working-tree and history tiers so both judge the
 # same evidence by the same rules.
 hex_context='(priv|secret|mnemonic|signer|api[_-]?key)'
-hex_allow='anvil|ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80|59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d|b256!|SALT=|/tx/|topic|selector|0xaaaa|deadbeef|000000000000000000000000'
+#
+# The last two entries are reachable only through git history (the working tree
+# no longer contains either), which is why they only matter under --history:
+#   1234...1234  64 sequential digits, the INPUT to a log-sanitizer demo in the
+#                pre-Rust Go scripts deleted in b3dca8c7 — a fixture whose whole
+#                point was proving key material gets masked, not a key
+#   1111...ffff  a patterned mock TX HASH (not a key at all), superseded in-tree
+#                by the 0xaaaa… hash already allowlisted above
+hex_allow='anvil|ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80|59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d|b256!|SALT=|/tx/|topic|selector|0xaaaa|deadbeef|000000000000000000000000|1234567890123456789012345678901234567890123456789012345678901234|1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff'
 hex_tier() { # hex_tier <raw tier-2 output> — filtered, truncated hits
     printf '%s\n' "$1" \
         | grep -iE "$hex_context" \
@@ -293,8 +334,9 @@ else
         git grep -nIE "$pat" "${hist_revs[@]}" -- "$@"
     }
 
-    hist_api=$(hist_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
+    hist_api_raw=$(hist_grep "$api_pat" "${scan_paths[@]}" "${scan_skip[@]}")
     hist_api_rc=$?
+    hist_api=$(api_tier "$hist_api_raw")
     hist_hex_raw=$(hist_grep "$hex_pat" "${scan_paths[@]}" ':!*package-lock.json' ':!*Cargo.lock' "${scan_skip[@]}")
     hist_hex_rc=$?
     hist_hex_hits=$(hex_tier "$hist_hex_raw")
@@ -318,22 +360,47 @@ fi
 section "installed binary"
 
 if [ "$CHECK_BINARY" -eq 1 ]; then
-    BIN="${HOME}/.cargo/bin/vaughan"
+    # Check whatever `vaughan` actually runs, not a fixed path: auditing a copy
+    # the user's PATH never reaches is worse than not auditing one, because it
+    # reports green for a binary nobody executes. Fall back to the install
+    # directory so a machine without it on PATH still gets a useful message.
+    INSTALL_DIR="${VAUGHAN_INSTALL_DIR:-${HOME}/.local/bin}"
+    BIN="$(command -v vaughan 2>/dev/null || true)"
+    [ -n "$BIN" ] || BIN="${INSTALL_DIR}/vaughan"
     if [ ! -x "$BIN" ]; then
         note "no installed binary at $BIN (CI has none) — build with scripts/install-vaughan.sh to check it"
         SKIPPED=$((SKIPPED + 1))
     else
+        note "checking $BIN ($("$BIN" --version 2>/dev/null || echo "version unknown"))"
+        # A second copy earlier on PATH is the silent-staleness failure mode:
+        # install-vaughan.sh writes one place, PATH prefers another.
+        shadow_dir="$(cd "$(dirname "$BIN")" && pwd)"
+        if [ "$shadow_dir" != "$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" ]; then
+            fail "'vaughan' resolves to $BIN, not ${INSTALL_DIR}/vaughan — the install dir is shadowed"
+        else
+            pass "'vaughan' resolves to the install directory"
+        fi
+        # The DEFAULT command must look like a release: no private panel, hence no
+        # BUSL-1.1 Singlepass in its graph. RAILGUN lives in `vaughan-p`, which
+        # docs/railgun-go-no-go.md limits to development and testing. This check
+        # is deliberately the inverse of the one it replaced — the panel being
+        # present in `vaughan` used to pass, and that was the wrong default.
         # NB: no `grep -q` here — it exits on first match, SIGPIPEs `strings`, and
         # `pipefail` would turn a hit into a failure.
         if strings "$BIN" | grep 'private (RAILGUN)' >/dev/null; then
-            pass "installed binary has the RAILGUN private panel"
+            fail "installed 'vaughan' contains the RAILGUN private panel — that belongs in vaughan-p only"
         else
-            fail "installed binary lacks the railgun feature (build with --features railgun)"
+            pass "installed 'vaughan' matches the released shape (no private panel)"
         fi
-        if [ -L "${HOME}/.cargo/bin/vaughan-p" ] || [ -x "${HOME}/.cargo/bin/vaughan-p" ]; then
-            pass "vaughan-p alias present"
+        BIN_P="${INSTALL_DIR}/vaughan-p"
+        if [ ! -e "$BIN_P" ]; then
+            note "no vaughan-p (scripts/install-vaughan.sh builds it; --plain skips it)"
+        elif [ "$(readlink "$BIN_P" 2>/dev/null)" = "vaughan" ]; then
+            fail "vaughan-p is an alias of vaughan — it must be its own --features railgun build"
+        elif strings "$BIN_P" | grep 'private (RAILGUN)' >/dev/null; then
+            pass "vaughan-p carries the RAILGUN private panel"
         else
-            note "vaughan-p alias missing (scripts/install-vaughan.sh creates it)"
+            fail "vaughan-p lacks the railgun feature (build with --features railgun)"
         fi
     fi
 else

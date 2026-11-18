@@ -1,4 +1,11 @@
 //! Background UI jobs so RPC work never `block_on`s the TUI thread.
+//!
+//! This module owns the job *data*: [`UiJob`] (what to run) and [`UiJobResult`]
+//! (what came back). The bodies that actually run them live in `app.rs`'s
+//! `spawn_job`, except where a family is big enough to deserve its own module —
+//! see [`lp`].
+
+pub mod lp;
 
 use secrecy::SecretString;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee};
@@ -192,20 +199,8 @@ pub enum UiJob {
     },
     /// Build createPool, initialize, or mint for V3 add-liquidity.
     LpV3PoolDeployStep {
-        venue: vaughan_core::core::DexVenue,
-        chain_id: u64,
-        rpc_url: String,
-        from: String,
-        token0: String,
-        token1: String,
-        fee: u32,
-        dec0: u8,
-        dec1: u8,
-        pool_initial_price: String,
-        pool_min_price: String,
-        pool_max_price: String,
-        amount0: String,
-        amount1: String,
+        /// The deploy form's inputs, already sorted and parsed by the view.
+        params: vaughan_core::core::V3LpDeployParams,
         /// Wait for a prior on-chain step before building the next tx.
         deploy_wait: vaughan_core::core::V3LpDeployWait,
         /// Label of the tx that was just broadcast (approve wait semantics).
@@ -213,55 +208,17 @@ pub enum UiJob {
     },
     /// Check NPM enable status for both tokens (PancakeSwap form step).
     LpEnableCheck {
-        venue: vaughan_core::core::DexVenue,
-        chain_id: u64,
-        rpc_url: String,
-        from: String,
-        token0: String,
-        token1: String,
-        fee: u32,
-        dec0: u8,
-        dec1: u8,
-        pool_initial_price: String,
-        pool_min_price: String,
-        pool_max_price: String,
-        amount0: String,
-        amount1: String,
+        params: vaughan_core::core::V3LpDeployParams,
     },
     /// Build the next Enable tx for the deposit form.
     LpEnablePrepare {
-        venue: vaughan_core::core::DexVenue,
-        chain_id: u64,
-        rpc_url: String,
-        from: String,
-        token0: String,
-        token1: String,
-        fee: u32,
-        dec0: u8,
-        dec1: u8,
-        pool_initial_price: String,
-        pool_min_price: String,
-        pool_max_price: String,
-        amount0: String,
-        amount1: String,
+        params: vaughan_core::core::V3LpDeployParams,
+        /// Symbol of the token being enabled, echoed back for the flash.
         symbol: String,
     },
     /// Wait for an Enable broadcast, then re-check allowances.
     LpEnableWait {
-        venue: vaughan_core::core::DexVenue,
-        chain_id: u64,
-        rpc_url: String,
-        from: String,
-        token0: String,
-        token1: String,
-        fee: u32,
-        dec0: u8,
-        dec1: u8,
-        pool_initial_price: String,
-        pool_min_price: String,
-        pool_max_price: String,
-        amount0: String,
-        amount1: String,
+        params: vaughan_core::core::V3LpDeployParams,
         after_step_label: String,
     },
     /// On-chain pool price + lifecycle for V3 add-LP deposit coupling.

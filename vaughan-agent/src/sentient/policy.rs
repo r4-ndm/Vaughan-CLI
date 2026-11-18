@@ -615,7 +615,34 @@ pub fn append_policy_audit(
         "field_changes": field_changes,
         "source": "socket",
     });
-    let line = serde_json::to_string(&entry)
+    append_audit_entry(dir, &entry)
+}
+
+/// Append a `{ts, peer_uid, reason}` entry to `<dir>/policy-audit.jsonl` when the signer
+/// daemon's circuit breaker is tripped. A kill switch must leave a trace next to the policy
+/// changes it overrides, so trips share the policy audit log rather than a second file.
+/// `peer_uid` is `None` for an automatic trip (gas ceiling / error streak), where no peer
+/// asked for it. `reason` must already be sanitised by the caller.
+pub fn append_trip_audit(
+    dir: &Path,
+    peer_uid: Option<u32>,
+    reason: &str,
+) -> Result<(), AgentError> {
+    crate::paths::assert_signer_store_writable(dir)?;
+
+    let entry = serde_json::json!({
+        "ts": crate::dca::now_unix(),
+        "event": "circuit_breaker_tripped",
+        "peer_uid": peer_uid,
+        "reason": reason,
+    });
+    append_audit_entry(dir, &entry)
+}
+
+/// Append one JSON entry as a line to `<dir>/policy-audit.jsonl` (mode `0600`), written
+/// atomically and rotated to retain at most the most recent 200 lines.
+fn append_audit_entry(dir: &Path, entry: &serde_json::Value) -> Result<(), AgentError> {
+    let line = serde_json::to_string(entry)
         .map_err(|e| AgentError::ProviderError(format!("serialize policy audit entry: {e}")))?;
 
     let path = dir.join(POLICY_AUDIT_JSONL);

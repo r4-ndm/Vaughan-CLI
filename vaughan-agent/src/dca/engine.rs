@@ -15,12 +15,10 @@ use vaughan_core::core::{
     AggVenue, DexProtocol, DexVenue,
 };
 
+use super::defer::{apply_refusal, classify_agent_error, push_log, SliceRefusal};
 use super::store;
 use super::trigger::{advance_schedule, due_indices};
-use super::types::{
-    DcaPlan, DcaPlanFile, DcaRouteResolved, DcaStatus, SliceLog, MAX_CONSECUTIVE_FAILURES,
-    MAX_SLICE_LOG,
-};
+use super::types::{DcaPlan, DcaPlanFile, DcaRouteResolved, DcaStatus, SliceLog};
 use crate::error::AgentError;
 use crate::sentient::{SentientTrader, SwapExecution};
 
@@ -383,11 +381,14 @@ pub async fn resolve_plan_pair_and_corridor(
     Ok((pair, min_out))
 }
 
-/// Apply a successful or failed fire to the in-memory plan.
+/// Apply a successful or refused fire to the in-memory plan.
+///
+/// The refused arm carries its [`SliceRefusal`] class because a refusal that moved no
+/// money must not burn a buy window — see [`super::defer`].
 pub fn record_outcome(
     plan: &mut DcaPlan,
     now: u64,
-    outcome: Result<&SwapExecution, &str>,
+    outcome: Result<&SwapExecution, (SliceRefusal, &str)>,
     amount_in: &U256,
 ) {
     match outcome {
@@ -413,33 +414,7 @@ pub fn record_outcome(
                 },
             );
         }
-        Err(msg) => {
-            plan.consecutive_failures = plan.consecutive_failures.saturating_add(1);
-            if plan.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                plan.status = DcaStatus::Paused;
-            }
-            // Still advance so we do not hammer the same second on transient errors.
-            advance_schedule(plan, now);
-            push_log(
-                plan,
-                SliceLog {
-                    at: now,
-                    ok: false,
-                    tx_hash: String::new(),
-                    dry_run: plan.dry_run,
-                    error: msg.to_string(),
-                    amount_in_wei: amount_in.to_string(),
-                },
-            );
-        }
-    }
-}
-
-fn push_log(plan: &mut DcaPlan, entry: SliceLog) {
-    plan.slice_log.push(entry);
-    if plan.slice_log.len() > MAX_SLICE_LOG {
-        let drop_n = plan.slice_log.len() - MAX_SLICE_LOG;
-        plan.slice_log.drain(0..drop_n);
+        Err((class, msg)) => apply_refusal(plan, now, class, msg, amount_in),
     }
 }
 
@@ -452,7 +427,7 @@ fn persist_outcome(
     dir: &Path,
     plan_id: &str,
     now: u64,
-    outcome: Result<&SwapExecution, &str>,
+    outcome: Result<&SwapExecution, (SliceRefusal, &str)>,
     amount_in: &U256,
 ) -> Result<(), AgentError> {
     store::update_plan(dir, plan_id, |p| {
@@ -465,7 +440,7 @@ fn persist_outcome(
 fn apply_outcome_preserving_status(
     plan: &mut DcaPlan,
     now: u64,
-    outcome: Result<&SwapExecution, &str>,
+    outcome: Result<&SwapExecution, (SliceRefusal, &str)>,
     amount_in: &U256,
 ) {
     let prior = plan.status;
@@ -475,17 +450,39 @@ fn apply_outcome_preserving_status(
     }
 }
 
-/// Fire one plan by id: quote → execute → persist.
-pub async fn fire_plan(
+/// Record a refused slice and shape the caller's result.
+///
+/// One place for all three refusal exits of [`fire_plan`], so the classification can
+/// never drift between them.
+fn refused_slice(
     dir: &Path,
     plan_id: &str,
-    trader: &SentientTrader,
-    chain_id: u64,
-    piteas_dir: Option<&Path>,
-    vault_password: Option<&SecretString>,
     now: u64,
-) -> Result<DcaFireResult, AgentError> {
-    let file = store::load_plans(dir)?;
+    class: SliceRefusal,
+    message: String,
+    dry_run: bool,
+    amount_in: &U256,
+) -> DcaFireResult {
+    let _ = persist_outcome(dir, plan_id, now, Err((class, message.as_str())), amount_in);
+    DcaFireResult {
+        plan_id: plan_id.to_string(),
+        ok: false,
+        dry_run,
+        tx_hash: String::new(),
+        error: message,
+    }
+}
+
+/// Find `plan_id` and refuse everything that makes it unfireable right now: status,
+/// due time, chain/wallet binding, venue. Every refusal here is a caller error that
+/// never reaches a signer, so none of it touches the plan's failure count.
+fn fireable_plan<'a>(
+    file: &'a DcaPlanFile,
+    plan_id: &str,
+    chain_id: u64,
+    trader_address: Address,
+    now: u64,
+) -> Result<&'a DcaPlan, AgentError> {
     let plan =
         file.plans.iter().find(|p| p.id == plan_id).ok_or_else(|| {
             AgentError::InvalidToolCall(format!("dca plan `{plan_id}` not found"))
@@ -516,15 +513,29 @@ pub async fn fire_plan(
     let bound_account = plan
         .account_address()
         .map_err(AgentError::InvalidToolCall)?;
-    if bound_account != trader.address() {
+    if bound_account != trader_address {
         return Err(AgentError::SecurityViolation(format!(
-            "plan `{plan_id}` bound to {bound_account:#x} — active wallet is {:#x}",
-            trader.address()
+            "plan `{plan_id}` bound to {bound_account:#x} — active wallet is {trader_address:#x}"
         )));
     }
     plan.venue
         .validate_for_chain(chain_id)
         .map_err(AgentError::InvalidToolCall)?;
+    Ok(plan)
+}
+
+/// Fire one plan by id: quote → execute → persist.
+pub async fn fire_plan(
+    dir: &Path,
+    plan_id: &str,
+    trader: &SentientTrader,
+    chain_id: u64,
+    piteas_dir: Option<&Path>,
+    vault_password: Option<&SecretString>,
+    now: u64,
+) -> Result<DcaFireResult, AgentError> {
+    let file = store::load_plans(dir)?;
+    let plan = fireable_plan(&file, plan_id, chain_id, trader.address(), now)?;
     let token_out = plan
         .token_out_address()
         .map_err(AgentError::InvalidToolCall)?;
@@ -554,15 +565,16 @@ pub async fn fire_plan(
     {
         Ok(p) => p,
         Err(e) => {
-            let msg = e.to_string();
-            let _ = persist_outcome(dir, plan_id, now, Err(msg.as_str()), &amount_in);
-            return Ok(DcaFireResult {
-                plan_id: plan_id.to_string(),
-                ok: false,
-                dry_run: plan_dry,
-                tx_hash: String::new(),
-                error: msg,
-            });
+            let class = classify_agent_error(&e);
+            return Ok(refused_slice(
+                dir,
+                plan_id,
+                now,
+                class,
+                e.to_string(),
+                plan_dry,
+                &amount_in,
+            ));
         }
     };
 
@@ -572,14 +584,15 @@ pub async fn fire_plan(
             "prepared value {} != plan slice {amount_in} — refusing DCA fire",
             prepared.value
         );
-        let _ = persist_outcome(dir, plan_id, now, Err(msg.as_str()), &amount_in);
-        return Ok(DcaFireResult {
-            plan_id: plan_id.to_string(),
-            ok: false,
-            dry_run: plan_dry,
-            tx_hash: String::new(),
-            error: msg,
-        });
+        return Ok(refused_slice(
+            dir,
+            plan_id,
+            now,
+            SliceRefusal::Failed,
+            msg,
+            plan_dry,
+            &amount_in,
+        ));
     }
 
     let key = format!("dca_{plan_id}_{}", plan.slices_done);
@@ -612,15 +625,16 @@ pub async fn fire_plan(
             })
         }
         Err(e) => {
-            let msg = e.to_string();
-            let _ = persist_outcome(dir, plan_id, now, Err(msg.as_str()), &amount_in);
-            Ok(DcaFireResult {
-                plan_id: plan_id.to_string(),
-                ok: false,
-                dry_run: plan_dry || trader.is_dry_run(),
-                tx_hash: String::new(),
-                error: msg,
-            })
+            let class = classify_agent_error(&e);
+            Ok(refused_slice(
+                dir,
+                plan_id,
+                now,
+                class,
+                e.to_string(),
+                plan_dry || trader.is_dry_run(),
+                &amount_in,
+            ))
         }
     }
 }
@@ -707,7 +721,7 @@ mod tests {
         let mut p = plan();
         let amt = U256::from(1u64);
         for _ in 0..3 {
-            record_outcome(&mut p, 0, Err("boom"), &amt);
+            record_outcome(&mut p, 0, Err((SliceRefusal::Failed, "boom")), &amt);
         }
         assert_eq!(p.status, DcaStatus::Paused);
         assert_eq!(p.consecutive_failures, 3);

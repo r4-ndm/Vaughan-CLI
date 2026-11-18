@@ -4,6 +4,8 @@
 //! fee estimation, and transaction signing/broadcast. EVM-specific operations
 //! (nonce, ERC-20) live on [`EvmAdapter`] itself rather than the shared trait.
 
+mod broadcast;
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::str::FromStr;
@@ -426,26 +428,6 @@ impl EvmAdapter {
                 .map_err(|e| WalletError::RpcError(e.to_string()))
         })
         .await
-    }
-
-    /// Broadcast an already-signed raw transaction (EIP-2718 encoded, no
-    /// leading `0x`) through the primary + fallback provider chain.
-    ///
-    /// Broadcasting the same signed envelope to a fallback endpoint is safe:
-    /// identical nonce means a duplicate is a no-op on-chain.
-    pub async fn broadcast_raw(&self, raw: Vec<u8>) -> Result<TxHash, WalletError> {
-        let pending = self
-            .with_provider(move |provider| {
-                let raw = raw.clone();
-                async move {
-                    provider
-                        .send_raw_transaction(&raw)
-                        .await
-                        .map_err(|e| WalletError::TransactionFailed(e.to_string()))
-                }
-            })
-            .await?;
-        Ok(TxHash(format!("{:?}", pending.tx_hash())))
     }
 
     /// Drop cached native / ERC-20 balances (call after a successful broadcast).
@@ -1368,6 +1350,7 @@ impl ChainAdapter for EvmAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::broadcasts::BroadcastPhase;
 
     /// The EIP-20 Transfer topic0 is the canonical keccak of the event
     /// signature (the same hash every ERC-20 emits, e.g. on Etherscan).
@@ -1507,5 +1490,82 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, WalletError::InvalidAmount(_)));
+    }
+
+    /// A minimal one-shot HTTP endpoint: `respond=None` accepts a request and drops the
+    /// connection (a transport failure); `Some(body)` answers 200 with that body.
+    fn mock_rpc_endpoint(
+        respond: Option<&'static [u8]>,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            if let Some(body) = respond {
+                let mut buf = [0u8; 4096];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = std::io::Write::write_all(&mut stream, body);
+            }
+            // respond == None: drop the connection without answering.
+        });
+        (addr, handle)
+    }
+
+    const ALREADY_KNOWN: &[u8] =
+        br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"already known"}}"#;
+
+    /// P0 regression: the primary endpoint accepts the envelope and drops the connection
+    /// (the tx may be in the mempool), then the fallback answers `already known` — itself
+    /// evidence the first attempt landed. The verdict must stay `Uncertain`; a per-attempt
+    /// classification would report `Definitive` and release the gas + spend reservations
+    /// for a live tx (duplicate spend on retry).
+    #[tokio::test]
+    async fn a_transport_failure_then_a_node_error_is_still_uncertain() {
+        let (drop_addr, t1) = mock_rpc_endpoint(None);
+        let (known_addr, t2) = mock_rpc_endpoint(Some(ALREADY_KNOWN));
+        let adapter = EvmAdapter::new(
+            &format!("http://{drop_addr}"),
+            1,
+            "test",
+            &[format!("http://{known_addr}")],
+        )
+        .await
+        .unwrap();
+
+        let (phase, _) = adapter
+            .broadcast_raw_phased(vec![0x02, 0x01, 0x00])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            phase,
+            BroadcastPhase::Uncertain,
+            "a fallback's `already known` must never downgrade a transport-uncertain send"
+        );
+        let _ = (t1.join(), t2.join());
+    }
+
+    /// The unchanged half of the contract: a node error response with no transport failure
+    /// anywhere is still `Definitive` (safe to release — the node refused the envelope).
+    #[tokio::test]
+    async fn a_node_error_response_alone_is_definitive() {
+        let (known_addr, t) = mock_rpc_endpoint(Some(ALREADY_KNOWN));
+        let adapter = EvmAdapter::new(&format!("http://{known_addr}"), 1, "test", &[])
+            .await
+            .unwrap();
+
+        let (phase, _) = adapter
+            .broadcast_raw_phased(vec![0x02, 0x01, 0x00])
+            .await
+            .unwrap_err();
+        assert_eq!(phase, BroadcastPhase::Definitive);
+        let _ = t.join();
     }
 }

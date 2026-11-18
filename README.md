@@ -71,6 +71,51 @@ vaughan-mcp --version
 
 Ships the `vaughan` (TUI/CLI) and `vaughan-mcp` (MCP stdio server) bins using npm `optionalDependencies` (`linux-x64`, `linux-arm64`, `darwin-arm64`, no postinstall or runtime download). On unsupported platforms, build from source above.
 
+### Staying current
+
+```bash
+vaughan update --check          # report the latest release; change nothing
+vaughan update                  # refresh through the channel that installed it
+```
+
+`vaughan update` works out whether this binary came from npm, `cargo install`, or
+a release tarball and hands the install back to that channel — so it never
+introduces a trust path you had not already chosen. A build symlinked out of a
+checkout is reported rather than overwritten (rebuild it with
+`scripts/install-vaughan.sh`).
+
+**Nothing checks for updates on its own.** A wallet that contacts GitHub on every
+launch would tell that host, on a schedule, that your IP runs Vaughan and which
+version. So the periodic check is opt-in and off by default:
+
+```bash
+vaughan config update-check show   # off, unless you turned it on
+vaughan config update-check on     # at most one release lookup per 24h
+```
+
+`vaughan --version` prints the git revision it was built from, so a local build
+and a release of the same version number can be told apart:
+
+```
+vaughan 0.2.11 (9218db08d-dirty)
+```
+
+### Which binary am I running?
+
+`scripts/install.sh` and `scripts/install-vaughan.sh` both install to
+`$VAUGHAN_INSTALL_DIR` (default `~/.local/bin`). If a second copy sits earlier on
+your `PATH` — a stale `cargo install` in `~/.cargo/bin`, say — it silently wins,
+and the symptom is a feature that exists in the repo but not in the binary you
+run. Both scripts now fail loudly when that happens; to check by hand:
+
+```bash
+command -v vaughan && vaughan --version
+```
+
+Building from a checkout produces two binaries: `vaughan` with default features
+(the shape releases ship) and `vaughan-p` with `--features railgun`, which
+`docs/railgun-go-no-go.md` limits to development and testing.
+
 ## Launch
 
 ```bash
@@ -79,6 +124,7 @@ vaughan tui          # same as above
 vaughan balance      # scriptable CLI subcommands
 vaughan send …
 vaughan browse 0x…
+vaughan update       # refresh this install (see "Staying current")
 ```
 
 Ensure `~/.local/bin` (or `~/.cargo/bin` when using the cargo fallback) is on your `PATH`.
@@ -171,8 +217,13 @@ Rough flow:
 
 Guards you get by default: re-simulation at approve time, chain mismatch
 rejection, fee-spike rejection if gas jumped more than ~10% since the proposal,
-session token for the local queue, and testnet-first mainnet gating for MCP
-writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
+session token for the local queue (adviser), and testnet-first mainnet gating
+for MCP writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
+
+A separate **`sentient`** profile is the deliberate exception to “you approve
+every spend”: that seed belongs to `vaughan signerd`, which signs its intents
+under policy caps and a spend ledger with no approval card. Keys never enter the
+MCP process either way — see [docs/sentient-ops.md](docs/sentient-ops.md).
 
 ### What is in good shape vs still rough
 
@@ -196,7 +247,9 @@ before mainnet funds.
 ```bash
 vaughan balance --network pulsechain-testnet-v4
 vaughan send 0x… --value 0.01 --network pulsechain-testnet-v4
-vaughan serve --password-env VAUGHAN_PASSWORD   # unlock + MCP listener for agents
+vaughan serve --password-env VAUGHAN_PASSWORD   # adviser: unlock vault + MCP listener
+vaughan --profile sentient serve                 # sentient thin client: no password, no token,
+                                                 # keys stay in vaughan signerd
 ```
 
 For agent tool names and limits, see [docs/ai-tool-surface.md](docs/ai-tool-surface.md).

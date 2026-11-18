@@ -758,3 +758,69 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
       is ours before someone squats it; publish nothing until the real package is ready.
 
 Not a substitute for signer work: S3 (historical: initial password step-up, superseded by S3b/S3c root-approved policy updates + hardening) and the DCA replay proof come first.
+
+### Keeping an install current (2026-11-18)
+
+> Found while answering "does `vaughan` load the latest build?" — it did not. The
+> installed binary was a release download six hours older than the branch it was
+> being compared against, and nothing in the product could ever have said so:
+> there was no update path at all, and `--version` printed the same `0.2.11` for
+> both.
+
+- [x] One install directory. `scripts/install-vaughan.sh` wrote to `~/.cargo/bin`
+      while `scripts/install.sh` wrote to `~/.local/bin`, which usually wins PATH —
+      a dev install reported success without changing what `vaughan` ran. Both now
+      use `$VAUGHAN_INSTALL_DIR` and fail loudly when shadowed.
+- [x] `audit.sh --binary` checks what `vaughan` resolves to, not a hardcoded path,
+      and now requires the DEFAULT command to be free of the private panel
+      (RAILGUN belongs in `vaughan-p`, which BUSL limits to dev/testing).
+- [x] `vaughan --version` carries the git revision (`vaughan-cli/build.rs`), so a
+      local build and a release of the same version are distinguishable.
+- [x] `vaughan update` / `--check`: classify the install (npm / cargo / tarball /
+      dev build) and refresh through that channel; dev builds are refused, not
+      overwritten.
+- [x] Periodic check is **opt-in, default off** (`vaughan config update-check`),
+      state in its own file rather than `wallet.json`. Rationale in
+      `vaughan-cli/src/update_check.rs`: a wallet that beacons on launch hands
+      GitHub a standing IP ↔ version correlation next to stealth/RAILGUN.
+- [x] Second pass on the above, after auditing what was actually unverified
+      (2026-11-18). Five fixes, two of them live defects:
+      - the startup notice was set as a chrome flash, which `views/unlock.rs`
+        explicitly does not render — so an opted-in user saw nothing and it
+        expired during password entry. Now routed through
+        `App::surface_message`, the same path profile-switch errors use.
+      - the launch check had no deadline (`reqwest` sets no default timeout), so
+        a blackholed host meant the TUI never opened. Now a 3s
+        `LAUNCH_CHECK_DEADLINE` at the call site plus a 30s client timeout —
+        and `notice()` persists the attempt BEFORE awaiting, since the await can
+        now be cancelled and a later save would never run.
+      - `install_tarball` was untestable and untested; split into
+        `expected_sha256` / `verify_sha256` / `extract_and_replace` with 8 tests,
+        including a real tarball round trip that swaps a stand-in binary.
+      - `build.rs` used `../.git/...`, which does not exist in a linked
+        worktree; now `git rev-parse --git-path` plus the branch ref file. The
+        residual `-dirty` staleness is documented rather than implied away.
+      - `ScratchDir` keyed its directory on the pid alone, so two in one process
+        collided and `new()` wiped the other's contents (found by the new tests).
+- [x] The tarball download → install leg had never actually run end to end
+      (2026-11-18). Rather than wait for a release newer than the running
+      binary, gave `install_tarball` a `VAUGHAN_UPDATE_BASE_URL` override (same
+      pattern as `update_check`'s `VAUGHAN_UPDATE_STATE`) and pointed it at a
+      minimal local HTTP server in a test — no new dependency, `tokio::net` was
+      already in the workspace. The test builds a real tarball with `tar`,
+      serves it plus a matching `SHA256SUMS` over a real socket, and asserts the
+      stand-in "running binary" ends up holding the fixture's bytes with the
+      executable bit set. This is the strongest evidence the flow works short
+      of a real release.
+- [x] Audited the `reqwest` / `sha2` / `dirs` additions to `vaughan-cli` against
+      "never add a dependency without approval": all three were already
+      workspace-approved for other crates, so documented the new use in the
+      CLAUDE.md allowlist table rather than treating it as a new dependency.
+- [ ] Sign releases with a pinned key and verify the signature in
+      `vaughan update`. Today the tarball path verifies `SHA256SUMS` from the same
+      host that served the archive, which proves integrity, not authenticity —
+      stated in the module doc so it is not mistaken for more than it is. Needs
+      a decision on signing tool and private-key custody before it can start;
+      not attempted without that.
+- [ ] Teach the npm launcher the same `update --check` courtesy, or document that
+      npm installs update via `npm i -g vaughan@latest` only.

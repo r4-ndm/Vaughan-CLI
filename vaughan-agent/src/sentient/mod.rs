@@ -9,10 +9,13 @@ pub mod spend_ledger;
 pub mod stealth_pending;
 pub mod trader;
 
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, GAS_BUDGET_REFUSAL_PREFIX, GAS_CEILING_REFUSAL_PREFIX,
+    TRADING_HALTED_PREFIX,
+};
 pub use file_guard::assert_owner_only_file;
 pub use policy::{
-    append_policy_audit, breaker_config_for_session, build_policy_proposal,
+    append_policy_audit, append_trip_audit, breaker_config_for_session, build_policy_proposal,
     format_policy_diff_lines, load_policy, policy_field_changes, save_policy, AgentSessionPolicy,
     EnforcementMode, PolicyProposal, LEGACY_DEGEN_POLICY_TOML, POLICY_AUDIT_JSONL,
     SENTIENT_POLICY_TOML,

@@ -99,8 +99,101 @@ swaps, sized approve/unwrap (unlimited approve refused), and `Batch7702`
 on DEX routers (agg routers need `min_amount_out > 0`), audited DEX/Agg
 allowlist, fresh fee estimate (fail-closed) + pre-broadcast gas-budget check,
 and the mainnet-write guard.
-Kill-switch: **Ctrl+K** in the TUI trips the session breaker. The human
-`default` profile never auto-signs.
+Kill-switch: **Ctrl+K** in the TUI trips the session breaker **and** sends the
+daemon's `trip` op (below), so the thing that holds the keys stops too and stays
+stopped across a restart. The flash is explicit about what happened — only
+"daemon HALTED" means the daemon stopped; "daemon NOT reached … local breaker
+only", "daemon too old — NOT halted" and "daemon HALTED but NOT on disk" each
+mean you still have work to do (stop the unit). Ctrl+K stays a no-op on a
+non-sentient profile: the socket is machine-global and a human wallet never
+asked the daemon to sign. The human `default` profile never auto-signs.
+
+## Gas ceiling: set it before you upgrade the daemon
+
+From 0.2.12 the daemon **meters every broadcast** against `max_session_gas_wei`:
+it prices the transaction, reserves `gas_limit × max_fee_per_gas` against the
+ceiling, and refuses (`gas_ceiling_exceeded`) rather than signing when the quote
+does not fit. A transaction it cannot price is refused too (`gas_unavailable`) —
+nothing is ever treated as free.
+
+**The stock default (5e16 wei) refuses EVERY transaction on PulseChain.**
+Measured `eth_gasPrice` on 2026-11-16: chain 369 ≈ 1.9e15 wei/gas, chain 943 ≈
+2.4e13 wei/gas, so a bare 21,000-gas transfer costs ~4e19 wei on 369 — about
+800× the default ceiling. Raise it **before** upgrading the host daemon, through
+the normal root-approved flow (the field already exists; the old daemon ignores
+it):
+
+```bash
+vaughan --profile sentient policy set --max-session-gas-wei 5000000000000000000000   # 5e21 = 5,000 PLS, chain 369
+# chain 943 (testnet): 5e20 is a reasonable starting point
+```
+
+Pick the number deliberately and adjust to the real fee level. Two footguns, both
+unvalidated: `U256::MAX` effectively disables the ceiling, and `0` refuses
+everything. After the upgrade, the daemon's `status` op — which the MCP
+`budget_status` tool returns verbatim — reports what is in force:
+
+```
+budget.gas_spent_wei / budget.gas_max_wei / budget.gas_remaining_wei
+```
+
+A DCA plan whose slice the daemon refuses on gas (`gas_ceiling_exceeded`,
+`gas_unavailable`) is **deferred, not failed**: nothing was spent, so the slice
+does not count toward the three-failure pause and does not burn the buy window.
+The slice log shows `deferred (not counted): …` and the plan retries about a
+minute later, so a too-tight ceiling shows up as a stalled plan, not a paused one.
+
+A slice refused with `circuit_breaker_tripped` or `policy_load_failed` is
+**paused, not deferred**: the daemon's trip is durable and there is no untrip op,
+and a missing policy file will not reappear on its own, so retrying every minute
+would only re-ask a halted daemon forever while the plan still read `Active`.
+The slice log shows `halted (not counted): …`, the failure streak is untouched,
+and the plan resumes once the operator clears the trip marker (or restores the
+policy file) and re-enables it.
+
+A `broadcast_uncertain` slice still counts — it may have executed.
+
+The counter is per daemon process and in memory: restarting the daemon refunds
+the whole gas budget. On Base/Arbitrum the ceiling under-counts (unpriced L1 data
+fee) — see [`mcp-threat-model.md`](mcp-threat-model.md). Never try to change
+policy from an agent; it needs root approval by design.
+
+## Halting the daemon (durable kill switch)
+
+Any peer the socket allowlist admits may halt the daemon:
+
+```bash
+# one newline-delimited JSON line; any tool that speaks a Unix socket works
+printf '{"op":"trip","reason":"operator stop: investigating"}\n' \
+  | socat - UNIX-CONNECT:/run/vaughan/signerd.sock   # or: nc -U /run/vaughan/signerd.sock
+```
+
+Every later `sign` is refused with `circuit_breaker_tripped`, and the reason is
+written to `/var/lib/vaughan/sentient/signerd-tripped.json` (0600) **before** the
+op returns ok. If that write fails the answer is `ok:false` /
+`trip_not_persisted`: the daemon is halted in memory only, so stop the unit
+instead of trusting it. Automatic trips (gas ceiling, consecutive-error
+tripwire) are persisted the same way, and the trip is appended to
+`policy-audit.jsonl` with the peer UID.
+
+The marker is loaded before the socket is bound and **fails closed**: a marker
+that cannot be read, parsed, or trusted (wrong mode/owner) also starts the
+daemon halted. That is what makes `Restart=on-failure` safe — a panic or OOM kill
+would otherwise bring the breaker back clean within seconds.
+
+**There is no untrip op.** To resume trading, as root:
+
+```bash
+systemctl stop vaughan-signerd
+cat /var/lib/vaughan/sentient/signerd-tripped.json   # read WHY before clearing it
+rm /var/lib/vaughan/sentient/signerd-tripped.json
+systemctl start vaughan-signerd
+```
+
+If a `broadcast_uncertain` error is what halted things, check the chain for the
+transaction before clearing: that code means the raw transaction may already have
+been accepted, and the spend-ledger leg is deliberately kept so an identical
+retry answers `spend_already_reserved` instead of sending twice.
 
 Vaughan does **not** run a general background price daemon. The agent (or a cron
 that calls MCP) owns ad-hoc poll intervals. Exception: **TUI-hosted DCA** — while

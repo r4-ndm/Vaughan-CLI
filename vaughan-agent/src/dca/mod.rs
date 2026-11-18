@@ -4,18 +4,21 @@
 //! - [`types`] — serde models only
 //! - [`store`] — atomic disk I/O
 //! - [`trigger`] — pure “is due?” math
+//! - [`defer`] — refused slice → deferred (window kept) or failed (counted)
 //! - [`engine`] — quote → [`crate::sentient::SentientTrader`] → record
 //!
 //! Phase 2 indicator triggers plug in via [`types::DcaTrigger`] without rewriting
 //! the engine. Do not put TUI widgets or MCP JSON shaping here.
 
 pub mod build;
+pub mod defer;
 pub mod engine;
 pub mod store;
 pub mod trigger;
 pub mod types;
 
 pub use build::{build_plan, build_proposal};
+pub use defer::{apply_refusal, classify_agent_error, SliceRefusal};
 pub use engine::{
     fire_plan, next_due_plan_id, now_unix, poll_due_id, resolve_plan_pair_and_corridor,
     DcaFireResult,

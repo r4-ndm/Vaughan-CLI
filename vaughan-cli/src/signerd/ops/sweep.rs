@@ -148,15 +148,11 @@ impl Signer {
             .sweep_stealth(chain_id, stealth_address)
             .await
         {
-            Ok(tx_hash) => {
-                let _ = self
-                    .inner
-                    .breaker
-                    .lock()
-                    .unwrap()
-                    .record_success(U256::ZERO);
-                SignerResponse::sign_ok(tx_hash)
-            }
+            // Stays OUT of the metered path: the fee is paid from the swept note's own
+            // balance (see `core::stealth`), not the active wallet's gas budget. Deliberately
+            // calls neither `record_success` nor `record_success_no_gas` — an agent must not
+            // be able to clear a building failure streak with unmetered sweeps.
+            Ok(tx_hash) => SignerResponse::sign_ok(tx_hash),
             Err(err) => {
                 self.inner.breaker.lock().unwrap().record_failure(&err);
                 let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);

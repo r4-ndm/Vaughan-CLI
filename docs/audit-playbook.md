@@ -144,6 +144,27 @@ Documentation is part of the product, and it drifts silently:
 - **Anvil version skew.** CI pins Foundry v1.2.1; newer anvil replies to
   `eth_sendTransaction` before mining and makes send-then-read tests flaky.
 - **`test-vectors/railgun/node_modules`** exists locally and is deliberately untracked.
+- **History secrets hits are pre-Rust Go fixtures, not leaked keys.** `--history` walks
+  every reachable commit, which reaches the Go-era `security_demo.sh` /
+  `security_complete_demo.sh` deleted in `b3dca8c7`. Those files contain secret-*shaped*
+  placeholders — including a 64-digit `privateKey` that is the INPUT to a log-sanitizer
+  demo proving key material gets masked. All are allowlisted by full value in
+  `audit.sh` (`api_allow` / `hex_allow`), never by wildcard, so a real key in the same
+  file still fails. Nothing here was ever live and nothing needs rotating. Re-derive the
+  complete set before widening the allowlist — if this prints anything not already
+  listed in `api_allow`, treat it as a finding:
+
+  ```bash
+  mapfile -t revs < <(git rev-list --all)
+  git grep -nIE 'sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+      "${revs[@]}" -- '*.rs' '*.toml' '*.json' '*.md' '*.sh' '*.yml' '*.yaml' '*.txt' \
+      '*.mjs' '*.py' '*.service' '.env*' ':!test-vectors/**' \
+    | grep -oE 'sk-[A-Za-z0-9]+|AIza[0-9A-Za-z_-]+' | sort -u
+  ```
+
+  Confirm the gate still bites after any allowlist change: add a tracked file holding a
+  realistic `sk-…` and a `private_key = "<64 hex>"`, run `scripts/audit.sh`, and check it
+  FAILS before deleting the file.
 
 ---
 

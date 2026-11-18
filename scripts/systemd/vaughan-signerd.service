@@ -2,6 +2,12 @@
 Description=Vaughan Isolated Signer Daemon (vaughan signerd)
 Documentation=https://github.com/r4-ndm/Vaughan-CLI
 After=network.target
+# A daemon panic or OOM exits the (panic = "abort") process and Restart=on-failure brings it
+# back in RestartSec — with the in-memory circuit breaker un-tripped unless signerd-tripped.json
+# survived the restart (see Signer::new / run_signerd). These two bound a crash LOOP so it stops
+# instead of spinning: at most 5 restarts in any 60s window, then systemd leaves the unit failed.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -39,6 +45,12 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 UMask=0077
 ReadWritePaths=/var/lib/vaughan
+
+# Durable kill switch: `{"op":"trip"}` (and every automatic trip) writes
+# /var/lib/vaughan/sentient/signerd-tripped.json before returning ok, and `signerd` loads it
+# BEFORE binding the socket — so a crash/OOM/restart comes back tripped, not clean. There is
+# no untrip op over the socket. To clear a trip: root removes that file, then restarts the
+# unit (`systemctl restart vaughan-signerd`). See docs/sentient-ops.md.
 
 [Install]
 WantedBy=multi-user.target

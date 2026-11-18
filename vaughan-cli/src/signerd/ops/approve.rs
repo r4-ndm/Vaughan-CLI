@@ -101,21 +101,6 @@ impl Signer {
         let tx =
             intents::build_approve_tx(chain_id, self.inner.active_address, token, spender, amount);
 
-        match self.inner.broadcaster.broadcast(tx).await {
-            Ok(tx_hash) => {
-                let _ = self
-                    .inner
-                    .breaker
-                    .lock()
-                    .unwrap()
-                    .record_success(U256::ZERO);
-                SignerResponse::sign_ok(tx_hash)
-            }
-            Err(err) => {
-                self.inner.breaker.lock().unwrap().record_failure(&err);
-                let _ = vaughan_agent::sentient::release_legs(&self.inner.store, &key);
-                SignerResponse::error("broadcast_failed", err)
-            }
-        }
+        self.finish_metered(tx, &key).await
     }
 }

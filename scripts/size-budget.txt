@@ -1,13 +1,13 @@
 # Size-budget baseline (see scripts/size_budget.py). Existing debt only:
 # numbers may go DOWN, never up. A new entry here needs a reason in the PR.
 # file = production lines > 800; fn = length >= 150.
-file 1635 vaughan-cli/src/main.rs
-file 1367 vaughan-core/src/chains/evm/adapter.rs
+file 1266 vaughan-cli/src/main.rs
+file 1349 vaughan-core/src/chains/evm/adapter/mod.rs
 file 887 vaughan-core/src/core/dex_catalog.rs
 file 1896 vaughan-core/src/core/dex_lp.rs
 file 875 vaughan-core/src/core/persistence.rs
 file 984 vaughan-core/src/core/proposal.rs
-file 2296 vaughan-core/src/core/wallet.rs
+file 2287 vaughan-core/src/core/wallet/mod.rs
 file 925 vaughan-core/src/security/hardware/trezor/usb.rs
 file 1260 vaughan-hl/src/indicators/mod.rs
 file 950 vaughan-hl/src/live.rs
@@ -18,7 +18,7 @@ file 5012 vaughan-hl/src/tui.rs
 file 884 vaughan-hl/src/wire.rs
 file 1134 vaughan-mcp/src/browser_bridge.rs
 file 1165 vaughan-mcp/src/dispatch.rs
-file 5453 vaughan-tui/src/app.rs
+file 5113 vaughan-tui/src/app.rs
 file 1489 vaughan-tui/src/brand.rs
 file 1827 vaughan-tui/src/provider.rs
 file 1091 vaughan-tui/src/views/ag.rs
@@ -36,9 +36,8 @@ file 1572 vaughan-tui/src/views/settings.rs
 fn 183 vaughan-agent/src/sentient/spend_ledger.rs::reserve_at#1
 fn 223 vaughan-agent/src/sentient/trader.rs::execute_swap_inner#1
 fn 612 vaughan-cli/src/main.rs::run_cli#1
-fn 151 vaughan-cli/src/signerd/ops/dca.rs::handle_dca_slice#1
-fn 188 vaughan-cli/src/signerd/ops/swap.rs::handle_swap#1
-fn 159 vaughan-core/src/chains/evm/adapter.rs::get_assets#1
+fn 173 vaughan-cli/src/signerd/ops/swap.rs::handle_swap#1
+fn 159 vaughan-core/src/chains/evm/adapter/mod.rs::get_assets#1
 fn 150 vaughan-core/src/core/humanizer/erc20.rs::try_humanize#1
 fn 246 vaughan-core/src/core/proposal_review.rs::review_mcp_proposal_with#1
 fn 150 vaughan-core/src/core/proposal_verify.rs::lp_deploy_step_verify_rows_with_job#1
@@ -64,13 +63,13 @@ fn 192 vaughan-hl/src/tui.rs::open_dapp_url_exact#1
 fn 159 vaughan-mcp/src/browser_bridge.rs::browser_open_agg#1
 fn 211 vaughan-mcp/src/browser_bridge.rs::browser_tool_definitions#1
 fn 280 vaughan-mcp/src/dispatch.rs::map_sentient_tool_to_intent#1
-fn 196 vaughan-tui/src/app.rs::execute_dca_slice_job#1
+fn 183 vaughan-tui/src/app.rs::execute_dca_slice_job#1
 fn 208 vaughan-tui/src/app.rs::handle_approval_key#1
 fn 276 vaughan-tui/src/app.rs::handle_key#2
 fn 322 vaughan-tui/src/app.rs::poll_jobs#1
 fn 295 vaughan-tui/src/app.rs::poll_mcp#1
 fn 188 vaughan-tui/src/app.rs::poll_provider#1
-fn 1129 vaughan-tui/src/app.rs::spawn_job#1
+fn 802 vaughan-tui/src/app.rs::spawn_job#1
 fn 207 vaughan-tui/src/provider.rs::describe_approval_with_fee#1
 fn 279 vaughan-tui/src/provider.rs::execute_approval_with_fee#1
 fn 168 vaughan-tui/src/views/browser.rs::render#1

@@ -1,9 +1,10 @@
 //! Non-panicking async-to-sync bridge for driving futures from the TUI loop.
 //!
 //! Callers: synchronous TUI controllers and views (`views::policy_approval`,
-//! `views::settings`) that need to run a short future on the shared Tokio
-//! runtime handle regardless of whether the caller is outside Tokio, on a
-//! multi-threaded worker, or inside a current-thread test runtime.
+//! `views::settings`) and the Ctrl+K [`crate::killswitch`] worker thread — all
+//! need to run a short future on the shared Tokio runtime handle regardless of
+//! whether the caller is outside Tokio, on a multi-threaded worker, or inside a
+//! current-thread test runtime.
 //!
 //! Must NOT contain RPC client logic, signer/wallet domain types, or UI code.
 

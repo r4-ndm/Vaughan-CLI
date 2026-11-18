@@ -404,6 +404,8 @@ pub struct App {
     /// Session-scoped circuit breaker for sentient auto-exec (created lazily,
     /// dropped on lock so tripwires reset with the session).
     sentient_breaker: Option<vaughan_agent::CircuitBreaker>,
+    /// Ctrl+K: in-flight daemon trip awaiting its honest verdict flash.
+    killswitch: crate::killswitch::KillSwitch,
     /// True while a DCA slice job is in flight (at most one).
     dca_fire_inflight: bool,
     /// Live provider-bridge secret slots shared with the WS server; the token
@@ -584,6 +586,7 @@ impl App {
             bridge_status,
             connected_sites,
             sentient_breaker: None,
+            killswitch: crate::killswitch::KillSwitch::default(),
             dca_fire_inflight: false,
             provider_slots,
             provider_session_unlocked: false,
@@ -645,25 +648,25 @@ impl App {
         });
     }
 
-    /// Ctrl+K kill switch: trip the session breaker so sentient auto-exec
-    /// halts for the rest of the session. No-op on non-sentient profiles and
-    /// while locked (auto-exec cannot run locked anyway).
+    /// Ctrl+K kill switch: halt the session breaker AND the signer daemon that
+    /// actually holds the keys — see [`crate::killswitch`] for the gate, the
+    /// background trip, and the honest flash wording.
     fn trip_sentient_breaker(&mut self) {
-        if !self.wallet().is_unlocked()
-            || !crate::sentient_mcp::mcp_auto_exec_enabled(self.wallet().profile_name())
-        {
+        let applies = {
+            let w = self.wallet();
+            crate::killswitch::applies(w.is_unlocked(), w.profile_name())
+        };
+        if !applies {
             return;
         }
-        match self.sentient_breaker() {
+        let flash = match self.sentient_breaker() {
             Ok(breaker) => {
-                breaker.trip("manual kill switch (Ctrl+K)");
-                tracing::warn!(target: "vaughan_tui::mcp", "sentient circuit breaker tripped manually");
-                self.set_flash(
-                    "Sentient breaker TRIPPED — auto-exec halted until restart".to_string(),
-                );
+                let handle = self.handle.clone();
+                self.killswitch.engage(&breaker, &handle)
             }
-            Err(e) => self.set_flash(e.to_string()),
-        }
+            Err(e) => e.to_string(),
+        };
+        self.set_flash(flash);
     }
 
     pub fn wallet(&self) -> std::sync::MutexGuard<'_, WalletState> {
@@ -802,6 +805,9 @@ impl App {
                 }
             }
             self.chrome.copy_pulse_ticks = self.chrome.copy_pulse_ticks.saturating_sub(1);
+            if let Some(flash) = self.killswitch.poll() {
+                self.set_flash(flash);
+            }
             self.poll_provider();
             self.poll_mcp();
             self.poll_jobs();
@@ -977,9 +983,9 @@ impl App {
             return;
         }
 
-        // Sentient kill switch: Ctrl+K trips the session breaker from any
-        // screen (including the approval prompt), halting auto-exec for the
-        // rest of the session.
+        // Sentient kill switch: Ctrl+K trips the session breaker from any screen
+        // (including the approval prompt) and asks the signer daemon to halt
+        // durably — the flash says which of the two actually stopped.
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
         {
@@ -1207,11 +1213,11 @@ impl App {
     fn switch_profile(&mut self, profile: &str, mode: OperatingMode) {
         let path = match StateManager::profile_path(profile) {
             Ok(p) => p,
-            Err(e) => return self.profile_switch_error(e.user_message()),
+            Err(e) => return self.surface_message(e.user_message()),
         };
         let wallet = match WalletState::load_with_session(path, OperatingMode::HumanOnly, profile) {
             Ok(w) => w,
-            Err(e) => return self.profile_switch_error(e.user_message()),
+            Err(e) => return self.surface_message(e.user_message()),
         };
         let initialized = wallet.is_initialized();
         let old_dir = profile_dir(self.wallet().path());
@@ -1240,7 +1246,7 @@ impl App {
     }
 
     /// Chrome toast under the address (home + every unlocked screen).
-    fn set_flash(&mut self, msg: impl Into<String>) {
+    pub(crate) fn set_flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash = Some(msg.into());
         self.chrome.flash_title = None;
         self.chrome.flash_table = None;
@@ -1281,11 +1287,11 @@ impl App {
         }
     }
 
-    /// Surface a profile-switch failure where the user can see it: the chrome
-    /// flash only renders on unlocked screens, so on the unlock screen the
-    /// error goes to the view's status line instead of vanishing — otherwise
-    /// the password prompt would silently keep targeting the previous wallet.
-    fn profile_switch_error(&mut self, msg: String) {
+    /// Surface a message where the user can actually see it: the chrome flash
+    /// only renders on unlocked screens, so on the unlock screen it goes to the
+    /// view's status line instead of vanishing — used for profile-switch errors
+    /// and for the launcher's update notice, both of which arrive pre-unlock.
+    pub(crate) fn surface_message(&mut self, msg: String) {
         if let View::Unlock(v) = &mut self.view {
             v.set_status(msg);
         } else {
@@ -3459,12 +3465,6 @@ impl App {
         self.set_flash("Unlock tools: confirm ≥13 WZRD to the dead address (one tx, no drip)");
     }
 
-    fn lp_job_rpc_urls(wallet: &WalletState, job_primary: &str) -> Vec<String> {
-        wallet
-            .active_rpc_url_list()
-            .unwrap_or_else(|_| vaughan_core::core::merge_rpc_urls(job_primary, &[]))
-    }
-
     fn approval_may_need_trezor(kind: &ApprovalKind) -> bool {
         matches!(
             kind,
@@ -4202,32 +4202,13 @@ impl App {
                     owner,
                     list_gen,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{list_v3_lp_position_views, with_lp_rpc_urls};
-                    let owner_for_result = owner.clone();
-                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
-                        WalletError::InvalidTransaction("invalid owner address".into())
-                    });
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
-                    UiJobResult::LpPositions {
-                        list_gen,
-                        owner: owner_for_result,
-                        result: match parsed_owner {
-                            Err(e) => Err(e),
-                            Ok(addr) => {
-                                handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
-                                    list_v3_lp_position_views(
-                                        &url, venue, chain_id, addr, None, None,
-                                    )
-                                    .await
-                                }))
-                            }
-                        },
-                    }
+                    crate::jobs::lp::list_v3_positions(
+                        &handle, &rpc_urls, venue, chain_id, owner, list_gen,
+                    )
                 }
                 UiJob::LpListV2Positions {
                     venue: _,
@@ -4236,333 +4217,54 @@ impl App {
                     owner,
                     list_gen,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{list_all_v2_lp_positions, with_lp_rpc_urls};
-                    let owner_for_result = owner.clone();
-                    let parsed_owner = Address::from_str(&owner).map_err(|_| {
-                        WalletError::InvalidTransaction("invalid owner address".into())
-                    });
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
-                    // Listing always walks every V2 factory on the chain so ETHW
-                    // LPs aren't hidden behind the current [ ] DEX focus.
-                    UiJobResult::LpV2Positions {
-                        list_gen,
-                        owner: owner_for_result,
-                        result: match parsed_owner {
-                            Err(e) => Err(e),
-                            Ok(addr) => {
-                                handle.block_on(with_lp_rpc_urls(&rpc_urls, |url| async move {
-                                    list_all_v2_lp_positions(&url, chain_id, addr).await
-                                }))
-                            }
-                        },
-                    }
+                    crate::jobs::lp::list_v2_positions(
+                        &handle, &rpc_urls, chain_id, owner, list_gen,
+                    )
                 }
                 UiJob::LpV3PoolDeployStep {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
+                    params,
                     deploy_wait,
                     after_step_label,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_prepare_deploy_step, v3_lp_run_deploy_wait, with_lp_rpc_urls,
-                        V3LpDeployContext, V3LpDeployParams,
-                    };
-                    let parse_addr = |s: &str, label: &str| {
-                        Address::from_str(s.trim()).map_err(|_| {
-                            WalletError::InvalidTransaction(format!("invalid {label}"))
-                        })
-                    };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpV3PoolDeployStep(handle.block_on(async {
-                        use tokio::time::{timeout, Duration};
-                        use vaughan_core::core::V3LpDeployWait;
-                        const DEPLOY_PREP_TIMEOUT: Duration = Duration::from_secs(30);
-                        const DEPLOY_ONCHAIN_WAIT: Duration = Duration::from_secs(60);
-                        let job_timeout = match deploy_wait {
-                            V3LpDeployWait::None => DEPLOY_PREP_TIMEOUT,
-                            _ => DEPLOY_ONCHAIN_WAIT + DEPLOY_PREP_TIMEOUT,
-                        };
-                        let t0 = parse_addr(&token0, "token0")?;
-                        let t1 = parse_addr(&token1, "token1")?;
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: t0,
-                            token1: t1,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        with_lp_rpc_urls(&rpc_urls, |url| {
-                            let mut p = params.clone();
-                            p.rpc_url = url;
-                            let ctx = after_step_label.clone().map(|label| V3LpDeployContext {
-                                last_step_label: Some(label),
-                            });
-                            async move {
-                                timeout(job_timeout, async {
-                                    v3_lp_run_deploy_wait(deploy_wait, &p, ctx.as_ref()).await?;
-                                    v3_lp_prepare_deploy_step(&p).await
-                                })
-                                .await
-                                .map_err(|_| {
-                                    WalletError::NetworkError(format!(
-                                        "LP deploy step timed out ({}s)",
-                                        job_timeout.as_secs()
-                                    ))
-                                })?
-                            }
-                        })
-                        .await
-                    }))
+                    crate::jobs::lp::v3_pool_deploy_step(
+                        &handle,
+                        &rpc_urls,
+                        params,
+                        deploy_wait,
+                        after_step_label,
+                    )
                 }
-                UiJob::LpEnableCheck {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
-                } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_token_enable_status, with_lp_rpc_urls, V3LpDeployParams,
-                    };
+                UiJob::LpEnableCheck { params } => {
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpEnableCheck((|| {
-                        let parse_addr = |s: &str, label: &str| {
-                            Address::from_str(s.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction(format!("invalid {label}"))
-                            })
-                        };
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: parse_addr(&token0, "token0")?,
-                            token1: parse_addr(&token1, "token1")?,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        handle.block_on(async {
-                            use tokio::time::{timeout, Duration};
-                            const ENABLE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
-                            with_lp_rpc_urls(&rpc_urls, |url| {
-                                let mut p = params.clone();
-                                p.rpc_url = url.to_string();
-                                async move {
-                                    timeout(ENABLE_CHECK_TIMEOUT, v3_lp_token_enable_status(&p))
-                                        .await
-                                        .map_err(|_| {
-                                            WalletError::NetworkError(
-                                                "enable check timed out (30s)".into(),
-                                            )
-                                        })?
-                                }
-                            })
-                            .await
-                        })
-                    })())
+                    crate::jobs::lp::enable_check(&handle, &rpc_urls, params)
                 }
-                UiJob::LpEnablePrepare {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
-                    symbol,
-                } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_build_next_enable_tx, with_lp_rpc_urls, V3LpDeployParams,
-                    };
+                UiJob::LpEnablePrepare { params, symbol } => {
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpEnablePrepare(handle.block_on(async {
-                        let parse_addr = |s: &str, label: &str| {
-                            Address::from_str(s.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction(format!("invalid {label}"))
-                            })
-                        };
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: parse_addr(&token0, "token0")?,
-                            token1: parse_addr(&token1, "token1")?,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        use tokio::time::{timeout, Duration};
-                        const ENABLE_PREP_TIMEOUT: Duration = Duration::from_secs(30);
-                        let out = with_lp_rpc_urls(&rpc_urls, |url| {
-                            let mut p = params.clone();
-                            p.rpc_url = url.to_string();
-                            async move {
-                                timeout(ENABLE_PREP_TIMEOUT, v3_lp_build_next_enable_tx(&p))
-                                    .await
-                                    .map_err(|_| {
-                                        WalletError::NetworkError(
-                                            "enable prepare timed out (30s)".into(),
-                                        )
-                                    })?
-                            }
-                        })
-                        .await?;
-                        match out {
-                            Some((tx, label)) => Ok((tx, label, symbol)),
-                            None => Err(WalletError::InvalidTransaction(
-                                "pool not ready for Enable yet — finish pool setup first".into(),
-                            )),
-                        }
-                    }))
+                    crate::jobs::lp::enable_prepare(&handle, &rpc_urls, params, symbol)
                 }
                 UiJob::LpEnableWait {
-                    venue,
-                    chain_id,
-                    rpc_url,
-                    from,
-                    token0,
-                    token1,
-                    fee,
-                    dec0,
-                    dec1,
-                    pool_initial_price,
-                    pool_min_price,
-                    pool_max_price,
-                    amount0,
-                    amount1,
+                    params,
                     after_step_label,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        v3_lp_run_deploy_wait, with_lp_rpc_urls, V3LpDeployContext,
-                        V3LpDeployParams, V3LpDeployWait,
-                    };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &params.rpc_url)
                     };
-                    UiJobResult::LpEnableWait(handle.block_on(async {
-                        let parse_addr = |s: &str, label: &str| {
-                            Address::from_str(s.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction(format!("invalid {label}"))
-                            })
-                        };
-                        let params = V3LpDeployParams {
-                            from,
-                            venue,
-                            chain_id,
-                            rpc_url: String::new(),
-                            token0: parse_addr(&token0, "token0")?,
-                            token1: parse_addr(&token1, "token1")?,
-                            fee,
-                            dec0,
-                            dec1,
-                            pool_initial_price,
-                            pool_min_price,
-                            pool_max_price,
-                            amount0,
-                            amount1,
-                            deposit_on_token0: true,
-                        };
-                        use tokio::time::{timeout, Duration};
-                        const ENABLE_WAIT: Duration = Duration::from_secs(75);
-                        let ctx = V3LpDeployContext {
-                            last_step_label: Some(after_step_label),
-                        };
-                        with_lp_rpc_urls(&rpc_urls, |url| {
-                            let mut p = params.clone();
-                            p.rpc_url = url;
-                            let ctx = ctx.clone();
-                            async move {
-                                timeout(
-                                    ENABLE_WAIT,
-                                    v3_lp_run_deploy_wait(
-                                        V3LpDeployWait::AfterApprove,
-                                        &p,
-                                        Some(&ctx),
-                                    ),
-                                )
-                                .await
-                                .map_err(|_| {
-                                    WalletError::NetworkError("Enable wait timed out (75s)".into())
-                                })?
-                            }
-                        })
-                        .await
-                    }))
+                    crate::jobs::lp::enable_wait(&handle, &rpc_urls, params, after_step_label)
                 }
                 UiJob::LpV3PoolQuote {
                     venue,
@@ -4574,42 +4276,13 @@ impl App {
                     dec0,
                     dec1,
                 } => {
-                    use alloy::primitives::Address;
-                    use std::str::FromStr;
-                    use vaughan_core::core::{fetch_v3_lp_pool_quote, with_lp_rpc_urls};
-                    let parse_addr = |s: &str, label: &str| {
-                        Address::from_str(s.trim()).map_err(|_| {
-                            WalletError::InvalidTransaction(format!("invalid {label}"))
-                        })
-                    };
                     let rpc_urls = {
                         let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        Self::lp_job_rpc_urls(&w, &rpc_url)
+                        crate::jobs::lp::rpc_urls(&w, &rpc_url)
                     };
-                    UiJobResult::LpV3PoolQuote(handle.block_on(async {
-                        use tokio::time::{timeout, Duration};
-                        const POOL_QUOTE_TIMEOUT: Duration = Duration::from_secs(45);
-                        let t0 = parse_addr(&token0, "token0")?;
-                        let t1 = parse_addr(&token1, "token1")?;
-                        if t0 >= t1 {
-                            return Err(WalletError::InvalidTransaction(
-                                "internal: token0 must be sorted".into(),
-                            ));
-                        }
-                        with_lp_rpc_urls(&rpc_urls, |url| async move {
-                            timeout(
-                                POOL_QUOTE_TIMEOUT,
-                                fetch_v3_lp_pool_quote(
-                                    &url, venue, chain_id, t0, t1, dec0, dec1, fee,
-                                ),
-                            )
-                            .await
-                            .map_err(|_| {
-                                WalletError::NetworkError("pool lookup timed out (45s)".into())
-                            })?
-                        })
-                        .await
-                    }))
+                    crate::jobs::lp::v3_pool_quote(
+                        &handle, &rpc_urls, venue, chain_id, token0, token1, fee, dec0, dec1,
+                    )
                 }
                 UiJob::DeployToken {
                     name,
@@ -5389,24 +5062,11 @@ pub fn execute_dca_slice_job(
                 })
             }
             Err(refusal) => {
+                // A gas refusal moved no money: it must not count as a failure or burn
+                // this buy window (see crate::dca_defer).
+                let class = crate::dca_defer::classify(&refusal);
                 let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
-                    p.consecutive_failures = p.consecutive_failures.saturating_add(1);
-                    if p.consecutive_failures >= vaughan_agent::dca::MAX_CONSECUTIVE_FAILURES {
-                        p.status = vaughan_agent::dca::DcaStatus::Paused;
-                    }
-                    vaughan_agent::dca::advance_schedule(p, now);
-                    p.slice_log.push(vaughan_agent::dca::SliceLog {
-                        at: now,
-                        ok: false,
-                        tx_hash: String::new(),
-                        dry_run: plan.dry_run,
-                        error: refusal.clone(),
-                        amount_in_wei: amount_in.to_string(),
-                    });
-                    if p.slice_log.len() > 32 {
-                        let drop_n = p.slice_log.len() - 32;
-                        p.slice_log.drain(0..drop_n);
-                    }
+                    vaughan_agent::dca::apply_refusal(p, now, class, &refusal, &amount_in);
                     Ok(())
                 });
                 Err(WalletError::Other(refusal))

@@ -15,6 +15,8 @@
 //! The mnemonic only ever lives inside [`AccountManager`], which zeroizes it on
 //! drop; this type deliberately implements no `Debug`/`Display`.
 
+mod fee;
+
 use std::path::{Path, PathBuf};
 
 use alloy::signers::local::PrivateKeySigner;
@@ -2176,18 +2178,7 @@ impl WalletState {
             tx.from = accounts.active_address().to_string();
         }
         let adapter = self.adapter_for(net).await?;
-        let missing_fees = tx.max_fee_per_gas.is_none() && tx.gas_price.is_none();
-        if tx.gas_limit.is_none() || missing_fees {
-            let mut chain_tx = ChainTransaction::Evm(tx);
-            let fee = adapter.estimate_fee(&chain_tx).await?;
-            TransactionService::new().apply_fee(&mut chain_tx, &fee)?;
-            let ChainTransaction::Evm(prepared) = chain_tx else {
-                return Err(WalletError::InvalidTransaction(
-                    "expected an EVM transaction".to_string(),
-                ));
-            };
-            tx = prepared;
-        }
+        tx = self.fill_fee(tx).await?;
         if tx.nonce.is_none() {
             tx.nonce = Some(adapter.get_pending_nonce(&tx.from).await?);
         }

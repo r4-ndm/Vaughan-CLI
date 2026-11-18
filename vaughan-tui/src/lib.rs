@@ -10,10 +10,12 @@ pub mod blocking;
 pub mod brand;
 pub mod clipboard;
 pub mod dapp_browser;
+pub mod dca_defer;
 pub mod freedom;
 pub mod input;
 pub mod intent;
 pub mod jobs;
+pub mod killswitch;
 pub mod mcp;
 pub mod provider;
 pub mod sentient_mcp;
@@ -29,7 +31,10 @@ use app::App;
 /// when no CLI subcommand is given. `profile` selects the vault profile
 /// (`default` = adviser; `sentient` = agent auto-exec) and pre-selects that
 /// profile on the unlock-screen picker.
-pub fn run_interactive(profile: &str) -> io::Result<()> {
+/// `startup_notice` is shown as the opening chrome toast. The caller decides
+/// whether there is anything to say — the TUI never looks for one itself, which
+/// is what keeps the update check out of the launch path when it is disabled.
+pub fn run_interactive(profile: &str, startup_notice: Option<String>) -> io::Result<()> {
     vaughan_core::logging::init_tui_logging();
     if let Err(e) = vaughan_core::core::reject_deferred_sentient_profile(profile) {
         return Err(io::Error::other(e.user_message()));
@@ -38,7 +43,12 @@ pub fn run_interactive(profile: &str) -> io::Result<()> {
 
     let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let mut terminal = ratatui::init();
-    let result = run_terminal(&mut terminal, runtime.handle().clone(), profile);
+    let result = run_terminal(
+        &mut terminal,
+        runtime.handle().clone(),
+        profile,
+        startup_notice,
+    );
     ratatui::restore();
     result
 }
@@ -47,7 +57,14 @@ fn run_terminal(
     terminal: &mut ratatui::DefaultTerminal,
     handle: tokio::runtime::Handle,
     profile: &str,
+    startup_notice: Option<String>,
 ) -> io::Result<()> {
     let mut app = App::new(handle, profile).map_err(|e| io::Error::other(e.user_message()))?;
+    // Routed, not flashed: an initialized wallet opens on the unlock screen,
+    // which does not render the chrome flash, so a plain `set_flash` here would
+    // expire unseen while the user types their password.
+    if let Some(notice) = startup_notice {
+        app.surface_message(notice);
+    }
     app.run(terminal)
 }

@@ -8,6 +8,21 @@ use std::sync::{Arc, RwLock};
 use crate::error::AgentError;
 use crate::sentient::policy::EnforcementMode;
 
+/// Prefix of every pre-flight "the breaker is tripped, nothing was signed" refusal.
+///
+/// A const because callers must be able to tell this refusal (no money moved, see
+/// [`crate::dca::defer`]) from the retrospective ceiling trip raised by
+/// [`CircuitBreaker::record_success`] *after* a broadcast.
+pub const TRADING_HALTED_PREFIX: &str = "Trading halted: ";
+
+/// Prefix of the [`CircuitBreaker::reserve_gas`] refusal, which names the policy key.
+pub const GAS_CEILING_REFUSAL_PREFIX: &str = "max_session_gas_wei ceiling";
+
+/// Prefix of the [`CircuitBreaker::check_gas_budget`] refusal (the in-process pre-flight
+/// check). Separate const because the two ceilings word their refusals differently and
+/// `crate::dca::defer` must defer BOTH — neither one has signed anything.
+pub const GAS_BUDGET_REFUSAL_PREFIX: &str = "Gas ceiling would be exceeded";
+
 /// Configuration defining strict risk boundaries for autonomous trading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitBreakerConfig {
@@ -78,11 +93,25 @@ impl CircuitBreaker {
         self.trip_reason.read().unwrap().clone()
     }
 
-    /// Trip the breaker manually (e.g. via emergency stop keypress).
+    /// Trip the breaker (emergency stop, gas ceiling, consecutive errors, or the signer
+    /// daemon's `trip` op). First reason wins and the check-and-set is atomic under one
+    /// write lock: an automatic trip (e.g. the gas ceiling) racing a manual kill switch must
+    /// not let whichever call lands second clobber the reason that actually halted trading.
     pub fn trip(&self, reason: impl Into<String>) {
-        let r = reason.into();
-        *self.trip_reason.write().unwrap() = Some(r);
+        let mut guard = self.trip_reason.write().unwrap();
+        if guard.is_none() {
+            *guard = Some(reason.into());
+        }
         self.tripped.store(true, Ordering::SeqCst);
+    }
+
+    /// Read the tripped flag and reason together under one lock, so a caller never observes
+    /// `tripped == true` paired with a not-yet-visible reason (or vice versa) from a trip
+    /// landing concurrently. Prefer this over separate [`Self::is_tripped`] /
+    /// [`Self::trip_reason`] calls when reporting *why* trading halted.
+    pub fn trip_state(&self) -> (bool, Option<String>) {
+        let guard = self.trip_reason.read().unwrap();
+        (self.tripped.load(Ordering::SeqCst), guard.clone())
     }
 
     /// Reset the circuit breaker state.
@@ -110,7 +139,7 @@ impl CircuitBreaker {
         if self.is_tripped() {
             let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
             return Err(AgentError::CircuitBreakerTripped(format!(
-                "Trading halted: {reason}"
+                "{TRADING_HALTED_PREFIX}{reason}"
             )));
         }
 
@@ -170,7 +199,7 @@ impl CircuitBreaker {
         if self.is_tripped() {
             let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
             return Err(AgentError::CircuitBreakerTripped(format!(
-                "Trading halted: {reason}"
+                "{TRADING_HALTED_PREFIX}{reason}"
             )));
         }
         let cfg = self.config.read().unwrap().clone();
@@ -181,7 +210,7 @@ impl CircuitBreaker {
         let projected = spent.saturating_add(gas_wei);
         if projected > cfg.max_session_gas_wei {
             let msg = format!(
-                "Gas ceiling would be exceeded: spent {spent} + this tx {gas_wei} wei \
+                "{GAS_BUDGET_REFUSAL_PREFIX}: spent {spent} + this tx {gas_wei} wei \
                  > max {} wei — session stays open for cheaper transactions",
                 cfg.max_session_gas_wei
             );
@@ -192,6 +221,77 @@ impl CircuitBreaker {
             return Err(AgentError::InvalidToolCall(msg));
         }
         Ok(())
+    }
+
+    /// Reserve `gas` (a quote's worst-case `max_fee_wei`) against the session ceiling
+    /// BEFORE broadcast, atomically: one write lock on `cumulative_gas_wei` covers the
+    /// check and the add, so N concurrent reservations whose sum would cross the ceiling
+    /// cannot all observe "under budget" (check-then-add under separate locks could).
+    /// Pairs with [`Self::release_gas`] when the tx is refused or definitively fails.
+    /// Boundary: `spent + gas == max_session_gas_wei` is admitted (`>` trips, not `>=`).
+    pub fn reserve_gas(&self, gas: U256) -> Result<(), AgentError> {
+        if self.is_tripped() {
+            let reason = self.trip_reason().unwrap_or_else(|| "Unknown".to_string());
+            return Err(AgentError::CircuitBreakerTripped(format!(
+                "{TRADING_HALTED_PREFIX}{reason}"
+            )));
+        }
+        let cfg = self.config.read().unwrap().clone();
+        if cfg.enforcement == EnforcementMode::Disabled {
+            return Ok(());
+        }
+        let mut total_gas = self.cumulative_gas_wei.write().unwrap();
+        let spent = *total_gas;
+        let remaining = cfg.max_session_gas_wei.saturating_sub(spent);
+        let projected = spent.saturating_add(gas);
+        if projected > cfg.max_session_gas_wei {
+            let msg = format!(
+                "{GAS_CEILING_REFUSAL_PREFIX} {} wei would be exceeded: spent {spent} wei + \
+                 this tx's quoted max fee {gas} wei (remaining {remaining} wei) — shrink the \
+                 tx or wait for a cheaper quote",
+                cfg.max_session_gas_wei
+            );
+            if cfg.enforcement == EnforcementMode::WarnOnly {
+                tracing::warn!(target: "vaughan_agent::sentient", "breaker warn-only: {msg}");
+                *total_gas = projected;
+                return Ok(());
+            }
+            return Err(AgentError::InvalidToolCall(msg));
+        }
+        *total_gas = projected;
+        Ok(())
+    }
+
+    /// Undo a [`Self::reserve_gas`] booking (refusal or a definitively-failed broadcast
+    /// moved no money, so its worst-case fee must not count against the ceiling). Saturating:
+    /// floors at zero rather than underflowing if called more than the reservation covers.
+    /// Mirrors `reserve_gas`'s `Disabled` early return: a mode that books nothing must
+    /// release nothing, or a release can erase a booking another in-flight reservation
+    /// still needs (across a mid-session enforcement change).
+    pub fn release_gas(&self, gas: U256) {
+        if self.config.read().unwrap().enforcement == EnforcementMode::Disabled {
+            return;
+        }
+        let mut total_gas = self.cumulative_gas_wei.write().unwrap();
+        *total_gas = total_gas.saturating_sub(gas);
+    }
+
+    /// Reset the consecutive-error streak only, for a broadcast whose gas was already
+    /// booked by [`Self::reserve_gas`] (the metered signerd path keeps the reservation
+    /// regardless of outcome — see `broadcast_metered` — so it must not add gas again here).
+    /// The TUI's retrospective, non-metered trader keeps using [`Self::record_success`].
+    pub fn record_success_no_gas(&self) {
+        self.consecutive_errors.store(0, Ordering::SeqCst);
+    }
+
+    /// Cumulative gas spend booked this session (status reporting / tests).
+    pub fn cumulative_gas_wei(&self) -> U256 {
+        *self.cumulative_gas_wei.read().unwrap()
+    }
+
+    /// Current consecutive-error streak (status reporting / tests).
+    pub fn consecutive_errors(&self) -> u32 {
+        self.consecutive_errors.load(Ordering::SeqCst)
     }
 
     /// Record a successful transaction and gas expenditure.
