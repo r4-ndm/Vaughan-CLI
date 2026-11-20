@@ -1,7 +1,7 @@
 //! Body for the [`crate::jobs::UiJob::McpQueuedApprove`] job, lifted out of
 //! `app.rs`'s `spawn_job`.
 //!
-//! Lock discipline: this job holds the wallet lock across the broadcast await
+//! Lock discipline: [`mcp_queued_approve`] holds the wallet lock across the broadcast await
 //! (`#[allow(clippy::await_holding_lock)]`, same as before the move) because
 //! `execute_approval_with_fee` needs `&mut WalletState` for the whole
 //! MCP-approved sign+broadcast. It is the only job that takes the lock *inside*
