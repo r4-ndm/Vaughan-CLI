@@ -3,7 +3,7 @@
 # broadcaster-core suites at the commit Vaughan pins, resolved with Vaughan's
 # Cargo.lock (so they exercise the exact dependency versions we ship).
 #
-# Required on every pin bump and Alloy upgrade; see docs/railgun-go-no-go.md.
+# Required on every pin bump and Alloy upgrade; see docs/decisions/railgun-go-no-go.md.
 # Usage: ./scripts/railgun-parity.sh
 
 set -euo pipefail

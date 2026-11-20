@@ -6,7 +6,7 @@
 //! - `search` — spoof-aware rank / catalog coverage (pure)
 //! - `client` — HTTP + rate spacing
 //!
-//! Docs: `docs/dexscreener.md`. Patterns inspired by pulsechain-mcp research
+//! Docs: `docs/architecture/dexscreener.md`. Patterns inspired by pulsechain-mcp research
 //! tools; reimplemented in Rust (no TypeScript vendoring).
 
 mod chain;

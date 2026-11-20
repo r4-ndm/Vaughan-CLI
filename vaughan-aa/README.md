@@ -17,7 +17,7 @@ on-chain `AmbireAccount` contract. This crate is **MIT OR Apache-2.0**.
   ABI/EIP specs and the verified contract's behavior. `Vaughan-Dioxus` is a
   reference guide only — never a code source (see CLAUDE.md).
 
-See `docs/ambire-aa.md` for the full rationale and the differential-test plan.
+See `docs/architecture/ambire-aa.md` for the full rationale and the differential-test plan.
 
 ## What's implemented
 

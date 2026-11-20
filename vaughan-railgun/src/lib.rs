@@ -11,7 +11,7 @@
 //! Phase 2 adds `shield` (Sepolia-only ERC-20 shields) and `verify`: the
 //! approval card checks a shield pays this wallet.
 //!
-//! Plan, threat model and pin-bump procedure: `docs/railgun-go-no-go.md`.
+//! Plan, threat model and pin-bump procedure: `docs/decisions/railgun-go-no-go.md`.
 
 #[cfg(feature = "enabled")]
 pub mod balance;

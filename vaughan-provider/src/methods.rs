@@ -7,7 +7,7 @@
 //! wallet state, approval prompts, and signing; the handler never signs.
 //!
 //! Supported methods (FR-2.2 + `vaughan_signTransaction` for the Freedom
-//! Browser signer backend, see `docs/freedom-browser-integration.md` §4):
+//! Browser signer backend, see `docs/roadmap/freedom-browser-integration.md` §4):
 //!
 //! - `eth_accounts`, `eth_requestAccounts` — account list for the caller
 //! - `eth_chainId` — active chain id as `0x` hex

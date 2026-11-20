@@ -167,7 +167,7 @@ pub async fn run_signerd(
 /// Warn once at startup when the daemon's chain is a known L2 whose real cost includes an
 /// L1 data fee that `estimate_fee` does not price: on those chains the session gas ceiling
 /// UNDER-counts what is actually paid. Pricing the L1 component is out of scope — see
-/// docs/mcp-threat-model.md. The two configured L2s are Base (8453) and Arbitrum One (42161).
+/// docs/risk/mcp-threat-model.md. The two configured L2s are Base (8453) and Arbitrum One (42161).
 fn warn_if_known_l2(chain_id: u64) {
     if matches!(chain_id, 8453 | 42161) {
         eprintln!(

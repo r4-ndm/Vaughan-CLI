@@ -9,8 +9,8 @@ Vaughan’s default story is **in-terminal** Pulse DeFi: Ag / Dex / Browse /
 approvals — approve calldata, not websites. External agents use **MCP**
 (`vaughan mcp`); **VB** is the optional web side door. **Freedom Browser is
 parked** until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
-merges ([docs/freedom-browser-status.md](docs/freedom-browser-status.md)).
-See [docs/browserless-pulse.md](docs/browserless-pulse.md). Prefer that framing
+merges ([docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md)).
+See [docs/architecture/browserless-pulse.md](docs/architecture/browserless-pulse.md). Prefer that framing
 in docs and UX copy; don’t push WalletConnect or an in-wallet dApp browser as
 the main path.
 

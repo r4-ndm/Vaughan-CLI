@@ -66,4 +66,4 @@ Run get_control_plane_status and get_network. Report both JSON results.
 | Tools missing `browser_*` | Add CDP env or `vaughan config agent-browser on`; reconnect |
 | Wrong profile | Edit `"args": ["mcp", "--profile", "default"]` |
 
-Smoke checklist: [`docs/mcp-smoke.md`](../../../../docs/mcp-smoke.md).
+Smoke checklist: [`docs/ops/mcp-smoke.md`](../../../../docs/ops/mcp-smoke.md).

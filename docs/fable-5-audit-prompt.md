@@ -54,11 +54,11 @@ Rust self-custody wallet TUI (EVM-first, PulseChain-optimized). This is
 
 - `CLAUDE.md` — engineering rules, allowlisted deps, security guardrails
 - `REQUIREMENTS.md` / `TASKS.md` / `PLAN.md` — what we claim to ship
-- `docs/browserless-pulse.md` — default product path (Ag / Dex / Browse / MCP)
-- `docs/dapp-browser-strategy.md` — VB (`vaughan-dapp-browser`) optional web side door
-- `docs/freedom-browser-status.md` — Freedom Browser **parked** until upstream PR #195 merges
-- `docs/mcp.md` + `docs/mcp-threat-model.md` + `docs/ai-tool-surface.md` — MCP contract
-- `docs/Security-Table.md` — threat model by path
+- `docs/architecture/browserless-pulse.md` — default product path (Ag / Dex / Browse / MCP)
+- `docs/roadmap/dapp-browser-strategy.md` — VB (`vaughan-dapp-browser`) optional web side door
+- `docs/roadmap/freedom-browser-status.md` — Freedom Browser **parked** until upstream PR #195 merges
+- `docs/architecture/mcp.md` + `docs/risk/mcp-threat-model.md` + `docs/architecture/ai-tool-surface.md` — MCP contract
+- `docs/risk/Security-Table.md` — threat model by path
 - `SECURITY.md` — scope for vuln reports
 
 ### Product paths (must stay consistent in your review)
@@ -163,9 +163,9 @@ Verify **docs, TASKS, and code** agree. Prioritize:
 ## Out of scope (do not spend tokens here)
 
 - Style, rustfmt, clippy nits (CI handles)
-- Rewriting MCP to `rmcp` (deferred per `docs/mcp-transport.md`)
+- Rewriting MCP to `rmcp` (deferred per `docs/architecture/mcp-transport.md`)
 - Freedom Browser upstream PR #195 review (out of repo)
-- Kohaku / RAILGUN (NO-GO per `docs/kohaku-go-no-go.md`)
+- Kohaku / RAILGUN (NO-GO per `docs/decisions/kohaku-go-no-go.md`)
 - Feature requests unrelated to security or product truth
 - Bitcoin / Polkadot profile bodies (future)
 
@@ -175,7 +175,7 @@ Verify **docs, TASKS, and code** agree. Prioritize:
 
 - [ ] Zero **unmitigated P0** findings (or explicit user acceptance with documented risk)
 - [ ] Every **P1** has a TASKS.md checkbox or GitHub issue link
-- [ ] Product table (Browserless / MCP / Sentient / VB / Freedom parked) matches README + `docs/freedom-browser-status.md`
+- [ ] Product table (Browserless / MCP / Sentient / VB / Freedom parked) matches README + `docs/roadmap/freedom-browser-status.md`
 - [ ] Signing invariant verified on at least: Send, Ag swap, MCP propose, provider `eth_sendTransaction`, sentient auto-exec (if in scope)
 - [ ] Auditor ran `cargo test --workspace` (or notes why not)
 

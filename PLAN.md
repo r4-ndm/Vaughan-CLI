@@ -8,9 +8,9 @@ Vaughan-CLI is a sovereign Rust multi-chain CLI wallet TUI:
 - **wiz4rd-engine** — contract browser, dynamic call encoder/decoder, capability prober, DEX factory/pair indexer.
 - **External agents via MCP** — Cursor / Claude / Codex call `vaughan mcp`; the TUI owns keys and approvals. Embedded in-wallet LLM chat is retired.
 - **vaughan-agent** — library only: proposal engine, sensory/write tools, Sentient circuit breakers (no LLM client).
-- **ERC-5564 stealth** — spec-first in `vaughan-core` (`docs/erc-5564-stealth.md`). RAILGUN / Kohaku remain deferred (`docs/kohaku-go-no-go.md`).
+- **ERC-5564 stealth** — spec-first in `vaughan-core` (`docs/architecture/erc-5564-stealth.md`). RAILGUN / Kohaku remain deferred (`docs/decisions/kohaku-go-no-go.md`).
 - **ratatui** — terminal UI.
-- **Freedom Browser** — **parked** until upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges; Vaughan-side EIP-1193 bridge is shipped ([docs/freedom-browser-status.md](docs/freedom-browser-status.md)).
+- **Freedom Browser** — **parked** until upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges; Vaughan-side EIP-1193 bridge is shipped ([docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md)).
 
 EVM-first, PulseChain-optimized. Architecture mirrors Vaughan-Dioxus's `vaughan-core`
 (chain adapters, core services, security, persistence).
@@ -85,12 +85,12 @@ send native PLS, receive, network switching.
 ### Phase 2 — Native provider bridge (Done; Freedom **parked**)
 `vaughan-provider` local EIP-1193 server + TUI approval flow + trusted hosts.
 Freedom signer-backend [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
-is open upstream — no further Freedom work until merge ([freedom-browser-status.md](docs/freedom-browser-status.md)).
+is open upstream — no further Freedom work until merge ([freedom-browser-status.md](docs/roadmap/freedom-browser-status.md)).
 
 ### Phase 3 — Privacy + smart accounts (AA done; stealth on 943)
-Ambire AA in Rust (see `docs/ambire-aa.md`) is **done**. ERC-5564 scheme-1 crypto,
+Ambire AA in Rust (see `docs/architecture/ambire-aa.md`) is **done**. ERC-5564 scheme-1 crypto,
 TUI `st:` send/scan/sweep, and the canonical announcer on PulseChain testnet 943
-are in (`docs/erc-5564-stealth.md`). Mainnet 369 announcer is still open.
+are in (`docs/architecture/erc-5564-stealth.md`). Mainnet 369 announcer is still open.
 RAILGUN remains deferred.
 
 ### Phase 4 — Contract browser & DEX engine (`wiz4rd-engine`) (Done)
@@ -103,16 +103,16 @@ CLI batch execution (`vaughan browse <address>`). Anvil test suite verified.
 Shipped the tool/proposal/circuit-breaker foundation and (historically) an embedded
 LLM chat path. **Plan change (2026-08-23):** embedded in-wallet LLM UI/CLI was
 retired in favour of Vaughan-as-MCP-tool for external agents. Historical design:
-`docs/AI-AGENT-ARCHITECTURE.md`. Retired UX guide: `docs/agent-configuration.md`.
+`docs/architecture/AI-AGENT-ARCHITECTURE.md`. Retired UX guide: `docs/agents/agent-configuration.md`.
 
 ### Phase 6 — External Agent / MCP (Current)
 Vaughan is a **signing wallet that agents call**, not a host for its own LLM:
 
-- `vaughan mcp` — hand-rolled MCP JSON-RPC over stdio (`docs/mcp.md`); transport decision: `docs/mcp-transport.md` (no `rmcp` rewrite now)
+- `vaughan mcp` — hand-rolled MCP JSON-RPC over stdio (`docs/architecture/mcp.md`); transport decision: `docs/architecture/mcp-transport.md` (no `rmcp` rewrite now)
 - Hybrid IPC — loopback `127.0.0.1:8746` when TUI unlocked; file queue when offline
 - Unified approval with EIP-1193 (`ApprovalKind::McpProposal`); re-simulate at approve
 - MCP never unlocks the vault; testnet-first writes (`VAUGHAN_MCP_ALLOW_MAINNET=1`)
-- Tool contract + threat model: `docs/ai-tool-surface.md`, `docs/mcp-threat-model.md`
+- Tool contract + threat model: `docs/architecture/ai-tool-surface.md`, `docs/risk/mcp-threat-model.md`
 - Requirements: FR-6.1–FR-6.8 in `REQUIREMENTS.md`
 
 **Why the pivot:** one approval gate for dApps and agents; no API keys or model
@@ -146,5 +146,5 @@ plane; stdio MCP stays the agent client.
 
 - **Freedom Browser bridge** — **parked** pending upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195); Vaughan-side transport shipped. Active web side door: **VB**.
 - **PulseChain RPC availability** — public endpoints; fallback routing handled via `EvmAdapter::with_provider`.
-- **MCP client diversity** — hand-rolled JSON-RPC subset by design; validate against Cursor / Claude Code via [`docs/mcp-smoke.md`](docs/mcp-smoke.md) + `vaughan-mcp` conformance tests. Full `rmcp` rewrite is **not scheduled** — see [`docs/mcp-transport.md`](docs/mcp-transport.md).
+- **MCP client diversity** — hand-rolled JSON-RPC subset by design; validate against Cursor / Claude Code via [`docs/ops/mcp-smoke.md`](docs/ops/mcp-smoke.md) + `vaughan-mcp` conformance tests. Full `rmcp` rewrite is **not scheduled** — see [`docs/architecture/mcp-transport.md`](docs/architecture/mcp-transport.md).
 - **Wallet daemon (v2)** — minimal `vaughan serve` shipped; full thin-client TUI still optional polish.

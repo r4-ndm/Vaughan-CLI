@@ -9,7 +9,7 @@
 //! adapter's primary + fallback broadcast path.
 //!
 //! The relayer / ERC-4337-bundler routes are intentionally not implemented
-//! here — see TASKS.md (FR-3.3) and `docs/ambire-aa.md`.
+//! here — see TASKS.md (FR-3.3) and `docs/architecture/ambire-aa.md`.
 
 use alloy::consensus::{SignableTransaction, TxEip7702};
 use alloy::eips::eip2718::Encodable2718;

@@ -1,7 +1,7 @@
 # Upstream contributions to railgun-rust
 
 Patches and issue drafts for [`triamazikamno/railgun-rust`](https://github.com/triamazikamno/railgun-rust)
-and one dependency, prepared during RAILGUN Phase 0 (see `docs/railgun-go-no-go.md`).
+and one dependency, prepared during RAILGUN Phase 0 (see `docs/decisions/railgun-go-no-go.md`).
 These are contributions **to** upstream; nothing here is compiled into Vaughan.
 
 All patches are based on the pinned commit

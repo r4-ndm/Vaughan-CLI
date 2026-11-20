@@ -108,7 +108,7 @@ enum Command {
     },
     /// Show every detected balance (native + known ERC-20s) — auto asset
     /// detection against the curated per-chain token list (EIP-20 balances,
-    /// batched via Multicall3; see docs/optimizations.md).
+    /// batched via Multicall3; see docs/roadmap/optimizations.md).
     Assets {
         /// Network id override.
         #[arg(long)]
@@ -1095,7 +1095,7 @@ fn run_preset(profile: String, json_mode: bool, action: PresetCmd) -> anyhow::Re
                     println!("  {id}");
                 }
                 println!(
-                    "Apply: vaughan --profile sentient preset apply <id>\nDocs: docs/sentient-presets.md"
+                    "Apply: vaughan --profile sentient preset apply <id>\nDocs: docs/agents/sentient-presets.md"
                 );
             });
         }

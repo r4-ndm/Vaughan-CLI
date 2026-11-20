@@ -1,3 +1,9 @@
+//! `SentientTrader` — the one path that signs and broadcasts without a human
+//! approval card, gated by Rust circuit breakers rather than a UI confirm step.
+//! `ensure_local_signing_allowed` refuses local signing for the `sentient`/`degen`
+//! profile names specifically; those route through MCP proposals instead. See
+//! `docs/audit-playbook.md` invariant 4 before changing anything here.
+
 use alloy::eips::eip2718::Encodable2718;
 use alloy::network::{Ethereum, EthereumWallet, NetworkTransactionBuilder};
 use alloy::primitives::{Address, Bytes, B256, U256};

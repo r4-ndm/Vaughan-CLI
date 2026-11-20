@@ -1,6 +1,6 @@
 //! Hardware wallet seams: modular, multichain-ready signing.
 //!
-//! Layers (see `docs/hardware-wallets.md`):
+//! Layers (see `docs/architecture/hardware-wallets.md`):
 //! - [`types`] — watch records + family-tagged [`SignRequest`] / [`SignResult`]
 //! - [`paths`] — shared BIP-44 EVM path strings (vendor-agnostic)
 //! - [`SignerBackend`] / [`LocalSignerBackend`] — wallet-facing async surface

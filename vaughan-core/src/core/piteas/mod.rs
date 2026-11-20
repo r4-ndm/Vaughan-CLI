@@ -4,7 +4,7 @@
 //! rate-limited). Partner access may add an API key — store it encrypted next
 //! to the wallet and attach via configurable [`AuthStyle`].
 //!
-//! Docs: <https://docs.piteas.io/piteas-sdk-api> · Vaughan: `docs/piteas.md`.
+//! Docs: <https://docs.piteas.io/piteas-sdk-api> · Vaughan: `docs/architecture/piteas.md`.
 
 mod client;
 mod config;

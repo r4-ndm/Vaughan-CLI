@@ -49,4 +49,4 @@ you pick a mirror.
 ## Vaughan notes
 
 - Seeded as `PulseX (pick IPFS mirror)` → `https://app.pulsex.com/`.
-- Strategy: `docs/dapp-browser-strategy.md`; browserless default: `docs/browserless-pulse.md`.
+- Strategy: `docs/roadmap/dapp-browser-strategy.md`; browserless default: `docs/architecture/browserless-pulse.md`.

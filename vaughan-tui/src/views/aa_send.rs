@@ -5,7 +5,7 @@
 //! EOA is delegated to Ambire's `AmbireAccount` implementation (bootstrapped
 //! automatically on the first batch if it isn't already), the transfers are
 //! signed as one `execute(txns, signature)` batch, and the account self-pays
-//! gas. See `docs/ambire-aa.md` for the 7702 self-pay decision.
+//! gas. See `docs/architecture/ambire-aa.md` for the 7702 self-pay decision.
 
 use alloy::primitives::U256;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

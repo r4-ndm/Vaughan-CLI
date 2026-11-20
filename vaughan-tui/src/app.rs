@@ -4,7 +4,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use alloy::primitives::{Address, U256};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
@@ -12,13 +11,12 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use vaughan_agent::paths::profile_dir;
 use vaughan_core::chains::evm::networks::{get_network_by_chain_id, resolve_switch_chain_id};
-use vaughan_core::chains::{Balance, ChainAdapter, EvmTransaction};
+use vaughan_core::chains::{Balance, EvmTransaction};
 use vaughan_core::core::proposal::{ProposalQueue, ProposalType};
 use vaughan_core::core::token_launch::TokenLaunchOutcome;
 use vaughan_core::core::{
     mark_replaced, operator_connect_allowed, push_recent, tui_mode_for_profile, AgentAutonomyTier,
-    BroadcastEntry, BroadcastReceipt, McpSessionToken, OperatingMode, SignerClient, SignerIntent,
-    StateManager, WalletState,
+    BroadcastEntry, McpSessionToken, OperatingMode, SignerClient, StateManager, WalletState,
 };
 use vaughan_core::error::WalletError;
 use vaughan_provider::{EventBus, ProviderError, ProviderEvent};
@@ -26,7 +24,7 @@ use zeroize::Zeroize;
 
 use crate::jobs::{
     asset_index_for_address, chrome_assets_from_fetch, ChromeFocus, ChromeSnapshot, UiJob,
-    UiJobResult, UnlockCompletion,
+    UiJobResult,
 };
 use crate::mcp::{McpHostRequest, McpService, McpSessionSnapshot};
 use crate::provider::{self, ApprovalKind, BridgeStatusHandle, HostRequest};
@@ -3549,173 +3547,29 @@ impl App {
             // TUI on `[busy]` / `(busy)` (seen after unlock → Sentient → Dashboard chrome refresh).
             let result = match job {
                 UiJob::Unlock { password, mode } => {
-                    // Clone the vault under a brief lock, then run the Argon2id
-                    // KDF unlocked — holding the mutex across it would freeze
-                    // the render loop (and the spinner with it).
-                    let payload = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.unlock_payload()
-                    };
-                    UiJobResult::Unlock(match payload {
-                        Ok(p) => p
-                            .decrypt(&password)
-                            .map(|accounts| UnlockCompletion { accounts, mode }),
-                        Err(e) => Err(e),
-                    })
+                    crate::jobs::refresh::unlock(&wallet, password, mode)
                 }
                 UiJob::RefreshChrome { owner, gen } => {
-                    let owner_for_result = owner.clone();
-                    let snap = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.chrome_rpc_snapshot_for(&owner)
-                    };
-                    UiJobResult::Chrome {
-                        owner: owner_for_result,
-                        gen,
-                        result: match snap {
-                            Ok(s) => handle.block_on(s.fetch_chrome()),
-                            Err(e) => Err(e),
-                        },
-                    }
+                    crate::jobs::refresh::refresh_chrome(&wallet, &handle, owner, gen)
                 }
-                UiJob::RefreshBalance => {
-                    let snap = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.chrome_rpc_snapshot()
-                    };
-                    UiJobResult::Balance(match snap {
-                        Ok(s) => handle.block_on(s.balance()),
-                        Err(e) => Err(e),
-                    })
-                }
+                UiJob::RefreshBalance => crate::jobs::refresh::refresh_balance(&wallet, &handle),
                 UiJob::RefreshAssets { owner, gen } => {
-                    let owner_for_result = owner.clone();
-                    let (snap, extras) = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (
-                            w.chrome_rpc_snapshot_for(&owner),
-                            w.custom_token_addresses_for_active_chain(),
-                        )
-                    };
-                    UiJobResult::Assets {
-                        owner: owner_for_result,
-                        gen,
-                        result: match snap {
-                            Ok(s) => handle.block_on(s.fetch_assets(&extras)),
-                            Err(e) => Err(e),
-                        },
-                    }
+                    crate::jobs::refresh::refresh_assets(&wallet, &handle, owner, gen)
                 }
                 UiJob::EstimateFee { to, value_wei } => {
-                    let prepared = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.build_native_transfer(&to, &value_wei)?;
-                            let snap = w.network_rpc_snapshot()?;
-                            Ok::<_, WalletError>((tx, snap))
-                        })()
-                    };
-                    UiJobResult::Fee(match prepared {
-                        Ok((tx, snap)) => handle.block_on(async move {
-                            let adapter = snap.adapter().await?;
-                            adapter
-                                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
-                                .await
-                        }),
-                        Err(e) => Err(e),
-                    })
+                    crate::jobs::send::estimate_fee(&wallet, &handle, to, value_wei)
                 }
                 UiJob::EstimateTokenFee { token, to, amount } => {
-                    let prepared = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        (|| {
-                            let tx = w.build_erc20_transfer(&token, &to, &amount)?;
-                            let snap = w.network_rpc_snapshot()?;
-                            Ok::<_, WalletError>((tx, snap))
-                        })()
-                    };
-                    UiJobResult::Fee(match prepared {
-                        Ok((tx, snap)) => handle.block_on(async move {
-                            let adapter = snap.adapter().await?;
-                            adapter
-                                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
-                                .await
-                        }),
-                        Err(e) => Err(e),
-                    })
+                    crate::jobs::send::estimate_token_fee(&wallet, &handle, token, to, amount)
                 }
                 UiJob::SendWithFee { to, value_wei, fee } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        execute_sentient_transfer_job(&wallet, &handle, to, value_wei, None, "Send")
-                    } else {
-                        let prepared = {
-                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                            (|| {
-                                let tx = w.build_native_transfer_with_fee(&to, &value_wei, &fee)?;
-                                let ctx = w.detached_sign_context()?;
-                                Ok::<_, WalletError>((tx, ctx))
-                            })()
-                        };
-                        UiJobResult::Send(match prepared {
-                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
-                            Err(e) => Err(e),
-                        })
-                    }
+                    crate::jobs::send::send_with_fee(&wallet, &handle, to, value_wei, fee)
                 }
                 UiJob::Send { to, value_wei } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        execute_sentient_transfer_job(&wallet, &handle, to, value_wei, None, "Send")
-                    } else {
-                        let prepared = {
-                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                            (|| {
-                                let tx = w.build_native_transfer(&to, &value_wei)?;
-                                let ctx = w.detached_sign_context()?;
-                                Ok::<_, WalletError>((tx, ctx))
-                            })()
-                        };
-                        UiJobResult::Send(match prepared {
-                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Send")),
-                            Err(e) => Err(e),
-                        })
-                    }
+                    crate::jobs::send::send(&wallet, &handle, to, value_wei)
                 }
                 UiJob::SendToken { token, to, amount } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        execute_sentient_transfer_job(
-                            &wallet,
-                            &handle,
-                            to,
-                            amount,
-                            Some(token),
-                            "Token",
-                        )
-                    } else {
-                        let prepared = {
-                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                            (|| {
-                                let tx = w.build_erc20_transfer(&token, &to, &amount)?;
-                                let ctx = w.detached_sign_context()?;
-                                Ok::<_, WalletError>((tx, ctx))
-                            })()
-                        };
-                        UiJobResult::Send(match prepared {
-                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
-                            Err(e) => Err(e),
-                        })
-                    }
+                    crate::jobs::send::send_token(&wallet, &handle, token, to, amount)
                 }
                 UiJob::SendTokenWithFee {
                     token,
@@ -3723,105 +3577,16 @@ impl App {
                     amount,
                     fee,
                 } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        execute_sentient_transfer_job(
-                            &wallet,
-                            &handle,
-                            to,
-                            amount,
-                            Some(token),
-                            "Token",
-                        )
-                    } else {
-                        let prepared = {
-                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                            (|| {
-                                let tx =
-                                    w.build_erc20_transfer_with_fee(&token, &to, &amount, &fee)?;
-                                let ctx = w.detached_sign_context()?;
-                                Ok::<_, WalletError>((tx, ctx))
-                            })()
-                        };
-                        UiJobResult::Send(match prepared {
-                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Token")),
-                            Err(e) => Err(e),
-                        })
-                    }
+                    crate::jobs::send::send_token_with_fee(&wallet, &handle, token, to, amount, fee)
                 }
                 UiJob::SendStealth {
                     announcement,
                     value_wei,
-                } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        UiJobResult::SendStealth(Err(WalletError::Other(
-                            "intent_untyped: stealth send requires human approval via an adviser profile (not available on sentient)".into(),
-                        )))
-                    } else {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        UiJobResult::SendStealth(
-                            handle.block_on(w.send_stealth(&announcement, &value_wei)),
-                        )
-                    }
-                }
-                UiJob::SendEvm { tx } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        execute_sentient_evm_job(&handle, tx, "Contract")
-                    } else {
-                        let prepared = {
-                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                            w.detached_sign_context().map(|ctx| (tx, ctx))
-                        };
-                        UiJobResult::Send(match prepared {
-                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
-                            Err(e) => Err(e),
-                        })
-                    }
-                }
-                UiJob::AssistBurnVerify => {
-                    use vaughan_core::core::{
-                        entitlement_chain_id, vault_has_assist_burn_with_retry,
-                    };
-                    let (dir, addrs) = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        let dir = profile_dir(w.path());
-                        let addrs = w.account_addresses().unwrap_or_default();
-                        (dir, addrs)
-                    };
-                    UiJobResult::AssistBurnVerify(match entitlement_chain_id() {
-                        Some(chain_id) => handle.block_on(vault_has_assist_burn_with_retry(
-                            Some(&dir),
-                            chain_id,
-                            &addrs,
-                        )),
-                        None => Ok(false),
-                    })
-                }
+                } => crate::jobs::send::send_stealth(&wallet, &handle, announcement, value_wei),
+                UiJob::SendEvm { tx } => crate::jobs::send::send_evm(&wallet, &handle, tx),
+                UiJob::AssistBurnVerify => crate::jobs::send::assist_burn_verify(&wallet, &handle),
                 UiJob::EstimateEvmFee { tx } => {
-                    let prepared = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.network_rpc_snapshot().map(|snap| (tx, snap))
-                    };
-                    UiJobResult::Fee(match prepared {
-                        Ok((tx, snap)) => handle.block_on(async move {
-                            let adapter = snap.adapter().await?;
-                            adapter
-                                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
-                                .await
-                        }),
-                        Err(e) => Err(e),
-                    })
+                    crate::jobs::send::estimate_evm_fee(&wallet, &handle, tx)
                 }
                 UiJob::DexSwapEstimateAfterApprove {
                     rpc_url,
@@ -3830,74 +3595,20 @@ impl App {
                     router,
                     amount_in,
                     tx,
-                } => {
-                    use alloy::primitives::{Address, U256};
-                    use std::str::FromStr;
-                    use vaughan_core::chains::Fee;
-                    use vaughan_core::core::wait_erc20_allowance;
-
-                    let parsed = (|| -> Result<Fee, WalletError> {
-                        let token = Address::from_str(token_in.trim())
-                            .map_err(|_| WalletError::InvalidTransaction("dex token in".into()))?;
-                        let owner = Address::from_str(owner.trim())
-                            .map_err(|_| WalletError::InvalidTransaction("dex owner".into()))?;
-                        let router = Address::from_str(router.trim())
-                            .map_err(|_| WalletError::InvalidTransaction("dex router".into()))?;
-                        let need = U256::from_str(&amount_in)
-                            .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
-                        handle
-                            .block_on(wait_erc20_allowance(&rpc_url, token, owner, router, need))?;
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        handle.block_on(w.estimate_transaction_fee(tx))
-                    })();
-                    UiJobResult::Fee(parsed)
-                }
+                } => crate::jobs::dex::dex_swap_estimate_after_approve(
+                    &wallet, &handle, rpc_url, token_in, owner, router, amount_in, tx,
+                ),
                 UiJob::DexAllowanceCheck {
                     rpc_url,
                     token_in,
                     owner,
                     router,
                     amount_in,
-                } => {
-                    use alloy::primitives::{Address, U256};
-                    use std::str::FromStr;
-                    use vaughan_core::core::erc20_allowance_covers;
-
-                    let parsed = (|| -> Result<bool, WalletError> {
-                        let token = Address::from_str(token_in.trim())
-                            .map_err(|_| WalletError::InvalidTransaction("dex token in".into()))?;
-                        let owner = Address::from_str(owner.trim())
-                            .map_err(|_| WalletError::InvalidTransaction("dex owner".into()))?;
-                        let router = Address::from_str(router.trim())
-                            .map_err(|_| WalletError::InvalidTransaction("dex router".into()))?;
-                        let need = U256::from_str(&amount_in)
-                            .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
-                        handle
-                            .block_on(erc20_allowance_covers(&rpc_url, token, owner, router, need))
-                    })();
-                    UiJobResult::DexAllowanceCheck(parsed)
-                }
+                } => crate::jobs::dex::dex_allowance_check(
+                    &handle, rpc_url, token_in, owner, router, amount_in,
+                ),
                 UiJob::SendEvmWithFee { tx, fee } => {
-                    let is_sentient = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        vaughan_core::core::is_sentient_profile(w.profile_name())
-                    };
-                    if is_sentient {
-                        execute_sentient_evm_job(&handle, tx, "Contract")
-                    } else {
-                        let prepared = {
-                            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                            (|| {
-                                let tx = w.apply_fee_to_evm(tx, &fee)?;
-                                let ctx = w.detached_sign_context()?;
-                                Ok::<_, WalletError>((tx, ctx))
-                            })()
-                        };
-                        UiJobResult::Send(match prepared {
-                            Ok((tx, ctx)) => handle.block_on(ctx.broadcast(tx, "Contract")),
-                            Err(e) => Err(e),
-                        })
-                    }
+                    crate::jobs::send::send_evm_with_fee(&wallet, &handle, tx, fee)
                 }
                 UiJob::AggQuote {
                     venue,
@@ -3908,38 +3619,10 @@ impl App {
                     native_in,
                     native_out,
                     account,
-                } => {
-                    use vaughan_core::core::quote_aggregator;
-
-                    let parsed = parse_agg_quote_request(
-                        &token_in,
-                        &token_out,
-                        &amount,
-                        slippage,
-                        native_in,
-                        native_out,
-                        account.as_deref(),
-                    );
-                    let dir = StateManager::default_path()
-                        .ok()
-                        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                    let chain_id = wallet
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .networks()
-                        .active()
-                        .chain_id;
-                    UiJobResult::AggQuote(match parsed {
-                        Ok(req) => handle.block_on(quote_aggregator(
-                            venue,
-                            &req,
-                            chain_id,
-                            dir.as_deref(),
-                            None,
-                        )),
-                        Err(e) => Err(e),
-                    })
-                }
+                } => crate::jobs::dex::agg_quote(
+                    &wallet, &handle, venue, token_in, token_out, amount, slippage, native_in,
+                    native_out, account,
+                ),
                 UiJob::AggCompareQuote {
                     token_in,
                     token_out,
@@ -3948,40 +3631,10 @@ impl App {
                     native_in,
                     native_out,
                     account,
-                } => {
-                    use vaughan_core::core::quote_live_aggregators;
-
-                    let parsed = parse_agg_quote_request(
-                        &token_in,
-                        &token_out,
-                        &amount,
-                        slippage,
-                        native_in,
-                        native_out,
-                        account.as_deref(),
-                    );
-                    let dir = StateManager::default_path()
-                        .ok()
-                        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                    let chain_id = wallet
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .networks()
-                        .active()
-                        .chain_id;
-                    UiJobResult::AggCompareQuote(match parsed {
-                        Ok(req) => handle.block_on(quote_live_aggregators(
-                            &req,
-                            chain_id,
-                            dir.as_deref(),
-                            None,
-                        )),
-                        Err(e) => vec![vaughan_core::core::AggQuoteOutcome {
-                            venue: vaughan_core::core::AggVenue::SquirrelSwap,
-                            result: Err(e),
-                        }],
-                    })
-                }
+                } => crate::jobs::dex::agg_compare_quote(
+                    &wallet, &handle, token_in, token_out, amount, slippage, native_in, native_out,
+                    account,
+                ),
                 UiJob::DexQuote {
                     quote_gen,
                     chain_id,
@@ -3996,88 +3649,22 @@ impl App {
                     token_out,
                     wpls,
                     native_in,
-                } => {
-                    use alloy::primitives::{Address, U256};
-                    use std::str::FromStr;
-                    use vaughan_core::core::{
-                        discover_v3_swap_route, quote_v2_exact_in, quote_v3_path_exact_in,
-                        resolve_v3_swap_path,
-                    };
-
-                    let parsed = (|| -> Result<vaughan_core::core::DexQuote, WalletError> {
-                        let amount_in = U256::from_str(&amount_in)
-                            .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
-                        if protocol_v2 {
-                            let hops: Result<Vec<Address>, _> = path
-                                .iter()
-                                .map(|s| {
-                                    Address::from_str(s.trim()).map_err(|_| {
-                                        WalletError::InvalidTransaction("dex path token".into())
-                                    })
-                                })
-                                .collect();
-                            let hops = hops?;
-                            let router = Address::from_str(&router).map_err(|_| {
-                                WalletError::InvalidTransaction("dex router".into())
-                            })?;
-                            handle.block_on(quote_v2_exact_in(&rpc_url, router, amount_in, &hops))
-                        } else {
-                            let token_in = Address::from_str(token_in.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction("dex token in".into())
-                            })?;
-                            let token_out = Address::from_str(token_out.trim()).map_err(|_| {
-                                WalletError::InvalidTransaction("dex token out".into())
-                            })?;
-                            let wpls = match wpls {
-                                Some(s) if !s.trim().is_empty() => {
-                                    Some(Address::from_str(s.trim()).map_err(|_| {
-                                        WalletError::InvalidTransaction("dex WPLS".into())
-                                    })?)
-                                }
-                                _ => None,
-                            };
-                            let quoter = match quoter {
-                                Some(s) if !s.trim().is_empty() => {
-                                    Some(Address::from_str(s.trim()).map_err(|_| {
-                                        WalletError::InvalidTransaction("dex quoter".into())
-                                    })?)
-                                }
-                                _ => None,
-                            };
-                            let (hops, hop_fees, amount_out) =
-                                if vaughan_core::core::deployment_for_chain(chain_id).is_some() {
-                                    let route = handle.block_on(discover_v3_swap_route(
-                                        &rpc_url, chain_id, token_in, token_out, amount_in, wpls,
-                                        native_in,
-                                    ))?;
-                                    (route.path, route.hop_fees, route.amount_out)
-                                } else {
-                                    let hops = handle.block_on(resolve_v3_swap_path(
-                                        &rpc_url, chain_id, token_in, token_out, fee, wpls,
-                                        native_in,
-                                    ))?;
-                                    let quote = handle.block_on(quote_v3_path_exact_in(
-                                        &rpc_url, chain_id, &hops, amount_in, fee, quoter,
-                                    ))?;
-                                    (
-                                        hops,
-                                        vec![fee; quote.path.len().saturating_sub(1)],
-                                        quote.amount_out,
-                                    )
-                                };
-                            Ok(vaughan_core::core::DexQuote {
-                                amount_out,
-                                path: hops,
-                                fee_tier: hop_fees.first().copied().unwrap_or(0),
-                                hop_fees,
-                            })
-                        }
-                    })();
-                    UiJobResult::DexQuote {
-                        quote_gen,
-                        result: parsed,
-                    }
-                }
+                } => crate::jobs::dex::dex_quote(
+                    &handle,
+                    quote_gen,
+                    chain_id,
+                    rpc_url,
+                    protocol_v2,
+                    router,
+                    quoter,
+                    amount_in,
+                    fee,
+                    path,
+                    token_in,
+                    token_out,
+                    wpls,
+                    native_in,
+                ),
                 UiJob::BridgeQuote {
                     src_token,
                     dst_token,
@@ -4085,115 +3672,37 @@ impl App {
                     src_chain,
                     dst_chain,
                     recipient,
-                } => {
-                    use alloy::primitives::{Address, U256};
-                    use vaughan_core::core::{BridgeAsset, BridgeQuoteRequest, LibertySwapClient};
-
-                    let parsed = (|| -> Result<BridgeQuoteRequest, WalletError> {
-                        let amount = U256::from_str(&amount)
-                            .map_err(|_| WalletError::InvalidAmount("bridge amount".into()))?;
-                        let recipient = Address::from_str(&recipient).map_err(|_| {
-                            WalletError::InvalidTransaction("bridge recipient".into())
-                        })?;
-                        let src_token = if src_token.eq_ignore_ascii_case("USDC") {
-                            BridgeAsset::Symbol("USDC")
-                        } else {
-                            BridgeAsset::Address(Address::from_str(&src_token).map_err(|_| {
-                                WalletError::InvalidTransaction("bridge src_token".into())
-                            })?)
-                        };
-                        let dst_token = if dst_token.eq_ignore_ascii_case("USDC") {
-                            BridgeAsset::Symbol("USDC")
-                        } else {
-                            BridgeAsset::Address(Address::from_str(&dst_token).map_err(|_| {
-                                WalletError::InvalidTransaction("bridge dst_token".into())
-                            })?)
-                        };
-                        Ok(BridgeQuoteRequest {
-                            src_token,
-                            dst_token,
-                            amount,
-                            src_chain,
-                            dst_chain,
-                            recipient,
-                        })
-                    })();
-                    UiJobResult::BridgeQuote(Box::new(match parsed {
-                        Ok(req) => match LibertySwapClient::public() {
-                            Ok(client) => handle.block_on(client.quote(&req)),
-                            Err(e) => Err(e),
-                        },
-                        Err(e) => Err(e),
-                    }))
-                }
+                } => crate::jobs::dex::bridge_quote(
+                    &handle, src_token, dst_token, amount, src_chain, dst_chain, recipient,
+                ),
                 UiJob::RefreshActivity { limit } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Activity(handle.block_on(w.activity(limit)))
+                    crate::jobs::refresh::refresh_activity(&wallet, &handle, limit)
                 }
                 UiJob::RefreshAllowances => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Allowances(handle.block_on(w.list_allowances()))
+                    crate::jobs::refresh::refresh_allowances(&wallet, &handle)
                 }
                 UiJob::RefreshHexStakes { owner, gen } => {
-                    let rpc = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.active_rpc_url()
-                    };
-                    let (stakes, globals) =
-                        handle.block_on(crate::views::hex::load_hex_stakes(&rpc, &owner));
-                    UiJobResult::HexStakes {
-                        gen,
-                        owner,
-                        stakes,
-                        globals,
-                    }
+                    crate::jobs::refresh::refresh_hex_stakes(&wallet, &handle, owner, gen)
                 }
                 UiJob::DcaSlice {
                     plan_id,
                     profile_dir,
                     breaker,
-                } => execute_dca_slice_job(&wallet, &handle, plan_id, profile_dir, breaker),
+                } => crate::jobs::dca::execute_dca_slice_job(
+                    &wallet,
+                    &handle,
+                    plan_id,
+                    profile_dir,
+                    breaker,
+                ),
                 UiJob::PollTxStatus { tx_hash } => {
-                    // Brief lock for RPC endpoints only — holding WalletState across
-                    // eth_getTransactionReceipt freezes the Done screen on "working…".
-                    let snap = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.network_rpc_snapshot()
-                    };
-                    UiJobResult::TxStatus(match snap {
-                        Ok(s) => handle.block_on(s.get_tx_status(&tx_hash)),
-                        Err(e) => Err(e),
-                    })
+                    crate::jobs::refresh::poll_tx_status(&wallet, &handle, tx_hash)
                 }
                 UiJob::RefreshBroadcastStatuses { hashes } => {
-                    let snap = {
-                        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        w.network_rpc_snapshot()
-                    };
-                    UiJobResult::BroadcastStatuses(match snap {
-                        Ok(s) => {
-                            let mut out = Vec::with_capacity(hashes.len());
-                            let mut err = None;
-                            for h in hashes {
-                                match handle.block_on(s.get_tx_status(&h)) {
-                                    Ok(st) => out.push((h, st)),
-                                    Err(e) => {
-                                        err = Some(e);
-                                        break;
-                                    }
-                                }
-                            }
-                            match err {
-                                Some(e) => Err(e),
-                                None => Ok(out),
-                            }
-                        }
-                        Err(e) => Err(e),
-                    })
+                    crate::jobs::refresh::refresh_broadcast_statuses(&wallet, &handle, hashes)
                 }
                 UiJob::ReplaceBroadcast { entry, kind } => {
-                    let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                    UiJobResult::Send(handle.block_on(w.replace_broadcast(&entry, kind)))
+                    crate::jobs::refresh::replace_broadcast(&wallet, &handle, entry, kind)
                 }
                 UiJob::LpListPositions {
                     venue,
@@ -4288,37 +3797,20 @@ impl App {
                     name,
                     symbol,
                     supply,
-                } => UiJobResult::DeployToken(handle.block_on(
-                    WalletState::deploy_fixed_supply_token_background(
-                        &wallet, &name, &symbol, &supply,
-                    ),
-                )),
+                } => crate::jobs::send::deploy_token(&wallet, &handle, name, symbol, supply),
                 UiJob::McpQueuedApprove {
                     proposal_id,
                     source,
                     proposal,
                     fee_override,
-                } => {
-                    use crate::provider::{execute_approval_with_fee, ApprovalKind};
-                    let proposal_for_flash = proposal.clone();
-                    let kind = ApprovalKind::McpProposal {
-                        proposal_id: proposal_id.clone(),
-                        source,
-                        proposal: Box::new(proposal),
-                    };
-                    #[allow(clippy::await_holding_lock)]
-                    let result = handle.block_on(async {
-                        let mut w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-                        execute_approval_with_fee(&kind, &mut w, fee_override.as_ref())
-                            .await
-                            .map_err(|e| WalletError::Other(e.to_string()))
-                    });
-                    UiJobResult::McpQueuedApprove {
-                        result,
-                        proposal: proposal_for_flash,
-                        proposal_id,
-                    }
-                }
+                } => crate::jobs::mcp::mcp_queued_approve(
+                    &wallet,
+                    &handle,
+                    proposal_id,
+                    source,
+                    proposal,
+                    fee_override,
+                ),
             };
             // Plain std thread: blocking_send applies backpressure if the UI
             // queue is full; Err means the UI is gone, result is droppable.
@@ -4759,119 +4251,6 @@ fn global_action(key: KeyEvent, outcome: &KeyOutcome) -> GlobalAction {
     }
 }
 
-fn parse_agg_quote_request(
-    token_in: &str,
-    token_out: &str,
-    amount: &str,
-    slippage: f64,
-    native_in: bool,
-    native_out: bool,
-    account: Option<&str>,
-) -> Result<vaughan_core::core::AggQuoteRequest, WalletError> {
-    use alloy::primitives::{Address, U256};
-    use vaughan_core::core::AggQuoteRequest;
-
-    let token_in = Address::from_str(token_in)
-        .map_err(|_| WalletError::InvalidTransaction("agg token_in".into()))?;
-    let token_out = Address::from_str(token_out)
-        .map_err(|_| WalletError::InvalidTransaction("agg token_out".into()))?;
-    let amount_in =
-        U256::from_str(amount).map_err(|_| WalletError::InvalidAmount("agg amount".into()))?;
-    let account = account
-        .map(Address::from_str)
-        .transpose()
-        .map_err(|_| WalletError::InvalidTransaction("agg account".into()))?;
-    Ok(AggQuoteRequest {
-        token_in,
-        token_out,
-        token_in_is_native: native_in,
-        token_out_is_native: native_out,
-        amount_in,
-        slippage_percent: slippage,
-        account,
-    })
-}
-
-fn execute_sentient_transfer_job(
-    wallet: &Arc<Mutex<WalletState>>,
-    handle: &Handle,
-    to: String,
-    value_wei: String,
-    token: Option<String>,
-    label: &'static str,
-) -> UiJobResult {
-    let (chain_id, from) = {
-        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            w.networks().active().chain_id,
-            w.active_address()
-                .map(|a| a.to_string())
-                .unwrap_or_default(),
-        )
-    };
-    let res = handle.block_on(async {
-        let recipient =
-            Address::from_str(&to).map_err(|e| WalletError::InvalidTransaction(e.to_string()))?;
-        let amount = U256::from_str(&value_wei)
-            .map_err(|_| WalletError::InvalidAmount("bad value".into()))?;
-        let token_addr = token
-            .as_deref()
-            .map(Address::from_str)
-            .transpose()
-            .map_err(|e| WalletError::InvalidTransaction(e.to_string()))?;
-        let intent = SignerIntent::Transfer {
-            chain_id,
-            to: recipient,
-            token: token_addr,
-            amount,
-        };
-        let client = SignerClient::default();
-        let hash = client.execute(&intent).await.map_err(WalletError::Other)?;
-        let tx = EvmTransaction {
-            from,
-            to: if let Some(ref t) = token {
-                t.clone()
-            } else {
-                to
-            },
-            value: if token.is_some() {
-                "0".into()
-            } else {
-                value_wei
-            },
-            data: None,
-            chain_id,
-            nonce: None,
-            gas_limit: None,
-            gas_price: None,
-            max_fee_per_gas: None,
-            max_priority_fee_per_gas: None,
-        };
-        Ok(BroadcastReceipt {
-            entry: BroadcastEntry::from_prepared(&tx, hash.clone(), label),
-            hash,
-        })
-    });
-    UiJobResult::Send(res)
-}
-
-fn execute_sentient_evm_job(
-    handle: &Handle,
-    tx: EvmTransaction,
-    label: &'static str,
-) -> UiJobResult {
-    let res = handle.block_on(async {
-        let intent = crate::sentient_mcp::evm_tx_to_sentient_intent(&tx)?;
-        let client = SignerClient::default();
-        let hash = client.execute(&intent).await.map_err(WalletError::Other)?;
-        Ok(BroadcastReceipt {
-            entry: BroadcastEntry::from_prepared(&tx, hash.clone(), label),
-            hash,
-        })
-    });
-    UiJobResult::Send(res)
-}
-
 /// Match native or ERC-20 rows for F2 chrome alignment (checksum-safe).
 fn same_f2_asset(a: &vaughan_core::chains::Balance, b: &vaughan_core::chains::Balance) -> bool {
     match (
@@ -4920,195 +4299,6 @@ fn find_vaughan_hl_bin() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("vaughan-hl")
-}
-
-/// Execute a single due DCA slice job.
-///
-/// Under a sentient profile, execution strictly routes via `SignerClient` over
-/// the Unix socket submitting typed [`SignerIntent::DcaSlice`]; local in-process
-/// signing and local `SentientTrader` construction are forbidden.
-pub fn execute_dca_slice_job(
-    wallet: &std::sync::Mutex<WalletState>,
-    handle: &tokio::runtime::Handle,
-    plan_id: String,
-    profile_dir: std::path::PathBuf,
-    breaker: vaughan_agent::CircuitBreaker,
-) -> UiJobResult {
-    let is_sentient = {
-        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-        vaughan_core::core::is_sentient_profile(w.profile_name())
-    };
-    if is_sentient {
-        if breaker.is_tripped() {
-            let reason = breaker
-                .trip_reason()
-                .unwrap_or_else(|| "circuit breaker tripped".into());
-            return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
-                "circuit_breaker_tripped: {reason}"
-            ))));
-        }
-        let (chain_id, rpc_url) = {
-            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-            (w.networks().active().chain_id, w.active_rpc_url())
-        };
-        let plans_file = match vaughan_agent::dca::store::load_plans(&profile_dir) {
-            Ok(f) => f,
-            Err(e) => return UiJobResult::DcaSlice(Err(WalletError::Other(e.to_string()))),
-        };
-        let mut plan = match plans_file.plans.into_iter().find(|p| p.id == plan_id) {
-            Some(p) => p,
-            None => {
-                return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
-                    "dca plan `{plan_id}` not found"
-                ))))
-            }
-        };
-        let now = vaughan_agent::now_unix();
-        if !vaughan_agent::dca::is_due(&plan, now) {
-            return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
-                "plan `{plan_id}` is not due yet"
-            ))));
-        }
-        if plan.chain_id != 0 && plan.chain_id != chain_id {
-            return UiJobResult::DcaSlice(Err(WalletError::Other(format!(
-                "plan `{plan_id}` bound to chain {} — active chain is {chain_id}",
-                plan.chain_id
-            ))));
-        }
-        let amount_in = match plan.slice_amount_u256() {
-            Ok(a) => a,
-            Err(e) => return UiJobResult::DcaSlice(Err(WalletError::Other(e))),
-        };
-        let (pair, corridor_min_out) = match handle.block_on(
-            vaughan_agent::resolve_plan_pair_and_corridor(&rpc_url, chain_id, &plan),
-        ) {
-            Ok(res) => res,
-            Err(e) => {
-                let msg = e.to_string();
-                let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
-                    p.consecutive_failures = p.consecutive_failures.saturating_add(1);
-                    if p.consecutive_failures >= vaughan_agent::dca::MAX_CONSECUTIVE_FAILURES {
-                        p.status = vaughan_agent::dca::DcaStatus::Paused;
-                    }
-                    vaughan_agent::dca::advance_schedule(p, now);
-                    p.slice_log.push(vaughan_agent::dca::SliceLog {
-                        at: now,
-                        ok: false,
-                        tx_hash: String::new(),
-                        dry_run: plan.dry_run,
-                        error: msg.clone(),
-                        amount_in_wei: amount_in.to_string(),
-                    });
-                    if p.slice_log.len() > 32 {
-                        let drop_n = p.slice_log.len() - 32;
-                        p.slice_log.drain(0..drop_n);
-                    }
-                    Ok(())
-                });
-                return UiJobResult::DcaSlice(Err(WalletError::Other(msg)));
-            }
-        };
-
-        if plan.pair.as_deref() != Some(&format!("{pair:#x}")) {
-            let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
-                p.pair = Some(format!("{pair:#x}"));
-                Ok(())
-            });
-            plan.pair = Some(format!("{pair:#x}"));
-        }
-
-        let intent = SignerIntent::DcaSlice {
-            plan_id: plan.id.clone(),
-            slice_index: plan.slices_done as u64,
-            chain_id,
-            pair,
-            amount_in,
-            corridor_min_out,
-        };
-        let client = SignerClient::default();
-        let exec_res = handle.block_on(client.execute(&intent));
-        let result = match exec_res {
-            Ok(tx_hash) => {
-                let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
-                    p.consecutive_failures = 0;
-                    p.slices_done = p.slices_done.saturating_add(1);
-                    if let Ok(spent) = p.spent_u256() {
-                        p.spent_wei = spent.saturating_add(amount_in).to_string();
-                    }
-                    vaughan_agent::dca::advance_schedule(p, now);
-                    if p.slices_done >= p.max_slices {
-                        p.status = vaughan_agent::dca::DcaStatus::Done;
-                    }
-                    p.slice_log.push(vaughan_agent::dca::SliceLog {
-                        at: now,
-                        ok: true,
-                        tx_hash: tx_hash.clone(),
-                        dry_run: plan.dry_run,
-                        error: String::new(),
-                        amount_in_wei: amount_in.to_string(),
-                    });
-                    if p.slice_log.len() > 32 {
-                        let drop_n = p.slice_log.len() - 32;
-                        p.slice_log.drain(0..drop_n);
-                    }
-                    Ok(())
-                });
-                Ok(vaughan_agent::DcaFireResult {
-                    plan_id: plan.id.clone(),
-                    ok: true,
-                    dry_run: plan.dry_run,
-                    tx_hash,
-                    error: String::new(),
-                })
-            }
-            Err(refusal) => {
-                // A gas refusal moved no money: it must not count as a failure or burn
-                // this buy window (see crate::dca_defer).
-                let class = crate::dca_defer::classify(&refusal);
-                let _ = vaughan_agent::dca::store::update_plan(&profile_dir, &plan.id, |p| {
-                    vaughan_agent::dca::apply_refusal(p, now, class, &refusal, &amount_in);
-                    Ok(())
-                });
-                Err(WalletError::Other(refusal))
-            }
-        };
-        UiJobResult::DcaSlice(result)
-    } else {
-        let (signer, rpcs, chain_id, profile_name) = {
-            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-            let signer = w.active_signer().map_err(|e| e.to_string());
-            let mut rpcs = vec![w.active_rpc_url()];
-            rpcs.extend(w.networks().active().fallback_rpc_urls.iter().cloned());
-            let chain_id = w.networks().active().chain_id;
-            let profile_name = w.profile_name().to_string();
-            (signer, rpcs, chain_id, profile_name)
-        };
-        let result = (|| {
-            let signer = signer.map_err(WalletError::Other)?;
-            let trader = vaughan_agent::SentientTrader::with_breaker(
-                &profile_name,
-                signer,
-                rpcs,
-                chain_id,
-                breaker,
-            )
-            .map_err(|e| WalletError::Other(e.to_string()))?
-            .with_profile_dir(&profile_dir);
-            let now = vaughan_agent::now_unix();
-            handle
-                .block_on(vaughan_agent::fire_plan(
-                    &profile_dir,
-                    &plan_id,
-                    &trader,
-                    chain_id,
-                    Some(profile_dir.as_path()),
-                    None,
-                    now,
-                ))
-                .map_err(|e| WalletError::Other(e.to_string()))
-        })();
-        UiJobResult::DcaSlice(result)
-    }
 }
 
 #[cfg(test)]

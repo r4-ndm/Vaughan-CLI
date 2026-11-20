@@ -223,3 +223,112 @@ This document aggregates specific architectural, security, performance, ergonomi
 
 - [x] **4.2 PulseChain priority-fee tuning + RPC fallbacks** — `EvmNetworkConfig` now carries `default_priority_fee_wei` and `fallback_rpc_urls` (serde-defaulted). PulseChain mainnet/testnet use 0.01 gwei tips (vs Ethereum's 1.5 gwei); Polygon/BSC/Base get chain-appropriate defaults. The EVM adapter builds a primary + fallback provider chain with a sticky last-known-good endpoint, retrying only transport-ish failures (RPC/network/gas/broadcast) and failing fast on local errors; broadcasting to a fallback is safe (same nonce → on-chain no-op). Covered by unit tests (classification + fallback loop, offline). (Fixed — `vaughan-core/src/chains/evm/networks.rs`, `chains/evm/adapter.rs`, `core/wallet.rs`, `chains/mod.rs`.)
 - [x] **Gas Precedence**: Only set `gas_price` if `max_fee_per_gas` is absent. (Fixed — `vaughan-core/src/chains/evm/adapter.rs`.)
+
+---
+
+## 7. 2026-11-20 session — codebase organization pass
+
+Scope was agent-navigability and governance tooling (new `.claude/skills/audit/`,
+`docs/` reorg, module docs, size-budget cleanup), not a full forensic re-audit. Per
+`docs/audit-playbook.md`'s evidence rules: this is what was verified vs. what wasn't.
+
+**Mechanical gate**: `scripts/audit.sh --with-tests --binary` at commit `50fd36d5` plus
+this session's changes — fmt/clippy (both feature sets)/tests/cargo-audit/tracked-file
+hygiene/secrets scan all green; `scripts/size_budget.py` at 0 violations after reverting
+a module-doc addition that would have grown an already-frozen file (see finding below).
+
+**Spot-checked invariants** (read-only; not a full Pass A diff read):
+- No `siphon` module exists (`git grep -ri siphon` matches only the playbook itself) — P0 invariant 1/8 holds.
+- `vaughan-hl/Cargo.toml` has no `vaughan-core` dependency — custody boundary (invariant 11) holds.
+- `vaughan-agent::sentient::trader::ensure_local_signing_allowed` still rejects the
+  `sentient`/`degen` profile names for local signing — unchanged from the documented design.
+- Default `cargo build -p vaughan-cli` still excludes `railgun-wallet`/`broadcaster-core`/`wasmer` (`cargo tree`) and the installed binary has 0 hits for `private (RAILGUN)`.
+
+**P2 finding — module-doc requirement conflicts with the size-budget ratchet.**
+`vaughan-tui/src/views/lp/{confirm,helpers,input,render,state}.rs` are missing the `//!`
+module doc `AGENTS.md` rule 4 requires, but all five are already at their frozen ceiling
+in `scripts/size-budget.txt`; adding even a 3-line doc comment trips `scripts/audit.sh`'s
+"GREW file" check. Not fixed this session — tracked in `TASKS.md` under "Codebase
+organization" to land once those files are split (smaller resulting files can take the
+doc without raising the ratchet).
+
+**Not covered**: a full Pass A line-by-line read of money paths across `vaughan-core`
+(41k lines) — this session's diff was docs/tooling/comments only, no logic changes, so
+Pass A was limited to the spot-checks above rather than a full re-derivation.
+
+---
+
+## 8. 2026-11-20 second pass — `spawn_job` / `tui.rs` split verification
+
+Pass A on the two splits from §7, run as a mechanical proof rather than a read-through.
+The scripts are `scripts/split-proof-hl-tui.py` and `scripts/split-proof-app-jobs.py`
+(both take a base rev, default `HEAD`), following the precedent of the existing
+`private/split-proof.sh`. **They are local-only** — `/private/` is gitignored and
+`scripts/audit.sh` fails if anything there becomes tracked — so these results are
+reproducible on this machine but are *not* in the repo or CI. Promote them to `scripts/`
+if the proof should gate future splits; noted in `TASKS.md`.
+
+Each proof was negative-tested rather than trusted: transposing two same-typed `String`
+arguments in a send path (`build_erc20_transfer(&token, &amount, &to)`) makes
+`split-proof-app-jobs.py` report a real body difference and exit non-zero, so a green run
+is not vacuous.
+
+**Move-only is proven, not asserted:**
+
+- `vaughan-hl/src/tui.rs` → `tui/{mod,render}.rs`: **5383 normalised lines conserved
+  1-to-1** (`scripts/split-proof-hl-tui.py 50fd36d5`). Normalises away only what a split
+  may change: module docs, `use`/`mod` items, the extra `impl HlTuiApp {` wrapper, and
+  `pub(super)` visibility bumps.
+- `vaughan-tui/src/app.rs::spawn_job` → `jobs/{refresh,send,dex,dca,mcp}.rs`: of 33 moved
+  bodies, **29 are token-identical**, 3 differ only in closure-brace placement
+  (`|_| { e }` → `|_| e`), and 1 (`dex_quote`) differs only in braces/whitespace/commas
+  from a block-arm → expression-arm restyle. Verified at three tiers by
+  `scripts/split-proof-app-jobs.py 50fd36d5`; every identifier, literal, operator, call
+  and argument order matches in all 33.
+- **Argument-forwarding check (the one that matters for funds):** several extracted
+  functions take 3-6 consecutive `String` params (`token`, `to`, `amount`), where a
+  transposed call site would compile cleanly and send the wrong amount to the wrong
+  address. All **30 delegating call sites** forward every pattern-bound field, positionally
+  matching the callee's parameter names. No transposition.
+- `UiJob` / `UiJobResult` definitions in `jobs/mod.rs` are **untouched** (diff is the module
+  doc + 5 `mod` lines); the pre-existing `UiJob::Lp*` arms are byte-identical; every line
+  added to `app.rs` is an import change or a delegating-call argument (net −810 lines).
+
+**P2 — `spawn_job`'s stated lock invariant is violated by six jobs (pre-existing).**
+`vaughan-tui/src/app.rs:3546` asserts *"Never hold the wallet mutex across RPC / signing
+awaits — that freezes the TUI on `[busy]`"*. Six jobs do exactly that, in two shapes:
+**(A)** a guard bound and still in scope at `block_on`, and **(B)** the lock taken *inside*
+the `async` block that then `.await`s — which the compiler itself flags, hence the
+`#[allow(clippy::await_holding_lock)]`:
+
+| Job | Shape | Held across |
+|---|---|---|
+| `mcp.rs::mcp_queued_approve` | B | `execute_approval_with_fee(..).await` — MCP-approved **sign + broadcast**, needs `&mut WalletState` throughout |
+| `send.rs::send_stealth` | A | `w.send_stealth(..)` — a **sign + broadcast** |
+| `dex.rs::dex_swap_estimate_after_approve` | A | `w.estimate_transaction_fee(..)` |
+| `refresh.rs::refresh_activity` | A | `w.activity(limit)` |
+| `refresh.rs::refresh_allowances` | A | `w.list_allowances()` |
+| `refresh.rs::replace_broadcast` | A | `w.replace_broadcast(..)` |
+
+Verified pre-existing and unchanged by the split (`git show 50fd36d5:…/app.rs` has the
+identical pattern, `#[allow]` included), so this is **latent, not a regression** — but the
+two sign+broadcast entries hold the wallet for a full signing round-trip, the worst case
+for the freeze the comment warns about. Deliberately **not** fixed here: re-scoping a guard
+is a behaviour change and has no place in a move-only commit. Filed in `TASKS.md`.
+
+Note for whoever picks this up: shape B is not simply re-scopable —
+`execute_approval_with_fee` takes `&mut WalletState` for the duration by design, so that
+one needs an interface change, not just an earlier `drop(w)`. The four read-only shape-A
+cases are the cheap wins.
+
+**P2 — module docs asserted a lock discipline the code does not honour (introduced, fixed).**
+The `jobs/{refresh,send}.rs` docs written in §7 claimed *every* function drops the wallet
+lock before its await, which the table above falsifies. A doc promising a safety property
+the code lacks is worse than no doc — the next agent will build on the false premise.
+Corrected in the same change: each module doc now names its exceptions explicitly.
+`jobs/mod.rs`'s claim that job bodies "live in `app.rs`'s `spawn_job`" was also stale after
+the split and now describes reality.
+
+**Not covered**: still no full line-by-line Pass A across `vaughan-core`'s 41k lines; the
+splits were verified as splits (token conservation + call-site correctness), which proves
+behaviour was *preserved*, not that the pre-existing behaviour is *correct*.

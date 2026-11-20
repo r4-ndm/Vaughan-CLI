@@ -1,6 +1,6 @@
 //! Alloy `sol!` ABI bindings for the token/asset features.
 //!
-//! Provenance (per the optimization-source policy in `docs/optimizations.md`):
+//! Provenance (per the optimization-source policy in `docs/roadmap/optimizations.md`):
 //! - [`IERC20Metadata`] — EIP-20 (<https://eips.ethereum.org/EIPS/eip-20>) plus
 //!   the optional metadata accessors (`symbol`/`name`/`decimals`) standardized
 //!   by OpenZeppelin's ERC20Metadata. `balanceOf` is the only strictly
@@ -9,7 +9,7 @@
 //! - [`IMulticall3`] — Multicall3 by mds1 (<https://github.com/mds1/multicall>),
 //!   the canonical batched-call contract deployed at `0xcA11bde05977b3631167028862bE2a173976CA11`
 //!   on essentially every EVM chain (verified present on PulseChain mainnet —
-//!   see `docs/optimizations.md`). `tryAggregate` with `requireSuccess=false`
+//!   see `docs/roadmap/optimizations.md`). `tryAggregate` with `requireSuccess=false`
 //!   returns per-call success + return data, so one non-conforming token
 //!   cannot fail the whole balance batch.
 

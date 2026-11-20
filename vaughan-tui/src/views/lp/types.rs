@@ -1,3 +1,7 @@
+//! Shared types for the LP module: `LpView` itself and the small structs
+//! (`SortedPair`, `V3DepositPreviewContext`, `LpConfirmUi`, …) its sibling
+//! files pass between state/input/render/jobs.
+
 #![allow(unused_imports)]
 use ratatui::text::Line;
 use vaughan_core::core::{

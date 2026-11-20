@@ -5,7 +5,7 @@
 //! crash, an OOM kill, or `Restart=on-failure` — the in-memory
 //! [`vaughan_agent::CircuitBreaker`] flag alone does not. Must NOT contain
 //! policy logic, intent handling, or any way to UNTRIP: clearing a trip is
-//! root deleting the file and restarting the unit (see docs/sentient-ops.md).
+//! root deleting the file and restarting the unit (see docs/agents/sentient-ops.md).
 
 use std::path::Path;
 

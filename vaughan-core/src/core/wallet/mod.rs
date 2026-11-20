@@ -1532,7 +1532,7 @@ impl WalletState {
     /// curated / discovered / user-imported ERC-20s.
     ///
     /// ERC-20s are read in one Multicall3 `tryAggregate` batch (EIP-20 +
-    /// mds1/multicall; see `docs/optimizations.md` for provenance), with a
+    /// mds1/multicall; see `docs/roadmap/optimizations.md` for provenance), with a
     /// sequential fallback when Multicall3 is absent. Zero balances are
     /// excluded except for user-imported custom tokens; symbol/decimals come
     /// from the contract (cached), falling back to the curated registry.
