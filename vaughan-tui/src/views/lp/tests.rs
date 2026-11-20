@@ -1,3 +1,5 @@
+//! Unit tests for `LpView` state and input handling.
+
 #![allow(unused_imports)]
 use alloy::primitives::U256;
 use crossterm::event::{KeyCode, KeyEvent};

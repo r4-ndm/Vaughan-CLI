@@ -1,3 +1,7 @@
+//! Builds the `UiJob`s that drive an LP add/deploy through its stages (enable
+//! check, enable prepare/wait, deploy) and the follow-up job once one stage
+//! finishes — the job-graph side of the LP flow, not the rendering.
+
 use vaughan_core::core::{V3LpDeployParams, V3LpDeployWait, WalletState};
 
 use crate::app::KeyOutcome;

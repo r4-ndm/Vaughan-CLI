@@ -1,3 +1,6 @@
+//! Applies finished `UiJob` results back onto `LpView` state — the completion
+//! side of the job graph that `deploy.rs` builds.
+
 #![allow(unused_imports)]
 use alloy::primitives::U256;
 use crossterm::event::{KeyCode, KeyEvent};
