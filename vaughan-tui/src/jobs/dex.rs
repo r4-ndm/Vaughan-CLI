@@ -5,17 +5,19 @@
 //! broadcast (that is `jobs::send`'s `UiJob::SendEvm*` once the view has a
 //! quote it wants to act on).
 //!
-//! Lock discipline: all of these are lock-free except
-//! [`dex_swap_estimate_after_approve`], which holds the wallet guard across its
-//! `estimate_transaction_fee` await — carried over unchanged from `spawn_job`
-//! and tracked in `TASKS.md`.
+//! Lock discipline: every job here honours the rule `spawn_job` states — the
+//! wallet guard is never held across an await. Only
+//! [`dex_swap_estimate_after_approve`] touches the wallet at all, and it
+//! snapshots under the lock and drops it before the fee RPC. Enforced by
+//! `scripts/lock_discipline.py`, so a regression fails the audit gate rather
+//! than relying on this comment.
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, U256};
 use tokio::runtime::Handle;
-use vaughan_core::chains::Fee;
+use vaughan_core::chains::{ChainAdapter, Fee};
 use vaughan_core::core::{
     discover_v3_swap_route, erc20_allowance_covers, quote_aggregator, quote_live_aggregators,
     quote_v2_exact_in, quote_v3_path_exact_in, resolve_v3_swap_path, wait_erc20_allowance,
@@ -77,8 +79,29 @@ pub(crate) fn dex_swap_estimate_after_approve(
         let need = U256::from_str(&amount_in)
             .map_err(|_| WalletError::InvalidAmount("dex amount".into()))?;
         handle.block_on(wait_erc20_allowance(&rpc_url, token, owner, router, need))?;
-        let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
-        handle.block_on(w.estimate_transaction_fee(tx))
+        // Snapshot under the lock, then drop it before the fee RPC — the rule
+        // `spawn_job` states. `WalletState::estimate_transaction_fee` cannot be
+        // used here: it is `async fn(&self)`, so its future borrows the guard
+        // and the borrow checker will not let us release it first.
+        //
+        // That method opens with `require_unlocked()`, which is `NotInitialized`
+        // then `WalletLocked`; `network_rpc_snapshot()` reproduces the first and
+        // `is_unlocked()` the second, in that order, so the error cases are
+        // unchanged.
+        let snap = {
+            let w = wallet.lock().unwrap_or_else(|e| e.into_inner());
+            let snap = w.network_rpc_snapshot()?;
+            if !w.is_unlocked() {
+                return Err(WalletError::WalletLocked);
+            }
+            snap
+        };
+        handle.block_on(async move {
+            let adapter = snap.adapter().await?;
+            adapter
+                .estimate_fee(&vaughan_core::chains::ChainTransaction::Evm(tx))
+                .await
+        })
     })();
     UiJobResult::Fee(parsed)
 }

@@ -769,19 +769,50 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
       vacuous. Caveat: both scripts live in gitignored `private/`, so they are local-only
       — promote to `scripts/` if the remaining split candidates below should be gated by
       the same proof.
-- [ ] **P2 (latent, pre-existing): six jobs hold the wallet mutex across an await,**
-      contradicting the invariant `vaughan-tui/src/app.rs:3546` states for `spawn_job`
+- [x] **Enforce the wallet-mutex invariant** `vaughan-tui/src/app.rs` states for `spawn_job`
       ("never hold the wallet mutex across RPC / signing awaits — that freezes the TUI").
-      Cheap wins (read-only, just snapshot what's needed and drop the guard before the
-      await, like the other jobs already do): `jobs/refresh.rs::{refresh_activity,
-      refresh_allowances,replace_broadcast}` and `jobs/dex.rs::dex_swap_estimate_after_approve`.
-      Harder: `jobs/send.rs::send_stealth` holds it across a full **sign + broadcast**, and
-      `jobs/mcp.rs::mcp_queued_approve` holds it across `execute_approval_with_fee(..).await`
-      (carries `#[allow(clippy::await_holding_lock)]`) — that one takes `&mut WalletState`
-      for the duration by design, so it needs an interface change, not just an earlier
-      `drop`. All six are unchanged by the split (identical at `50fd36d5`), so none is a
-      regression. Needs its own commit plus a UI-freeze repro, not a move-only one.
-      Module docs now name these exceptions instead of claiming a discipline the code lacks.
+      It was prose, and nothing noticed that it was being broken. `scripts/lock_discipline.py`
+      now detects both shapes (`A` = guard held across `block_on`, invisible to clippy;
+      `B` = lock taken inside an `async` block that awaits, which is what
+      `clippy::await_holding_lock` sees), freezes the existing sites in
+      `scripts/lock-budget.txt`, and fails on any new one. Wired into `scripts/audit.sh`
+      beside the size-budget ratchet. Negative-tested: injecting a held-lock site makes it
+      exit 1.
+- [ ] **P2 (latent, pre-existing): 7 held-lock sites left to unwind** — see
+      `scripts/lock-budget.txt`. Two corrections to what an earlier pass of this file
+      claimed:
+      - It said **six**. It is **eight**: hand-scanning only looked at `jobs/*.rs` and
+        missed `vaughan-cli/src/serve.rs::stealth_scan` (RPC note-scanning under the lock)
+        and `vaughan-tui/src/app.rs::poll_jobs` — which holds it across `block_on` **on the
+        UI thread**, the most direct instance of the freeze the comment warns about.
+      - It called four of them "cheap wins… just drop the guard". **That is wrong.** All
+        four are `pub async fn (&self, ..)` on `WalletState`, so the returned future
+        borrows the guard and the borrow checker will not let you drop it first. Each needs
+        its body moved onto an owned snapshot type in `vaughan-core`, not a reordered
+        `drop`.
+      Accurate tiers, with the in-crate pattern each should copy:
+      - ~~`jobs/dex.rs::dex_swap_estimate_after_approve`~~ — **fixed**: snapshots under the
+        lock and drops it before the fee RPC, copying `jobs/send.rs::estimate_evm_fee`.
+        `network_rpc_snapshot()` + `is_unlocked()` reproduce `require_unlocked()`'s two
+        error cases (`NotInitialized`, then `WalletLocked`) in the same order, so the
+        error behaviour is unchanged. The ratchet dropped 8 → 7.
+      - `jobs/refresh.rs::{refresh_activity,refresh_allowances}` — need new methods on
+        `impl ChromeRpcSnapshot` (`vaughan-core/src/core/wallet/mod.rs:105`), which already
+        carries `rpc_url`/`fallback_rpc_urls`/`chain_id`/`address` — exactly their inputs.
+        `WalletState::activity` then delegates, keeping the logic in core.
+      - `jobs/refresh.rs::replace_broadcast` and `jobs/send.rs::send_stealth` — **money
+        paths**: both reach `self.broadcast(..)`. `detached_sign_context()` exists for
+        precisely this ("snapshot signer + RPC so a background job can drop the wallet
+        mutex before Trezor/Ledger USB or broadcast RPC"), so tractable, but testnet-first
+        per rule 5 and not to be done casually.
+      - `jobs/mcp.rs::mcp_queued_approve` — hardest: `execute_approval_with_fee` takes
+        `&mut WalletState` for the whole sign+broadcast by design, so it needs an interface
+        change.
+      - `serve.rs::stealth_scan`, `app.rs::poll_jobs` — not yet analysed.
+      None is a regression: at `50fd36d5` the detector finds 3 sites, one being `spawn_job`
+      with shape `AB` — that single 802-line function *contained* the 6 job violations. The
+      split turned one opaque blob into 6 individually named, attributable entries, so
+      3 → 8 is granularity, not new breakage.
 - [ ] Second pass candidates: `vaughan-core/src/core/wallet/mod.rs` (2287 lines),
       `vaughan-tui/src/provider.rs` (1827 lines), `vaughan-tui/src/views/dex.rs` (1980
       lines), `vaughan-core/src/core/dex_lp.rs` (1896 lines), the `views/lp/*` module-doc

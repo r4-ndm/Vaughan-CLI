@@ -321,6 +321,53 @@ Note for whoever picks this up: shape B is not simply re-scopable —
 one needs an interface change, not just an earlier `drop(w)`. The four read-only shape-A
 cases are the cheap wins.
 
+> **Corrected 2026-11-20 (same day), §9.** Both claims above are wrong: there are **8**
+> sites, not six, and the shape-A cases are **not** cheap. See §9.
+
+---
+
+## 9. 2026-11-20 third pass — the invariant is now machine-enforced
+
+§8 reported this finding by hand-scanning `vaughan-tui/src/jobs/*.rs`. Hand-scanning was
+the wrong tool twice over, so the rule is now a gate: `scripts/lock_discipline.py`, frozen
+baseline in `scripts/lock-budget.txt`, wired into `scripts/audit.sh` beside the size
+budget. Negative-tested — injecting a held-lock site makes it exit 1, so a green run is
+not vacuous.
+
+**Correction 1 — the count is 8, not 6.** Hand-scanning missed two files it never looked
+at:
+
+| Missed site | Why it matters |
+|---|---|
+| `vaughan-tui/src/app.rs::poll_jobs` | holds the guard across `block_on` **on the UI thread** — the most direct instance of the freeze `spawn_job`'s comment warns about |
+| `vaughan-cli/src/serve.rs::stealth_scan` | holds it across `w.scan_stealth_notes()`, an RPC round-trip, in the serve daemon |
+
+**Correction 2 — "the four read-only shape-A cases are the cheap wins" is false.** All
+four call `pub async fn (&self, ..)` methods on `WalletState`, so the returned future
+borrows `&self` and therefore the `MutexGuard`. The borrow checker forbids dropping the
+guard first; there is no reordering that fixes these. Each needs its body moved onto an
+owned snapshot type in `vaughan-core` — the `NetworkRpcSnapshot` / `ChromeRpcSnapshot`
+pattern that the already-compliant jobs use. `replace_broadcast` is additionally
+mis-tiered: it reaches `self.broadcast(..)`, making it a **money path**, not a read-only
+one.
+
+Accurate tiering and the existing in-crate pattern each should copy is recorded in
+`TASKS.md`; the short version is one small fix, two mechanical `ChromeRpcSnapshot`
+additions, two money paths that must go testnet-first, one interface change, and two
+unanalysed.
+
+**The split did not add violations.** Run against `50fd36d5`, the detector finds 3 sites,
+one of which is `spawn_job` carrying shape `AB` — that single 802-line function *contained*
+all six job-level violations. The split converted one opaque entry into six individually
+named, attributable ones. 3 → 8 is granularity, not regression. This is also the clearest
+argument that the split earned its keep: the same defects went from invisible-in-a-blob to
+enumerable and separately fixable.
+
+**Method note.** Three successive hand counts of this finding gave 5, then 6, then 8. The
+lesson is the repo's own: a rule stated only in prose is not enforced, and a count derived
+only by reading is not a measurement. The gate is the finding's real deliverable; the
+remaining fixes are now tracked debt that cannot silently grow.
+
 **P2 — module docs asserted a lock discipline the code does not honour (introduced, fixed).**
 The `jobs/{refresh,send}.rs` docs written in §7 claimed *every* function drops the wallet
 lock before its await, which the table above falsifies. A doc promising a safety property

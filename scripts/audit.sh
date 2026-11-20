@@ -175,6 +175,20 @@ else
     fail "python3 not found — module size budget cannot run (unchecked, not clean)"
 fi
 
+# ---------------------------------------------------------------- wallet lock
+section "wallet mutex discipline"
+
+# spawn_job states the rule ("never hold the wallet mutex across RPC / signing
+# awaits — that freezes the TUI"); it was prose and six jobs broke it unnoticed.
+# Same ratchet shape as the size budget: existing sites frozen in
+# scripts/lock-budget.txt, a new one fails. See scripts/lock_discipline.py.
+if command -v python3 >/dev/null 2>&1; then
+    run_check "no new wallet-lock-across-await site (scripts/lock_discipline.py)" \
+        python3 scripts/lock_discipline.py
+else
+    fail "python3 not found — wallet lock discipline cannot run (unchecked, not clean)"
+fi
+
 # ---------------------------------------------------------------- tracked files
 section "tracked file hygiene"
 

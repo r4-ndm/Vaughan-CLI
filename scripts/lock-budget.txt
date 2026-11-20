@@ -1,0 +1,13 @@
+# Wallet-mutex discipline baseline (see scripts/lock_discipline.py).
+# Existing violations only: entries may be REMOVED, never added without a
+# reason in the PR. `A` = guard held across block_on; `B` = lock taken inside
+# an async block that awaits (clippy::await_holding_lock).
+# The rule being frozen here is stated in vaughan-tui/src/app.rs's spawn_job:
+# never hold the wallet mutex across RPC / signing awaits.
+A vaughan-cli/src/serve.rs::stealth_scan
+A vaughan-tui/src/app.rs::poll_jobs
+B vaughan-tui/src/jobs/mcp.rs::mcp_queued_approve
+A vaughan-tui/src/jobs/refresh.rs::refresh_activity
+A vaughan-tui/src/jobs/refresh.rs::refresh_allowances
+A vaughan-tui/src/jobs/refresh.rs::replace_broadcast
+A vaughan-tui/src/jobs/send.rs::send_stealth
