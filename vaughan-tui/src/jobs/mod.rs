@@ -1,11 +1,18 @@
 //! Background UI jobs so RPC work never `block_on`s the TUI thread.
 //!
 //! This module owns the job *data*: [`UiJob`] (what to run) and [`UiJobResult`]
-//! (what came back). The bodies that actually run them live in `app.rs`'s
-//! `spawn_job`, except where a family is big enough to deserve its own module —
-//! see [`lp`].
+//! (what came back). The bodies that run them live in the submodules here —
+//! [`lp`], [`dca`], and the crate-private `refresh`, `send`, `dex`, `mcp`.
+//! `app.rs`'s `spawn_job` is now just the thread spawn plus a one-line
+//! delegation per variant; it owns the Trezor-PIN pre-check and the result
+//! channel, not the job logic.
 
+pub mod dca;
+pub(crate) mod dex;
 pub mod lp;
+pub(crate) mod mcp;
+pub(crate) mod refresh;
+pub(crate) mod send;
 
 use secrecy::SecretString;
 use vaughan_core::chains::{Balance, EvmTransaction, Fee};

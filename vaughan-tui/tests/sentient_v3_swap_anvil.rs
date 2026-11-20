@@ -432,7 +432,7 @@ async fn test_sentient_dca_slice_routes_to_signer_and_reports_refusal_verbatim()
     let plan_id = plan.id.clone();
     let profile_dir_clone = profile_dir.clone();
     let job_res = tokio::task::spawn_blocking(move || {
-        vaughan_tui::app::execute_dca_slice_job(
+        vaughan_tui::jobs::dca::execute_dca_slice_job(
             &wallet_mutex,
             &rt_handle,
             plan_id,
@@ -523,7 +523,7 @@ async fn test_sentient_dca_slice_fires_successfully_with_resolved_corridor_on_an
     let plan_id = plan.id.clone();
     let profile_dir_clone = profile_dir.clone();
     let job_res = tokio::task::spawn_blocking(move || {
-        vaughan_tui::app::execute_dca_slice_job(
+        vaughan_tui::jobs::dca::execute_dca_slice_job(
             &wallet_mutex,
             &rt_handle,
             plan_id,
