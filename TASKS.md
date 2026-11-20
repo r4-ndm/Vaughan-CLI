@@ -62,8 +62,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 > **Parked** until upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
 > merges. Vaughan-side bridge is done; no active Freedom work until then.
-> Status: [docs/freedom-browser-status.md](docs/freedom-browser-status.md)
-> Integration research: [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md)
+> Status: [docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md)
+> Integration research: [docs/roadmap/freedom-browser-integration.md](docs/roadmap/freedom-browser-integration.md)
 
 - [x] `vaughan-provider` crate: local EIP-1193 WebSocket server (loopback) (FR-2.1)
 - [x] Implement provider methods: accounts, chainId, sendTransaction, sign, signTypedData_v4, switchEthereumChain + `vaughan_signTransaction` (FR-2.2)
@@ -75,7 +75,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ## Phase 3 — Privacy + smart accounts
 
-- [ ] Harden kohaku-rs: add stealth test vectors + `kohaku-core` tests (FR-3.1) — **deferred by decision**: upstream RAILGUN key-derivation bug (BIP-32 vs babyjubjub seed tree) makes keys incompatible/unrecoverable; see `docs/kohaku-go-no-go.md`
+- [ ] Harden kohaku-rs: add stealth test vectors + `kohaku-core` tests (FR-3.1) — **deferred by decision**: upstream RAILGUN key-derivation bug (BIP-32 vs babyjubjub seed tree) makes keys incompatible/unrecoverable; see `docs/decisions/kohaku-go-no-go.md`
 - [ ] Fix kohaku-rs railgun build (git dep / submodule instead of sync script) (FR-3.1) — deferred with FR-3.1
 - [ ] Publish `kohaku-core` + `kohaku-stealth` to crates.io (FR-3.1) — deferred with FR-3.1
 - [x] ERC-5564 scheme-1 crypto in `vaughan-core` (spec-first, no Kohaku) (FR-3.2)
@@ -84,14 +84,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Anvil stealth tests: core send/scan/sweep, Alice→Bob isolation, dust stipend, scan after later blocks, TUI `st:` send/scan/sweep
 - [x] TUI: stealth receive URI, send `st:`, scan, sweep (FR-3.2)
 - [ ] CREATE2-deploy announcer on PulseChain 369 after 943 E2E (FR-3.2) — codesize still `0` on `https://rpc.pulsechain.com`; ready via `RPC_URL=https://rpc.pulsechain.com PRIVATE_KEY=0x… ./scripts/deploy-erc5564-announcer.sh` (needs funded PLS key; not run from this session)
-- [ ] Ambire smart accounts in Rust — see `docs/ambire-aa.md` (FR-3.3)
+- [ ] Ambire smart accounts in Rust — see `docs/architecture/ambire-aa.md` (FR-3.3)
   - [x] Create the `vaughan-aa` workspace crate and document the AGPL-3.0/GPL → MIT/Apache reimplementation boundary
   - [x] Define the smart-account ABI (`sol!`) + `scw_transaction`/`SignatureMode` types from the on-chain `AmbireAccount` contract (Vaughan-Dioxus as guide only)
   - [x] Digest = `keccak256(abi.encode(account, chainId, nonce, txns))`; sign raw hash (`sign_hash`, mode `0`) or EIP-191 (`personal_sign`, mode `1`), append the mode byte. Core gained `security::signing::sign_hash`; the digest is verified byte-for-byte against a hand-built ABI-spec vector.
   - [x] Encode the inner `Transaction[]` batch calldata (`execute` selector + `abi.encode`, round-trip tested). *(Fixture byte-equality is covered by the differential harness below — still pending fixtures.)*
   - [x] Sign a `scw_transaction` and recover/verify the 66-byte `r‖s‖v‖mode` signature (raw-hash + EIP-191)
   - [x] EIP-7702 assembly (`build.rs`): sign the `Authorization` delegating the account EOA to the Ambire implementation and build the `TxEip7702` carrying `execute(txns, signature)` (self-pay, testnet-first). Authority/chain-id are validated against the batch before assembling.
-  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — **deferred by decision**: 7702 is implemented and proven against a Prague fork, but blocked on 369/943; 4337 only buys gas sponsorship + EntryPoint interop. See `docs/ambire-aa.md` §7.
+  - [ ] ERC-4337 `UserOperation` / `getUserOpHash` assembly (`build.rs`) — **deferred by decision**: 7702 is implemented and proven against a Prague fork, but blocked on 369/943; 4337 only buys gas sponsorship + EntryPoint interop. See `docs/architecture/ambire-aa.md` §7.
   - [x] Broadcast via `EvmAdapter` (`adapter.rs`): the **self-pay** path is wired — fetch the account's *pending* nonce (uncached), derive EIP-1559 fees through the adapter's existing heuristic (pinned gas limit, since `eth_estimateGas` can't price a pre-delegation 7702 call), sign the 7702 envelope (auth nonce = account nonce + 1 per EIP-7702's "after the sender's nonce is incremented"), and submit via the adapter's primary + fallback broadcast. Relayer / bundler routes still TBD.
   - [x] Differential test harness: fixtures captured from the **EVM reference** (self-contained forge test in `vaughan-aa/.fixtures-capture/`, gitignored — Solidity's own encoder is the canonical independent implementation); `tests/differential.rs` asserts Rust matches byte-for-byte on preimage + digest + `execute` calldata across 5 cases (single zero-value, native transfer, multi-txn batch, empty batch revert, ERC-20 transfer). See `tests/fixtures/README.md`.
   - [x] Live E2E on a forked testnet (`vaughan-aa/tests/self_pay_e2e.rs`): forks PulseChain testnet (943, where the real `AmbireAccount` impl lives at `0x2A2b…684EF`), bootstraps the account key privilege via a self-call `setAddrPrivilege(account, bytes32(1))` 7702 tx (a fresh EOA otherwise reverts `INSUFFICIENT_PRIVILEGE`), then `submit_self_pay` signs + broadcasts the batch — the recipient receives exactly the value, and the delegation persists as `0xef0100 || impl` per the final EIP-7702 (delegations are permanent; the transient variant was dropped in the spec).
@@ -100,7 +100,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 
 ## Phase 4 — Contract browser & DEX engine (`wiz4rd-engine`)
 
-> Full scope: `docs/browser-engine.md` and `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5). **Pure Rust, no cast subprocess** — alloy is the battle-tested core (it's the library Foundry itself is built on). Engine is generic wallet tooling (browses/calls *any* contract, not just DEXes). Read-only on other DEXes in v0.1; money-moving flows only through Vaughan's existing alloy signer layer.
+> Full scope: `docs/architecture/browser-engine.md` and `wiz4rd-swap/docs/other-dexes-scope.md` (rev 5). **Pure Rust, no cast subprocess** — alloy is the battle-tested core (it's the library Foundry itself is built on). Engine is generic wallet tooling (browses/calls *any* contract, not just DEXes). Read-only on other DEXes in v0.1; money-moving flows only through Vaughan's existing alloy signer layer.
 
 ### vaughan-core — browser engine (`wiz4rd-engine`, generic, no DEX knowledge)
 - [x] `browser/abi.rs`: Explorer `getabi` fetch (`api.scan.pulsechain.com`) + persistent disk cache (FR-4.1)
@@ -124,8 +124,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 ### DEX views — from wiz4rd-sdk (integrated into workspace)
 - [x] Protocol views by capability: V2 price (`getReserves` ratio), V3 pool state (`slot0` + wiz4rd-math tick math), token metadata probes
 - [ ] Deferred: write calls on other DEXes, cross-DEX routing
-- [x] Piteas aggregator client scaffold (`vaughan-core::core::piteas`): quote API, optional encrypted partner key vault, `docs/piteas.md` — Ag uses public beta (no key)
-- [x] Ag screen (`g`): SquirrelSwap Brain primary (no key); also PulseSwap + Piteas; catalog of other aggs (`docs/aggregator.md`)
+- [x] Piteas aggregator client scaffold (`vaughan-core::core::piteas`): quote API, optional encrypted partner key vault, `docs/architecture/piteas.md` — Ag uses public beta (no key)
+- [x] Ag screen (`g`): SquirrelSwap Brain primary (no key); also PulseSwap + Piteas; catalog of other aggs (`docs/architecture/aggregator.md`)
 
 ### Custom tokens + dApp whitelist (added 2026-08-20)
 - [x] Import custom ERC-20s (meme coins) into Assets (`i`); persist in vault JSON; show even at zero balance
@@ -236,7 +236,7 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > **Embedded LLM UI/CLI retired (2026-08-23); superseded by Phase 6 MCP.** In-TUI chat,
 > provider setup, mode picker, `vaughan agent`, and `vaughan policy` are removed.
 > `vaughan-agent` remains as a slim library (proposals, tools, circuit breakers) consumed
-> by `vaughan mcp`. Setup: `docs/mcp.md`. Historical spec: `docs/AI-AGENT-ARCHITECTURE.md`.
+> by `vaughan mcp`. Setup: `docs/architecture/mcp.md`. Historical spec: `docs/architecture/AI-AGENT-ARCHITECTURE.md`.
 
 ### Step 1: 3-Tier Operating Mode & Profile Isolation (Done)
 - [x] `OperatingMode` enum: `HumanOnly`, `AiAssisted`, `SentientTrader` (FR-5.1)
@@ -311,14 +311,14 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 > **Pitch:** “The wallet that doesn’t need Chrome.” Approve calldata, not websites.
 > Primary path = Dashboard → Ag / Dex / Contract browser / MCP. **Freedom is
 > parked** until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
-> merges ([docs/freedom-browser-status.md](docs/freedom-browser-status.md)).
+> merges ([docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md)).
 > **VB** is the active optional web side door.
 >
 > Exit demo (no browser window): unlock → Ag swap → contract probe → MCP propose
 > → stealth receive.
 >
-> Related: `docs/browserless-pulse.md`, `docs/dapp-browser-strategy.md`,
-> `docs/aggregator.md`, `docs/mcp.md`, Phase 4 Dex/Ag scaffolds, Phase 6 MCP,
+> Related: `docs/architecture/browserless-pulse.md`, `docs/roadmap/dapp-browser-strategy.md`,
+> `docs/architecture/aggregator.md`, `docs/architecture/mcp.md`, Phase 4 Dex/Ag scaffolds, Phase 6 MCP,
 > Phase 7 optional Chromium agent browser.
 
 ### Sentient session policy (guardrails the user owns)
@@ -335,16 +335,16 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] CLI: `vaughan [--profile sentient] policy show|set|confirm-unsafe|reload`
 
 ### P0 — Finish in-TUI trade (kills PulseX-in-Chrome)
-- [x] DexScreener research tools + e*/p* origin catalog (`docs/dexscreener.md`) — Advisor discovery; Sentient foundation
-- [x] HEX stake reads + TUI Hex view (`u`) + `propose_hex_stake_*` + MCP proposal review/safety hints (`docs/hex-stake.md`)
+- [x] DexScreener research tools + e*/p* origin catalog (`docs/architecture/dexscreener.md`) — Advisor discovery; Sentient foundation
+- [x] HEX stake reads + TUI Hex view (`u`) + `propose_hex_stake_*` + MCP proposal review/safety hints (`docs/architecture/hex-stake.md`)
 - [x] Ag Anvil: SquirrelSwap `/swap` fixture → mock router → native + approve/swap broadcast (`vaughan-tui/tests/ag_view.rs`)
 - [x] Ag end-to-end polish: SquirrelSwap quote → route preview → ERC-20 approve (if needed) → swap confirm → broadcast (explicit approval only)
-- [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/piteas.md`)
+- [x] Piteas Ag venue via public `sdk.piteas.io` (`LiveNoKey`; partner key optional for higher limits — see `docs/architecture/piteas.md`)
 - [x] Ag parallel compare-all (Squirrel / PulseSwap / Piteas / Empseal) with pick screen; single-venue default via ↑/↓
 - [x] PulseSwap advanced quotes: send `extra` pricing + validate inner `data.success`
 - [x] Dex (`d`) write path for curated V2/V3 routers (Pulse-first); reuse Send approval card + fee estimate
-- [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/wiz4rd-addresses.md`)
-- [x] wiz4rd MCP Phase B+C: `get_v3_pool`, `quote_v3_swap`, `propose_v3_swap` (`docs/pulse-defi-skills.md`)
+- [x] wiz4rd V3 on Pulse testnet 943: addresses + Dex venue **Wiz4rd** + MCP `get_network.wiz4rd` (`docs/architecture/wiz4rd-addresses.md`)
+- [x] wiz4rd MCP Phase B+C: `get_v3_pool`, `quote_v3_swap`, `propose_v3_swap` (`docs/agents/pulse-defi-skills.md`)
 - [x] wiz4rd MCP Phase D: `propose_v3_mint` + `list_v3_positions`
 - [x] LP Brews Phase 1: `lp_brew.rs` + `lp_deploy.rs` orchestrator, `propose_v3_lp_deploy`, `discover_v3_pool_fee`, TUI auto-advance on `LpDeployStep`, `vaughan lp plan|deploy`, token-agnostic `vaughan-brews` skill + `brew.example.json`
 - [x] LP Brews Phase 2: `build_lp_deploy_batch_calls` + `propose_v3_lp_deploy { mode: batch }` → single `Batch7702` confirm
@@ -362,19 +362,19 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [x] Agent tools: `quote_swap` / `propose_agg_swap` (+ existing `propose_swap`) with ground-truth approval cards (Assist never auto-broadcasts)
 - [x] Intent macros: `/swap …`, `/inspect 0x…`, `/revoke …`, `/stealth receive` in Browser REPL → existing surfaces (`vaughan-tui/src/intent.rs`)
 - [x] Pulse DeFi skill pack aligned with Ag/Dex (inspect / quote / route / trade) — MCP tools `quote_swap` + `propose_agg_swap`
-- [x] **DeFi agent parity** — must-have verbs in [`docs/defi-agent-parity.md`](docs/defi-agent-parity.md); EmpX + 7702 AA exec + stealth scan/sweep MCP shipped
-- [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agent-roles.md`](docs/agent-roles.md)
-- [x] **Sentient re-enabled (Track B)** — `sentient_mode_enabled() = true`; unlock role picker restored; gate sizes approve/unwrap + allowlisted agg routers; raw zero-value `contract_call` still refused; `default` never auto-signs ([`docs/sentient-ops.md`](docs/sentient-ops.md))
-- [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/sentient-presets.md`](docs/sentient-presets.md), `vaughan-agent/presets/`)
+- [x] **DeFi agent parity** — must-have verbs in [`docs/roadmap/defi-agent-parity.md`](docs/roadmap/defi-agent-parity.md); EmpX + 7702 AA exec + stealth scan/sweep MCP shipped
+- [x] **MCP sentient mode** — `vaughan-sentient` / `--profile sentient` auto-exec when TUI unlocked (re-sim + policy; no approval card); `default` / `vaughan` stays **adviser**. See [`docs/agents/agent-roles.md`](docs/agents/agent-roles.md)
+- [x] **Sentient re-enabled (Track B)** — `sentient_mode_enabled() = true`; unlock role picker restored; gate sizes approve/unwrap + allowlisted agg routers; raw zero-value `contract_call` still refused; `default` never auto-signs ([`docs/agents/sentient-ops.md`](docs/agents/sentient-ops.md))
+- [x] **Sentient skill presets** — premade packs (`high-risk-gambler`, `balanced`, `quant-risk-reward`, `cautious`) + docs; human copies into profile / customizes ([`docs/agents/sentient-presets.md`](docs/agents/sentient-presets.md), `vaughan-agent/presets/`)
 - [x] **`vaughan preset apply <id>`** — copy a bundled preset into the active profile (skills + `sentient-policy.toml`)
-- [x] **`vaughan serve`** — headless unlock + MCP control plane (`--password-env`); see `docs/mcp.md`
+- [x] **`vaughan serve`** — headless unlock + MCP control plane (`--password-env`); see `docs/architecture/mcp.md`
 
 ### P2 — Replace explorer & settings tabs people open constantly
 - [x] Activity / History screen (`m`): ERC-20 Transfer logs (sent/received) over recent window; reload; native-only without token log still needs explorer later
 - [x] Anvil: ERC-20 approve → revoke (`approve(spender,0)`) clears allowance (`browserless_anvil.rs` + `build_revoke_tx`)
 - [x] Approvals manager (`j`): list ERC-20 allowances vs known Ag/Dex/Bridge spenders; one-shot revoke via confirm card
 - [x] Anvil: WPLS wrap (`deposit`) / unwrap (`withdraw`) against MockWeth (`browserless_anvil.rs` + `build_wrap_tx` / `build_unwrap_tx`)
-- [x] Bridge (`f`): LibertySwap USDC cross-chain quote → approve → source broadcast (`docs/bridge.md`; not official Omnibridge)
+- [x] Bridge (`f`): LibertySwap USDC cross-chain quote → approve → source broadcast (`docs/architecture/bridge.md`; not official Omnibridge)
 - [ ] Official Pulse Omnibridge / PulseRamp client (lock-and-mint ETH ↔ Pulse) — **deferred** (polish first; LibertySwap remains Bridge)
 - [x] Wrap / unwrap WPLS as a first-class tiny flow (`e`)
 - [x] Contract browser gated writes: `write` / `writeraw` from REPL → fee confirm → broadcast (same path as Send)
@@ -397,8 +397,8 @@ Checkbox tasks, ordered by phase. Requirement IDs reference `REQUIREMENTS.md`.
 - [ ] Official Omnibridge UI *or* keep documenting “use LibertySwap Bridge / Ag / Dex for in-chain” — keep documenting Liberty until Omnibridge is un-deferred
 - [x] Local EIP-712: paste/load typed-data JSON → Approve view — `vaughan sign-typed-data`, browser `sign-typed`
 - [x] Watch mode (MCP): `watch_balance` + `watch_quote` threshold snapshots; agent owns poll loop
-- [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/sentient-ops.md`](docs/sentient-ops.md))
-- [x] TUI-hosted DCA (FR-5.9): `vaughan-agent::dca` store/engine + DcaView (`o`) + MCP propose/list/cancel; route **agg ↔ DEX** + named venue pickers; Sentient tick fires slices; indicator Phase 2 documented in [`docs/dca.md`](docs/dca.md)
+- [x] Sentient always-on: `vaughan serve` + example systemd unit + `get_control_plane_status` ([`docs/agents/sentient-ops.md`](docs/agents/sentient-ops.md))
+- [x] TUI-hosted DCA (FR-5.9): `vaughan-agent::dca` store/engine + DcaView (`o`) + MCP propose/list/cancel; route **agg ↔ DEX** + named venue pickers; Sentient tick fires slices; indicator Phase 2 documented in [`docs/architecture/dca.md`](docs/architecture/dca.md)
 - [x] Batch7702 fee-spike: stamp via `estimate_self_pay_fee`, check at approve (same as other MCP writes)
 
 #### LP manual 943 walkthrough (operator runbook)
@@ -436,28 +436,28 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 ### Positioning (UX + docs)
 - [x] Demote Dapps screen: relabel to “Optional web / VB” (`w` Web); chrome emphasizes Ag / Dex / Browse / MCP
-- [x] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom parked pending PR #195 (`docs/freedom-browser-status.md`)
-- [x] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame) — operator script: [`docs/browserless-pulse-demo.md`](docs/browserless-pulse-demo.md)
+- [x] README + CONTRIBUTING blurb: browserless Pulse thesis; Freedom parked pending PR #195 (`docs/roadmap/freedom-browser-status.md`)
+- [x] One recorded demo reel matching the exit demo above (no Chrome/Freedom in frame) — operator script: [`docs/ops/browserless-pulse-demo.md`](docs/ops/browserless-pulse-demo.md)
 
 ### Explicitly out of scope for this thesis
 - Making a webview the **default** wallet identity (Browserless Pulse stays primary)
 - Open-internet general browsing / Chrome replacement / extensions
 - WalletConnect-as-default identity (keeps users married to websites)
 - 1:1 clones of every Pulse website — prefer verbs: swap, inspect, revoke, send, stealth
-- Hosted multi-tenant / cloud fire-and-forget signing (see [`docs/sentient-ops.md`](docs/sentient-ops.md))
-- Full `rmcp` MCP rewrite — **not needed now**; deferred until revisit triggers in [`docs/mcp-transport.md`](docs/mcp-transport.md) (prefer smallest hand-rolled fix first)
+- Hosted multi-tenant / cloud fire-and-forget signing (see [`docs/agents/sentient-ops.md`](docs/agents/sentient-ops.md))
+- Full `rmcp` MCP rewrite — **not needed now**; deferred until revisit triggers in [`docs/architecture/mcp-transport.md`](docs/architecture/mcp-transport.md) (prefer smallest hand-rolled fix first)
 - CEF / Chromium linked into `vaughan-core` (optional browser is a separate binary — see Phase 7)
 
 ## Phase 7 — Optional Chromium dApp browser + agent control
 
-> Strategy: [`docs/dapp-browser-strategy.md`](docs/dapp-browser-strategy.md).
+> Strategy: [`docs/roadmap/dapp-browser-strategy.md`](docs/roadmap/dapp-browser-strategy.md).
 > Modular Tauri+CEF side door; multi-chain EVM; CDP agents; never auto-sign.
 > **VB** (system Chromium today) is the active web side door; Freedom **parked**
 > until [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges.
 
 ### Phase 0 — Docs
-- [x] `docs/dapp-browser-strategy.md` (CEF, modularity, multi-chain, CDP, kill-switch)
-- [x] `docs/browserless-pulse.md` + REQUIREMENTS FR-7.* + this TASKS section
+- [x] `docs/roadmap/dapp-browser-strategy.md` (CEF, modularity, multi-chain, CDP, kill-switch)
+- [x] `docs/architecture/browserless-pulse.md` + REQUIREMENTS FR-7.* + this TASKS section
 
 ### Phase 0.5 — CEF spike (gate)
 - [x] crates.io survey: `cef` published; `tauri-runtime-cef` not on crates.io (git/wrymium required)
@@ -478,17 +478,17 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 ### Phase 2 — MCP B1 (FR-7.5)
 
 - [x] `browser_open` / `browser_navigate` / `browser_status` (allowlisted; CDP via `vb.session`)
-- [x] Structured unavailable when binary/child absent; document in `docs/mcp.md`
+- [x] Structured unavailable when binary/child absent; document in `docs/architecture/mcp.md`
 
 ### Phase 3 — MCP B2 (FR-7.5)
 - [x] `browser_snapshot` / `browser_click` / `browser_type` / `browser_press` / `browser_wait` via CDP evaluate + Input (refs e0..e49)
-- [x] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6) — [`docs/vb-kill-switch.md`](docs/vb-kill-switch.md); Settings **`p`**; `vaughan config agent-browser`
+- [x] Settings toggle default off; never auto-sign; kill-switch path documented (FR-7.6) — [`docs/ops/vb-kill-switch.md`](docs/ops/vb-kill-switch.md); Settings **`p`**; `vaughan config agent-browser`
 - [x] Hardening: `vb_cdp` split into modules + `js/*.js` snippets; VB spawn via `setsid` + `vb.log`; picker search-box flow (long-tail tokens); quote `token_out` inference + Swap-details auto-expand + labeled outputs
 
 ### MCP + VB agent-control security audit (2026-08-29, all findings fixed)
 
 > Full audit of the MCP surface, proposal queue/IPC, sentient auto-exec gate, and
-> VB CDP agent control. Controls matrix: [`docs/mcp-threat-model.md`](docs/mcp-threat-model.md).
+> VB CDP agent control. Controls matrix: [`docs/risk/mcp-threat-model.md`](docs/risk/mcp-threat-model.md).
 
 - [x] Sentient gate: `Batch7702` per-leg sizing (native + ERC-20 `execute(txns)` decode; unsizeable raw calls refused for auto-exec)
 - [x] Sentient gate: fresh quote + slippage floor, audited router allowlist (propose-time + gate-time), fresh fee estimate (fail-closed) + pre-broadcast gas-budget check, mainnet re-check, mode-keyed gate
@@ -517,7 +517,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 ### Parked — Blunt.cash payments (Browserless Pulse)
 
-> **Parked** 2026-08-27. Full plan: [`docs/blunt-integration-plan.md`](docs/blunt-integration-plan.md).
+> **Parked** 2026-08-27. Full plan: [`docs/roadmap/blunt-integration-plan.md`](docs/roadmap/blunt-integration-plan.md).
 > Prototype: `/home/r4/Desktop/Blunt-vaughan`. Official API:
 > [blunt.cash/merchant/docs/reference/api](https://blunt.cash/merchant/docs/reference/api).
 > **v1 = direct wallet pay only; no VaughanPaymentRouter / protocol fees.**
@@ -558,7 +558,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 - [ ] `docs/blunt.md` (operator guide)
 - [ ] FR-8.* in REQUIREMENTS.md
-- [ ] Browserless Pulse demo step in `docs/browserless-pulse.md`
+- [ ] Browserless Pulse demo step in `docs/architecture/browserless-pulse.md`
 
 #### Explicitly deferred (post-v1)
 
@@ -569,7 +569,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 
 ### Ideas borrowed from ZKX Wallet — approval-gate hardening (in progress)
 
-> Full plan: [`docs/zkx-borrowed-ideas-plan.md`](docs/zkx-borrowed-ideas-plan.md).
+> Full plan: [`docs/roadmap/zkx-borrowed-ideas-plan.md`](docs/roadmap/zkx-borrowed-ideas-plan.md).
 > ZKX / Ambire are idea references only — written fresh (CLAUDE.md rule 5).
 > Scope for this round: the realistic near-term wins that harden the existing
 > approval gate. RAILGUN is **parked** (see below).
@@ -629,7 +629,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 > Un-parked 2026-10-02: upstream `triamazikamno/railgun-rust` (MIT) matches the
 > official engine's derivation, so no from-scratch rewrite is needed. Pinned
 > git dependency, opt-in `railgun` feature, only in `vaughan-railgun`. Not on
-> PulseChain; Sepolia first. Full record: `docs/railgun-go-no-go.md`.
+> PulseChain; Sepolia first. Full record: `docs/decisions/railgun-go-no-go.md`.
 > **Release blocker:** `wasmer-compiler-singlepass` is BUSL-1.1 (see doc).
 
 #### Phase 0 — groundwork (branch `railgun/phase-0`)
@@ -650,7 +650,7 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [x] `cargo audit` + licence scan + transitive git deps (`rs-poseidon`) recorded
 - [x] Sepolia proxy / implementation / RelayAdapt verified on-chain; scan start block 5784774
 - [x] CI job `railgun` (leak check, clippy, tests, parity)
-- [x] `docs/railgun-go-no-go.md`; `kohaku-go-no-go.md` + FR-3.4 updated
+- [x] `docs/decisions/railgun-go-no-go.md`; `kohaku-go-no-go.md` + FR-3.4 updated
 - [x] **Gate 0 (user):** CLAUDE.md allowlist rows for `railgun-wallet` / `broadcaster-core` approved 2026-10-02
 - [x] Upstream contributions drafted and tested: 3 patches + 3 issue texts in `docs/railgun-upstream/`
 - [ ] Send upstream PRs / issues (user posts them; Singlepass is the release blocker)
@@ -693,11 +693,11 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 > Session policy foundation shipped under **Browserless Pulse → Sentient session policy**.
 
 - [x] P0: `AgentSessionPolicy` + wire Sentient breakers + Agent `/policy` (see Browserless Pulse)
-- [x] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Sentient under policy) — `vaughan mcp`, hybrid IPC, `docs/mcp.md`
+- [x] P1: Vaughan MCP server for Claude/Codex/Gemini (no key exposure; Assist approve / Sentient under policy) — `vaughan mcp`, hybrid IPC, `docs/architecture/mcp.md`
 - [x] P2: Pulse DeFi skill pack (inspect / quote / route / trade; Earn only when real) — `quote_swap`, `propose_agg_swap`, `propose_swap`
 - [ ] P3: x402 client (opportunistic — only with real counterparties)
 - [ ] P4: gas tank, optional hardware signer, local deny lists (never hosted TEE / KYT telemetry)
-  - Plan: [`docs/hardware-wallets.md`](docs/hardware-wallets.md) (Ledger + Trezor; Phase 0 abstraction first, no HID crates until approved)
+  - Plan: [`docs/architecture/hardware-wallets.md`](docs/architecture/hardware-wallets.md) (Ledger + Trezor; Phase 0 abstraction first, no HID crates until approved)
   - [x] HW readiness check (2026-08-25): Phase 0 = Go-with-fixes; see readiness section in plan doc
   - [x] HW Phase 0: modular `security/hardware/` + family-agnostic `SignerBackend` + EVM profile + vault `hardware[]` (no new deps; multichain-ready seams)
   - [x] HW Phase 1: Ledger EOA (`alloy-signer-ledger`, Keys Add Ledger, mock Anvil); live 943 device smoke still optional
@@ -718,6 +718,81 @@ Pass: NFT minted on 943; no agent re-prompt between steps; `cargo test -p vaugha
 - [ ] `chains/polkadot/` adapter (Substrate, SS58 addresses, weight-based fees, `subxt`)
 
 - [ ] Family-aware derivation schemes (BIP-44 per coin type; Substrate `//`-path secret URIs)
+
+## Codebase organization (agent navigability, scoped 2026-11-20)
+
+> Goal: tighten existing governance (audit gate, size-budget ratchet) rather than add
+> process, and clear the backlog it has been holding frozen. Plan:
+> `docs/audit-playbook.md` stays the audit source of truth; `.claude/skills/audit/` just
+> makes it discoverable.
+
+- [x] `.claude/skills/audit/SKILL.md` — thin pointer to `docs/audit-playbook.md` +
+      `scripts/audit.sh`, so `/audit` and the Skill tool surface the existing procedure
+- [x] Installed `mattpocock-skills@claude-plugins-official` (Claude Code plugin, not a
+      Rust dependency) for `/improve-codebase-architecture` on future file-split passes
+- [x] `//!` module docs added to the files that were missing them and had headroom under
+      `scripts/size-budget.txt` (`vaughan-agent/src/sentient/trader.rs`,
+      `vaughan-tui/src/views/lp/{deploy,jobs,tests,types}.rs`)
+- [ ] `//!` module docs still missing on `vaughan-tui/src/views/lp/{confirm,helpers,input,render,state}.rs`
+      — adding one today would grow an already-frozen `size-budget.txt` entry (not
+      allowed per the ratchet). These are LP-view files, a separate split from the
+      `app.rs`/`tui.rs` work below; pick up once that LP view group gets its own split.
+- [x] `docs/` reorganized from 50 flat files into `architecture/ agents/ decisions/ risk/
+      roadmap/ ops/` + a `docs/README.md` index; `audit-playbook.md`, `audit-findings.md`,
+      `fable-5-audit-prompt.md` stay at `docs/` root (load-bearing, pointed to directly by
+      `AGENTS.md`/`CLAUDE.md`). Every cross-reference repo-wide (`.md`/`.rs`/`.sh`/`.toml`)
+      updated in the same change, including relative links between moved docs.
+- [x] Removed vestigial tracked `vaughan-hl/Cargo.lock` (it's a real `[workspace]` member;
+      only the root lockfile is load-bearing — verified `cargo build -p vaughan-hl --locked`
+      still works from the root lock before deleting)
+- [x] Split `vaughan-tui/src/app.rs`'s `spawn_job` (5113-line file, 802-line fn
+      dispatching every `UiJob` variant) into `vaughan-tui/src/jobs/{refresh,send,dex,dca,mcp}.rs`
+      (`dca` and `lp` are `pub`, used by `vaughan-tui/tests/sentient_v3_swap_anvil.rs`; the
+      rest are `pub(crate)`). `app.rs` is now 4303 lines, `spawn_job` 296 — mostly the
+      already-thin `jobs::lp` delegators. Verified: `cargo build/clippy/test --workspace`
+      green, `size_budget.py --update` run to lock in the new baseline.
+- [x] Split `vaughan-hl/src/tui.rs` (5012 lines) into `tui/mod.rs` (3182 lines: state,
+      key handling, the main `draw` dispatcher) + `tui/render.rs` (1842 lines: the six
+      `draw_*` screen-rendering methods, a second `impl HlTuiApp` block — `HlTuiApp`'s
+      fields are all `pub` so no visibility changes were needed beyond `pub(super)` on
+      the moved methods). Move-only: the six `draw_*` fns are unchanged in length (still
+      individually over the 150-line fn budget — splitting the *file* didn't shrink
+      those functions, that's a separate future cut if wanted).
+- [x] Verified both splits are genuinely move-only, mechanically rather than by eye —
+      `scripts/split-proof-hl-tui.py` (5383 normalised lines conserved 1-to-1) and
+      `scripts/split-proof-app-jobs.py` (33 bodies: 29 token-identical, 4 differing only
+      in brace/comma style; all 30 delegating call sites forward every pattern-bound field
+      in the right order — the check that matters, since several callees take 3-6
+      consecutive `String`s where a transposition would compile and misroute funds).
+      Details in `docs/audit-findings.md` §8. Both proofs were negative-tested (a
+      transposed `to`/`amount` argument makes the app-jobs proof fail), so green is not
+      vacuous. Caveat: both scripts live in gitignored `private/`, so they are local-only
+      — promote to `scripts/` if the remaining split candidates below should be gated by
+      the same proof.
+- [ ] **P2 (latent, pre-existing): six jobs hold the wallet mutex across an await,**
+      contradicting the invariant `vaughan-tui/src/app.rs:3546` states for `spawn_job`
+      ("never hold the wallet mutex across RPC / signing awaits — that freezes the TUI").
+      Cheap wins (read-only, just snapshot what's needed and drop the guard before the
+      await, like the other jobs already do): `jobs/refresh.rs::{refresh_activity,
+      refresh_allowances,replace_broadcast}` and `jobs/dex.rs::dex_swap_estimate_after_approve`.
+      Harder: `jobs/send.rs::send_stealth` holds it across a full **sign + broadcast**, and
+      `jobs/mcp.rs::mcp_queued_approve` holds it across `execute_approval_with_fee(..).await`
+      (carries `#[allow(clippy::await_holding_lock)]`) — that one takes `&mut WalletState`
+      for the duration by design, so it needs an interface change, not just an earlier
+      `drop`. All six are unchanged by the split (identical at `50fd36d5`), so none is a
+      regression. Needs its own commit plus a UI-freeze repro, not a move-only one.
+      Module docs now name these exceptions instead of claiming a discipline the code lacks.
+- [ ] Second pass candidates: `vaughan-core/src/core/wallet/mod.rs` (2287 lines),
+      `vaughan-tui/src/provider.rs` (1827 lines), `vaughan-tui/src/views/dex.rs` (1980
+      lines), `vaughan-core/src/core/dex_lp.rs` (1896 lines), the `views/lp/*` module-doc
+      gap above, and the six still-oversized `tui/render.rs` draw fns if someone wants to
+      break those up by sub-widget next.
+- [ ] Full Pass A (funds/signing diff read) of `docs/audit-playbook.md` on current `main`
+      — this session only ran the mechanical gate (`scripts/audit.sh --with-tests
+      --binary`) plus spot-checks of the seven P0 invariants (all held: no `siphon`
+      module, `vaughan-hl` has no `vaughan-core` dep, `ensure_local_signing_allowed`
+      still refuses `sentient`/`degen`, default build still excludes RAILGUN). A full
+      line-by-line Pass A across `vaughan-core`'s 41k lines needs its own session.
 
 ## Robustness (fund-safety + ops, not new product)
 
