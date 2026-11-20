@@ -5,7 +5,7 @@
 //!
 //! Docs lag the live path (`/v3/swap/quote`, recipient required). Vaughan
 //! targets the host the web app uses. Railgun / privacy routes are out of
-//! scope. See `docs/bridge.md`.
+//! scope. See `docs/architecture/bridge.md`.
 
 mod client;
 mod types;

@@ -37,4 +37,4 @@
 ## Vaughan notes
 
 - Seeded in `default_trusted_dapps()`.
-- See `docs/bridge.md` for API / router allowlists.
+- See `docs/architecture/bridge.md` for API / router allowlists.

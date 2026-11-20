@@ -13,13 +13,13 @@ Requirement IDs are referenced by `TASKS.md`.
 - EVM first-class; PulseChain mainnet (369) and testnet v4 (943) as the primary targets.
 - Native EIP-1193 provider bridge (VB today; Freedom when upstream
   [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges —
-  see `docs/freedom-browser-status.md`).
+  see `docs/roadmap/freedom-browser-status.md`).
 - Smart accounts via Ambire (ERC-4337/7702 AA) reimplemented in Rust — done
-  (FR-3.3, see `docs/ambire-aa.md`).
+  (FR-3.3, see `docs/architecture/ambire-aa.md`).
 - Privacy: ERC-5564 stealth in `vaughan-core` (no Kohaku). RAILGUN shielded
   balances are **in progress** behind the opt-in `railgun` feature on Sepolia only
-  (FR-3.4); Kohaku-rs stays deferred (`docs/kohaku-go-no-go.md`) and privacy pools
-  remain deferred (`docs/railgun-go-no-go.md`). See `docs/erc-5564-stealth.md`.
+  (FR-3.4); Kohaku-rs stays deferred (`docs/decisions/kohaku-go-no-go.md`) and privacy pools
+  remain deferred (`docs/decisions/railgun-go-no-go.md`). See `docs/architecture/erc-5564-stealth.md`.
 
 ## Non-goals (deferred, not dropped)
 
@@ -29,7 +29,7 @@ Requirement IDs are referenced by `TASKS.md`.
 - A **general-purpose** open-internet browser / Chrome replacement inside Vaughan.
   An **optional**, modular, allowlisted Chromium dApp shell (`vaughan-dapp-browser`,
   Tauri + CEF) with CDP agent control is in scope as a side door — see FR-7.* and
-  `docs/dapp-browser-strategy.md`. It must not live in `vaughan-core`, must not
+  `docs/roadmap/dapp-browser-strategy.md`. It must not live in `vaughan-core`, must not
   auto-sign, and default `vaughan-cli` builds must not require CEF.
 
 ## Functional requirements
@@ -58,7 +58,7 @@ Requirement IDs are referenced by `TASKS.md`.
 
 > Vaughan-side bridge shipped. Freedom Browser integration **parked** until
 > upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
-> merges — see [docs/freedom-browser-status.md](docs/freedom-browser-status.md).
+> merges — see [docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md).
 
 - **FR-2.1** Local EIP-1193 JSON-RPC server (WebSocket on 127.0.0.1), loopback only.
 - **FR-2.2** Implement `eth_accounts`, `eth_requestAccounts`, `eth_chainId`,
@@ -79,21 +79,21 @@ Requirement IDs are referenced by `TASKS.md`.
   `kohaku-core` / `kohaku-stealth` to crates.io. — **deferred by decision**: upstream
   `ethereum/kohaku` derives RAILGUN keys with BIP-32 while the canonical RAILGUN
   engine uses a babyjubjub seed tree, producing incompatible/unrecoverable keys;
-  upstream is also unaudited and pre-production. See `docs/kohaku-go-no-go.md`.
+  upstream is also unaudited and pre-production. See `docs/decisions/kohaku-go-no-go.md`.
 - **FR-3.2** ERC-5564 stealth addresses — **implemented on testnet**, spec-first in
   `vaughan-core` (scheme 1, HD `m/5564'/60'/0'/{0,1}'`). Not Kohaku.
-  See `docs/erc-5564-stealth.md`. TUI `st:` send/scan/sweep and the 943 announcer
+  See `docs/architecture/erc-5564-stealth.md`. TUI `st:` send/scan/sweep and the 943 announcer
   are live; CREATE2-deploy on PulseChain 369 is still open.
 - **FR-3.3** Ambire smart accounts (ERC-4337/7702 AA) reimplemented in Rust via Alloy +
   Ambire ABI (borrowed from Vaughan-Dioxus). — **implemented**: `vaughan-aa` with
   differential (EVM-reference) fixtures and a live 7702 self-pay E2E; TUI batched-send
-  view landed (see `docs/ambire-aa.md`). ERC-4337 `UserOperation` stays deferred by
+  view landed (see `docs/architecture/ambire-aa.md`). ERC-4337 `UserOperation` stays deferred by
   decision (self-pay 7702 is the testnet-first route).
 - **FR-3.4** RAILGUN shielded balances — **in progress (Phase 0 done 2026-10-02)**
   via pinned upstream `railgun-rust` behind the opt-in `railgun` feature
   (`vaughan-railgun`); derivation matches the official engine. Sepolia first; not
   on PulseChain. User-facing release blocked on the Wasmer Singlepass licence
-  (BUSL). See `docs/railgun-go-no-go.md`. Privacy pools remain deferred.
+  (BUSL). See `docs/decisions/railgun-go-no-go.md`. Privacy pools remain deferred.
 
 ### Phase 4 — Contract Browser & DEX Engine (`wiz4rd-engine`)
 
@@ -113,24 +113,24 @@ Requirement IDs are referenced by `TASKS.md`.
 - **FR-5.4** Autonomous Read/Inspect Tools: Wrap `wiz4rd-engine` and `vaughan-core` for contract capability probing, balance inspection, selector reverse lookup, DEX reserves, and pre-flight call simulation without user prompts.
 - **FR-5.5** Guarded Propose-Only Write Tools (Assist Mode): Draft transfers, DEX swaps, and EIP-7702 batched calls into structured `TxProposal`s that require explicit human approval via the TUI/CLI confirmation card. Private keys are never exposed to the agent.
 - **FR-5.6** Autonomous Execution with Circuit Breakers (Sentient Mode): In Sentient mode, automated signing is governed by hardcoded Rust circuit breakers (max position size %, gas burn rate ceiling, maximum 1.0% slippage, emergency kill-switch).
-- **FR-5.9** TUI-hosted DCA (recurring native→token buys): Human-approved plans in `dca-plans.json`; per-plan **aggregator or direct DEX** venue; Sentient App tick fires slices under FR-5.6 breakers; close TUI = pause. Indicator triggers deferred (Phase 2 — see `docs/dca.md`).
+- **FR-5.9** TUI-hosted DCA (recurring native→token buys): Human-approved plans in `dca-plans.json`; per-plan **aggregator or direct DEX** venue; Sentient App tick fires slices under FR-5.6 breakers; close TUI = pause. Indicator triggers deferred (Phase 2 — see `docs/architecture/dca.md`).
 - **FR-5.7** ~~Multi-Model Provider Integration~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 - **FR-5.8** ~~TUI Agent Console & CLI Commands~~ — **retired** (2026-08-23). Superseded by FR-6 (external agents via MCP).
 
 ### Phase 6 — External Agent / MCP Integration
 
 - **FR-6.1** MCP stdio server (`vaughan mcp`): hand-rolled JSON-RPC subset (`initialize`, `tools/list`, `tools/call`, `ping`) over stdin/stdout; diagnostics to stderr only.
-- **FR-6.2** Public tool contract documented in `docs/ai-tool-surface.md`: read tools (no approval), write tools (propose only), meta tools, hard bans, structured error codes.
+- **FR-6.2** Public tool contract documented in `docs/architecture/ai-tool-surface.md`: read tools (no approval), write tools (propose only), meta tools, hard bans, structured error codes.
 - **FR-6.3** Hybrid IPC: loopback TCP (`127.0.0.1:8746`) when TUI unlocked; file queue (`proposals/pending/`) when offline; session token auth; HMAC integrity on queue files.
 - **FR-6.4** Unified human approval: MCP proposals route through the same `ApprovalKind` gate as EIP-1193 dApp requests; re-simulate and re-estimate fee at approve time.
 - **FR-6.5** MCP process never unlocks vault or holds key material; signing only in TUI after explicit user approval.
 - **FR-6.6** CLI `--json` surface on `balance`, `assets`, `browse`, `propose`, `proposals` for script/agent use without MCP.
 - **FR-6.7** Testnet-first default for MCP writes; mainnet writes require `VAUGHAN_MCP_ALLOW_MAINNET=1`.
-- **FR-6.8** Threat model in `docs/mcp-threat-model.md`; zero telemetry (NFR-2).
+- **FR-6.8** Threat model in `docs/risk/mcp-threat-model.md`; zero telemetry (NFR-2).
 
 ### Phase 7 — Optional Chromium dApp browser + agent control
 
-> Side door only. Strategy: `docs/dapp-browser-strategy.md`. Modular binary;
+> Side door only. Strategy: `docs/roadmap/dapp-browser-strategy.md`. Modular binary;
 > multi-chain EVM; never auto-sign. Default product path remains Browserless Pulse.
 
 - **FR-7.1** Optional `vaughan-dapp-browser` binary (Tauri + CEF / Chromium). CEF
@@ -164,7 +164,7 @@ Requirement IDs are referenced by `TASKS.md`.
 - **C-3** TUI: ratatui + crossterm.
 - **C-4** `vaughan-core` reimplements the Vaughan-Dioxus layering (not vendored).
 - **C-5** Kohaku-rs is **not** a dependency. ERC-5564 is implemented in
-  `vaughan-core`. RAILGUN stays deferred (`docs/kohaku-go-no-go.md`).
+  `vaughan-core`. RAILGUN stays deferred (`docs/decisions/kohaku-go-no-go.md`).
 - **C-7** ERC-5564 v1 claim: payments are unlinkable to the recipient's
   **public** address. Sender, amount, and token stay visible. Sender attaches a
   PLS stipend so the recipient need not fund the stealth address from the main
@@ -172,4 +172,4 @@ Requirement IDs are referenced by `TASKS.md`.
 - **C-6** PulseChain is the primary target chain; optional dApp browser is
   multi-chain EVM (FR-7.4), not Pulse-locked.
 - **C-8** Optional Chromium/CEF browser is a separate binary only
-  (`docs/dapp-browser-strategy.md`); never a hard dependency of `vaughan-core`.
+  (`docs/roadmap/dapp-browser-strategy.md`); never a hard dependency of `vaughan-core`.

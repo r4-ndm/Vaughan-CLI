@@ -4,7 +4,7 @@
 //! that docs cannot catch: deny must land in `rejected/`, and a proposal that
 //! fails `eth_call` must not sign.
 //!
-//! Mapped to [`docs/mcp-threat-model.md`](../../docs/mcp-threat-model.md).
+//! Mapped to [`docs/risk/mcp-threat-model.md`](../../docs/risk/mcp-threat-model.md).
 
 mod common;
 

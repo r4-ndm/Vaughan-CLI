@@ -1,7 +1,7 @@
 //! Curated per-chain ERC-20 registry used by auto asset detection
 //! ([`crate::chains::evm::EvmAdapter::get_assets`]).
 //!
-//! Address provenance (see `docs/optimizations.md`): every entry was
+//! Address provenance (see `docs/roadmap/optimizations.md`): every entry was
 //! **verified on-chain** (`symbol()`/`decimals()` via `cast` against the
 //! chain's public RPC) on 2026-08-18, and cross-checked against the chain's
 //! block explorer token search. WPLS additionally matches the canonical

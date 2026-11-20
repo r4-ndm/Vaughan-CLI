@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-# Opt-in RAILGUN shielded balances (see docs/railgun-go-no-go.md).
+# Opt-in RAILGUN shielded balances (see docs/decisions/railgun-go-no-go.md).
 railgun = ["vaughan-tui/railgun"]
 
 [dependencies]

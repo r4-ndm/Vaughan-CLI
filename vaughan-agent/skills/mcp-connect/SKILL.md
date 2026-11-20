@@ -44,7 +44,7 @@ Fix cable 1 with host reconnect (see [`hosts/`](hosts/)). Fix cable 2 by unlocki
 | **Adviser** (default) | `vaughan` | `default` | Human approves in TUI |
 | **Sentient** | `vaughan-sentient` | `sentient` | Agent auto-exec under policy |
 
-Details: [`docs/agent-roles.md`](../../docs/agent-roles.md). Never point `vaughan-sentient` at the human savings seed by accident.
+Details: [`docs/agents/agent-roles.md`](../../docs/agents/agent-roles.md). Never point `vaughan-sentient` at the human savings seed by accident.
 
 ## Setup checklist (all hosts)
 
@@ -87,7 +87,7 @@ Confirm: `which vaughan` or dev path `target/debug/vaughan` matches MCP config `
 
 Or enable persisted CDP: `vaughan config agent-browser on` (then reconnect MCP — step 3).
 
-Full reference: [`docs/mcp.md`](../../docs/mcp.md).
+Full reference: [`docs/architecture/mcp.md`](../../docs/architecture/mcp.md).
 
 ### 3. Reconnect MCP on the host (required after any config change)
 
@@ -116,7 +116,7 @@ vaughan serve --password-env VAUGHAN_WALLET_PASSWORD
 # sentient: vaughan --profile sentient serve --password-env VAUGHAN_WALLET_PASSWORD
 ```
 
-See [`docs/sentient-ops.md`](../../docs/sentient-ops.md) for `serve.env` layout.
+See [`docs/agents/sentient-ops.md`](../../docs/agents/sentient-ops.md) for `serve.env` layout.
 
 ### 5. Verify (agent runs these in order)
 
@@ -154,7 +154,7 @@ browser_open { "url": "https://example.com" }
 browser_snapshot {}
 ```
 
-Full checklist: [`docs/mcp-smoke.md`](../../docs/mcp-smoke.md) · VB: [`docs/vb-mcp-smoke.md`](../../docs/vb-mcp-smoke.md).
+Full checklist: [`docs/ops/mcp-smoke.md`](../../docs/ops/mcp-smoke.md) · VB: [`docs/ops/vb-mcp-smoke.md`](../../docs/ops/vb-mcp-smoke.md).
 
 ## Agent browser (VB) enablement
 
@@ -166,7 +166,7 @@ CDP is **off by default**. Before `browser_snapshot` / `browser_open_agg`:
 | Settings → **`p`** | Same, from TUI |
 | `VAUGHAN_DAPP_BROWSER_CDP_PORT=9222` in MCP `env` | Dev/smoke override in `mcp.json` |
 
-After any change → **reconnect MCP** (step 3). Kill-switch: [`docs/vb-kill-switch.md`](../../docs/vb-kill-switch.md).
+After any change → **reconnect MCP** (step 3). Kill-switch: [`docs/ops/vb-kill-switch.md`](../../docs/ops/vb-kill-switch.md).
 
 ## Troubleshooting
 
@@ -194,8 +194,8 @@ After any change → **reconnect MCP** (step 3). Kill-switch: [`docs/vb-kill-swi
 
 | What | Where |
 |------|--------|
-| MCP architecture | [`docs/mcp.md`](../../docs/mcp.md) |
-| Smoke tests | [`docs/mcp-smoke.md`](../../docs/mcp-smoke.md) |
-| Tool list | [`docs/ai-tool-surface.md`](../../docs/ai-tool-surface.md) |
+| MCP architecture | [`docs/architecture/mcp.md`](../../docs/architecture/mcp.md) |
+| Smoke tests | [`docs/ops/mcp-smoke.md`](../../docs/ops/mcp-smoke.md) |
+| Tool list | [`docs/architecture/ai-tool-surface.md`](../../docs/architecture/ai-tool-surface.md) |
 | Project MCP config | [`.cursor/mcp.json`](../../../.cursor/mcp.json) |
 | MCP server impl | `vaughan-mcp/src/server.rs`, `dispatch.rs` |

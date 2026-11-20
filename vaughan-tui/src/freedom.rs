@@ -4,7 +4,7 @@
 //! a page is required; Freedom only if VB is missing and the user has a local
 //! checkout (`VAUGHAN_FREEDOM_CMD`). Freedom integration is **parked** until upstream
 //! [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) merges —
-//! see `docs/freedom-browser-status.md`.
+//! see `docs/roadmap/freedom-browser-status.md`.
 //!
 //! Terminals often auto-link plain `https://…` text and open the **system**
 //! browser on click. [`display_url`] inserts a zero-width space so that does not

@@ -74,7 +74,7 @@ EmpX and PortalX have **no public swap web UI** — always `quote_swap` for thos
 | 4 | MCP env: `VAUGHAN_DAPP_BROWSER_CHROME`, optional `VAUGHAN_DAPP_BROWSER_CDP_PORT=9222` |
 | 5 | Restart MCP host after config changes |
 
-Docs: [`docs/vb-mcp-smoke.md`](../../docs/vb-mcp-smoke.md) · [`docs/mcp.md`](../../docs/mcp.md)
+Docs: [`docs/ops/vb-mcp-smoke.md`](../../docs/ops/vb-mcp-smoke.md) · [`docs/architecture/mcp.md`](../../docs/architecture/mcp.md)
 
 ## Standard VB quote flow (PLS → HEX)
 
@@ -135,7 +135,7 @@ See **[`venues/INDEX.md`](venues/INDEX.md)** — one markdown file per Ag catalo
 
 - Connect / inject: [`dapp-connect`](../dapp-connect/SKILL.md)
 - Token addresses: [`pulsechain-context`](../pulsechain-context/SKILL.md)
-- Aggregator matrix: [`docs/aggregator.md`](../../docs/aggregator.md)
-- MCP tools: [`docs/ai-tool-surface.md`](../../docs/ai-tool-surface.md)
+- Aggregator matrix: [`docs/architecture/aggregator.md`](../../docs/architecture/aggregator.md)
+- MCP tools: [`docs/architecture/ai-tool-surface.md`](../../docs/architecture/ai-tool-surface.md)
 
 Update venue markdown when you learn a new quirk — do not rely on chat memory alone.

@@ -3,7 +3,7 @@
 //! These are the function signatures and struct shapes of Ambire's deployed,
 //! verified `AmbireAccount` contract (AGPL-3.0), carried over strictly as
 //! *interface facts* required for calldata interop. The contract's
-//! implementation is never copied or reimplemented — see `docs/ambire-aa.md`.
+//! implementation is never copied or reimplemented — see `docs/architecture/ambire-aa.md`.
 
 alloy::sol! {
     /// A single call in the batch: the account performs `call(to, value, data)`.

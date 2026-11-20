@@ -15,4 +15,4 @@ Newline-delimited JSON-RPC request samples for `tests/conformance.rs`.
 | `required_tools.json` | names that must appear in `tools/list` |
 | `banned_tool_substrings.json` | substrings that must never appear |
 
-Manual checklist: [`docs/mcp-smoke.md`](../../../docs/mcp-smoke.md).
+Manual checklist: [`docs/ops/mcp-smoke.md`](../../../docs/ops/mcp-smoke.md).

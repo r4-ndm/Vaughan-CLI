@@ -3,7 +3,7 @@
 //! Fixtures live in `tests/fixtures/`. These do **not** require Anvil or an
 //! unlocked TUI — they lock the wire format and tool catalog shape.
 //!
-//! Manual host smoke: [`docs/mcp-smoke.md`](../../docs/mcp-smoke.md).
+//! Manual host smoke: [`docs/ops/mcp-smoke.md`](../../docs/ops/mcp-smoke.md).
 
 use serde_json::{json, Value};
 use vaughan_mcp::{build_context, handle_stdio_line, McpDispatcher, MCP_PROTOCOL_VERSION};

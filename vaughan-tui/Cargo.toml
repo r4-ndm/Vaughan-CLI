@@ -7,7 +7,7 @@ description = "ratatui terminal frontend for Vaughan"
 
 [features]
 default = []
-# Opt-in RAILGUN shielded balances (heavy; see docs/railgun-go-no-go.md).
+# Opt-in RAILGUN shielded balances (heavy; see docs/decisions/railgun-go-no-go.md).
 railgun = ["dep:vaughan-railgun", "vaughan-railgun/enabled"]
 
 [dependencies]

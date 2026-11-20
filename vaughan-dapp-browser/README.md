@@ -28,7 +28,7 @@ Signing stays in the Vaughan TUI. Window stays open until you close it.
 
 Override: `VAUGHAN_DAPP_BROWSER_CHROME=/usr/bin/brave`
 
-Strategy: [`docs/dapp-browser-strategy.md`](../docs/dapp-browser-strategy.md)
+Strategy: [`docs/roadmap/dapp-browser-strategy.md`](../docs/roadmap/dapp-browser-strategy.md)
 
 ## Usage
 

@@ -1,6 +1,6 @@
 //! ERC-5564 scheme-1 stealth addresses (secp256k1 + view tags).
 //!
-//! Spec freeze: `docs/erc-5564-stealth.md`.
+//! Spec freeze: `docs/architecture/erc-5564-stealth.md`.
 //! `h(s)` is keccak256 of the **SEC1 compressed** shared point (33 bytes), matching
 //! ScopeLift `stealth-address-sdk` scheme 1 (`@noble/secp256k1` `getSharedSecret`).
 //! Spend/view keys: `m/5564'/60'/0'/0'` and `m/5564'/60'/0'/1'`.

@@ -11,7 +11,7 @@
 //! 5. an unknown (registry-less) address falls back to a shortened address +
 //!    18 decimals for metadata.
 //!
-//! Provenance for each piece: `docs/optimizations.md`.
+//! Provenance for each piece: `docs/roadmap/optimizations.md`.
 //!
 //! Run with:
 //! ```sh
@@ -292,7 +292,7 @@ async fn assets_detect_transfer_discovered_token() {
     assert!(ready, "anvil did not come up on {}", anvil.url);
 
     // ---- LINK: real token on the fork, NOT in the curated registry ----
-    // Verified 2026-08-18: symbol LINK, 18 decimals (see docs/optimizations.md).
+    // Verified 2026-08-18: symbol LINK, 18 decimals (see docs/roadmap/optimizations.md).
     let link: Address = "0x514910771AF9Ca656af840dff83E8264EcF986CA"
         .parse()
         .unwrap();

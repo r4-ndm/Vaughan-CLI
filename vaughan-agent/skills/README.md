@@ -74,7 +74,7 @@ Read before running multi-venue PLS→HEX comparisons in VB.
 
 Premade **skill + `policy.toml`** packs (gambler → quant → cautious) for humans
 who share a seed with an agent — no contracts, just rules. See
-[`../presets/`](../presets/) and [`docs/sentient-presets.md`](../../docs/sentient-presets.md).
+[`../presets/`](../presets/) and [`docs/agents/sentient-presets.md`](../../docs/agents/sentient-presets.md).
 
 ## User overrides
 

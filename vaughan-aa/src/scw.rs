@@ -3,7 +3,7 @@
 //! `scw_transaction` is Ambire's name for the off-chain payload that authorizes
 //! a batch of calls from a smart account. We reimplement only the *schema* — the
 //! fields the on-chain `AmbireAccount.execute` verifies — and write the digest
-//! logic fresh from the ABI spec. See `docs/ambire-aa.md`.
+//! logic fresh from the ABI spec. See `docs/architecture/ambire-aa.md`.
 
 use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy::sol_types::SolValue;

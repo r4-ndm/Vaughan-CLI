@@ -179,7 +179,7 @@ fn format_fee_total(total_wei: U256, symbol: &str, decimals: u8) -> String {
 
 /// Canonical Multicall3 address (<https://github.com/mds1/multicall>). Present
 /// on both PulseChain mainnet and testnet — verified via `cast codesize`
-/// (3808 bytes on both, 2026-08-18; see `docs/optimizations.md`).
+/// (3808 bytes on both, 2026-08-18; see `docs/roadmap/optimizations.md`).
 pub const MULTICALL3: Address =
     alloy::primitives::address!("cA11bde05977b3631167028862bE2a173976CA11");
 

@@ -13,7 +13,7 @@
 #   vaughan    default features — byte-for-byte the shape `npm i -g vaughan` and
 #              the GitHub release tarballs ship. No RAILGUN, so no BUSL-1.1
 #              `wasmer-compiler-singlepass` in the graph.
-#   vaughan-p  --features railgun — the private panel. docs/railgun-go-no-go.md
+#   vaughan-p  --features railgun — the private panel. docs/decisions/railgun-go-no-go.md
 #              allows this for development and testing only; a user-facing
 #              release with `railgun` is blocked on the Singlepass licence, so
 #              this must never be the everyday default command.
@@ -108,7 +108,7 @@ echo "  Size:     $(wc -c < "$DEST" | tr -d ' ') bytes"
 echo "  RAILGUN:  none (${plain_count} hits — matches a release build)"
 if [ "$WITH_RAILGUN" -eq 1 ]; then
     echo ""
-    echo "Private panel (development/testing only — BUSL, see docs/railgun-go-no-go.md):"
+    echo "Private panel (development/testing only — BUSL, see docs/decisions/railgun-go-no-go.md):"
     echo "  Path:     $DEST_P"
     echo "  Version:  $("$DEST_P" --version 2>/dev/null || echo unknown)"
     echo "  Size:     $(wc -c < "$DEST_P" | tr -d ' ') bytes"

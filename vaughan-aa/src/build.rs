@@ -10,7 +10,7 @@
 //!
 //! The ERC-4337 `UserOperation` path (bundler submission) is intentionally
 //! *not* assembled here yet — it needs its own EntryPoint/bundler decision (see
-//! TASKS.md FR-3.3 and `docs/ambire-aa.md`).
+//! TASKS.md FR-3.3 and `docs/architecture/ambire-aa.md`).
 //!
 //! [EIP-7702]: https://eips.ethereum.org/EIPS/eip-7702
 

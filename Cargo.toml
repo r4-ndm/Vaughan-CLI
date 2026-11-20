@@ -94,7 +94,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "def
 uniswap-v3-sdk = { version = "=7.0.0", default-features = false }
 
 # RAILGUN (opt-in `railgun` feature; only `vaughan-railgun` may depend on these).
-# Exact-commit pin: bump only via the procedure in `docs/railgun-go-no-go.md`.
+# Exact-commit pin: bump only via the procedure in `docs/decisions/railgun-go-no-go.md`.
 railgun-wallet = { git = "https://github.com/triamazikamno/railgun-rust", rev = "95e05b0cc06bb6ee6d0d44d5112540b26da947c3" }
 broadcaster-core = { git = "https://github.com/triamazikamno/railgun-rust", rev = "95e05b0cc06bb6ee6d0d44d5112540b26da947c3" }
 merkletree = { git = "https://github.com/triamazikamno/railgun-rust", rev = "95e05b0cc06bb6ee6d0d44d5112540b26da947c3" }

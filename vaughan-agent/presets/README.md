@@ -3,7 +3,7 @@
 Premade **skill + policy** packs for humans who share a seed (or fund
 `sentient`) with an agent. No contracts — behavior comes from these files.
 
-See [`docs/sentient-presets.md`](../../docs/sentient-presets.md).
+See [`docs/agents/sentient-presets.md`](../../docs/agents/sentient-presets.md).
 
 | Preset | Path |
 |--------|------|

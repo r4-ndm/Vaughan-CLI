@@ -8,7 +8,7 @@
 //! Only viewing material is kept: it can decrypt notes and spot spends, but
 //! can't move funds. The spending key is wiped right after derivation.
 //! Residual: upstream copies key bytes internally during derivation and
-//! those copies aren't wiped (`docs/railgun-go-no-go.md`).
+//! those copies aren't wiped (`docs/decisions/railgun-go-no-go.md`).
 
 use alloy::primitives::U256;
 use broadcaster_core::crypto::railgun::ViewingKeyData;

@@ -89,4 +89,4 @@ Expect one JSON line on stdout (logs on stderr).
 | `wallet_locked` in tool results | Start `vaughan` TUI or `vaughan serve` |
 | No browser tools | Add `VAUGHAN_DAPP_BROWSER_CDP_PORT` env; install `vaughan-dapp-browser` |
 
-Reference: [Anthropic MCP docs](https://modelcontextprotocol.io) · Vaughan: [`docs/mcp.md`](../../../../docs/mcp.md).
+Reference: [Anthropic MCP docs](https://modelcontextprotocol.io) · Vaughan: [`docs/architecture/mcp.md`](../../../../docs/architecture/mcp.md).

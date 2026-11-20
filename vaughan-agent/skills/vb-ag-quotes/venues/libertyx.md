@@ -12,7 +12,7 @@
 The web UI shows **USD stablecoin bridge** flows, not native PLS → HEX on PulseChain.
 
 Use Vaughan **Bridge screen (`f`)** + `quote_bridge` for LibertySwap routes.
-See [`docs/bridge.md`](../../../docs/bridge.md).
+See [`docs/architecture/bridge.md`](../../../docs/architecture/bridge.md).
 
 ## MCP
 

@@ -5,7 +5,7 @@
 //! verified smart account — the ABI selectors, struct shapes, and the
 //! digest/signature layout — and writes every line of encoding, hashing, and
 //! signing fresh. The contract itself (AGPL-3.0) is never copied or
-//! reimplemented; we only `call` it. See `docs/ambire-aa.md` and the provenance
+//! reimplemented; we only `call` it. See `docs/architecture/ambire-aa.md` and the provenance
 //! note in `README.md`.
 //!
 //! `Vaughan-Dioxus` is a reference guide only, never a code source (CLAUDE.md).

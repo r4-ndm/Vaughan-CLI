@@ -25,7 +25,7 @@ kind: guide
 
 High-confusion pairs are labeled by `resolve_token` / `list_assets` / DexScreener
 tools when the address is catalogued (`vaughan-core::core::token_origin`). See
-[`docs/dexscreener.md`](../../../docs/dexscreener.md).
+[`docs/architecture/dexscreener.md`](../../../docs/architecture/dexscreener.md).
 
 Never invent `token_origin` for unknown addresses. Prefer:
 
@@ -86,12 +86,12 @@ For tHEX / other testnet tokens not listed here, ask for the token address or `i
 - Stakeable contract is **pHEX** (state-fork at the Ethereum HEX address) — not **eHEX**.
 - Sensory: `hex_global_state`, `hex_stakes_for_address`. Writes: `propose_hex_stake_start` /
   `propose_hex_stake_end` (human approve). Hearts = 8 decimals. Days 1–5555.
-- TUI: footer **`u` HEX**. Docs: `docs/hex-stake.md`.
+- TUI: footer **`u` HEX**. Docs: `docs/architecture/hex-stake.md`.
 - Early `stakeEnd` incurs a protocol penalty — always warn before proposing.
 
 ## Piteas aggregator
 
-- Quote client lives in `vaughan-core::core::piteas` (see `docs/piteas.md`).
+- Quote client lives in `vaughan-core::core::piteas` (see `docs/architecture/piteas.md`).
 - Public beta: `GET https://sdk.piteas.io/quote` — native PLS spelled `PLS`; router `0x6BF228eb7F8ad948d37deD07E595EfddfaAF88A6`.
 - Partner API key (when issued): encrypt into `piteas.key.json`; set `auth_style` in `piteas.toml`. Do not put keys in chat or skills.
 
@@ -99,9 +99,9 @@ For tHEX / other testnet tokens not listed here, ask for the token address or `i
 
 - **Primary (no key):** SquirrelSwap Brain — `https://api.squirrelswap.pro` (`POST /swap` → unsigned tx). Native PLS = `0x000…000`.
 - Also live: PulseSwap, Piteas public beta.
-- Live Ag: Squirrel, Piteas, Empseal, **9mm 9X** (`api.9mm.pro`). Needs key: Switch, CURV — see `docs/aggregator.md`.
+- Live Ag: Squirrel, Piteas, Empseal, **9mm 9X** (`api.9mm.pro`). Needs key: Switch, CURV — see `docs/architecture/aggregator.md`.
 - **Ag quote tours in VB (MCP):** [`vb-ag-quotes`](../vb-ag-quotes/SKILL.md) — `browser_open_agg`, PLS→HEX across venues.
-- Bridge (`f`): LibertySwap USDC cross-chain (`docs/bridge.md`) — not official Omnibridge;
+- Bridge (`f`): LibertySwap USDC cross-chain (`docs/architecture/bridge.md`) — not official Omnibridge;
   destination is async (no claim tracker in v1). Omnibridge/PulseRamp is deferred.
 - Browser (Settings → `c`) intent macros: `/swap`, `/inspect 0x…`, `/revoke`, `/stealth receive`
   (thin jumps to Ag / browse / Approvals / Receive). Writes: `write` / `writeraw` → fee confirm.

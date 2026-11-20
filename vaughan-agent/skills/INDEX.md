@@ -57,4 +57,4 @@ files **point here**; edit `vaughan-agent/skills/` first.
 | `workflow-recovery` | guide | [`workflow-recovery/SKILL.md`](workflow-recovery/SKILL.md) |
 | `vaughan-brews` | guide | [`vaughan-brews/SKILL.md`](vaughan-brews/SKILL.md) |
 
-Details: [`README.md`](README.md) · Docs: [`docs/agent-configuration.md`](../../docs/agent-configuration.md)
+Details: [`README.md`](README.md) · Docs: [`docs/agents/agent-configuration.md`](../../docs/agents/agent-configuration.md)

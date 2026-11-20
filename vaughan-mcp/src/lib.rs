@@ -3,7 +3,7 @@
 //! Implements a minimal MCP JSON-RPC 2.0 subset over stdin/stdout. Diagnostics
 //! go to stderr only so Cursor's MCP client is not broken by log noise.
 //!
-//! Full `rmcp` / SDK rewrite is **not scheduled** — see `docs/mcp-transport.md`.
+//! Full `rmcp` / SDK rewrite is **not scheduled** — see `docs/architecture/mcp-transport.md`.
 
 pub mod browser_bridge;
 pub mod client;

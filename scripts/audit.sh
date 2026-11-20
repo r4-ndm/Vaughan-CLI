@@ -382,7 +382,7 @@ if [ "$CHECK_BINARY" -eq 1 ]; then
         fi
         # The DEFAULT command must look like a release: no private panel, hence no
         # BUSL-1.1 Singlepass in its graph. RAILGUN lives in `vaughan-p`, which
-        # docs/railgun-go-no-go.md limits to development and testing. This check
+        # docs/decisions/railgun-go-no-go.md limits to development and testing. This check
         # is deliberately the inverse of the one it replaced — the panel being
         # present in `vaughan` used to pass, and that was the wrong default.
         # NB: no `grep -q` here — it exits on first match, SIGPIPEs `strings`, and

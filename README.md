@@ -15,16 +15,16 @@
 and approve in the TUI without Chrome. Agents talk to Vaughan via MCP; **VB**
 (`vaughan-dapp-browser`) is the optional owned Chromium side door.
 **Freedom Browser is parked** until [upstream PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195)
-merges — see [docs/freedom-browser-status.md](docs/freedom-browser-status.md).
+merges — see [docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md).
 
 - **Alloy** for the wallet core — keys, signing, RPC, transaction building and broadcast
 - **ratatui** for the terminal interface
-- **In-core ERC-5564 stealth** plus **RAILGUN shielded balances** (opt-in feature, Sepolia only — see [docs/railgun-go-no-go.md](docs/railgun-go-no-go.md))
-- **MCP** for external agents — Cursor / Claude propose; you approve in Vaughan ([docs/mcp.md](docs/mcp.md))
-- **VB** (`vaughan-dapp-browser`) — optional allowlisted Chromium shell + CDP ([docs/dapp-browser-strategy.md](docs/dapp-browser-strategy.md))
+- **In-core ERC-5564 stealth** plus **RAILGUN shielded balances** (opt-in feature, Sepolia only — see [docs/decisions/railgun-go-no-go.md](docs/decisions/railgun-go-no-go.md))
+- **MCP** for external agents — Cursor / Claude propose; you approve in Vaughan ([docs/architecture/mcp.md](docs/architecture/mcp.md))
+- **VB** (`vaughan-dapp-browser`) — optional allowlisted Chromium shell + CDP ([docs/roadmap/dapp-browser-strategy.md](docs/roadmap/dapp-browser-strategy.md))
 - **Freedom Browser** — **parked** (upstream [PR #195](https://github.com/solardev-xyz/freedom-browser/pull/195) pending); dev fallback only
 
-EVM-first and PulseChain-optimized. Thesis: [docs/browserless-pulse.md](docs/browserless-pulse.md).
+EVM-first and PulseChain-optimized. Thesis: [docs/architecture/browserless-pulse.md](docs/architecture/browserless-pulse.md).
 Architecture mirrors the `vaughan-core` layering from
 [Vaughan-Dioxus](https://github.com/r4-ndm/Vaughan-Dioxus).
 
@@ -114,7 +114,7 @@ command -v vaughan && vaughan --version
 
 Building from a checkout produces two binaries: `vaughan` with default features
 (the shape releases ship) and `vaughan-p` with `--features railgun`, which
-`docs/railgun-go-no-go.md` limits to development and testing.
+`docs/decisions/railgun-go-no-go.md` limits to development and testing.
 
 ## Launch
 
@@ -133,7 +133,7 @@ Ensure `~/.local/bin` (or `~/.cargo/bin` when using the cargo fallback) is on yo
 
 Vaughan is a **terminal wallet for PulseChain**. You stay in control: every spend
 needs your explicit approval unless you deliberately set up a separate
-“sentient” burner profile (see [docs/agent-roles.md](docs/agent-roles.md)).
+“sentient” burner profile (see [docs/agents/agent-roles.md](docs/agents/agent-roles.md)).
 
 **Start on testnet (chain 943)** until you are comfortable. Mainnet (369) is
 supported but real money — treat mistakes as permanent.
@@ -176,7 +176,7 @@ when a whitelisted site needs a page. Freedom stays parked until upstream PR
 
 USB needs vendor udev rules (CachyOS/Arch included). In the TUI:
 **Settings (`n`) → `h`**, or see
-[`docs/hardware-wallets.md`](docs/hardware-wallets.md#linux-usb-udev--ledger--trezor).
+[`docs/architecture/hardware-wallets.md`](docs/architecture/hardware-wallets.md#linux-usb-udev--ledger--trezor).
 
 - Ledger: [Fix USB connection issues](https://support.ledger.com/article/115005165269-zd)
 - Trezor: [Udev rules](https://trezor.io/guides/trezorctl/udev-rules)
@@ -209,7 +209,7 @@ Vaughan over MCP, which **proposes** transactions; **you** approve in the TUI.
 
 Rough flow:
 
-1. Configure MCP per [docs/mcp.md](docs/mcp.md) (`vaughan mcp` stdio server).
+1. Configure MCP per [docs/architecture/mcp.md](docs/architecture/mcp.md) (`vaughan mcp` stdio server).
 2. Ask the agent to quote or inspect (read-only tools are safe to run freely).
 3. When it calls `propose_*`, open Vaughan — a proposal card appears.
 4. Read the decoded calldata and fee, not just the agent’s explanation text.
@@ -218,12 +218,12 @@ Rough flow:
 Guards you get by default: re-simulation at approve time, chain mismatch
 rejection, fee-spike rejection if gas jumped more than ~10% since the proposal,
 session token for the local queue (adviser), and testnet-first mainnet gating
-for MCP writes. Details: [docs/mcp-threat-model.md](docs/mcp-threat-model.md).
+for MCP writes. Details: [docs/risk/mcp-threat-model.md](docs/risk/mcp-threat-model.md).
 
 A separate **`sentient`** profile is the deliberate exception to “you approve
 every spend”: that seed belongs to `vaughan signerd`, which signs its intents
 under policy caps and a spend ledger with no approval card. Keys never enter the
-MCP process either way — see [docs/sentient-ops.md](docs/sentient-ops.md).
+MCP process either way — see [docs/agents/sentient-ops.md](docs/agents/sentient-ops.md).
 
 ### What is in good shape vs still rough
 
@@ -252,7 +252,7 @@ vaughan --profile sentient serve                 # sentient thin client: no pass
                                                  # keys stay in vaughan signerd
 ```
 
-For agent tool names and limits, see [docs/ai-tool-surface.md](docs/ai-tool-surface.md).
+For agent tool names and limits, see [docs/architecture/ai-tool-surface.md](docs/architecture/ai-tool-surface.md).
 
 ## Build from source (developers)
 
@@ -317,24 +317,24 @@ vaughan-cli/
 
 ## Documentation
 
-- [docs/browserless-pulse.md](docs/browserless-pulse.md) — Product thesis (TUI-first; VB optional web)
-- [docs/freedom-browser-status.md](docs/freedom-browser-status.md) — Freedom **parked** until upstream PR #195
+- [docs/architecture/browserless-pulse.md](docs/architecture/browserless-pulse.md) — Product thesis (TUI-first; VB optional web)
+- [docs/roadmap/freedom-browser-status.md](docs/roadmap/freedom-browser-status.md) — Freedom **parked** until upstream PR #195
 - [docs/fable-5-audit-prompt.md](docs/fable-5-audit-prompt.md) — Parked comprehensive audit prompt (Fable 5; run before release)
-- [docs/wiz4rd-addresses.md](docs/wiz4rd-addresses.md) — wiz4rd V3 deploy on Pulse testnet 943
-- [docs/wiz4rd-agent-plan.md](docs/wiz4rd-agent-plan.md) — Agents + wiz4rd capability plan
-- [docs/mcp.md](docs/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
-- [docs/mcp-smoke.md](docs/mcp-smoke.md) — Cursor smoke checklist + conformance tests
-- [docs/mcp-transport.md](docs/mcp-transport.md) — Hand-rolled MCP vs `rmcp` (no rewrite now)
-- [docs/sentient-ops.md](docs/sentient-ops.md) — Always-on serve, watch loops, multi-tenant boundaries
-- [docs/ai-tool-surface.md](docs/ai-tool-surface.md) — Public tool contract for agents
-- [docs/pulse-defi-skills.md](docs/pulse-defi-skills.md) — Pulse DeFi MCP skill pack (quote / trade)
+- [docs/architecture/wiz4rd-addresses.md](docs/architecture/wiz4rd-addresses.md) — wiz4rd V3 deploy on Pulse testnet 943
+- [docs/roadmap/wiz4rd-agent-plan.md](docs/roadmap/wiz4rd-agent-plan.md) — Agents + wiz4rd capability plan
+- [docs/architecture/mcp.md](docs/architecture/mcp.md) — MCP setup (external agents; replaces embedded LLM chat)
+- [docs/ops/mcp-smoke.md](docs/ops/mcp-smoke.md) — Cursor smoke checklist + conformance tests
+- [docs/architecture/mcp-transport.md](docs/architecture/mcp-transport.md) — Hand-rolled MCP vs `rmcp` (no rewrite now)
+- [docs/agents/sentient-ops.md](docs/agents/sentient-ops.md) — Always-on serve, watch loops, multi-tenant boundaries
+- [docs/architecture/ai-tool-surface.md](docs/architecture/ai-tool-surface.md) — Public tool contract for agents
+- [docs/agents/pulse-defi-skills.md](docs/agents/pulse-defi-skills.md) — Pulse DeFi MCP skill pack (quote / trade)
 - [vaughan-agent/skills/INDEX.md](vaughan-agent/skills/INDEX.md) — **Agent playbooks index** (mcp-connect, vb-ag-quotes, dapp-connect, …)
-- [docs/mcp-threat-model.md](docs/mcp-threat-model.md) — MCP threat model
-- [docs/freedom-browser-integration.md](docs/freedom-browser-integration.md) — EIP-1193 provider bridge
-- [docs/ambire-aa.md](docs/ambire-aa.md) — Ambire EIP-7702 batch transactions
-- [docs/browser-engine.md](docs/browser-engine.md) — Smart contract browser engine
-- [docs/piteas.md](docs/piteas.md) — PulseChain Piteas swap / quote integration notes
-- [docs/aggregator.md](docs/aggregator.md) — Multi-DEX aggregator surface
+- [docs/risk/mcp-threat-model.md](docs/risk/mcp-threat-model.md) — MCP threat model
+- [docs/roadmap/freedom-browser-integration.md](docs/roadmap/freedom-browser-integration.md) — EIP-1193 provider bridge
+- [docs/architecture/ambire-aa.md](docs/architecture/ambire-aa.md) — Ambire EIP-7702 batch transactions
+- [docs/architecture/browser-engine.md](docs/architecture/browser-engine.md) — Smart contract browser engine
+- [docs/architecture/piteas.md](docs/architecture/piteas.md) — PulseChain Piteas swap / quote integration notes
+- [docs/architecture/aggregator.md](docs/architecture/aggregator.md) — Multi-DEX aggregator surface
 - [PLAN.md](PLAN.md) — Architecture and phase plan (incl. MCP pivot)
 - [REQUIREMENTS.md](REQUIREMENTS.md) — Functional and non-functional requirements
 - [TASKS.md](TASKS.md) — Implementation backlog and test matrix

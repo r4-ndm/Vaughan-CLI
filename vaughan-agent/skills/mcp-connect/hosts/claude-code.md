@@ -82,4 +82,4 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_contro
 | Works in terminal, not in Claude | Path issue — use absolute `command` path |
 | `ready_for_writes: false` | Run `vaughan serve` or unlock TUI |
 
-Reference: [`docs/mcp.md`](../../../../docs/mcp.md) · [`docs/mcp-smoke.md`](../../../../docs/mcp-smoke.md).
+Reference: [`docs/architecture/mcp.md`](../../../../docs/architecture/mcp.md) · [`docs/ops/mcp-smoke.md`](../../../../docs/ops/mcp-smoke.md).

@@ -65,4 +65,4 @@ Use these labels in site files:
   agent CDP only with `--cdp-port` / `VAUGHAN_DAPP_BROWSER_CDP_PORT`.
 - `--self-check` should show inject PASS **and** bridge PASS (`eth_chainId`).
 - Security: session token for extension WS, connect approve, page origin on
-  prompts, approve debounce/TTL — see `docs/native-parity-tricks.md` §5.
+  prompts, approve debounce/TTL — see `docs/roadmap/native-parity-tricks.md` §5.
